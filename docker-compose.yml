@@ -1,0 +1,139 @@
+services:
+  # Restricted Docker API proxy (OPTIONAL).
+  #
+  # By default the backend talks to /var/run/docker.sock directly (see below).
+  # This is simpler and has no external image dependency. For extra defense-in-
+  # depth, you can enable the proxy by setting COMPOSE_PROFILES=secure and
+  # setting DOCKER_HOST=tcp://127.0.0.1:2375 on the backend service.
+  #
+  # Bound to 127.0.0.1 only — never exposed on LAN.
+  docker-proxy:
+    profiles: ["secure"]
+    image: tecnativa/docker-socket-proxy:0.3
+    container_name: pitun-docker-proxy
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:2375:2375"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    environment:
+      - CONTAINERS=1
+      - IMAGES=1
+      - INFO=1
+      - VERSION=1
+      - POST=1
+      - DELETE=1
+      - NETWORKS=0
+      - VOLUMES=0
+      - EXEC=0
+      - SWARM=0
+      - SYSTEM=0
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "5m"
+        max-file: "2"
+
+  backend:
+    image: pitun-backend:latest
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: pitun-backend
+    restart: unless-stopped
+    network_mode: host          # needed for tproxy / nftables access
+    privileged: true            # needed for nftables manipulation
+    pid: host                    # needed for nsenter to host PID 1
+    volumes:
+      - ./backend/app:/app/app
+      - ./backend/alembic:/app/alembic              # migrations: picked up automatically by entrypoint.sh
+      - ./backend/alembic.ini:/app/alembic.ini:ro
+      - ./data:/app/data
+      - /tmp/pitun:/tmp/pitun
+      - /etc/pitun/naive:/etc/pitun/naive    # naive sidecar configs (host-shared)
+      - /usr/local/share/xray:/usr/local/share/xray
+      - /usr/local/bin/xray:/usr/local/bin/xray:ro
+      - /etc/resolv.conf:/host/resolv.conf    # host DNS config (read/write)
+      - /etc/os-release:/host/os-release:ro    # host distro info (for /system/versions)
+      - /proc/sys:/host/proc_sys              # host sysctl (read/write)
+      # Docker API: by default direct socket access; override via DOCKER_HOST
+      # when running with COMPOSE_PROFILES=secure + docker-proxy.
+      - /var/run/docker.sock:/var/run/docker.sock
+    env_file: .env
+    environment:
+      - DATABASE_URL=sqlite:////app/data/pitun.db
+      # Docker API endpoint used by NaiveManager. Default = direct socket.
+      # Set to tcp://127.0.0.1:2375 to route through docker-proxy (secure profile).
+      - DOCKER_HOST=unix:///var/run/docker.sock
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://127.0.0.1:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    # Docker default json-file driver has NO size cap → /var/lib/docker
+    # on an RPi SD card would fill up over weeks of operation. 10 MB × 3
+    # files ≈ 30 MB ceiling per service, plenty for troubleshooting.
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  frontend:
+    # Plain nginx serving the bind-mounted SPA dist. Historically this
+    # used a custom `pitun-frontend:latest` image built locally — but
+    # nothing in the image was actually unique (just nginx + a COPY of
+    # dist + a printf'd config). Both of those are now bind-mounted, so
+    # we can use the upstream nginx image directly and skip building
+    # / shipping a project-specific frontend image entirely. Makes
+    # offline installs work without internet at deploy time.
+    image: nginx:1.25-alpine
+    container_name: pitun-frontend
+    restart: unless-stopped
+    volumes:
+      - ./frontend/dist:/usr/share/nginx/html:ro
+      - ./frontend/nginx-spa.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      - backend
+    # Healthcheck so the reverse-proxy (`nginx` service below) can wait
+    # for `pitun-frontend` to be ready BEFORE starting itself, instead
+    # of racing it. Without this, on a fresh `docker compose up` the
+    # reverse nginx can win the race, fail to resolve `frontend:80`
+    # via Docker's embedded DNS (the alias hasn't propagated yet) and
+    # crash-loop. Belt-and-braces with the runtime-resolver dance in
+    # nginx.conf — both together make the startup deterministic.
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1/"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "5m"
+        max-file: "2"
+
+  nginx:
+    image: nginx:1.25-alpine
+    container_name: pitun-nginx
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+    extra_hosts:
+      # backend uses network_mode:host, so it's not on the Docker bridge.
+      # host-gateway resolves to the host IP so nginx can reach it.
+      # Requires Docker >= 20.10.
+      - "backend:host-gateway"
+    depends_on:
+      backend:
+        condition: service_started
+      frontend:
+        condition: service_healthy
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"

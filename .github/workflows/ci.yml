@@ -1,0 +1,87 @@
+name: CI
+
+# Runs on every push to main and on every PR — fast feedback only.
+# Heavier multi-arch builds live in `release.yml` and are triggered by
+# pushing a `vX.Y.Z` tag.
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+    branches: [master, main]
+
+# Cancel in-progress runs for the same ref so a quick force-push doesn't
+# burn through all your free Actions minutes.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  backend:
+    name: Backend tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: backend/requirements*.txt
+
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt -r requirements-dev.txt
+
+      - name: Run pytest
+        run: python -m pytest tests/ -q
+
+  frontend:
+    name: Frontend build + tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          # No cache: we don't track package-lock.json (regenerated each
+          # run, see "Install dependencies" below) so there's no key to
+          # build a cache against. setup-node@v4 fails fast if `cache:
+          # npm` is set but the lock file is missing — easier to just
+          # not cache at all. Adds ~30 s to each run, acceptable.
+
+      # `npm ci` is what we'd normally use, but our `package-lock.json`
+      # is generated on Windows and only carries the win32-msvc rollup
+      # native binary; on Linux runners npm fails with
+      # "Cannot find module @rollup/rollup-linux-x64-gnu" (npm/cli#4828).
+      # Until we ship a multi-platform lock, regenerate fresh on each
+      # CI run — slightly slower than `npm ci` but reproducible.
+      - name: Install dependencies (cross-platform workaround)
+        run: |
+          rm -f package-lock.json
+          npm install --no-audit --no-fund
+      # `npm run lint` is intentionally skipped — there's no ESLint
+      # config tracked in the repo yet (the `lint` script in
+      # package.json invokes eslint without a `.eslintrc.*` /
+      # `eslint.config.js`). When we add one, drop this comment and
+      # re-enable: `- run: npm run lint`.
+      - run: npm run test:ci
+      - run: npm run build
+
+      # Surface the build size on PRs — handy for catching accidental
+      # 10 MB chunks before they ship.
+      - name: Report dist size
+        run: du -sh dist

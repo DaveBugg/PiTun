@@ -1,0 +1,44 @@
+version: "3.9"
+
+# Standalone dev compose for Windows/macOS
+# Usage: docker compose -f docker-compose.dev.yml up --build
+# UI: http://localhost:3000  |  API: http://localhost:3000/api
+
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+      target: dev
+    container_name: pitun-backend
+    volumes:
+      - ./backend/app:/app/app
+      - ./backend/tests:/app/tests
+      - ./backend/alembic:/app/alembic
+      - ./backend/alembic.ini:/app/alembic.ini
+      - ./data:/app/data
+      - ./scripts:/app/scripts
+    environment:
+      - SECRET_KEY=dev-secret
+      - DATABASE_URL=sqlite:////app/data/pitun.db
+      - CORS_ORIGINS=http://localhost:3000,http://localhost:5173
+      - XRAY_BINARY=/bin/false
+      - XRAY_CONFIG_PATH=/tmp/pitun/config.json
+      - XRAY_LOG_LEVEL=debug
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: pitun-frontend
+
+  nginx:
+    image: nginx:1.25-alpine
+    container_name: pitun-nginx
+    ports:
+      - "3000:80"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - backend
+      - frontend

@@ -1,0 +1,28 @@
+# Force LF line endings for all shell scripts and text files
+# (prevents Windows CRLF from breaking bash scripts on Linux server)
+* text=auto eol=lf
+
+# Explicitly LF for scripts
+*.sh text eol=lf
+*.py text eol=lf
+*.js text eol=lf
+*.ts text eol=lf
+*.tsx text eol=lf
+*.json text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.toml text eol=lf
+*.conf text eol=lf
+*.md text eol=lf
+*.env* text eol=lf
+Dockerfile text eol=lf
+.dockerignore text eol=lf
+
+# Binaries — no conversion
+*.dat binary
+*.db binary
+*.sqlite binary
+*.png binary
+*.jpg binary
+*.ico binary
+*.woff2 binary

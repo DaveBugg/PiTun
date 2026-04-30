@@ -1,0 +1,108 @@
+# ── Build artifacts ───────────────────────────────────────────────────────────
+# Architecture-specific builds are attached to GitHub Releases manually,
+# never committed. Anything here is regenerable.
+*.tar.gz
+*.tar.xz
+*.zip
+*.deb
+*.rpm
+*.AppImage
+docker/offline/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+env/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Build output
+build/
+dist/
+backend/dist/
+frontend/dist/
+docs/design/
+
+# Node
+node_modules/
+.cache/
+*.local
+.npm/
+
+# ── Runtime data (per-host) ──────────────────────────────────────────────────
+# All of these are populated at runtime; committing them would leak
+# the maintainer's specific node list, traffic stats, or geo databases.
+data/
+*.db
+*.db-journal
+*.sqlite
+*.sqlite3
+*.sqlite3-journal
+
+# Geo databases (downloaded on first boot via scripts/update_geo.sh)
+xray
+geoip.dat
+geosite.dat
+*.mmdb
+
+# ── Environment / secrets ────────────────────────────────────────────────────
+.env
+.env.*
+!.env.example
+
+# Maintainer-only files (personal notes, SSH keys, ad-hoc deploy scripts,
+# AI-agent project guide). CLAUDE.md is kept local: it has Claude/Serena-
+# specific instructions that aren't useful to contributors using other
+# tooling, and the architecturally-useful bits live in README.md instead.
+notes.md
+notes_*.md
+keys.md
+deploy_2nd.py
+CLAUDE.md
+
+# Local backup of the pre-public git history. Kept on the maintainer's
+# machine so old commits stay accessible (they reference personal IPs /
+# hardcoded creds and are NOT safe to publish), but never pushed.
+.git.bak/
+
+# ── Logs ─────────────────────────────────────────────────────────────────────
+*.log
+logs/
+
+# ── IDE / OS noise ───────────────────────────────────────────────────────────
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+desktop.ini
+*~
+
+# ── Agent / AI tooling — never publish memory or local config ────────────────
+# These directories store per-developer agent state (Claude Code's session
+# memory, Serena's project memories, Cursor's local context). They are
+# intentionally outside the project domain — keeping them in git would
+# expose private dev workflow / chat history / scratch notes.
+.claude/
+.serena/
+.cursor/
+.aider*/
+.continue/
+.playwright-mcp/
+
+# ── Misc ─────────────────────────────────────────────────────────────────────
+/tmp/
+*.tmp
+*.bak
+
+# Frontend test coverage / snapshots
+coverage/
+.vitest/

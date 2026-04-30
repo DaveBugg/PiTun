@@ -1,0 +1,224 @@
+name: Release artifacts
+
+# Triggered manually or by pushing a `vX.Y.Z` tag.
+# Builds the backend & frontend Docker images for both linux/amd64 and
+# linux/arm64 (RPi 4/5), exports them as `.tar.gz` files, and uploads
+# them as artifacts. The maintainer then attaches the artifacts to a
+# GitHub Release manually — we deliberately don't push to a registry
+# from CI so a misclick on tag doesn't ship a broken build.
+#
+# Why tar.gz instead of `docker push`?
+# - PiTun installs are typically air-gapped (RPi behind a captive portal,
+#   factory reset, etc.). Loadable tarballs match that workflow.
+# - No registry credentials needed in CI; release stays under the
+#   maintainer's control end-to-end.
+
+on:
+  push:
+    tags: ['v*.*.*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version tag to use in artifact filenames (e.g. v1.2.3)'
+        required: true
+        default: 'v0.0.0-dev'
+
+permissions:
+  # `contents: write` is required for the auto-publish step at the end
+  # to create / update a GitHub Release and attach the built tarballs
+  # as Release assets. Without it the run can build everything but
+  # can't expose them on the Releases page.
+  contents: write
+  # `actions: read` is required by actions/download-artifact@v4 when
+  # the combine job pulls every artifact uploaded by this run.
+  actions: read
+
+jobs:
+  # Frontend dist is architecture-independent — single build, attached
+  # to the release once. RPi nginx will serve it just fine.
+  frontend:
+    name: Frontend dist
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          # See ci.yml for why we don't cache here.
+
+      # See ci.yml for why we don't use `npm ci` here.
+      - name: Install dependencies (cross-platform workaround)
+        working-directory: frontend
+        run: |
+          rm -f package-lock.json
+          npm install --no-audit --no-fund
+
+      - run: npm run build
+        working-directory: frontend
+
+      - name: Package dist
+        run: |
+          VERSION="${{ github.ref_name || inputs.version }}"
+          tar -czf "pitun-frontend-${VERSION}.tar.gz" -C frontend/dist .
+          ls -lh pitun-frontend-*.tar.gz
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pitun-frontend
+          path: pitun-frontend-*.tar.gz
+          retention-days: 14
+
+  # Backend image must be built per-architecture because the Python wheels
+  # (uvloop, httptools, watchfiles, etc.) are native binaries.
+  backend:
+    name: Backend image (${{ matrix.platform }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            arch: amd64
+          - platform: linux/arm64
+            arch: arm64
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Resolve version
+        id: ver
+        run: |
+          VERSION="${{ github.ref_name || inputs.version }}"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      # Build for the target arch and load into the local docker daemon
+      # so we can `docker save` it into a tarball.
+      - name: Build & export image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./backend
+          file: ./backend/Dockerfile
+          target: production
+          platforms: ${{ matrix.platform }}
+          load: true
+          tags: pitun-backend:${{ steps.ver.outputs.version }}
+          cache-from: type=gha,scope=backend-${{ matrix.arch }}
+          cache-to: type=gha,scope=backend-${{ matrix.arch }},mode=max
+
+      - name: Save image to tarball
+        run: |
+          docker save pitun-backend:${{ steps.ver.outputs.version }} \
+            | gzip > "pitun-backend-${{ steps.ver.outputs.version }}-${{ matrix.arch }}.tar.gz"
+          ls -lh pitun-backend-*.tar.gz
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pitun-backend-${{ matrix.arch }}
+          path: pitun-backend-*.tar.gz
+          retention-days: 14
+
+  # Naive sidecar image — same multi-arch story.
+  naive:
+    name: Naive sidecar image (${{ matrix.platform }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            arch: amd64
+          - platform: linux/arm64
+            arch: arm64
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Resolve version
+        id: ver
+        run: |
+          VERSION="${{ github.ref_name || inputs.version }}"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Build & export image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./docker/naive
+          file: ./docker/naive/Dockerfile
+          platforms: ${{ matrix.platform }}
+          load: true
+          tags: pitun-naive:${{ steps.ver.outputs.version }}
+          cache-from: type=gha,scope=naive-${{ matrix.arch }}
+          cache-to: type=gha,scope=naive-${{ matrix.arch }},mode=max
+
+      - name: Save image to tarball
+        run: |
+          docker save pitun-naive:${{ steps.ver.outputs.version }} \
+            | gzip > "pitun-naive-${{ steps.ver.outputs.version }}-${{ matrix.arch }}.tar.gz"
+          ls -lh pitun-naive-*.tar.gz
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pitun-naive-${{ matrix.arch }}
+          path: pitun-naive-*.tar.gz
+          retention-days: 14
+
+  # Bundle everything into a single artifact for convenient download.
+  bundle:
+    name: Combine artifacts
+    needs: [frontend, backend, naive]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          # Restrict to our own artifacts. `build-push-action` also
+          # uploads opaque internal artifacts named `<owner>~<repo>~XXXX.dockerbuild`
+          # that we don't want to pull. `pattern: 'pitun-*'` matches the
+          # five we actually publish: pitun-frontend,
+          # pitun-{backend,naive}-{amd64,arm64}.
+          pattern: 'pitun-*'
+          path: artifacts/
+
+      - name: List downloaded artifacts
+        run: ls -la artifacts/ && find artifacts/ -type f -exec ls -lh {} \;
+
+      - name: Flatten into single dir
+        run: |
+          mkdir -p release
+          find artifacts/ -name '*.tar.gz' -exec cp {} release/ \;
+          ls -lh release/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pitun-release-bundle
+          path: release/*
+          retention-days: 14
+
+      # Auto-publish to the GitHub Releases page so install.sh can
+      # discover assets via the public `/releases/latest` API. Only
+      # runs on a real tag push (`v*.*.*`); a manual `workflow_dispatch`
+      # against an arbitrary version string would skip this step,
+      # since the inputs.version may not correspond to a real tag.
+      - name: Create / update GitHub Release with assets
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: release/*

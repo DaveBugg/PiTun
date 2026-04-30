@@ -1,0 +1,239 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ── Design tokens ────────────────────────────────────────────────────────
+   All theme-dependent values live here as CSS custom properties. Tailwind
+   utility classes like `bg-brand-500`, `bg-brand-500/20`, `text-brand-400`
+   resolve to `rgb(var(--color-brand-500) / <alpha-value>)` via the config
+   in tailwind.config.ts.
+
+   Values are RGB *channels* (e.g. `14 165 233`, space-separated, no `rgb()`
+   wrapper) so Tailwind's `<alpha-value>` substitution works.
+
+   Add a light theme later by duplicating this block under
+   `[data-theme="light"] { … }` and adding a toggle to Settings. No
+   component changes needed — call sites stay unchanged.
+
+   Dark theme is the default and applies both when no attribute is set and
+   when `<html data-theme="dark">` is explicit (the attribute is already
+   on index.html so the dark theme is always active today). */
+/* Tailwind's full gray ramp routed through CSS vars. Every
+   text-gray-*, bg-gray-*, border-gray-*, and their alpha variants
+   (e.g. /30) resolve through these at Tailwind utility-generation
+   time. Light theme just inverts the shade meaning (gray-50 ↔ gray-950,
+   gray-100 ↔ gray-900, …) so component code stays untouched.
+
+   The "bg-gray-900 with blue-slate tint" we picked in dark theme is a
+   light-version-independent override: gray-900 in dark = 10 22 33
+   (blue-slate), in light = 246 248 251 (near-white). Both read as
+   "card panel surface" in their respective themes. */
+:root,
+[data-theme="dark"] {
+  /* Brand accent — cyan ramp (sky-50 → sky-900). Same in both themes. */
+  --color-brand-50:  240 249 255;
+  --color-brand-100: 224 242 254;
+  --color-brand-200: 186 230 253;
+  --color-brand-300: 125 211 252;
+  --color-brand-400:  56 189 248;
+  --color-brand-500:  14 165 233;
+  --color-brand-600:   2 132 199;
+  --color-brand-700:   3 105 161;
+  --color-brand-800:   7  89 133;
+  --color-brand-900:  12  74 110;
+
+  /* Gray ramp (dark theme — Tailwind defaults, except gray-900 which is
+     our blue-slate tint). Light theme inverts these below. */
+  --color-gray-50:  249 250 251;
+  --color-gray-100: 243 244 246;
+  --color-gray-200: 229 231 235;
+  --color-gray-300: 209 213 219;
+  --color-gray-400: 156 163 175;
+  --color-gray-500: 107 114 128;   /* neutral — stays put in both themes */
+  --color-gray-600:  75  85  99;
+  --color-gray-700:  55  65  81;
+  --color-gray-800:  31  41  55;
+  --color-gray-900:  10  22  33;   /* custom blue-slate (was default 17 24 39) */
+  --color-gray-950:   3   7  18;
+
+  /* Semantic surfaces — aliases of the gray ramp for new components. */
+  --color-surface:         3   7  18;   /* gray-950 — page base */
+  --color-surface-raised: 17  24  39;   /* gray-900 — cards */
+  --color-surface-sunken:  2   6  12;
+
+  /* Sidebar gradient — saturated dark navy, reads as a "frame" over
+     the ambient body gradient. Applied as an inline style in Layout.tsx
+     (Tailwind can't express multi-stop gradients inline). */
+  --sidebar-bg: linear-gradient(180deg,
+    rgb(4 22 38),
+    rgb(10 17 31) 35%,
+    rgb(3 7 18) 90%);
+
+  /* Ambient body gradient (Variant E). */
+  --bg-gradient-top:    14 165 233;     /* brand-500, applied at ~9% alpha */
+  --bg-gradient-mid:    11  18  32;     /* slate-navy, ~95% alpha */
+  --bg-gradient-bottom:  3   7  18;     /* gray-950 */
+  --dot-color:         148 163 184;     /* slate-400, ~9% alpha */
+}
+
+/* ── LIGHT THEME ─────────────────────────────────────────────────────────
+   Gray ramp inverts: each shade becomes its mirror so every
+   `text-gray-100` → dark on light bg, `bg-gray-900` → light on bg, etc.
+   Existing code doesn't need to change. */
+[data-theme="light"] {
+  /* Inverted gray ramp */
+  --color-gray-50:    3   7  18;   /* was 249 250 251 */
+  --color-gray-100:  17  24  39;
+  --color-gray-200:  31  41  55;
+  --color-gray-300:  55  65  81;
+  --color-gray-400:  75  85  99;
+  --color-gray-500: 107 114 128;   /* neutral — unchanged */
+  --color-gray-600: 156 163 175;
+  --color-gray-700: 209 213 219;
+  --color-gray-800: 229 231 235;
+  --color-gray-900: 246 248 251;   /* near-white, used for cards */
+  --color-gray-950: 255 255 255;   /* pure white — page base */
+
+  /* Semantic surfaces mirror the new grays */
+  --color-surface:       255 255 255;
+  --color-surface-raised: 246 248 251;
+  --color-surface-sunken: 237 240 246;
+
+  /* Sidebar — airy pale-blue wash, bright end of the spectrum so it
+     reads as the app's "anchor" surface without competing with cards.
+     User-tuned 2026-04-22. */
+  --sidebar-bg: linear-gradient(180deg,
+    rgb(234 247 253),
+    rgb(236 245 255) 50%,
+    rgb(239 246 255) 100%);
+
+  /* Ambient body: faint cyan wash top, fading to near-white bottom */
+  --bg-gradient-top:    14 165 233;   /* same brand-500, applied at low alpha */
+  --bg-gradient-mid:   240 245 252;   /* very light slate */
+  --bg-gradient-bottom: 255 255 255;  /* white */
+  --dot-color:          71  85 105;   /* slate-600 — darker dots on light */
+}
+
+/* ── Per-theme utility overrides ──────────────────────────────────────
+   These target specific Tailwind utility classes that can't be handled
+   by just flipping the gray ramp — cases where a utility reads fine in
+   one theme but needs a different color in the other (colored accents,
+   brand text on light bg, etc.). Placed after the base utilities so they
+   win on specificity (selector specificity is equal, but source order
+   decides; we rely on this file being imported after Tailwind base).
+   Keep the list flat and targeted — the default path is "use a
+   themeable utility like text-gray-400"; these are exceptions. */
+
+/* Dark theme: more blue-tinted translucent gray-800 for inputs/surfaces. */
+[data-theme="dark"] .bg-gray-800 {
+  background-color: #04121fc7;   /* was rgb(31 41 55) */
+}
+
+/* Light theme: soften accents that are tuned for dark bg. */
+[data-theme="light"] .bg-brand-900\/20 {
+  background-color: #82afca33;
+}
+/* Brand text becomes harder to read on light bg at 300/400 shades,
+   darken them to tinted-blue. */
+[data-theme="light"] .text-brand-300 { color: rgb(87 141 167); }
+[data-theme="light"] .text-brand-400 { color: rgb(22 97 130); }
+/* Hover state — `hover:bg-gray-800` on light theme resolves to the
+   inverted gray-800 which is too dark for a hover tint. Use pale blue. */
+[data-theme="light"] .hover\:bg-gray-800:hover {
+  background-color: #cfe4f1;
+}
+/* Status/accent text colors reused on white: darken them per user
+   spec (2026-04-22 tuning). */
+[data-theme="light"] .text-blue-300  { color: rgb( 77 118 163); }
+[data-theme="light"] .text-green-400 { color: rgb(  0 123  45); }
+[data-theme="light"] .text-red-400   { color: rgb(139  22  22); }
+/* gray-500 reads as "muted metadata" on many pages. Darker slate-graphite
+   reads better on near-white ambient. */
+[data-theme="light"] .text-gray-500  { color: rgb( 44  49  59); }
+
+/* Pastel backgrounds for status-themed cards/badges (used all over the
+   app for "proxy" / "direct" / "block" tags, notification banners etc).
+   The dark-theme `bg-<color>-9XX/30` reads as "dark-washed tint" on a
+   dark body; on light it'd be barely visible → pick tuned pastels. */
+[data-theme="light"] .bg-blue-950\/30   { background-color: #b0c2ff4d; }
+[data-theme="light"] .bg-yellow-950\/30 { background-color: #fff6ef4d; }
+[data-theme="light"] .bg-green-950\/30  { background-color: #7effb44d; }
+[data-theme="light"] .bg-red-950\/30    { background-color: #ffb4b44d; }   /* mirror of green */
+/* Stronger alpha variants (/50, /60) for active/selected states. */
+[data-theme="light"] .bg-green-900\/50  { background-color: #00bf4c80; }
+[data-theme="light"] .bg-blue-900\/50   { background-color: #a2baff80; }
+[data-theme="light"] .bg-blue-900\/60   { background-color: #a8bdf999; }
+
+/* Smooth transition when toggling between themes — short enough to feel
+   responsive, long enough not to feel like a jank refresh. */
+html { transition: background-color 0.2s ease; }
+body {
+  transition: background-color 0.2s ease, background-image 0.2s ease;
+}
+
+@layer base {
+  * {
+    box-sizing: border-box;
+  }
+
+  html, body, #root {
+    height: 100%;
+  }
+
+  /* ── Ambient background (Variant E) ────────────────────────────────────
+     Vertical gradient on <body> (no ::before layer — simpler than the
+     previous 3-blob radial setup). A dot grid lives on ::after with a
+     vertical fade mask so it's felt at the top and dissolves into the
+     page by the bottom half. */
+  body {
+    position: relative;
+    overflow: hidden;                          /* the app shell scrolls inside .main, body stays still */
+    background-color: rgb(var(--bg-gradient-bottom));
+    background-image: linear-gradient(
+      180deg,
+      rgb(var(--bg-gradient-top) / 0.09) 0%,
+      rgb(var(--bg-gradient-mid) / 0.95) 35%,
+      rgb(var(--bg-gradient-bottom))    90%
+    );
+  }
+
+  body::after {
+    content: '';
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    z-index: 0;
+    background-image: radial-gradient(
+      circle at 1px 1px,
+      rgb(var(--dot-color) / 0.09) 1px,
+      transparent 0
+    );
+    background-size: 24px 24px;
+    /* Dots densely visible at top, fully faded out by 95%. */
+    -webkit-mask-image: linear-gradient(180deg, black 0%, black 55%, transparent 95%);
+            mask-image: linear-gradient(180deg, black 0%, black 55%, transparent 95%);
+  }
+
+  /* Root app container sits above the ambient layer so components aren't
+     caught by the body's stacking context. */
+  #root {
+    position: relative;
+    z-index: 1;
+  }
+
+  /* Scrollbar */
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: #374151;
+    border-radius: 3px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: #4b5563;
+  }
+}

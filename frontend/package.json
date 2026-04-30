@@ -1,0 +1,51 @@
+{
+  "name": "pitun-frontend",
+  "private": true,
+  "version": "1.1.0",
+  "license": "BSD-3-Clause",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "preview": "vite preview",
+    "lint": "eslint . --ext ts,tsx --report-unused-disable-directives --max-warnings 0",
+    "test": "vitest",
+    "test:ci": "vitest --run",
+    "coverage": "vitest --run --coverage"
+  },
+  "dependencies": {
+    "@tanstack/react-query": "^5.40.0",
+    "axios": "^1.7.2",
+    "clsx": "^2.1.1",
+    "lucide-react": "^0.469.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "react-is": "^19.2.4",
+    "react-router-dom": "^6.23.1",
+    "recharts": "^3.8.1",
+    "tailwind-merge": "^2.3.0",
+    "zustand": "^4.5.2"
+  },
+  "devDependencies": {
+    "@testing-library/dom": "^10.4.1",
+    "@testing-library/jest-dom": "^6.9.1",
+    "@testing-library/react": "^16.3.2",
+    "@testing-library/user-event": "^14.6.1",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@typescript-eslint/eslint-plugin": "^7.13.0",
+    "@typescript-eslint/parser": "^7.13.0",
+    "@vitejs/plugin-react": "^4.3.0",
+    "@vitest/coverage-v8": "^4.1.5",
+    "autoprefixer": "^10.4.19",
+    "eslint": "^8.57.0",
+    "eslint-plugin-react-hooks": "^4.6.2",
+    "eslint-plugin-react-refresh": "^0.4.7",
+    "jsdom": "^29.0.2",
+    "postcss": "^8.4.38",
+    "tailwindcss": "^3.4.4",
+    "typescript": "^5.4.5",
+    "vite": "^5.2.12",
+    "vitest": "^4.1.5"
+  }
+}
