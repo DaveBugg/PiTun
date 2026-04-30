@@ -323,16 +323,10 @@ echo -e "nft_tproxy\nxt_TPROXY" | sudo tee /etc/modules-load.d/pitun.conf
 curl -fsSL https://get.docker.com | sudo sh
 sudo usermod -aG docker "$USER"   # then log out + back in
 
-# 6. xray-core + GeoIP/GeoSite (bind-mounted into the backend container)
-XRAY_VER="26.3.27"
-case "$(uname -m)" in
-  aarch64|arm64) ARCH="arm64-v8a" ;;
-  x86_64)        ARCH="64" ;;
-  *) echo "Unsupported arch"; exit 1 ;;
-esac
-curl -fsSL "https://github.com/XTLS/Xray-core/releases/download/v${XRAY_VER}/Xray-linux-${ARCH}.zip" -o /tmp/xray.zip
-sudo unzip -o /tmp/xray.zip -d /usr/local/bin/ xray
-sudo chmod 755 /usr/local/bin/xray
+# 6. GeoIP/GeoSite databases (bind-mounted RW into the backend container
+#    so the user can refresh them from the UI without an image rebuild).
+#    The xray binary itself is bundled inside the backend image as of
+#    v1.2.0 — no separate host install needed.
 sudo mkdir -p /usr/local/share/xray
 sudo curl -fsSL -o /usr/local/share/xray/geoip.dat   https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geoip.dat
 sudo curl -fsSL -o /usr/local/share/xray/geosite.dat https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geosite.dat
@@ -345,13 +339,13 @@ cp .env.example .env && $EDITOR .env
 docker compose up -d --build
 ```
 
-> **Why `xray` is on the host and not in the container.** Historical:
-> the original deploy was Docker-less and started xray as a systemd
-> service. When it got Dockerized, the `xray` binary kept living on
-> the host (bind-mounted read-only into the backend container) so
-> updating xray didn't require rebuilding the image. A future change
-> may roll it into the backend image to cut this step — until then,
-> the bind-mount is part of the contract.
+> **Why the geo databases are on the host, not inside the image.**
+> `geoip.dat` and `geosite.dat` are refreshable from the UI
+> (*GeoData → Update*). Keeping them as a host bind-mount means a
+> single `curl` updates them in place — no image rebuild required.
+> The xray binary itself, by contrast, is baked into the backend image
+> as of v1.2.0 (used to be a host install). One less host-side
+> prerequisite, version pinned to the release tag.
 
 ### Pre-built images
 

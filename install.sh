@@ -26,7 +26,6 @@
 #   --skip-host-prep       Skip avahi disable / sysctl / modprobe / Docker
 #                          install. Use only if you've already prepared
 #                          the host yourself.
-#   --xray-version vX.Y.Z  Pin xray-core version (default: 26.3.27).
 #   --non-interactive      Don't ask any questions; pick safe defaults.
 #                          Required when piping from `curl | bash`.
 #   --dry-run              Print every step without executing.
@@ -35,7 +34,7 @@
 # Environment variable equivalents (handy when piping from curl):
 #
 #   PITUN_VERSION, PITUN_DIR, PITUN_BUILD, PITUN_OFFLINE, PITUN_SKIP_HOST_PREP,
-#   PITUN_XRAY_VERSION, PITUN_NON_INTERACTIVE.
+#   PITUN_NON_INTERACTIVE.
 
 set -euo pipefail
 
@@ -46,7 +45,6 @@ VERSION="${PITUN_VERSION:-latest}"
 USE_BUILD="${PITUN_BUILD:-0}"
 OFFLINE_DIR="${PITUN_OFFLINE:-}"
 SKIP_HOST_PREP="${PITUN_SKIP_HOST_PREP:-0}"
-XRAY_VERSION="${PITUN_XRAY_VERSION:-26.3.27}"
 NON_INTERACTIVE="${PITUN_NON_INTERACTIVE:-0}"
 DRY_RUN=0
 
@@ -88,7 +86,6 @@ while [[ $# -gt 0 ]]; do
         --build)           USE_BUILD=1; shift ;;
         --offline)         OFFLINE_DIR="$2"; shift 2 ;;
         --skip-host-prep)  SKIP_HOST_PREP=1; shift ;;
-        --xray-version)    XRAY_VERSION="$2"; shift 2 ;;
         --non-interactive) NON_INTERACTIVE=1; shift ;;
         --dry-run)         DRY_RUN=1; shift ;;
         --help|-h)         print_help ;;
@@ -101,9 +98,9 @@ done
 
 ARCH_RAW="$(uname -m)"
 case "$ARCH_RAW" in
-    aarch64|arm64) ARCH="arm64";  XRAY_ARCH="arm64-v8a" ;;
-    x86_64)        ARCH="amd64"; XRAY_ARCH="64"         ;;
-    armv7l)        ARCH="arm";   XRAY_ARCH="arm32-v7a"  ;;
+    aarch64|arm64) ARCH="arm64" ;;
+    x86_64)        ARCH="amd64" ;;
+    armv7l)        ARCH="arm"   ;;
     *) error "Unsupported architecture: $ARCH_RAW (need arm64 / amd64 / armv7l)" ;;
 esac
 
@@ -203,7 +200,6 @@ SRC_TARBALL="$STAGING_DIR/pitun-src.tar.gz"
 BACKEND_IMG="$STAGING_DIR/pitun-backend.tar.gz"
 NAIVE_IMG="$STAGING_DIR/pitun-naive.tar.gz"
 FRONTEND_DIST="$STAGING_DIR/pitun-frontend.tar.gz"
-XRAY_ZIP="$STAGING_DIR/xray.zip"
 GEOIP_DAT="$STAGING_DIR/geoip.dat"
 GEOSITE_DAT="$STAGING_DIR/geosite.dat"
 
@@ -212,7 +208,7 @@ if [[ -n "$OFFLINE_DIR" ]]; then
     # can treat them uniformly. Missing files fall through to "did you
     # download them?" errors at use time.
     for f in pitun-src.tar.gz pitun-backend.tar.gz pitun-naive.tar.gz \
-             pitun-frontend.tar.gz xray.zip geoip.dat geosite.dat; do
+             pitun-frontend.tar.gz geoip.dat geosite.dat; do
         if [[ -e "$OFFLINE_DIR/$f" ]]; then
             ln -sf "$OFFLINE_DIR/$f" "$STAGING_DIR/$f"
         fi
@@ -257,10 +253,10 @@ else
         fi
     fi
 
-    # xray binary + geo data (pulled from upstream regardless of mode).
-    xray_url="https://github.com/XTLS/Xray-core/releases/download/v${XRAY_VERSION}/Xray-linux-${XRAY_ARCH}.zip"
-    download "$xray_url" "$XRAY_ZIP" "xray-core ${XRAY_VERSION}"
-
+    # GeoIP / GeoSite databases (bind-mounted into the backend container
+    # for on-demand refresh from the UI). The xray binary itself is
+    # bundled inside the backend image as of v1.2.0 — no separate
+    # download for it here.
     download "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geoip.dat" \
              "$GEOIP_DAT" "geoip.dat"
     download "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geosite.dat" \
@@ -335,15 +331,25 @@ else
     info "Skipping host prep (--skip-host-prep)"
 fi
 
-# ── Install xray + geo data ──────────────────────────────────────────────────
-step "Installing xray-core + GeoIP/GeoSite data"
-mkdir -p /usr/local/bin /usr/local/share/xray
-run unzip -qo "$XRAY_ZIP" -d "$STAGING_DIR/xray"
+# ── Install GeoIP / GeoSite data ─────────────────────────────────────────────
+# As of v1.2.0 the xray binary is bundled inside the backend image, so this
+# step only places the geo databases (which stay on the host so the user
+# can refresh them from the UI without rebuilding the image).
+step "Installing GeoIP/GeoSite data"
+mkdir -p /usr/local/share/xray
 if [[ "$DRY_RUN" != "1" ]]; then
-    install -m 755 "$STAGING_DIR/xray/xray" /usr/local/bin/xray
     cp "$GEOIP_DAT"   /usr/local/share/xray/geoip.dat
     cp "$GEOSITE_DAT" /usr/local/share/xray/geosite.dat
-    /usr/local/bin/xray version | head -1 || true
+fi
+
+# Migration cleanup: prior versions installed an xray binary at
+# /usr/local/bin/xray on the host (bind-mounted into the container
+# read-only). v1.2.0 ships xray inside the backend image and removes
+# that bind-mount, so the host file is no longer used. Remove it on
+# upgrade to keep the system tidy. Stays a no-op on fresh installs.
+if [[ -f /usr/local/bin/xray && "$DRY_RUN" != "1" ]]; then
+    info "Removing legacy host-side xray binary (now bundled in image)"
+    rm -f /usr/local/bin/xray
 fi
 
 # ── Extract source ───────────────────────────────────────────────────────────

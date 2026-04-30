@@ -319,16 +319,10 @@ echo -e "nft_tproxy\nxt_TPROXY" | sudo tee /etc/modules-load.d/pitun.conf
 curl -fsSL https://get.docker.com | sudo sh
 sudo usermod -aG docker "$USER"   # потом logout + login
 
-# 6. xray-core + GeoIP/GeoSite (bind-mount'ятся в контейнер бэкенда)
-XRAY_VER="26.3.27"
-case "$(uname -m)" in
-  aarch64|arm64) ARCH="arm64-v8a" ;;
-  x86_64)        ARCH="64" ;;
-  *) echo "Unsupported arch"; exit 1 ;;
-esac
-curl -fsSL "https://github.com/XTLS/Xray-core/releases/download/v${XRAY_VER}/Xray-linux-${ARCH}.zip" -o /tmp/xray.zip
-sudo unzip -o /tmp/xray.zip -d /usr/local/bin/ xray
-sudo chmod 755 /usr/local/bin/xray
+# 6. Базы GeoIP/GeoSite (bind-mount RW в контейнер бэкенда — чтобы их
+#    можно было обновлять из UI без пересборки образа). Сам xray-бинарник
+#    идёт внутри backend-образа начиная с v1.2.0 — устанавливать на хост
+#    отдельно не нужно.
 sudo mkdir -p /usr/local/share/xray
 sudo curl -fsSL -o /usr/local/share/xray/geoip.dat   https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geoip.dat
 sudo curl -fsSL -o /usr/local/share/xray/geosite.dat https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geosite.dat
@@ -341,12 +335,12 @@ cp .env.example .env && $EDITOR .env
 docker compose up -d --build
 ```
 
-> **Почему `xray` на хосте, а не в контейнере.** Исторически: первая
-> версия деплоя была без Docker, xray запускался как systemd-сервис.
-> Когда стек переехал в Docker, бинарник `xray` остался на хосте
-> (read-only bind-mount в контейнер) — чтобы обновить xray не пришлось
-> пересобирать образ. В будущем это может уехать внутрь образа бэкенда
-> и снять этот шаг — пока bind-mount часть контракта.
+> **Почему geo-базы на хосте, а не внутри образа.** `geoip.dat` /
+> `geosite.dat` обновляются из UI (*GeoData → Update*). Их хранение
+> bind-mount'ом значит что один `curl` обновляет файлы на месте — без
+> rebuild образа. Сам бинарник xray, наоборот, теперь идёт внутри
+> backend-образа (с v1.2.0; раньше ставился на хост). Один host-side
+> prerequisite меньше, версия привязана к тегу релиза.
 
 ### Готовые образы
 

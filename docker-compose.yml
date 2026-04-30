@@ -51,8 +51,12 @@ services:
       - ./data:/app/data
       - /tmp/pitun:/tmp/pitun
       - /etc/pitun/naive:/etc/pitun/naive    # naive sidecar configs (host-shared)
+      # Geo databases stay on host (bind-mount RW) so the user can
+      # refresh them from the UI without an image rebuild.
+      # The xray binary itself is baked into the backend image as of
+      # v1.2.0 (used to be bind-mounted from /usr/local/bin/xray on
+      # the host) — no host-side xray install needed anymore.
       - /usr/local/share/xray:/usr/local/share/xray
-      - /usr/local/bin/xray:/usr/local/bin/xray:ro
       - /etc/resolv.conf:/host/resolv.conf    # host DNS config (read/write)
       - /etc/os-release:/host/os-release:ro    # host distro info (for /system/versions)
       - /proc/sys:/host/proc_sys              # host sysctl (read/write)
