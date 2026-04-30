@@ -256,7 +256,7 @@ Useful flags (after `bash -s --`):
 ```
 
 After the script finishes:
-- Web UI is at `http://<this-host-ip>/`, login `admin` / `admin`
+- Web UI is at `http://<this-host-ip>/`, login `admin` / `password`
   (**change it on first login** via *Settings → Account*).
 - `/opt/pitun/.env` was generated with a random `SECRET_KEY` and your
   default LAN interface autodetected. Edit it to set `LAN_CIDR` /
@@ -289,7 +289,7 @@ docker compose up -d --build
 ```
 
 The web UI listens on the host's LAN IP, port 80. Default login is
-`admin` / `admin` — **change it on first run** via *Settings → Account*.
+`admin` / `password` — **change it on first run** via *Settings → Account*.
 
 ### Manual install (without `setup.sh`)
 

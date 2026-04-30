@@ -254,7 +254,7 @@ curl -fsSL https://raw.githubusercontent.com/DaveBugg/PiTun/master/install.sh | 
 ```
 
 После завершения:
-- Web UI на `http://<ip-хоста>/`, логин `admin` / `admin`
+- Web UI на `http://<ip-хоста>/`, логин `admin` / `password`
   (**смени при первом входе** через *Settings → Account*).
 - `/opt/pitun/.env` сгенерирован со случайным `SECRET_KEY` и
   авто-детектом LAN-интерфейса. Отредактируй чтобы выставить `LAN_CIDR`
@@ -285,7 +285,7 @@ docker compose up -d --build
 ```
 
 Веб-интерфейс слушает LAN IP хоста на порту 80. Логин по умолчанию —
-`admin` / `admin`, **смените при первом входе** через *Settings → Account*.
+`admin` / `password`, **смените при первом входе** через *Settings → Account*.
 
 ### Ручная установка (без `setup.sh`)
 
