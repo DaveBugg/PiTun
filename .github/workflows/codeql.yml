@@ -1,0 +1,75 @@
+# CodeQL static analysis — GitHub's built-in scanner for known
+# vulnerability patterns (SQL injection, command injection, hardcoded
+# secrets, prototype pollution, path traversal, etc.). Free for
+# public repos.
+#
+# Findings appear under the repo's "Security → Code scanning alerts"
+# tab and as inline annotations on PR diffs. Resolved alerts close
+# automatically when the offending code is removed.
+#
+# We scan on every push to master and every PR, plus a weekly cron so
+# new patterns added to the CodeQL ruleset catch existing code that
+# hasn't been touched in a while.
+
+name: CodeQL
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+  schedule:
+    # 03:17 UTC every Monday — off-peak for maintenance, far from the
+    # hour boundary that everyone else uses.
+    - cron: '17 3 * * 1'
+
+# Cancel an in-progress run if a newer commit lands on the same ref.
+# Saves Actions minutes (CodeQL is the slowest scan we run).
+concurrency:
+  group: codeql-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  # CodeQL needs to write its findings to the Security tab.
+  security-events: write
+  # `actions: read` lets it read the state of the workflow run itself
+  # (needed for some intra-workflow telemetry).
+  actions: read
+  # Read access to the source code being analysed.
+  contents: read
+
+jobs:
+  analyze:
+    name: Analyze ${{ matrix.language }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    strategy:
+      fail-fast: false
+      matrix:
+        # `python` covers the FastAPI backend; `javascript-typescript`
+        # covers the React / Vite frontend (CodeQL treats TS as a
+        # superset of JS).
+        language: [python, javascript-typescript]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@b2f9ef845756500b97acbdaf5c1dd4e9c1d15734 # v3.35.2
+        with:
+          languages: ${{ matrix.language }}
+          # `security-extended` adds rules beyond the default set
+          # (e.g. CWE-178 case-sensitivity, CWE-330 weak randomness).
+          # `security-and-quality` would also flag style issues —
+          # too noisy for our size.
+          queries: security-extended
+
+      - name: Autobuild
+        uses: github/codeql-action/autobuild@b2f9ef845756500b97acbdaf5c1dd4e9c1d15734 # v3.35.2
+
+      - name: Perform analysis
+        uses: github/codeql-action/analyze@b2f9ef845756500b97acbdaf5c1dd4e9c1d15734 # v3.35.2
+        with:
+          category: '/language:${{ matrix.language }}'
