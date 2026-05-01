@@ -98,6 +98,15 @@ updates:
         update-types: ["version-update:semver-major"]
       - dependency-name: "@vitest/coverage-v8"
         update-types: ["version-update:semver-major"]
+      # TypeScript 6 just released (Oct 2025); tooling (vite/vitest/
+      # @vitejs/plugin-react) hasn't caught up yet. Stay on 5.x until
+      # the broader ecosystem aligns.
+      - dependency-name: "typescript"
+        update-types: ["version-update:semver-major"]
+      # eslint-plugin-react-refresh ≥0.5 needs eslint 9 (flat config).
+      # Cascade with our eslint-major pin above.
+      - dependency-name: "eslint-plugin-react-refresh"
+        update-types: ["version-update:semver-minor", "version-update:semver-major"]
 
   # Backend Docker base image (python:3.11-slim) — bumps the digest
   # pinned in backend/Dockerfile.
