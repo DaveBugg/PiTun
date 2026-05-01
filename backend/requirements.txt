@@ -2,13 +2,8 @@ fastapi==0.111.1
 uvicorn[standard]==0.29.0
 sqlmodel==0.0.19
 pydantic==2.13.3
-<<<<<<< HEAD
-pydantic-settings==2.14.0
-httpx[socks]==0.27.0
-=======
 pydantic-settings==2.2.1
 httpx[socks]==0.28.1
->>>>>>> origin/dependabot/pip/backend/httpx-0.28.1
 aiofiles==23.2.1
 python-multipart==0.0.9
 websockets==12.0
