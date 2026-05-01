@@ -42,15 +42,17 @@ updates:
       prefix: "backend"
       include: scope
     ignore:
-      # Skip major bumps for libs whose 0.x → 0.y or N → N+1 jumps
-      # routinely break the API surface we use (lifespan, dependency
-      # injection, model declaration). We'll handle each as a planned
-      # epic with its own breaking-change pass instead of letting
-      # Dependabot fire a PR that we'd just close.
+      # Pin floor versions for libs whose pre-1.0 minor/patch bumps
+      # are de-facto breaking. Dependabot's `update-types: semver-major`
+      # filter only matches the leftmost version segment; for fastapi
+      # at 0.111.x, a bump to 0.136.x is a *minor* in semver terms but
+      # breaks the lifespan / dependency-injection contract we rely on.
+      # We use `versions:` ranges so the actual upgrade happens
+      # deliberately as a planned migration epic.
       - dependency-name: "fastapi"
-        update-types: ["version-update:semver-major"]
+        versions: [">=0.112.0"]
       - dependency-name: "sqlmodel"
-        update-types: ["version-update:semver-major"]
+        versions: [">=0.0.20"]
 
   # Frontend npm dependencies (React 19, Vite, TanStack Query, …).
   # NOTE: we don't track package-lock.json, so dependabot updates only
@@ -79,6 +81,11 @@ updates:
       - dependency-name: "@typescript-eslint/eslint-plugin"
         update-types: ["version-update:semver-major"]
       - dependency-name: "@typescript-eslint/parser"
+        update-types: ["version-update:semver-major"]
+      # Vite 6+ drops Node 18 support and changes the plugin/HMR APIs.
+      # Vitest pins its supported Vite range — they'll need to be
+      # upgraded together. Plan as one epic; meanwhile stay on 5.x.
+      - dependency-name: "vite"
         update-types: ["version-update:semver-major"]
 
   # Backend Docker base image (python:3.11-slim) — bumps the digest
