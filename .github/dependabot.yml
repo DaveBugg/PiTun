@@ -41,6 +41,16 @@ updates:
     commit-message:
       prefix: "backend"
       include: scope
+    ignore:
+      # Skip major bumps for libs whose 0.x → 0.y or N → N+1 jumps
+      # routinely break the API surface we use (lifespan, dependency
+      # injection, model declaration). We'll handle each as a planned
+      # epic with its own breaking-change pass instead of letting
+      # Dependabot fire a PR that we'd just close.
+      - dependency-name: "fastapi"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "sqlmodel"
+        update-types: ["version-update:semver-major"]
 
   # Frontend npm dependencies (React 19, Vite, TanStack Query, …).
   # NOTE: we don't track package-lock.json, so dependabot updates only
@@ -53,6 +63,23 @@ updates:
     commit-message:
       prefix: "frontend"
       include: scope
+    ignore:
+      # Tailwind 3 → 4 is a full Oxide-engine rewrite (config moved to
+      # @theme/@layer in CSS, plugin API changed). We'll do that as
+      # its own planned migration rather than have Dependabot keep
+      # opening — and us keep closing — a doomed major-bump PR.
+      - dependency-name: "tailwindcss"
+        update-types: ["version-update:semver-major"]
+      # ESLint 9+ requires flat-config (eslint.config.js, no .eslintrc).
+      # We don't actually run ESLint in CI yet (no config file tracked),
+      # so blocking the major also blocks the typescript-eslint companion
+      # bumps that fail in lockstep. Revisit if/when we add a config.
+      - dependency-name: "eslint"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "@typescript-eslint/eslint-plugin"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "@typescript-eslint/parser"
+        update-types: ["version-update:semver-major"]
 
   # Backend Docker base image (python:3.11-slim) — bumps the digest
   # pinned in backend/Dockerfile.
