@@ -29,8 +29,8 @@ permissions:
   # as Release assets. Without it the run can build everything but
   # can't expose them on the Releases page.
   contents: write
-  # `actions: read` is required by actions/download-artifact@v4 when
-  # the combine job pulls every artifact uploaded by this run.
+  # `actions: read` is required by actions/download-artifact@v4 (the
+  # combine job below pulls every artifact uploaded by this run).
   actions: read
 
 jobs:
@@ -40,9 +40,9 @@ jobs:
     name: Frontend dist
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: '20'
           # See ci.yml for why we don't cache here.
@@ -58,12 +58,13 @@ jobs:
         working-directory: frontend
 
       - name: Package dist
+        env:
+          VERSION: ${{ github.ref_name || inputs.version }}
         run: |
-          VERSION="${{ github.ref_name || inputs.version }}"
           tar -czf "pitun-frontend-${VERSION}.tar.gz" -C frontend/dist .
           ls -lh pitun-frontend-*.tar.gz
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: pitun-frontend
           path: pitun-frontend-*.tar.gz
@@ -84,26 +85,32 @@ jobs:
             arch: arm64
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
 
       - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
+        uses: docker/setup-qemu-action@29109295f81e9208d7d86ff1c6c12d2833863392 # v3.6.0
         with:
           platforms: arm64
 
       - name: Set up Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@f7ce87c1d6bead3e36075b2ce75da1f6cc28aaca # v3.9.0
 
+      # Pull the version into an env var BEFORE shell sees it. Direct
+      # `${{ ... }}` interpolation into a `run:` block is a script-
+      # injection vector if the input is collaborator-controllable
+      # (workflow_dispatch). With `env:`, GitHub passes the value to
+      # the shell as a string, no template-time substitution.
       - name: Resolve version
         id: ver
+        env:
+          INPUT_VERSION: ${{ github.ref_name || inputs.version }}
         run: |
-          VERSION="${{ github.ref_name || inputs.version }}"
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "version=${INPUT_VERSION}" >> "$GITHUB_OUTPUT"
 
       # Build for the target arch and load into the local docker daemon
       # so we can `docker save` it into a tarball.
       - name: Build & export image
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@4f58ea79222b3b9dc2c8bbdd6debcef730109a75 # v6.9.0
         with:
           context: ./backend
           file: ./backend/Dockerfile
@@ -115,12 +122,15 @@ jobs:
           cache-to: type=gha,scope=backend-${{ matrix.arch }},mode=max
 
       - name: Save image to tarball
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+          ARCH: ${{ matrix.arch }}
         run: |
-          docker save pitun-backend:${{ steps.ver.outputs.version }} \
-            | gzip > "pitun-backend-${{ steps.ver.outputs.version }}-${{ matrix.arch }}.tar.gz"
+          docker save "pitun-backend:${VERSION}" \
+            | gzip > "pitun-backend-${VERSION}-${ARCH}.tar.gz"
           ls -lh pitun-backend-*.tar.gz
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: pitun-backend-${{ matrix.arch }}
           path: pitun-backend-*.tar.gz
@@ -140,22 +150,24 @@ jobs:
             arch: arm64
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
 
-      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-qemu-action@29109295f81e9208d7d86ff1c6c12d2833863392 # v3.6.0
         with:
           platforms: arm64
 
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@f7ce87c1d6bead3e36075b2ce75da1f6cc28aaca # v3.9.0
 
+      # See backend job above for why we use `env:` here.
       - name: Resolve version
         id: ver
+        env:
+          INPUT_VERSION: ${{ github.ref_name || inputs.version }}
         run: |
-          VERSION="${{ github.ref_name || inputs.version }}"
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "version=${INPUT_VERSION}" >> "$GITHUB_OUTPUT"
 
       - name: Build & export image
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@4f58ea79222b3b9dc2c8bbdd6debcef730109a75 # v6.9.0
         with:
           context: ./docker/naive
           file: ./docker/naive/Dockerfile
@@ -166,12 +178,15 @@ jobs:
           cache-to: type=gha,scope=naive-${{ matrix.arch }},mode=max
 
       - name: Save image to tarball
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+          ARCH: ${{ matrix.arch }}
         run: |
-          docker save pitun-naive:${{ steps.ver.outputs.version }} \
-            | gzip > "pitun-naive-${{ steps.ver.outputs.version }}-${{ matrix.arch }}.tar.gz"
+          docker save "pitun-naive:${VERSION}" \
+            | gzip > "pitun-naive-${VERSION}-${ARCH}.tar.gz"
           ls -lh pitun-naive-*.tar.gz
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: pitun-naive-${{ matrix.arch }}
           path: pitun-naive-*.tar.gz
@@ -183,7 +198,7 @@ jobs:
     needs: [frontend, backend, naive]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           # Restrict to our own artifacts. `build-push-action` also
           # uploads opaque internal artifacts named `<owner>~<repo>~XXXX.dockerbuild`
@@ -202,7 +217,7 @@ jobs:
           find artifacts/ -name '*.tar.gz' -exec cp {} release/ \;
           ls -lh release/
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: pitun-release-bundle
           path: release/*
@@ -215,7 +230,7 @@ jobs:
       # since the inputs.version may not correspond to a real tag.
       - name: Create / update GitHub Release with assets
         if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
           tag_name: ${{ github.ref_name }}
           name: ${{ github.ref_name }}

@@ -1,3 +1,6 @@
+# Used by docker-compose.dev.yml only. Production frontend in
+# docker-compose.yml is a plain `nginx:1.25-alpine` (digest-pinned) +
+# bind-mounted dist + nginx-spa.conf, no custom image.
 ARG NODE_IMAGE=node:20-alpine
 ARG NGINX_IMAGE=nginx:1.25-alpine
 FROM ${NODE_IMAGE} AS builder

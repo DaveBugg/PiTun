@@ -1,0 +1,87 @@
+# Dependabot configuration.
+#
+# Watches every dependency surface in the repo and opens a PR whenever
+# something has a new version. Three reasons we want this on:
+#
+# 1. Security: GitHub Actions and base Docker images are pinned to
+#    SHAs / digests. Without dependabot, those pins would gradually
+#    fall behind upstream patches and we'd ship vulnerable transitive
+#    deps. With it, PRs land automatically and we just review+merge.
+#
+# 2. Visibility: PRs are the audit trail — every bump is reviewable in
+#    isolation, with the upstream changelog linked in the PR body.
+#
+# 3. Triggers CI: each PR runs ci.yml, so we know immediately whether
+#    a bump breaks the build.
+#
+# We use weekly cadence (vs daily) to avoid burying the issue feed when
+# 5+ ecosystems each open a PR. `open-pull-requests-limit: 5` keeps any
+# single ecosystem from monopolising the queue.
+
+version: 2
+updates:
+  # GitHub Actions used by the workflows in .github/workflows/.
+  # Every action is pinned to a SHA with a `# vX.Y.Z` trailing comment;
+  # dependabot updates both the SHA and the comment in one PR.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "ci"
+      include: scope
+
+  # Backend Python dependencies (FastAPI, SQLModel, Pydantic, etc.).
+  - package-ecosystem: pip
+    directory: /backend
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "backend"
+      include: scope
+
+  # Frontend npm dependencies (React 19, Vite, TanStack Query, …).
+  # NOTE: we don't track package-lock.json, so dependabot updates only
+  # `package.json`. CI regenerates the lock on each run.
+  - package-ecosystem: npm
+    directory: /frontend
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "frontend"
+      include: scope
+
+  # Backend Docker base image (python:3.11-slim) — bumps the digest
+  # pinned in backend/Dockerfile.
+  - package-ecosystem: docker
+    directory: /backend
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: "backend"
+      include: scope
+
+  # Naive sidecar Docker base (debian:bookworm-slim).
+  - package-ecosystem: docker
+    directory: /docker/naive
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: "naive"
+      include: scope
+
+  # Frontend dev Dockerfile (used by docker-compose.dev.yml). Pins
+  # `node:20` and `nginx:1.25-alpine`.
+  - package-ecosystem: docker
+    directory: /frontend
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: "frontend"
+      include: scope

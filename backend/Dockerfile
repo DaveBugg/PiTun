@@ -1,4 +1,8 @@
-ARG PYTHON_IMAGE=python:3.11-slim
+# Base image pinned by digest (vs `python:3.11-slim` mutable tag) so a
+# Docker Hub repush can't silently change what we ship. Dependabot will
+# bump the digest in PR form when a new patch lands. Override at build
+# time via --build-arg PYTHON_IMAGE=... if you need a different base.
+ARG PYTHON_IMAGE=python:3.11-slim@sha256:6d85378d88a19cd4d76079817532d62232be95757cb45945a99fec8e8084b9c2
 ARG XRAY_VERSION=26.3.27
 
 # ── 1. xray fetcher stage ─────────────────────────────────────────────────────

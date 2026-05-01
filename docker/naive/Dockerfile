@@ -14,7 +14,10 @@
 # missing. Alpine + gcompat can work in some cases but is unreliable for
 # Chromium-based binaries; bookworm-slim (~30 MB compressed) is the
 # predictable choice.
-ARG BASE_IMAGE=debian:bookworm-slim
+# Pinned by digest (vs the `debian:bookworm-slim` mutable tag) so an
+# upstream re-push can't silently change what we ship. Dependabot
+# bumps this digest in PR form when Debian rolls a new bookworm point.
+ARG BASE_IMAGE=debian:bookworm-slim@sha256:f9c6a2fd2ddbc23e336b6257a5245e31f996953ef06cd13a59fa0a1df2d5c252
 FROM ${BASE_IMAGE} AS fetcher
 
 ARG NAIVE_VERSION=v147.0.7727.49-1

@@ -91,7 +91,7 @@ services:
     # we can use the upstream nginx image directly and skip building
     # / shipping a project-specific frontend image entirely. Makes
     # offline installs work without internet at deploy time.
-    image: nginx:1.25-alpine
+    image: nginx:1.25-alpine@sha256:516475cc129da42866742567714ddc681e5eed7b9ee0b9e9c015e464b4221a00
     container_name: pitun-frontend
     restart: unless-stopped
     volumes:
@@ -119,7 +119,7 @@ services:
         max-file: "2"
 
   nginx:
-    image: nginx:1.25-alpine
+    image: nginx:1.25-alpine@sha256:516475cc129da42866742567714ddc681e5eed7b9ee0b9e9c015e464b4221a00
     container_name: pitun-nginx
     restart: unless-stopped
     ports:
