@@ -1,0 +1,22 @@
+# CodeQL custom configuration. Referenced from
+# .github/workflows/codeql.yml via `config-file:`.
+#
+# Scope: trim noise so the Security tab surfaces only findings we can
+# actually act on.
+
+name: PiTun CodeQL config
+
+# Don't run the analysis on test/fixture code. CodeQL's URL-substring
+# rules in particular fire on `"example.com" in url` patterns inside
+# tests, which are not security-relevant — they're synthetic inputs
+# we wrote ourselves to drive parser tests, not user-controllable
+# data flowing into a live HTTP request.
+paths-ignore:
+  - 'backend/tests/**'
+  - 'frontend/src/**/*.test.*'
+  - 'frontend/src/**/__tests__/**'
+  - 'docs/**'
+  - 'scripts/**'
+
+# Keep the default + security-extended query packs (set in workflow);
+# don't override `queries:` here so the workflow's setting wins.

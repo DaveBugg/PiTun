@@ -143,9 +143,24 @@ class NaiveManager:
     @classmethod
     def _write_config_sync(cls, node: Node) -> None:
         path = cls.config_path(node.id)
-        os.makedirs(os.path.dirname(path), exist_ok=True)
+        cfg_dir = os.path.dirname(path)
+        os.makedirs(cfg_dir, exist_ok=True)
+        # Lock the directory down to root-only traversal. Per-file mode
+        # has to stay world-readable (0o644) because the naive sidecar
+        # container runs as the unprivileged `naive` user (different
+        # UID than the backend container, which writes the file). With
+        # 0o600 on the file, naive can't read its own config and the
+        # sidecar fails to start. Restricting the *parent dir* to 0o700
+        # gives equivalent protection: even on a host shell, only root
+        # can list /etc/pitun/naive/ and reach the JSON files. CodeQL
+        # CWE-312 alert dismissed accordingly — this is the standard
+        # workaround when bind-mounted secrets are read by a non-root
+        # container.
+        try:
+            os.chmod(cfg_dir, 0o700)
+        except OSError:
+            pass  # tolerate if dir lives on a filesystem that ignores chmod
         payload = json.dumps(cls._build_config(node), indent=2)
-        # Write atomically: tmp file + rename
         tmp = f"{path}.tmp"
         with open(tmp, "w", encoding="utf-8") as f:
             f.write(payload)

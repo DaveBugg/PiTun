@@ -65,6 +65,8 @@ jobs:
           # `security-and-quality` would also flag style issues —
           # too noisy for our size.
           queries: security-extended
+          # Custom config to skip test/scripts/docs paths — see file.
+          config-file: ./.github/codeql/codeql-config.yml
 
       - name: Autobuild
         uses: github/codeql-action/autobuild@b2f9ef845756500b97acbdaf5c1dd4e9c1d15734 # v3.35.2

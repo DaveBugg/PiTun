@@ -12,6 +12,27 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s  %(levelname)-8s  %(name)s — %(message)s",
 )
+
+
+# Scrub CR/LF from every log message to defend against log-injection
+# (CWE-117). Many places legitimately format user-supplied strings into
+# log lines — node.name, subscription URIs, exception messages, etc.
+# An attacker who controls one of those values could inject a fake
+# log entry by inserting `\n[FAKE]`, fooling SIEM / grep-based audits.
+# Replacing line terminators with the unicode "return symbol" keeps
+# the original content visible (so debugging still works) without
+# letting it span lines. Cheaper than patching every `logger.info(…)`
+# call site, and catches future ones automatically.
+class _NoNewlineFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        msg = record.getMessage()
+        if "\r" in msg or "\n" in msg:
+            record.msg = msg.replace("\r", "␍").replace("\n", "␊")
+            record.args = ()  # already-formatted into record.msg
+        return True
+
+
+logging.getLogger().addFilter(_NoNewlineFilter())
 logger = logging.getLogger(__name__)
 
 # Attach in-memory ring buffer so diagnostics can read recent logs
