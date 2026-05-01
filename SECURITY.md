@@ -36,12 +36,20 @@ the maintainer at the address listed on the [GitHub profile](https://github.com/
 
 ### Response time
 
-- **Acknowledgement:** within 72 hours.
-- **Triage:** within 1 week — we either confirm severity, request
-  more info, or explain why we don't think it's exploitable.
-- **Fix + release:** depends on severity. Critical issues go out as
-  soon as a working patch lands; lower-severity ones bundle into the
-  next regular release.
+PiTun is a hobby project maintained in spare time, so we deliberately
+avoid hard SLAs. As a rough guide:
+
+- **Acknowledgement:** as soon as the maintainer sees the report —
+  usually within a few days.
+- **Triage:** when bandwidth allows — we'll either confirm severity,
+  ask for more info, or explain why we don't think it's exploitable.
+- **Fix + release:** depends on severity, complexity, and how busy
+  life is. Critical issues are prioritised; lower-severity ones bundle
+  into the next regular release.
+
+If a report sits without any reply for more than a couple of weeks,
+feel free to ping us — it usually means the email landed in the wrong
+folder, not that we're ignoring you.
 
 ### Coordinated disclosure
 
