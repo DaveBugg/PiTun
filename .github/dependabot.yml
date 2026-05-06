@@ -93,6 +93,14 @@ updates:
       # with ERESOLVE. Revisit alongside the vite-major epic.
       - dependency-name: "@vitejs/plugin-react"
         update-types: ["version-update:semver-major"]
+      # esbuild only ships as a vite transitive dep; if vite is pinned
+      # at 5.x, esbuild bumps that try to drag vite up to 8.x in a
+      # grouped PR (branch `dependabot/.../multi-...`) defeat our
+      # vite-major ignore above. Pin esbuild at the floor so the
+      # grouped form never gets opened. Saw this in PR #6 — vite
+      # 5.4.21 → 8.0.10 grouped with esbuild removal.
+      - dependency-name: "esbuild"
+        update-types: ["version-update:semver-major"]
       # Same lockstep as vite — vitest 5+ drops vite 5 support.
       - dependency-name: "vitest"
         update-types: ["version-update:semver-major"]
