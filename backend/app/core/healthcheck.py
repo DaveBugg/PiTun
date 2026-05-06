@@ -136,10 +136,37 @@ class HealthChecker:
                     await self._failover(node_id)
 
     async def _failover(self, failed_node_id: int) -> None:
+        """Recover from `failed_node_id` going dead.
+
+        Two-tier strategy (since 1.2.3):
+
+          1. **Circle-aware path**: if the failed node is part of an
+             enabled NodeCircle, delegate to `circle_scheduler.rotate_circle`.
+             Circle's pre-ping + retry logic picks the first alive
+             sibling. If circle rotation succeeds, we're done — no need
+             to consult `failover_node_ids` separately. This means the
+             user only has to maintain ONE list (the circle) and it
+             handles both scheduled rotation AND emergency failover.
+
+          2. **Fallback path**: if no circle contains this node, OR the
+             circle's rotation aborted (all candidates dead), fall back
+             to the explicit `failover_node_ids` list. Same probe-and-
+             switch logic as before — preserved for users who use
+             standalone failover without circles.
+        """
         async with AsyncSession(get_async_engine()) as session:
             failover_enabled = await self._get_setting(session, "failover_enabled") or "false"
             if failover_enabled.lower() != "true":
                 return
+
+            # Tier 1: try circle-aware failover.
+            #
+            # Find the FIRST enabled NodeCircle that contains
+            # `failed_node_id` in its node_ids list. We don't try
+            # multiple circles for the same node — that's an
+            # ambiguous configuration that no UI supports anyway, and
+            # picking one deterministically (first by id) is good enough.
+            circle_for_node = await self._find_circle_for_node(session, failed_node_id)
 
             failover_ids_raw = await self._get_setting(session, "failover_node_ids") or "[]"
             try:
@@ -163,6 +190,46 @@ class HealthChecker:
                         "protocol": candidate.protocol,
                         "internal_port": candidate.internal_port,
                     })
+
+        # Tier 1: delegate to circle if applicable. circle_scheduler's
+        # rotate_circle returns True on successful rotation, False on
+        # any abort (all dead, race, etc.) — in which case we drop
+        # through to Tier 2.
+        if circle_for_node is not None:
+            from app.core.circle_scheduler import circle_scheduler
+            from app.core.events import record_event
+
+            logger.info(
+                "Failover: node %d is in circle %d, delegating to circle rotation",
+                failed_node_id, circle_for_node,
+            )
+            try:
+                rotated = await circle_scheduler.rotate_circle(circle_for_node)
+            except Exception as exc:  # noqa: BLE001 — circle errors shouldn't kill failover
+                logger.warning("Failover: circle rotation raised %s, falling through", exc)
+                rotated = False
+
+            if rotated:
+                # circle_scheduler emits its own `circle.rotated` event
+                # already; record an additional `failover.via_circle`
+                # marker so the events feed shows this WAS a failover
+                # response (not a scheduled rotation).
+                try:
+                    await record_event(
+                        category="failover.via_circle",
+                        severity="warning",
+                        title="Failover: circle rotation triggered",
+                        details=(
+                            f"Active node #{failed_node_id} failed health checks; "
+                            f"circle #{circle_for_node} rotated to a live sibling."
+                        ),
+                        entity_id=circle_for_node,
+                    )
+                except Exception:
+                    pass
+                self._fail_counts[failed_node_id] = 0
+                return
+            # else: rotation aborted — fall through to Tier 2 list.
 
         for cand in candidates:
             result = await self._probe_node(
@@ -243,6 +310,31 @@ class HealthChecker:
             logger.error("Failed to reload xray after failover: %s", exc)
 
     # ── Public helpers ───────────────────────────────────────────────────────
+
+    @staticmethod
+    async def _find_circle_for_node(session: AsyncSession, node_id: int) -> Optional[int]:
+        """Return the id of the first enabled NodeCircle that contains
+        `node_id` in its node_ids, or None.
+
+        Used by `_failover` to decide whether to delegate recovery to
+        circle rotation instead of consulting `failover_node_ids`. We
+        only return ONE circle even if a node is in several — the
+        ambiguity isn't expressible in the UI today and picking
+        deterministically (lowest id wins) is good enough.
+        """
+        from app.models import NodeCircle
+        circles = (await session.exec(
+            select(NodeCircle).where(NodeCircle.enabled == True)  # noqa: E712
+            .order_by(NodeCircle.id)
+        )).all()
+        for c in circles:
+            try:
+                ids = json.loads(c.node_ids) if isinstance(c.node_ids, str) else c.node_ids
+            except (TypeError, ValueError, json.JSONDecodeError):
+                continue
+            if node_id in ids:
+                return c.id
+        return None
 
     @staticmethod
     async def _resolve_probe_target(session: AsyncSession, node: Node):

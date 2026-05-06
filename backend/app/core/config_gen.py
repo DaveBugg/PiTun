@@ -380,7 +380,18 @@ def _routing_rule_to_xray(rule: RoutingRule, active_node_id: Optional[int]) -> O
     elif rule.rule_type == "src_ip":
         xray_rule["sourceIP"] = values
     elif rule.rule_type == "domain":
-        xray_rule["domain"] = values
+        # xray treats a bare entry in `domain` as a SUBSTRING match —
+        # `youtube.com` would match `mynot-youtube.com.fake.tld`. That's
+        # almost never what users want. Auto-prefix bare entries with
+        # `domain:` (suffix match) unless they already carry a known
+        # matcher prefix. This keeps backward compatibility with any
+        # explicit `full:` / `keyword:` / `regexp:` / `geosite:` entries
+        # users might have hand-written.
+        _DOMAIN_PREFIXES = ("domain:", "full:", "keyword:", "regexp:", "geosite:")
+        xray_rule["domain"] = [
+            v if v.startswith(_DOMAIN_PREFIXES) else f"domain:{v}"
+            for v in values
+        ]
     elif rule.rule_type == "port":
         xray_rule["port"] = ",".join(values)
     elif rule.rule_type == "protocol":

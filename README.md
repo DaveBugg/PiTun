@@ -154,7 +154,10 @@ Frontend is a single-page React app served by nginx.
   through node #5")
 
 **Health & resilience**
-- Background liveness probe with auto-failover to a fallback node
+- Background liveness probe with two-tier auto-failover: if the failed
+  node belongs to an enabled NodeCircle, the failover handler delegates
+  recovery to the circle (which skips dead siblings via pre-ping +
+  retry); otherwise it walks a configurable fallback list
 - Speed test per node via short-lived isolated xray instance
 - Naive sidecar supervisor — auto-restarts crashed Naive containers
   with a sliding-window rate limiter
@@ -164,7 +167,9 @@ Frontend is a single-page React app served by nginx.
 **Balancing & rotation**
 - Balancer groups (xray's `leastPing` or `random` strategies)
 - Node Circles — automatically rotate the active node on a schedule,
-  seamlessly via xray's gRPC API (no dropped connections)
+  seamlessly via xray's gRPC API (no dropped connections); each
+  candidate is TCP-pinged with a single retry before switching, so
+  dead siblings are skipped without a connection blip
 
 **Subscriptions**
 - Periodic refresh from VLESS / VMess / Trojan / SS / Hysteria2 /
@@ -179,8 +184,19 @@ Frontend is a single-page React app served by nginx.
 - FakeDNS pool for sniffing-friendly geoip resolution
 - DNS query log with stats
 
+**Servers & deployments**
+- Inventory of remote VPS hosts (host, SSH credentials, tags) separate
+  from runtime nodes — async-SSH probe, deployment records track which
+  protocol/port is set up on which box, optional manual provisioning
+  scripts (Caddy + naive, xray, SSH hardening) over the same SSH link
+
 **Operations**
-- One-click GeoIP / GeoSite refresh from Loyalsoldier's dataset
+- One-click GeoIP / GeoSite refresh — three switchable upstream
+  profiles: Loyalsoldier (CN-focused community list), runetfreedom
+  (Russian-internet curated list), v2fly (vanilla baseline)
+- Full-fidelity JSON Export/Import for Nodes and Servers — versioned
+  bundle envelope, append/replace modes, optional secret redaction
+  (separate from URI/subscription import which is single-node only)
 - Built-in diagnostics page (DNS reachability, gateway, xray status,
   resource usage)
 - Streaming xray log viewer
@@ -258,10 +274,12 @@ Useful flags (after `bash -s --`):
 After the script finishes:
 - Web UI is at `http://<this-host-ip>/`, login `admin` / `password`
   (**change it on first login** via *Settings → Account*).
-- `/opt/pitun/.env` was generated with a random `SECRET_KEY` and your
-  default LAN interface autodetected. Edit it to set `LAN_CIDR` /
-  `GATEWAY_IP` matching your network, then `docker compose -f
-  /opt/pitun/docker-compose.yml restart`.
+- `/opt/pitun/.env` was generated with a random `SECRET_KEY` and the
+  network block autodetected from your default-route interface:
+  `INTERFACE`, `LAN_CIDR`, `GATEWAY_IP` (the PiTun host's own LAN IP),
+  `VITE_API_BASE_URL`, `VITE_WS_BASE_URL`, `CORS_ORIGINS`. Verify with
+  `head -30 /opt/pitun/.env` before going to production; if anything
+  looks off, edit and `docker compose -f /opt/pitun/docker-compose.yml restart`.
 
 > See [`install.sh --help`](install.sh) for the full option list.
 
@@ -282,8 +300,14 @@ cd pitun
 sudo bash scripts/setup.sh
 
 cp .env.example .env
-# Edit .env — at minimum set SECRET_KEY, INTERFACE, LAN_CIDR, GATEWAY_IP.
-# A random SECRET_KEY: openssl rand -hex 32
+# Edit .env — at minimum set SECRET_KEY, INTERFACE, LAN_CIDR,
+# GATEWAY_IP (the PiTun host's own LAN IP — what devices will use as
+# their default gateway). A random SECRET_KEY: openssl rand -hex 32
+#
+# Tip: instead of editing manually, run `sudo bash install.sh
+# --skip-host-prep` from the same checkout — it autodetects all the
+# network values from your default-route interface and writes them
+# into .env (only on first generation).
 
 docker compose up -d --build
 ```
@@ -378,8 +402,8 @@ must be set before first start, via `.env`:
 |---|---|---|
 | `SECRET_KEY` | `changeme-…` | JWT signing key — `openssl rand -hex 32` |
 | `INTERFACE` | `eth0` | LAN interface name on the host |
-| `LAN_CIDR` | `192.168.1.0/24` | Your LAN subnet |
-| `GATEWAY_IP` | `192.168.1.1` | Your home router's IP (used for `direct` traffic) |
+| `LAN_CIDR` | `192.168.1.0/24` | Your LAN subnet (autodetected by `install.sh`) |
+| `GATEWAY_IP` | `192.168.1.100` | **The PiTun host's own LAN IP** — devices set this as their default gateway. (Misnomer kept for backward compat; *not* the router's IP.) Autodetected by `install.sh`. |
 | `BACKEND_PORT` | `8000` | Backend listen port (behind nginx) |
 | `TPROXY_PORT_TCP` | `7893` | TPROXY TCP listener |
 | `DNS_PORT` | `5353` | Internal DNS forwarder port |
@@ -387,6 +411,13 @@ must be set before first start, via `.env`:
 | `NAIVE_IMAGE` | `pitun-naive:latest` | Image tag built locally or loaded from release |
 
 Full annotated example: [`.env.example`](.env.example).
+
+> **About `GATEWAY_IP`:** the variable name predates the LAN-gateway
+> feature and refers to the PiTun host itself, not your home router.
+> If the .env value disagrees with the actual interface IP, the backend
+> auto-syncs the live IP into the database on the first `GET /settings`,
+> so the UI always shows the truth. `LAN_CIDR` has the same runtime
+> fallback as of 1.2.3.
 
 ## Development
 

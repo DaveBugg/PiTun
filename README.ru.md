@@ -152,7 +152,10 @@ xray-core, набором правил nftables и SQLite-базой со все
   через ноду #5»)
 
 **Здоровье и устойчивость**
-- Фоновая проверка живости с автоматическим failover на резервную ноду
+- Фоновая проверка живости с двухуровневым auto-failover: если упавшая
+  нода входит в активный NodeCircle — failover делегирует
+  восстановление кругу (он пропускает мёртвых соседей через pre-ping +
+  retry); иначе идёт по настраиваемому списку fallback-нод
 - Speed test для каждой ноды через короткоживущий изолированный xray
 - Supervisor для Naive sidecars — авторестарт упавших контейнеров с
   rate-limiter (sliding window)
@@ -162,7 +165,9 @@ xray-core, набором правил nftables и SQLite-базой со все
 **Балансировка и ротация**
 - Группы балансировки (стратегии xray `leastPing` / `random`)
 - Node Circles — автоматическая ротация активной ноды по расписанию,
-  бесшовно через xray gRPC API (соединения не рвутся)
+  бесшовно через xray gRPC API (соединения не рвутся); каждый
+  кандидат проверяется TCP-пингом с одним повтором перед
+  переключением — мёртвые соседи пропускаются без обрыва
 
 **Подписки**
 - Периодическое обновление с VLESS / VMess / Trojan / SS / Hysteria2 /
@@ -178,8 +183,21 @@ xray-core, набором правил nftables и SQLite-базой со все
 - FakeDNS-пул для sniffing-friendly geoip-резолва
 - Лог DNS-запросов со статистикой
 
+**Серверы и развёртывания**
+- Инвентарь удалённых VPS (host, SSH-доступы, теги) отдельно от runtime-
+  нод — async-SSH probe, записи о развёртываниях помнят какой
+  протокол/порт настроен на какой машине, опционально — manual
+  provisioning скрипты (Caddy + naive, xray, харднинг SSH) по тому же
+  SSH-каналу
+
 **Эксплуатация**
-- One-click обновление GeoIP / GeoSite из dataset Loyalsoldier
+- One-click обновление GeoIP / GeoSite — три переключаемых upstream-
+  профиля: Loyalsoldier (CN-ориентированный community-список),
+  runetfreedom (курируемый список для рунета), v2fly (vanilla baseline)
+- Полноформатный JSON Export/Import для Nodes и Servers — версионный
+  конверт, режимы append/replace, опциональная редактирование секретов
+  (отдельно от URI/subscription импорта, который работает только на
+  одну ноду)
 - Встроенная страница диагностики (DNS, шлюз, статус xray, ресурсы)
 - Стриминг логов xray
 - Многоязычный UI (English / Русский)
@@ -257,8 +275,11 @@ curl -fsSL https://raw.githubusercontent.com/DaveBugg/PiTun/master/install.sh | 
 - Web UI на `http://<ip-хоста>/`, логин `admin` / `password`
   (**смени при первом входе** через *Settings → Account*).
 - `/opt/pitun/.env` сгенерирован со случайным `SECRET_KEY` и
-  авто-детектом LAN-интерфейса. Отредактируй чтобы выставить `LAN_CIDR`
-  / `GATEWAY_IP` под свою сеть, потом `docker compose -f
+  авто-детектом сетевого блока с интерфейса дефолтного маршрута:
+  `INTERFACE`, `LAN_CIDR`, `GATEWAY_IP` (это LAN-IP самого PiTun, не
+  роутера), `VITE_API_BASE_URL`, `VITE_WS_BASE_URL`, `CORS_ORIGINS`.
+  Проверь через `head -30 /opt/pitun/.env` перед боевым запуском; если
+  что-то не так — отредактируй и `docker compose -f
   /opt/pitun/docker-compose.yml restart`.
 
 > Полный список опций — [`install.sh --help`](install.sh).
@@ -278,8 +299,15 @@ cd pitun
 sudo bash scripts/setup.sh
 
 cp .env.example .env
-# Отредактируйте .env — минимум: SECRET_KEY, INTERFACE, LAN_CIDR, GATEWAY_IP.
-# Случайный SECRET_KEY: openssl rand -hex 32
+# Отредактируйте .env — минимум: SECRET_KEY, INTERFACE, LAN_CIDR,
+# GATEWAY_IP (это LAN-IP самого PiTun — то, что устройства будут
+# использовать как default gateway). Случайный SECRET_KEY:
+# openssl rand -hex 32
+#
+# Совет: вместо ручной правки можно запустить `sudo bash install.sh
+# --skip-host-prep` из этого же checkout — оно автодетектит все
+# сетевые значения с дефолтного интерфейса и пишет в .env (только при
+# первой генерации).
 
 docker compose up -d --build
 ```
@@ -373,8 +401,8 @@ docker compose up -d
 |---|---|---|
 | `SECRET_KEY` | `changeme-…` | Ключ подписи JWT — `openssl rand -hex 32` |
 | `INTERFACE` | `eth0` | Имя LAN-интерфейса на хосте |
-| `LAN_CIDR` | `192.168.1.0/24` | Ваша LAN-подсеть |
-| `GATEWAY_IP` | `192.168.1.1` | IP домашнего роутера (для `direct` трафика) |
+| `LAN_CIDR` | `192.168.1.0/24` | Ваша LAN-подсеть (автодетектится `install.sh`) |
+| `GATEWAY_IP` | `192.168.1.100` | **LAN-IP самого PiTun** — устройства задают это как default gateway. (Имя оставлено для обратной совместимости; это *не* IP роутера.) Автодетектится `install.sh`. |
 | `BACKEND_PORT` | `8000` | Порт бэкенда (за nginx) |
 | `TPROXY_PORT_TCP` | `7893` | TCP-листенер TPROXY |
 | `DNS_PORT` | `5353` | Внутренний DNS-форвардер |
@@ -382,6 +410,13 @@ docker compose up -d
 | `NAIVE_IMAGE` | `pitun-naive:latest` | Тег образа (билд локально или из release) |
 
 Полный аннотированный пример: [`.env.example`](.env.example).
+
+> **О `GATEWAY_IP`:** имя переменной осталось с тех времён когда LAN-
+> gateway фичи ещё не было, и относится к самому PiTun-хосту, а не к
+> роутеру. Если в .env лежит несовпадающий с реальным IP интерфейса —
+> бэкенд автоматически синкнет живой IP в БД при первом `GET /settings`,
+> так что в UI всегда будет правда. У `LAN_CIDR` такой же runtime-
+> fallback с версии 1.2.3.
 
 ## Разработка
 

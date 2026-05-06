@@ -16,6 +16,8 @@ import type {
   SystemMetric,
   NaiveSidecarStatus, NaiveSidecarLogs,
   V2RayImportRequest, V2RayImportResult,
+  Server, ServerCreate, ServerUpdate, ServerTestResult, ServerTestAllResult,
+  ServerDeployment, ServerDeploymentUpsert, ServerDeploymentProtocol,
 } from '@/types'
 
 const BASE = import.meta.env.VITE_API_BASE_URL || '/api'
@@ -90,6 +92,28 @@ export const nodesApi = {
 
   speedtestAll: () =>
     http.post<SpeedTestResult[]>('/nodes/speedtest-all').then(r => r.data),
+
+  // Full-fidelity JSON backup/restore. Distinct from `import` which
+  // parses VPN URIs — these handle the "back up everything" use case.
+  exportJSON: async (): Promise<void> => {
+    const r = await http.get('/nodes/export-json', { responseType: 'json' })
+    const blob = new Blob([JSON.stringify(r.data, null, 2)], { type: 'application/json' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = (r.data?.exported_at?.replace(/[:.]/g, '-') ?? 'pitun-nodes') + '.json'
+    document.body.appendChild(a)
+    a.click()
+    a.remove()
+    URL.revokeObjectURL(url)
+  },
+
+  importJSON: (bundle: unknown, replace = false) =>
+    http.post<NodeImportResponse>(
+      '/nodes/import-json',
+      bundle,
+      { params: { replace } },
+    ).then(r => r.data),
 
   reorder: (ids: number[]) =>
     http.post('/nodes/reorder', ids),
@@ -315,6 +339,126 @@ export const eventsApi = {
     http.get<PiEvent[]>('/events', { params }).then(r => r.data),
 
   clear: () => http.delete<{ cleared: boolean }>('/events').then(r => r.data),
+}
+
+// ── Servers (managed VPS instances) ───────────────────────────────────────────
+//
+// Mirror of /api/servers routes. Note `naiveInstallScriptUrl` returns a
+// raw URL the user can hand to <a download> rather than fetching itself —
+// that way the browser handles the file download natively (correct
+// Content-Disposition handling, no need to manage Blob URLs in code).
+
+export const serversApi = {
+  list: () => http.get<Server[]>('/servers').then(r => r.data),
+  get: (id: number) => http.get<Server>(`/servers/${id}`).then(r => r.data),
+  create: (data: ServerCreate) => http.post<Server>('/servers', data).then(r => r.data),
+  update: (id: number, data: ServerUpdate) =>
+    http.patch<Server>(`/servers/${id}`, data).then(r => r.data),
+  delete: (id: number) => http.delete(`/servers/${id}`),
+  test: (id: number) =>
+    http.post<ServerTestResult>(`/servers/${id}/test`).then(r => r.data),
+  testAll: () =>
+    http.post<ServerTestAllResult>('/servers/test-all').then(r => r.data),
+
+  // Fetch the generated naive-install bash script as text, then trigger
+  // a file download via an in-memory Blob URL. We deliberately don't
+  // hand the URL to <a download> directly because that path requires
+  // moving the JWT into a query string (token-in-URL pollutes browser
+  // history + access logs). The fetch path keeps auth in the header
+  // and pays a tiny memory cost (script is ~1 KB).
+  downloadNaiveInstallScript: async (
+    id: number,
+    params: { domain: string; email: string; naive_user?: string; naive_pass?: string },
+  ): Promise<void> => {
+    const r = await http.get(`/servers/${id}/naive-install-script`, {
+      params,
+      responseType: 'text',
+    })
+    const blob = new Blob([r.data], { type: 'text/x-shellscript' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `naive-install-${id}.sh`
+    document.body.appendChild(a)
+    a.click()
+    a.remove()
+    URL.revokeObjectURL(url)
+  },
+
+  // ── Deployments (persistent install plans per protocol) ───────────────────
+
+  listDeployments: (serverId: number) =>
+    http.get<ServerDeployment[]>(`/servers/${serverId}/deployments`).then(r => r.data),
+
+  upsertDeployment: (
+    serverId: number,
+    protocol: ServerDeploymentProtocol,
+    data: ServerDeploymentUpsert,
+  ) =>
+    http.put<ServerDeployment>(`/servers/${serverId}/deployments/${protocol}`, data).then(r => r.data),
+
+  deleteDeployment: (serverId: number, protocol: ServerDeploymentProtocol) =>
+    http.delete(`/servers/${serverId}/deployments/${protocol}`),
+
+  createNodeFromDeployment: (serverId: number, protocol: ServerDeploymentProtocol) =>
+    http.post<Node>(`/servers/${serverId}/deployments/${protocol}/create-node`).then(r => r.data),
+
+  // JSON backup. `includeSecrets=false` (default) strips passwords and
+  // private keys — safer to share or commit accidentally. With
+  // `includeSecrets=true` the bundle is round-trip-perfect but
+  // contains plaintext credentials; treat it like a password file.
+  exportJSON: async (includeSecrets: boolean): Promise<void> => {
+    const r = await http.get('/servers/export-json', {
+      params: { include_secrets: includeSecrets },
+      responseType: 'json',
+    })
+    const blob = new Blob([JSON.stringify(r.data, null, 2)], { type: 'application/json' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    const ts = (r.data?.exported_at ?? '').replace(/[:.]/g, '-')
+    const tag = includeSecrets ? 'with-secrets' : 'no-secrets'
+    a.download = `pitun-servers-${ts}-${tag}.json`
+    document.body.appendChild(a)
+    a.click()
+    a.remove()
+    URL.revokeObjectURL(url)
+  },
+
+  importJSON: (bundle: unknown, replace = false) =>
+    http.post<{ imported: number; skipped: number; errors: string[]; has_secrets: boolean }>(
+      '/servers/import-json',
+      bundle,
+      { params: { replace } },
+    ).then(r => r.data),
+}
+
+// ── Manual scripts (server-agnostic) ─────────────────────────────────────────
+//
+// Companion to the per-server install-script endpoint. Used by the
+// "Manual scripts" cards on the Servers page when the user wants the
+// bootstrap before registering a VPS. Same Blob/download mechanic as
+// `serversApi.downloadNaiveInstallScript` — keeps JWT in the header,
+// out of the URL.
+
+export const scriptsApi = {
+  downloadNaiveInstall: async (
+    params: { domain: string; email: string; naive_user?: string; naive_pass?: string },
+  ): Promise<void> => {
+    const r = await http.get('/scripts/naive-install', {
+      params,
+      responseType: 'text',
+    })
+    const blob = new Blob([r.data], { type: 'text/x-shellscript' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = 'naive-install.sh'
+    document.body.appendChild(a)
+    a.click()
+    a.remove()
+    URL.revokeObjectURL(url)
+  },
 }
 
 // ── WebSocket log stream ──────────────────────────────────────────────────────

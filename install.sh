@@ -402,19 +402,60 @@ if [[ "$DRY_RUN" != "1" ]]; then
         sed -i "s/^SECRET_KEY=.*/SECRET_KEY=$SECRET_KEY/" .env
 
         # Best-effort autodetect of the LAN interface — pick the first
-        # non-loopback, non-docker, non-virtual interface with a default
-        # route. The user is expected to verify before relying on it.
+        # interface with a default route. The user is expected to verify
+        # before relying on it.
         DEFAULT_IF=$(ip -o -4 route show to default 2>/dev/null \
                       | awk '{print $5}' | head -n1)
         if [[ -n "$DEFAULT_IF" ]]; then
             sed -i "s/^INTERFACE=.*/INTERFACE=$DEFAULT_IF/" .env
             info "  Autodetected INTERFACE=$DEFAULT_IF"
+
+            # Derive PiTun host IP and the LAN subnet from the chosen
+            # interface. Without this, the .env stays at the example
+            # defaults (192.168.1.0/24 + 192.168.1.100) and users on
+            # other subnets (e.g. 192.168.88.0/24) end up editing four
+            # places by hand. Tradeoff: we use python3 for CIDR math
+            # because every supported distro already ships it and there
+            # are three incompatible `ipcalc` flavours in the wild; a
+            # pure-bash fallback runs only if python3 is missing.
+            HOST_CIDR=$(ip -o -4 addr show dev "$DEFAULT_IF" 2>/dev/null \
+                        | awk '{print $4}' | head -n1)
+            ROUTER_IP=$(ip -o -4 route show to default 2>/dev/null \
+                        | awk '{print $3}' | head -n1)
+
+            if [[ -n "$HOST_CIDR" ]]; then
+                HOST_IP="${HOST_CIDR%/*}"
+                # Compute the network address (e.g. 192.168.88.50/24 -> 192.168.88.0/24).
+                LAN_CIDR=$(python3 -c "import ipaddress; print(ipaddress.ip_network('$HOST_CIDR', strict=False))" 2>/dev/null || true)
+                if [[ -z "$LAN_CIDR" ]]; then
+                    # Pure-bash fallback: bitwise AND of host IP and netmask.
+                    _ip=${HOST_CIDR%/*}; _prefix=${HOST_CIDR#*/}
+                    IFS=. read -r _a _b _c _d <<<"$_ip"
+                    _mask=$(( 0xFFFFFFFF << (32 - _prefix) & 0xFFFFFFFF ))
+                    _net=$(( ((_a<<24)|(_b<<16)|(_c<<8)|_d) & _mask ))
+                    LAN_CIDR=$(printf "%d.%d.%d.%d/%d" \
+                        $((_net>>24 & 0xFF)) $((_net>>16 & 0xFF)) \
+                        $((_net>>8  & 0xFF)) $((_net     & 0xFF)) "$_prefix")
+                fi
+
+                # GATEWAY_IP in our .env actually means "PiTun host IP"
+                # — the address devices on the LAN should set as their
+                # default gateway. Misnomer kept for backward-compat.
+                sed -i "s|^LAN_CIDR=.*|LAN_CIDR=$LAN_CIDR|"                                    .env
+                sed -i "s|^GATEWAY_IP=.*|GATEWAY_IP=$HOST_IP|"                                 .env
+                sed -i "s|^VITE_API_BASE_URL=.*|VITE_API_BASE_URL=http://${HOST_IP}/api|"      .env
+                sed -i "s|^VITE_WS_BASE_URL=.*|VITE_WS_BASE_URL=ws://${HOST_IP}/api|"          .env
+                sed -i "s|^CORS_ORIGINS=.*|CORS_ORIGINS=http://localhost:5173,http://${HOST_IP}|" .env
+                info "  Autodetected LAN_CIDR=$LAN_CIDR, host IP=$HOST_IP${ROUTER_IP:+, router=$ROUTER_IP}"
+            else
+                warn "Could not read IP/netmask from $DEFAULT_IF — leaving LAN_CIDR/GATEWAY_IP at example defaults; edit .env manually."
+            fi
         fi
 
-        warn "Edit $INSTALL_DIR/.env before going to production:"
-        warn "  - LAN_CIDR  (your home network, e.g. 192.168.1.0/24)"
-        warn "  - GATEWAY_IP (your home router's IP, e.g. 192.168.1.1)"
-        warn "  - INTERFACE (verify the autodetected value: $DEFAULT_IF)"
+        warn "Verify $INSTALL_DIR/.env before going to production:"
+        warn "  - INTERFACE  (autodetected: ${DEFAULT_IF:-<none>})"
+        warn "  - LAN_CIDR   (autodetected: ${LAN_CIDR:-192.168.1.0/24 default})"
+        warn "  - GATEWAY_IP (this PiTun host's LAN IP — autodetected: ${HOST_IP:-192.168.1.100 default})"
     else
         info ".env already exists, leaving it alone"
     fi

@@ -1,4 +1,5 @@
 from sqlmodel import SQLModel, Field
+from sqlalchemy import UniqueConstraint
 from typing import Optional
 from datetime import datetime, timezone
 
@@ -101,6 +102,96 @@ class Node(SQLModel, table=True):
 
     # Chain tunnel: if set, this node's outbound traffic goes through another node
     chain_node_id: Optional[int] = None
+
+    # Optional link to the Server this node is deployed on. Purely informational
+    # — set when the user uses the Servers tab to spin up a VPN endpoint and
+    # wants to remember which physical machine hosts it. Cleared on server
+    # delete (FK ON DELETE SET NULL handled in migration).
+    server_id: Optional[int] = Field(default=None, foreign_key="server.id")
+
+
+class ServerDeployment(SQLModel, table=True):
+    """A configured "deployment plan" for a specific protocol on a Server.
+
+    Acts as the persistent memory of "what credentials did the user
+    pick last time they generated a script for this server", so:
+      - Re-opening the script-generator modal pre-fills with last values
+      - User doesn't lose the auto-generated NaiveProxy password
+      - One-click "Create Node from this deployment" can populate a Node
+        row with the right host / user / password automatically
+
+    One row per (server_id, protocol). Re-running the script generator
+    UPDATEs the existing row instead of inserting a new one.
+
+    `config_json` is a free-form JSON blob whose shape depends on the
+    protocol — for naive: `{"domain", "email", "naive_user", "naive_pass"}`.
+    Future protocols (wireguard, hysteria2) will use different keys; the
+    JSON column avoids per-protocol column proliferation.
+
+    Threat model: same as Server (LAN-only deployment, plain SQLite).
+    See SECURITY.md.
+    """
+
+    __table_args__ = (
+        UniqueConstraint("server_id", "protocol", name="uq_server_protocol"),
+    )
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    server_id: int = Field(foreign_key="server.id", index=True)
+    protocol: str             # "naive" — extensible to "wireguard", "hysteria2", …
+    config_json: str          # JSON blob, shape per-protocol (see docstring)
+    status: str = "configured"  # configured | deployed | failed
+
+    # Set when the user clicks "Create node from this deployment". Lets
+    # the UI show "Already linked to Node X" rather than offering the
+    # button again. ON DELETE SET NULL via FK so deleting the node
+    # doesn't take the deployment with it.
+    last_node_id: Optional[int] = Field(default=None, foreign_key="node.id")
+
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class Server(SQLModel, table=True):
+    """A remote machine the user manages from PiTun.
+
+    Stores SSH connection info + free-form metadata so the user can keep a
+    catalogue of their VPS instances and run deployment scripts against them
+    (e.g. "install naive", "install wireguard").
+
+    Threat model: PiTun is LAN-only. Credentials are stored in plain SQLite
+    — same protection level as Node passwords. The DB file is root-only on
+    the host. Do not expose port 80 to the public internet. See SECURITY.md.
+
+    Credentials are write-only via the API: GET responses include
+    `has_password` / `has_private_key` booleans rather than the secrets
+    themselves, so they don't leak through logs / screenshots / XSS. Empty
+    string on PATCH means "leave existing", explicit `null` means "clear".
+    """
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    name: str
+    description: Optional[str] = None
+
+    host: str            # IP or DNS name
+    port: int = 22
+    user: str = "root"
+
+    # auth_type: "password" | "key"
+    auth_type: str = "password"
+    password: Optional[str] = None
+    private_key: Optional[str] = None     # PEM-formatted, multi-line
+    passphrase: Optional[str] = None      # for the encrypted private key
+
+    # Status / health (filled by /test endpoint)
+    status: str = "unknown"               # online | offline | unknown
+    last_check: Optional[datetime] = None
+    last_check_error: Optional[str] = None
+    latency_ms: Optional[int] = None
+
+    # Bookkeeping
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 class RoutingRule(SQLModel, table=True):

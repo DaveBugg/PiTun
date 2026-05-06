@@ -1,8 +1,9 @@
 import { useState } from 'react'
-import { Download, Globe, RefreshCw, CheckCircle, XCircle } from 'lucide-react'
+import { Download, Globe, RefreshCw, CheckCircle, XCircle, Layers } from 'lucide-react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { geodataApi } from '@/api/client'
 import { useSystemSettings, useUpdateSettings } from '@/hooks/useSystem'
+import { GEO_PROFILES, detectActiveProfile, type GeoProfile } from '@/lib/geoProfiles'
 
 function formatSize(bytes?: number | null): string {
   if (!bytes) return '—'
@@ -158,7 +159,7 @@ export function GeoData() {
             <input
               value={customMmdbUrl}
               onChange={(e) => setCustomMmdbUrl(e.target.value)}
-              placeholder={sysSettings?.geoip_mmdb_url || 'https://github.com/P3TERX/GeoLite.mmdb/releases/latest/download/GeoLite2-Country.mmdb'}
+              placeholder={sysSettings?.geoip_mmdb_url || 'https://git.io/GeoLite2-Country.mmdb'}
               className="w-full rounded bg-gray-800 border border-gray-700 px-3 py-1.5 text-sm text-gray-100 font-mono focus:border-brand-500 focus:outline-none"
             />
           </div>
@@ -180,6 +181,9 @@ export function GeoData() {
           <p className="text-xs text-red-400">Error: {String(updateGeo.error)}</p>
         )}
       </div>
+
+      {/* Profile picker — switch between curated geo lists. */}
+      <ProfilePicker sysSettings={sysSettings ?? null} />
 
       {/* Default URL settings */}
       <div className="rounded-xl border border-gray-800 bg-gray-900/30 p-5 space-y-4">
@@ -218,6 +222,103 @@ export function GeoData() {
           ))}
         </div>
       </div>
+    </div>
+  )
+}
+
+// ── Profile picker ──────────────────────────────────────────────────────────
+//
+// Switches between curated geo-data sources by bulk-updating the URL
+// settings. After switching, the user must click "Update all" in the
+// header above to actually re-download the data files. We could trigger
+// download automatically here too — but that would mean a 67 MB pull
+// without confirmation when switching to runetfreedom, which feels
+// surprising. Better to let the user opt in.
+
+function ProfilePicker({
+  sysSettings,
+}: {
+  sysSettings: { geoip_url?: string; geosite_url?: string; geoip_mmdb_url?: string } | null
+}) {
+  const updateSettings = useUpdateSettings()
+  const active = detectActiveProfile({
+    geoip_url: sysSettings?.geoip_url,
+    geosite_url: sysSettings?.geosite_url,
+    geoip_mmdb_url: sysSettings?.geoip_mmdb_url,
+  })
+
+  const apply = (profile: GeoProfile) => {
+    updateSettings.mutate({
+      geoip_url: profile.urls.geoip_url,
+      geosite_url: profile.urls.geosite_url,
+      geoip_mmdb_url: profile.urls.geoip_mmdb_url,
+    })
+  }
+
+  return (
+    <div className="rounded-xl border border-gray-800 bg-gray-900/30 p-5 space-y-3">
+      <h2 className="text-sm font-medium text-gray-300 flex items-center gap-2">
+        <Layers className="h-4 w-4" />
+        Geo profile
+        <span className="ml-auto text-[11px] font-normal text-gray-500">
+          Active: <span className="text-gray-300">{active}</span>
+        </span>
+      </h2>
+      <p className="text-xs text-gray-500">
+        Switching profile updates the three URLs below. After switching, use
+        "Update all" above to download the new dataset. Quick-Add presets in
+        the Routing page automatically switch to use category names that
+        exist in the active profile's geosite.
+      </p>
+      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+        {GEO_PROFILES.map((p) => {
+          const isActive = active === p.id
+          return (
+            <div
+              key={p.id}
+              className={`rounded-lg border p-3 transition-colors ${
+                isActive
+                  ? 'border-brand-600 bg-brand-600/10'
+                  : 'border-gray-800 bg-gray-900/40 hover:border-gray-700'
+              }`}
+            >
+              <div className="flex items-start gap-2">
+                <div className="flex-1 min-w-0">
+                  <div className="text-sm font-semibold text-gray-100 flex items-center gap-2">
+                    {p.label}
+                    <span className="text-[10px] uppercase tracking-wider text-gray-500">
+                      {p.geositeSize}
+                    </span>
+                    {isActive && (
+                      <span className="rounded bg-brand-600/30 text-brand-300 px-1.5 py-0.5 text-[10px] uppercase tracking-wider">
+                        active
+                      </span>
+                    )}
+                  </div>
+                  <p className="text-xs text-gray-400 mt-1 leading-relaxed">
+                    {p.description}
+                  </p>
+                </div>
+              </div>
+              {!isActive && (
+                <button
+                  onClick={() => apply(p)}
+                  disabled={updateSettings.isPending}
+                  className="mt-3 w-full rounded bg-gray-800 hover:bg-gray-700 text-gray-200 text-xs font-medium px-3 py-1.5 disabled:opacity-50 transition-colors"
+                >
+                  {updateSettings.isPending ? 'Switching…' : 'Switch to this profile'}
+                </button>
+              )}
+            </div>
+          )
+        })}
+      </div>
+      {active === 'custom' && (
+        <p className="text-[11px] text-yellow-500/80">
+          ⚠ Current URLs don't match any registered profile. Quick-Add presets
+          fall back to common categories (`category-ru`, `tld-ru`, `cn`, etc.).
+        </p>
+      )}
     </div>
   )
 }

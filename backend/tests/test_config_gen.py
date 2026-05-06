@@ -219,8 +219,29 @@ class TestRoutingRuleConversion:
         # Find the domain rule (not the API, DNS, private, or default rules)
         domain_rules = [r for r in cfg["routing"]["rules"] if "domain" in r]
         assert len(domain_rules) >= 1
-        assert "google.com" in domain_rules[0]["domain"]
+        # Bare entries are auto-prefixed with `domain:` (suffix match) by
+        # _routing_rule_to_xray — the old behaviour (substring match for
+        # bare entries) was a bug that was easy to hit. See config_gen.py.
+        assert "domain:google.com" in domain_rules[0]["domain"]
         assert domain_rules[0]["outboundTag"] == "direct"
+
+    def test_domain_rule_keeps_explicit_prefixes(self):
+        """Entries that already carry a known matcher prefix pass through unchanged."""
+        node = _make_node()
+        rule = RoutingRule(
+            id=1, name="mixed", rule_type="domain",
+            match_value="bare.com,domain:explicit.com,full:exact.host,keyword:foo,regexp:^bar$",
+            action="direct", enabled=True, order=100,
+        )
+        cfg = generate_config(node, [node], [rule], "rules", _default_settings())
+        domain_rules = [r for r in cfg["routing"]["rules"] if "domain" in r and any("bar" in str(v) for v in r.get("domain", []))]
+        assert len(domain_rules) >= 1
+        domains = domain_rules[0]["domain"]
+        assert "domain:bare.com" in domains
+        assert "domain:explicit.com" in domains
+        assert "full:exact.host" in domains
+        assert "keyword:foo" in domains
+        assert "regexp:^bar$" in domains
 
     def test_geoip_rule_to_xray(self):
         node = _make_node()
@@ -251,7 +272,7 @@ class TestRoutingRuleConversion:
             match_value="proxy.com", action="proxy", enabled=True, order=100,
         )
         cfg = generate_config(node, [node], [rule], "rules", _default_settings())
-        domain_rules = [r for r in cfg["routing"]["rules"] if "domain" in r and "proxy.com" in r.get("domain", [])]
+        domain_rules = [r for r in cfg["routing"]["rules"] if "domain" in r and "domain:proxy.com" in r.get("domain", [])]
         assert len(domain_rules) >= 1
         assert domain_rules[0]["outboundTag"] == "node-7"
 
@@ -261,7 +282,7 @@ class TestRoutingRuleConversion:
             match_value="proxy.com", action="proxy", enabled=True, order=100,
         )
         cfg = generate_config(None, [], [rule], "rules", _default_settings())
-        domain_rules = [r for r in cfg["routing"]["rules"] if "domain" in r and "proxy.com" in r.get("domain", [])]
+        domain_rules = [r for r in cfg["routing"]["rules"] if "domain" in r and "domain:proxy.com" in r.get("domain", [])]
         assert len(domain_rules) >= 1
         assert domain_rules[0]["outboundTag"] == "direct"
 
@@ -273,7 +294,7 @@ class TestRoutingRuleConversion:
         )
         bg = BalancerGroup(id=1, name="test-bg", enabled=True, node_ids="[10]", strategy="leastPing")
         cfg = generate_config(node, [node], [rule], "rules", _default_settings(), balancer_groups=[bg])
-        domain_rules = [r for r in cfg["routing"]["rules"] if "domain" in r and "balanced.com" in r.get("domain", [])]
+        domain_rules = [r for r in cfg["routing"]["rules"] if "domain" in r and "domain:balanced.com" in r.get("domain", [])]
         assert len(domain_rules) >= 1
         assert domain_rules[0].get("balancerTag") == "balancer-1"
 

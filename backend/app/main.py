@@ -181,7 +181,7 @@ app.add_middleware(
 )
 
 # ── Routers ───────────────────────────────────────────────────────────────────
-from app.api import nodes, routing, subscriptions, system, geodata, logs, dns, balancers, auth, nodecircle, devices, diagnostics, events
+from app.api import nodes, routing, subscriptions, system, geodata, logs, dns, balancers, auth, nodecircle, devices, diagnostics, events, servers, scripts
 from app.core.auth import get_current_user
 
 app.include_router(auth.router, prefix="/api")
@@ -199,6 +199,8 @@ app.include_router(nodecircle.router, prefix="/api", dependencies=_auth)
 app.include_router(devices.router, prefix="/api", dependencies=_auth)
 app.include_router(diagnostics.router, prefix="/api", dependencies=_auth)
 app.include_router(events.router, prefix="/api", dependencies=_auth)
+app.include_router(servers.router, prefix="/api", dependencies=_auth)
+app.include_router(scripts.router, prefix="/api", dependencies=_auth)
 
 
 # ── Health ────────────────────────────────────────────────────────────────────

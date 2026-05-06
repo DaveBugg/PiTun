@@ -123,3 +123,78 @@ class TestNodeReorder:
         result = resp2.json()
         result_ids = [n["id"] for n in result]
         assert result_ids == reversed_ids
+
+
+# ── JSON export / import (full-fidelity backup) ──────────────────────────────
+
+class TestNodeExportImportJSON:
+    def test_export_basic(self, client, admin_user, auth_headers, sample_node):
+        resp = client.get("/api/nodes/export-json", headers=auth_headers)
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["kind"] == "pitun-nodes-export"
+        assert body["version"] == 1
+        assert body["count"] == 1
+        assert len(body["nodes"]) == 1
+        assert body["nodes"][0]["name"] == "Test VLESS"
+        # Filename header present for browser download
+        assert "attachment" in resp.headers["content-disposition"]
+
+    def test_import_roundtrip(self, client, admin_user, auth_headers, sample_node):
+        # Export current state
+        export = client.get("/api/nodes/export-json", headers=auth_headers).json()
+        # Wipe via replace=true
+        resp = client.post(
+            "/api/nodes/import-json?replace=true",
+            json=export,
+            headers=auth_headers,
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["imported"] == 1
+        assert body["skipped"] == 0
+        assert body["nodes"][0]["name"] == "Test VLESS"
+        # Existing node was replaced — only 1 node in DB
+        list_resp = client.get("/api/nodes", headers=auth_headers).json()
+        assert len(list_resp) == 1
+
+    def test_import_dedup(self, client, admin_user, auth_headers, sample_node):
+        # Build an export bundle containing the existing node twice,
+        # plus one new
+        export = client.get("/api/nodes/export-json", headers=auth_headers).json()
+        export["nodes"].append({**export["nodes"][0], "name": "Duplicate"})  # same address+port+protocol+uuid
+        export["nodes"].append({
+            "name": "Brand new", "protocol": "vless", "address": "9.9.9.9",
+            "port": 443, "uuid": "fresh-uuid",
+        })
+        resp = client.post("/api/nodes/import-json", json=export, headers=auth_headers)
+        body = resp.json()
+        # Existing node + duplicate dedup'd, new one added
+        assert body["imported"] == 1
+        assert body["skipped"] == 2
+
+    def test_import_rejects_wrong_kind(self, client, admin_user, auth_headers):
+        bad = {"kind": "something-else", "version": 1, "nodes": []}
+        resp = client.post("/api/nodes/import-json", json=bad, headers=auth_headers)
+        assert resp.status_code == 400
+
+    def test_import_rejects_unknown_version(self, client, admin_user, auth_headers):
+        bad = {"kind": "pitun-nodes-export", "version": 999, "nodes": []}
+        resp = client.post("/api/nodes/import-json", json=bad, headers=auth_headers)
+        assert resp.status_code == 400
+
+    def test_import_per_row_errors(self, client, admin_user, auth_headers):
+        bundle = {
+            "kind": "pitun-nodes-export", "version": 1,
+            "nodes": [
+                {"name": "valid", "protocol": "vless", "address": "1.1.1.1",
+                 "port": 443, "uuid": "x"},
+                {"name": "bad-protocol", "protocol": "INVALID", "address": "2.2.2.2",
+                 "port": 443},
+            ],
+        }
+        resp = client.post("/api/nodes/import-json", json=bundle, headers=auth_headers)
+        body = resp.json()
+        assert body["imported"] == 1
+        assert len(body["errors"]) == 1
+        assert "bad-protocol" in body["errors"][0]

@@ -15,3 +15,8 @@ alembic==1.18.4
 aiosqlite==0.22.1
 psutil>=7.2.2
 docker==7.1.0
+# asyncssh: async-native SSH client used by /api/servers/{id}/test to probe
+# user-registered VPS hosts. Pure Python, depends on `cryptography` which
+# is already pulled in transitively by python-jose. Pinned to 2.x — the
+# 1.x line had several auth bugs we don't want to accidentally regress to.
+asyncssh==2.18.0

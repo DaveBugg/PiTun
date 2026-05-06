@@ -70,6 +70,9 @@ export interface Node {
   is_online: boolean
   order: number
   chain_node_id?: number
+  // Optional link to a Server (the VPS hosting this node's upstream).
+  // Purely informational — does not affect routing/connection.
+  server_id?: number
 }
 
 export type NodeCreate = Omit<Node, 'id' | 'latency_ms' | 'last_check' | 'is_online'>
@@ -495,4 +498,111 @@ export interface Event {
   title: string
   details?: string
   entity_id?: number
+}
+
+// ── Server (managed VPS instances) ───────────────────────────────────────────
+//
+// SSH-reachable machine the user manages from PiTun. Phase 1 stores the
+// connection info + pings via /api/servers/:id/test; Phase 2 will add
+// scripted deploy ("install naive on this server"). The credentials are
+// write-only at the API: GET responses include `has_password` etc rather
+// than the secrets themselves, so we never see them in DevTools.
+
+export type ServerAuthType = 'password' | 'key'
+export type ServerStatus = 'online' | 'offline' | 'unknown'
+
+export interface Server {
+  id: number
+  name: string
+  description?: string | null
+  host: string
+  port: number
+  user: string
+  auth_type: ServerAuthType
+  has_password: boolean
+  has_private_key: boolean
+  has_passphrase: boolean
+  status: ServerStatus
+  last_check?: string | null
+  last_check_error?: string | null
+  latency_ms?: number | null
+  created_at?: string | null
+  updated_at?: string | null
+}
+
+// On create the secret fields are sent as plain strings. Empty string is
+// treated as "no value" by the backend.
+export interface ServerCreate {
+  name: string
+  description?: string | null
+  host: string
+  port?: number
+  user?: string
+  auth_type?: ServerAuthType
+  password?: string
+  private_key?: string
+  passphrase?: string
+}
+
+// PATCH semantics for secret fields:
+//   field absent       — unchanged
+//   field === ''       — unchanged (form submitted blank input by mistake)
+//   field === null     — cleared
+//   field with value   — replaced
+export interface ServerUpdate {
+  name?: string
+  description?: string | null
+  host?: string
+  port?: number
+  user?: string
+  auth_type?: ServerAuthType
+  password?: string | null
+  private_key?: string | null
+  passphrase?: string | null
+}
+
+export interface ServerTestResult {
+  server_id: number
+  ok: boolean
+  latency_ms?: number | null
+  error?: string | null
+  remote_info?: string | null
+}
+
+export interface ServerTestAllResult {
+  results: ServerTestResult[]
+}
+
+// ── Server deployments ──────────────────────────────────────────────────────
+//
+// A persistent record of "what credentials did the user pick last time
+// they generated an install script for this server, for this protocol".
+// Lets the modal pre-fill on re-open and powers "Create node from this
+// deployment".
+
+export type ServerDeploymentProtocol = 'naive'
+
+export type ServerDeploymentStatus = 'configured' | 'deployed' | 'failed'
+
+export interface NaiveDeploymentConfig {
+  domain?: string
+  email?: string
+  naive_user?: string
+  naive_pass?: string
+}
+
+export interface ServerDeployment {
+  id: number
+  server_id: number
+  protocol: ServerDeploymentProtocol
+  config: NaiveDeploymentConfig  // shape varies per protocol — naive only for now
+  status: ServerDeploymentStatus
+  last_node_id?: number | null
+  created_at?: string | null
+  updated_at?: string | null
+}
+
+export interface ServerDeploymentUpsert {
+  protocol: ServerDeploymentProtocol
+  config: NaiveDeploymentConfig
 }

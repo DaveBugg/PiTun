@@ -401,7 +401,15 @@ nftables TPROXY -> xray-core -> правила маршрутизации
             <li><B>node:&lt;id&gt;</B> — route through a specific node</li>
             <li><B>balancer:&lt;id&gt;</B> — route through a balancer group</li>
           </Ul>
-          <P><B>Features:</B> drag-and-drop reorder, bulk import (paste domains/IPs one per line), Quick Add presets (Bypass RU/CN, Block ads, Proxy streaming).</P>
+          <P><B>Features:</B> drag-and-drop reorder, bulk import (paste domains/IPs one per line), Quick Add presets, full v2ray JSON import/export.</P>
+          <P><B>Quick Add presets:</B></P>
+          <Ul>
+            <li><B>Bypass RU / CN</B> — adds <code className="text-gray-400">geoip:ru</code> / <code className="text-gray-400">geoip:cn</code> + <code className="text-gray-400">geosite:ru</code> / <code className="text-gray-400">geosite:cn</code> &rarr; direct, so local sites stay on the home ISP.</li>
+            <li><B>Block ads</B> — adds <code className="text-gray-400">geosite:category-ads-all</code> &rarr; block.</li>
+            <li><B>Proxy streaming</B> — comprehensive 50-entry list (Netflix, Disney+, HBO, Hulu, Spotify, YouTube Premium, Twitch, Steam, Epic Games, BBC iPlayer, ChatGPT/OpenAI, Anthropic Claude, etc.) routed through the active proxy.</li>
+          </Ul>
+          <P><B>Domain entry shorthand:</B> the backend auto-prefixes bare entries (e.g. <code className="text-gray-400">netflix.com</code>) with <code className="text-gray-400">domain:</code> on save, so you don't have to type the prefix every time.</P>
+          <P><B>v2ray JSON Import/Export:</B> Routing page exposes Export/Import buttons that round-trip the rule set as v2ray-style routing JSON — useful for backups and for migrating a curated rule set between PiTun instances.</P>
         </>
       ),
       ru: (
@@ -434,7 +442,15 @@ nftables TPROXY -> xray-core -> правила маршрутизации
             <li><B>node:&lt;id&gt;</B> — через конкретную ноду</li>
             <li><B>balancer:&lt;id&gt;</B> — через группу балансировки</li>
           </Ul>
-          <P><B>Возможности:</B> drag-and-drop сортировка, массовый импорт (домены/IP построчно), пресеты Quick Add (Bypass RU/CN, Block ads, Proxy streaming).</P>
+          <P><B>Возможности:</B> drag-and-drop сортировка, массовый импорт (домены/IP построчно), пресеты Quick Add, полный импорт/экспорт v2ray JSON.</P>
+          <P><B>Пресеты Quick Add:</B></P>
+          <Ul>
+            <li><B>Bypass RU / CN</B> — добавляет <code className="text-gray-400">geoip:ru</code> / <code className="text-gray-400">geoip:cn</code> + <code className="text-gray-400">geosite:ru</code> / <code className="text-gray-400">geosite:cn</code> &rarr; direct, чтобы локальные сайты шли через домашнего провайдера.</li>
+            <li><B>Block ads</B> — добавляет <code className="text-gray-400">geosite:category-ads-all</code> &rarr; block.</li>
+            <li><B>Proxy streaming</B> — расширенный список из 50 записей (Netflix, Disney+, HBO, Hulu, Spotify, YouTube Premium, Twitch, Steam, Epic Games, BBC iPlayer, ChatGPT/OpenAI, Anthropic Claude и т.д.) — всё через активный прокси.</li>
+          </Ul>
+          <P><B>Сокращённый ввод доменов:</B> бэкенд автоматически добавляет префикс <code className="text-gray-400">domain:</code> к «голым» записям (напр. <code className="text-gray-400">netflix.com</code>) при сохранении, чтобы не писать префикс каждый раз.</P>
+          <P><B>Импорт/Экспорт v2ray JSON:</B> на странице Routing есть кнопки Export/Import — туда-обратно гонят набор правил в формате routing JSON (v2ray). Удобно для бэкапа и переноса между инстансами PiTun.</P>
         </>
       ),
     },
@@ -557,11 +573,15 @@ nftables TPROXY -> xray-core -> правила маршрутизации
             <li><B>Random</B> — picks a random node from the circle each time</li>
           </Ul>
           <P><B>Interval:</B> set min/max minutes. In sequential mode, rotates every <code className="text-gray-400">interval_min</code> minutes. In random mode, picks a random interval between min and max.</P>
+          <P><B>Pre-ping with retry:</B> Before switching to a candidate, PiTun probes it via TCP to <code className="text-gray-400">address:port</code> using SO_MARK=0xFF (so the probe bypasses the TPROXY layer). Each candidate gets <B>2 attempts</B> with a short delay between them — this absorbs transient SYN drops without getting stuck on a truly dead node. Disabled or removed nodes are skipped automatically. If every candidate fails after retries, the rotation aborts and the active node stays put.</P>
+          <P><B>Failover &harr; Circle integration:</B> When the active node fails its health checks repeatedly AND it belongs to an enabled circle, the failover handler delegates recovery to the circle by triggering an immediate <code className="text-gray-400">rotate_circle()</code> instead of using the legacy fallback list. If the circle has no live siblings, PiTun falls through to the Tier-2 fallback list configured in the NodeCircles page (Auto-failover toggle).</P>
+          <P><B>Auto-failover toggle (NodeCircles page):</B> Globally enables/disables the failover behavior. When ON you can also pick a <B>fallback nodes list</B> — used only when the failed node is NOT in any circle (or all siblings are dead). Leave the list empty if you only use circles.</P>
+          <P><B>Concurrency safety:</B> Each circle has its own <code className="text-gray-400">asyncio.Lock</code> so the scheduler tick and a manual "rotate now" can never race. A 20-second hard deadline prevents pathological probe times from blocking API responses.</P>
           <P><B>Use cases:</B></P>
           <Ul>
             <li>Distribute load across multiple VPN servers</li>
             <li>Avoid IP-based blocking by rotating exit IPs</li>
-            <li>Automatic failover-like behavior without health check dependency</li>
+            <li>Automatic failover with skip-dead-candidates behavior</li>
           </Ul>
           <P>You can also manually trigger rotation from the NodeCircles page with the rotate button.</P>
         </>
@@ -582,11 +602,15 @@ nftables TPROXY -> xray-core -> правила маршрутизации
             <li><B>Random</B> — случайный выбор ноды из круга каждый раз</li>
           </Ul>
           <P><B>Интервал:</B> задайте мин/макс минуты. В sequential режиме ротация каждые <code className="text-gray-400">interval_min</code> минут. В random режиме — случайный интервал между min и max.</P>
+          <P><B>Pre-ping с повтором:</B> Перед переключением на кандидата PiTun проверяет TCP-доступность <code className="text-gray-400">address:port</code> с SO_MARK=0xFF (зонд минует TPROXY). На каждого кандидата даётся <B>2 попытки</B> с короткой паузой — это нивелирует случайные пропуски SYN, но не позволит зависнуть на реально мёртвой ноде. Отключённые или удалённые ноды пропускаются. Если все кандидаты падают — ротация отменяется, активная нода остаётся прежней.</P>
+          <P><B>Связь Failover &harr; Circle:</B> Когда активная нода стабильно падает по health check И она входит в активный circle, обработчик failover делегирует восстановление кругу — запускается немедленный <code className="text-gray-400">rotate_circle()</code> вместо старого списка fallback. Если в круге нет живых соседей, PiTun переходит к Tier-2 fallback-списку со страницы NodeCircles (тогл Auto-failover).</P>
+          <P><B>Тогл Auto-failover (страница NodeCircles):</B> Глобально включает/выключает поведение failover. При включении можно выбрать <B>список fallback-нод</B> — используется только когда упавшая нода НЕ входит ни в один круг (или все соседи мертвы). Если используете только круги — оставьте список пустым.</P>
+          <P><B>Безопасность параллелизма:</B> У каждого круга свой <code className="text-gray-400">asyncio.Lock</code>, чтобы тик планировщика и ручной "rotate now" не пересекались. Жёсткий дедлайн 20с защищает от зависших проверок.</P>
           <P><B>Случаи использования:</B></P>
           <Ul>
             <li>Распределение нагрузки между VPN-серверами</li>
             <li>Избежание блокировки по IP через ротацию выходных IP</li>
-            <li>Автоматическое переключение без зависимости от health check</li>
+            <li>Автоматическое переключение со skip-dead-candidates</li>
           </Ul>
           <P>Также можно вручную запустить ротацию на странице NodeCircles кнопкой rotate.</P>
         </>
@@ -812,6 +836,152 @@ nftables TPROXY -> xray-core -> правила маршрутизации
     },
   },
 
+  /* 11b. Servers (managed VPS inventory) */
+  {
+    id: 'servers',
+    title: { en: 'Servers (VPS Inventory)', ru: 'Серверы (инвентарь VPS)' },
+    content: {
+      en: (
+        <>
+          <P>The <B>Servers</B> page is a managed inventory of remote VPS hosts that PiTun knows how to talk to. It is separate from <em>Nodes</em>: a Node is a runtime proxy outbound, a Server is the VPS box that may host one (or several) of those outbounds.</P>
+          <P><B>Each server stores:</B></P>
+          <Ul>
+            <li><B>Connection</B> — name, host (IP/domain), SSH port, username, key path or password</li>
+            <li><B>Provider metadata</B> — optional notes (provider, region, plan) just for human bookkeeping</li>
+            <li><B>Tags</B> — free-form labels for filtering</li>
+          </Ul>
+          <P><B>Deployments tab:</B> shows which protocols are currently set up on a server (e.g. VLESS+Reality on :443, NaiveProxy on :443, Hysteria2 on :8443). PiTun keeps these deployment records so you can re-issue clients without remembering which port belongs to what.</P>
+          <P><B>Manual scripts:</B> a server row can launch helper scripts (provision Caddy + naive, install xray, harden SSH, etc.) over its SSH connection. This is opt-in — nothing runs automatically.</P>
+          <P><B>JSON Export/Import:</B> Servers page has dedicated Export/Import JSON buttons. The bundle envelope is <code className="text-gray-400">{`{kind: "pitun-servers-export", version: 1, ...}`}</code>. Export defaults to <em>without secrets</em> (passwords and SSH key contents redacted); a checkbox lets you include them when migrating between trusted hosts. Dedup on import is keyed on <code className="text-gray-400">(name, host, port)</code>.</P>
+        </>
+      ),
+      ru: (
+        <>
+          <P>Страница <B>Servers</B> — управляемый инвентарь удалённых VPS, с которыми PiTun умеет общаться. Это <em>не</em> то же, что <em>Nodes</em>: Node — это runtime-outbound прокси, Server — это VPS-машина, на которой может хоститься один (или несколько) таких outbound.</P>
+          <P><B>В записи сервера хранится:</B></P>
+          <Ul>
+            <li><B>Подключение</B> — имя, host (IP/домен), SSH-порт, пользователь, путь к ключу или пароль</li>
+            <li><B>Метаданные провайдера</B> — опционально: провайдер, регион, план — чисто для человека</li>
+            <li><B>Теги</B> — произвольные метки для фильтрации</li>
+          </Ul>
+          <P><B>Вкладка Deployments:</B> показывает, какие протоколы сейчас развернуты на сервере (напр. VLESS+Reality на :443, NaiveProxy на :443, Hysteria2 на :8443). Чтобы не помнить, какой порт чему принадлежит — PiTun хранит эти записи и помогает переиздавать конфиги клиентов.</P>
+          <P><B>Manual scripts:</B> со строкой сервера можно запускать вспомогательные скрипты (поднять Caddy+naive, поставить xray, харднить SSH и т.п.) по его SSH-подключению. Только вручную — ничего не запускается само.</P>
+          <P><B>JSON Export/Import:</B> на странице Servers есть отдельные кнопки Export/Import JSON. Конверт пакета — <code className="text-gray-400">{`{kind: "pitun-servers-export", version: 1, ...}`}</code>. Экспорт по умолчанию <em>без секретов</em> (пароли и содержимое ключей редактируются); чекбокс позволяет включить их для переноса между доверенными хостами. Дедуп при импорте по <code className="text-gray-400">(name, host, port)</code>.</P>
+        </>
+      ),
+    },
+  },
+
+  /* 11c. Backup & Restore (JSON Export/Import) */
+  {
+    id: 'backup-restore',
+    title: { en: 'Backup & Restore (JSON Export/Import)', ru: 'Бэкап и восстановление (JSON Export/Import)' },
+    content: {
+      en: (
+        <>
+          <P>PiTun supports full-fidelity JSON export/import for three independent areas:</P>
+          <Ul>
+            <li><B>Nodes</B> — all proxy outbounds with their protocol-specific fields (UUID, transport, TLS, WireGuard keys, chain links, etc.).</li>
+            <li><B>Servers</B> — the VPS inventory described above.</li>
+            <li><B>Routing rules</B> — round-tripped as v2ray-style routing JSON (covered in the Routing Rules section).</li>
+          </Ul>
+          <P><B>Bundle envelope:</B> every export wraps its items in a typed envelope:</P>
+          <Code>{`{
+  "kind": "pitun-nodes-export" | "pitun-servers-export",
+  "version": 1,
+  "exported_at": "2026-05-04T12:34:56Z",
+  "pitun_version": "1.2.3",
+  "count": 42,
+  "items": [ ... ]
+}`}</Code>
+          <P>The <code className="text-gray-400">kind</code> + <code className="text-gray-400">version</code> pair lets future versions migrate or politely refuse incompatible files.</P>
+          <P><B>Import modes:</B></P>
+          <Ul>
+            <li><B>Append (default)</B> — duplicates are skipped using a natural key (Nodes: <code className="text-gray-400">protocol+address+port+uuid</code>; Servers: <code className="text-gray-400">name+host+port</code>).</li>
+            <li><B>Replace</B> — passing <code className="text-gray-400">replace=true</code> wipes the existing collection first, then inserts the bundle. Use only for migrations between fresh instances.</li>
+          </Ul>
+          <P><B>Distinct from URI/subscription import:</B> URI-based import (<code className="text-gray-400">vless://</code>, Clash YAML, etc.) only carries protocol details for one node at a time. JSON Export/Import is a true backup format that preserves PiTun-specific metadata such as ordering, enabled flags, chain links, and friendly names.</P>
+        </>
+      ),
+      ru: (
+        <>
+          <P>PiTun поддерживает полноформатный JSON Export/Import для трёх независимых областей:</P>
+          <Ul>
+            <li><B>Nodes</B> — все outbound-ы со всеми протокол-специфичными полями (UUID, транспорт, TLS, WireGuard ключи, chain-связки и т.д.).</li>
+            <li><B>Servers</B> — инвентарь VPS, описан выше.</li>
+            <li><B>Routing rules</B> — туда-обратно через v2ray routing JSON (см. раздел Routing Rules).</li>
+          </Ul>
+          <P><B>Конверт пакета:</B> экспорт всегда оборачивает items в типизированный конверт:</P>
+          <Code>{`{
+  "kind": "pitun-nodes-export" | "pitun-servers-export",
+  "version": 1,
+  "exported_at": "2026-05-04T12:34:56Z",
+  "pitun_version": "1.2.3",
+  "count": 42,
+  "items": [ ... ]
+}`}</Code>
+          <P>Пара <code className="text-gray-400">kind</code> + <code className="text-gray-400">version</code> позволяет будущим версиям мигрировать или вежливо отклонить несовместимый файл.</P>
+          <P><B>Режимы импорта:</B></P>
+          <Ul>
+            <li><B>Append (по умолчанию)</B> — дубли пропускаются по естественному ключу (Nodes: <code className="text-gray-400">protocol+address+port+uuid</code>; Servers: <code className="text-gray-400">name+host+port</code>).</li>
+            <li><B>Replace</B> — параметр <code className="text-gray-400">replace=true</code> сначала очищает коллекцию, затем вставляет пакет. Для миграций между чистыми инстансами.</li>
+          </Ul>
+          <P><B>Отличие от URI/подписок:</B> URI-импорт (<code className="text-gray-400">vless://</code>, Clash YAML и т.п.) переносит только протокольные поля одной ноды. JSON Export/Import — настоящий формат бэкапа: сохраняет PiTun-специфичные данные (порядок, флаг enabled, chain-связки, читаемые имена).</P>
+        </>
+      ),
+    },
+  },
+
+  /* 11d. Geo Data Profiles */
+  {
+    id: 'geodata',
+    title: { en: 'Geo Data Profiles', ru: 'Geo-профили' },
+    content: {
+      en: (
+        <>
+          <P>Geo data files (<code className="text-gray-400">geoip.dat</code> + <code className="text-gray-400">geosite.dat</code>) power <code className="text-gray-400">geoip:*</code> and <code className="text-gray-400">geosite:*</code> rules. PiTun ships with three switchable upstream profiles — pick the one that best matches your routing intent.</P>
+          <table className="w-full text-xs">
+            <thead>
+              <tr className="border-b border-gray-800 text-left text-gray-500">
+                <th className="py-2 pr-4">Profile</th>
+                <th className="py-2 pr-4">Source</th>
+                <th className="py-2">Best for</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-800/50">
+              <tr><td className="py-2 pr-4 text-gray-200">Loyalsoldier</td><td className="py-2 pr-4">github.com/Loyalsoldier/v2ray-rules-dat</td><td className="py-2">CN bypass, the de-facto Mainland-China focused community list. Largest <code className="text-gray-400">geosite:cn</code> coverage.</td></tr>
+              <tr><td className="py-2 pr-4 text-gray-200">runetfreedom</td><td className="py-2 pr-4">github.com/runetfreedom/russia-blocked-geosite</td><td className="py-2">Russian-internet focus. Curated <code className="text-gray-400">geosite:ru-blocked</code> for sites blocked inside RU and a clean <code className="text-gray-400">geosite:ru</code> list for bypass.</td></tr>
+              <tr><td className="py-2 pr-4 text-gray-200">v2fly</td><td className="py-2 pr-4">github.com/v2fly/domain-list-community + geoip.dat</td><td className="py-2">Upstream "vanilla" v2fly data — neutral, broadest coverage, recommended baseline.</td></tr>
+            </tbody>
+          </table>
+          <P><B>How it works:</B> the GeoData page lets you select a profile and click <em>Update</em>. PiTun fetches the new <code className="text-gray-400">.dat</code> files into the xray asset directory and triggers an xray reload. Update history (last fetched, file sizes, source URL) is shown on the page.</P>
+          <P><B>Mixing rule sources:</B> you can only have one active profile at a time — the loaded <code className="text-gray-400">.dat</code> files define the namespace for <em>all</em> <code className="text-gray-400">geosite:*</code> tags in your routing rules. Switching profiles may invalidate tags that don't exist in the new source.</P>
+        </>
+      ),
+      ru: (
+        <>
+          <P>Geo-данные (<code className="text-gray-400">geoip.dat</code> + <code className="text-gray-400">geosite.dat</code>) — это база для правил <code className="text-gray-400">geoip:*</code> и <code className="text-gray-400">geosite:*</code>. PiTun поставляется с тремя переключаемыми upstream-профилями — выбирайте по задаче.</P>
+          <table className="w-full text-xs">
+            <thead>
+              <tr className="border-b border-gray-800 text-left text-gray-500">
+                <th className="py-2 pr-4">Профиль</th>
+                <th className="py-2 pr-4">Источник</th>
+                <th className="py-2">Когда использовать</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-800/50">
+              <tr><td className="py-2 pr-4 text-gray-200">Loyalsoldier</td><td className="py-2 pr-4">github.com/Loyalsoldier/v2ray-rules-dat</td><td className="py-2">Bypass CN — де-факто стандартный community-список с фокусом на материковый Китай. Самый широкий <code className="text-gray-400">geosite:cn</code>.</td></tr>
+              <tr><td className="py-2 pr-4 text-gray-200">runetfreedom</td><td className="py-2 pr-4">github.com/runetfreedom/russia-blocked-geosite</td><td className="py-2">Фокус на рунет. Курируемый <code className="text-gray-400">geosite:ru-blocked</code> (заблокированные внутри РФ) и чистый <code className="text-gray-400">geosite:ru</code> для bypass.</td></tr>
+              <tr><td className="py-2 pr-4 text-gray-200">v2fly</td><td className="py-2 pr-4">github.com/v2fly/domain-list-community + geoip.dat</td><td className="py-2">Upstream «vanilla» v2fly — нейтральный, максимально широкий, разумный базовый выбор.</td></tr>
+            </tbody>
+          </table>
+          <P><B>Как работает:</B> на странице GeoData выберите профиль и нажмите <em>Update</em>. PiTun скачает новые <code className="text-gray-400">.dat</code> файлы в asset-директорию xray и перезагрузит xray. История обновлений (когда забиралось, размеры, источник) отображается на странице.</P>
+          <P><B>Смешивание источников:</B> активным может быть только один профиль — загруженные <code className="text-gray-400">.dat</code> определяют пространство имён для <em>всех</em> тегов <code className="text-gray-400">geosite:*</code> в правилах. При смене профиля теги, которых нет в новом источнике, перестанут срабатывать.</P>
+        </>
+      ),
+    },
+  },
+
   /* 11. Health Checks & Failover */
   {
     id: 'health-checks',
@@ -821,22 +991,34 @@ nftables TPROXY -> xray-core -> правила маршрутизации
         <>
           <P>PiTun performs background TCP health checks on all enabled nodes every 30 seconds.</P>
           <Ul>
+            <li>Probes connect with SO_MARK=0xFF so they bypass the TPROXY interception layer</li>
             <li>Nodes are marked online/offline based on TCP connectivity and measured latency</li>
-            <li><B>Automatic failover:</B> if the active node goes offline, PiTun switches to a backup node from the failover list</li>
             <li>Latency is displayed on the Dashboard and Nodes page</li>
             <li>Health check results feed into the <code className="text-gray-400">leastPing</code> balancer strategy</li>
           </Ul>
+          <P><B>Two-tier automatic failover:</B> when the active node fails health checks repeatedly, PiTun decides recovery in this order:</P>
+          <Ul>
+            <li><B>Tier 1 — Circle-aware:</B> if the failed node belongs to an <em>enabled</em> NodeCircle, the failover handler delegates to <code className="text-gray-400">circle_scheduler.rotate_circle()</code>. This reuses the circle's pre-ping + retry logic so dead siblings are skipped automatically. Emits a <code className="text-gray-400">failover.via_circle</code> event.</li>
+            <li><B>Tier 2 — Fallback list:</B> if no circle owns the node (or the circle has no live siblings), PiTun probes the <em>fallback nodes</em> list configured on the NodeCircles page in order; the first alive one becomes active.</li>
+          </Ul>
+          <P><B>Master toggle:</B> the <em>Auto-failover</em> switch on the NodeCircles page enables/disables the entire failover machinery.</P>
         </>
       ),
       ru: (
         <>
           <P>PiTun выполняет фоновые TCP health checks всех включённых нод каждые 30 секунд.</P>
           <Ul>
+            <li>Зонды соединяются с SO_MARK=0xFF, чтобы обходить TPROXY-слой</li>
             <li>Ноды помечаются online/offline по TCP-подключению и замеренной задержке</li>
-            <li><B>Автоматический failover:</B> если активная нода уходит в офлайн, PiTun переключается на резервную</li>
             <li>Задержка отображается на Dashboard и странице Nodes</li>
             <li>Результаты проверок используются стратегией <code className="text-gray-400">leastPing</code> балансировщика</li>
           </Ul>
+          <P><B>Двухуровневый автоматический failover:</B> когда активная нода стабильно падает по health check, PiTun выбирает восстановление в таком порядке:</P>
+          <Ul>
+            <li><B>Tier 1 — Circle-aware:</B> если упавшая нода входит во <em>включённый</em> NodeCircle, failover делегирует восстановление в <code className="text-gray-400">circle_scheduler.rotate_circle()</code>. Это переиспользует pre-ping + retry круга — мёртвые соседи пропускаются автоматически. Записывается событие <code className="text-gray-400">failover.via_circle</code>.</li>
+            <li><B>Tier 2 — Fallback-список:</B> если никакой круг не «владеет» нодой (или в круге нет живых), PiTun по порядку зондирует список <em>fallback nodes</em> со страницы NodeCircles; первая живая становится активной.</li>
+          </Ul>
+          <P><B>Главный тогл:</B> переключатель <em>Auto-failover</em> на странице NodeCircles включает/выключает весь механизм failover.</P>
         </>
       ),
     },

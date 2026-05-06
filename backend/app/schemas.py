@@ -39,6 +39,9 @@ class NodeBase(BaseModel):
     protocol: str
     address: str
     port: int
+    # Optional link to a Server (the VPS hosting this node's upstream).
+    # Purely informational — does not affect routing/connection.
+    server_id: Optional[int] = None
     uuid: Optional[str] = None
     password: Optional[str] = None
     transport: str = "tcp"
@@ -178,6 +181,156 @@ class NodeImportResponse(BaseModel):
     skipped: int
     nodes: List[NodeRead]
     errors: List[str]
+
+
+# ─── Servers (managed VPS instances) ─────────────────────────────────────────
+#
+# `Server` is the *machine* (SSH-reachable VPS); `Node` is the VPN connection
+# we route traffic through. They're 1:N — one VPS can host multiple nodes
+# (e.g. naive on :443 and a wireguard endpoint on :51820 share one Server).
+#
+# Credentials are stored plain in SQLite. PiTun is LAN-only — see the threat
+# model in SECURITY.md before changing this. Keep credentials write-only at
+# the API boundary: GET responses report `has_password` / `has_private_key`
+# booleans, never the secrets themselves.
+
+class ServerBase(BaseModel):
+    name: str
+    description: Optional[str] = None
+    host: str
+    port: int = 22
+    user: str = "root"
+    auth_type: str = "password"
+
+    @field_validator("auth_type")
+    @classmethod
+    def validate_auth_type(cls, v: str) -> str:
+        valid = {"password", "key"}
+        if v not in valid:
+            raise ValueError(f"auth_type must be one of {valid}")
+        return v
+
+    @field_validator("port")
+    @classmethod
+    def validate_port(cls, v: int) -> int:
+        if not (1 <= v <= 65535):
+            raise ValueError("port must be 1..65535")
+        return v
+
+
+class ServerCreate(ServerBase):
+    # On create, secrets are passed as plain strings. Empty string is
+    # treated as "no value" (so a key-auth server can omit `password`).
+    password: Optional[str] = None
+    private_key: Optional[str] = None
+    passphrase: Optional[str] = None
+
+
+class ServerUpdate(BaseModel):
+    """All fields optional for PATCH. Secret fields obey three-state rules:
+      - field absent (not in JSON)         → unchanged
+      - field present, empty string ("")   → unchanged (avoids accidental wipes
+                                              from forms that submit empty inputs)
+      - field present, explicit null       → cleared
+      - field present with value           → replaced
+    """
+    name: Optional[str] = None
+    description: Optional[str] = None
+    host: Optional[str] = None
+    port: Optional[int] = None
+    user: Optional[str] = None
+    auth_type: Optional[str] = None
+    password: Optional[str] = None
+    private_key: Optional[str] = None
+    passphrase: Optional[str] = None
+
+    @field_validator("auth_type")
+    @classmethod
+    def validate_auth_type(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return v
+        valid = {"password", "key"}
+        if v not in valid:
+            raise ValueError(f"auth_type must be one of {valid}")
+        return v
+
+    @field_validator("port")
+    @classmethod
+    def validate_port(cls, v: Optional[int]) -> Optional[int]:
+        if v is None:
+            return v
+        if not (1 <= v <= 65535):
+            raise ValueError("port must be 1..65535")
+        return v
+
+
+class ServerRead(ServerBase):
+    """API response shape — no secrets, only `has_*` booleans."""
+    id: int
+    has_password: bool = False
+    has_private_key: bool = False
+    has_passphrase: bool = False
+    status: str = "unknown"
+    last_check: Optional[datetime] = None
+    last_check_error: Optional[str] = None
+    latency_ms: Optional[int] = None
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+
+
+class ServerTestResult(BaseModel):
+    server_id: int
+    ok: bool
+    latency_ms: Optional[int] = None
+    error: Optional[str] = None
+    # Free-form info from `uname -a` / `cat /etc/os-release` on success,
+    # so the user gets feedback that we actually reached the box.
+    remote_info: Optional[str] = None
+
+
+class ServerTestAllResult(BaseModel):
+    results: List[ServerTestResult]
+
+
+# ─── Server deployments ──────────────────────────────────────────────────────
+#
+# A "deployment" persists the credentials the user picked when generating
+# a per-protocol install script for a Server. One row per (server, protocol)
+# — re-saving updates the existing row. See `app/models.py:ServerDeployment`
+# for the design rationale.
+#
+# `config` shape depends on protocol:
+#   naive: {"domain": str, "email": str, "naive_user": str, "naive_pass": str}
+# Future protocols will use different keys (the API just round-trips a dict).
+
+class ServerDeploymentBase(BaseModel):
+    protocol: str
+    config: dict
+
+    @field_validator("protocol")
+    @classmethod
+    def validate_protocol(cls, v: str) -> str:
+        # Only naive shipped in this release; gate here so a typo at the
+        # API doesn't quietly create a "wireguard" row that nothing else
+        # knows about. Loosen when WG / Hy2 deployments land.
+        valid = {"naive"}
+        if v not in valid:
+            raise ValueError(f"protocol must be one of {valid}")
+        return v
+
+
+class ServerDeploymentUpsert(ServerDeploymentBase):
+    """Body for PUT /servers/{id}/deployments — create or replace by protocol."""
+    pass
+
+
+class ServerDeploymentRead(ServerDeploymentBase):
+    id: int
+    server_id: int
+    status: str
+    last_node_id: Optional[int] = None
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
 
 
 # ─── Routing Rules ────────────────────────────────────────────────────────────

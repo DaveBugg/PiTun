@@ -1,5 +1,6 @@
+import * as React from 'react'
 import { useState } from 'react'
-import { Plus, Download, Activity, Search, Filter, GripVertical, Gauge } from 'lucide-react'
+import { Plus, Download, Activity, Search, Filter, GripVertical, Gauge, FileDown, FileUp } from 'lucide-react'
 import { clsx } from 'clsx'
 import { useQueryClient, useMutation } from '@tanstack/react-query'
 import {
@@ -136,10 +137,15 @@ export function Nodes() {
           <button
             onClick={() => setModal('import')}
             className="flex items-center gap-1.5 rounded-lg bg-gray-700 px-3 py-2 text-sm text-gray-200 hover:bg-gray-600 transition-colors"
+            title="Import VPN URIs, Clash YAML, or xray JSON"
           >
             <Download className="h-4 w-4" />
-            Import
+            Import URI
           </button>
+          {/* JSON backup pair — full-fidelity round-trip via the
+              /export-json + /import-json endpoints. Distinct from
+              "Import URI" above, which parses VPN protocol URIs. */}
+          <NodesJsonIO />
           <button
             onClick={() => { setEditNode(null); setModal('add') }}
             className="flex items-center gap-1.5 rounded-lg bg-brand-600 px-3 py-2 text-sm font-medium text-white hover:bg-brand-500 transition-colors"
@@ -280,5 +286,109 @@ function Modal({ title, children, onClose }: { title: string; children: React.Re
         {children}
       </div>
     </ModalShell>
+  )
+}
+
+
+// ── JSON backup / restore (export + import) ─────────────────────────────────
+//
+// Two buttons rendered together: "Export JSON" downloads a bundle of
+// every node, "Import JSON" reads a previously-exported bundle and
+// posts it to /api/nodes/import-json. Distinct from the "Import URI"
+// flow which parses VPN protocol URIs — the JSON path is a true
+// round-trip backup, including protocol-specific fields (transport,
+// TLS, WireGuard, Hysteria, NaiveProxy padding…).
+
+function NodesJsonIO() {
+  const fileRef = React.useRef<HTMLInputElement | null>(null)
+  const qc = useQueryClient()
+  const confirm = useConfirm()
+
+  const handleExport = async () => {
+    try {
+      await nodesApi.exportJSON()
+    } catch (err: unknown) {
+      alert('Export failed: ' + (err instanceof Error ? err.message : String(err)))
+    }
+  }
+
+  const handlePickFile = () => fileRef.current?.click()
+
+  const handleFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    e.target.value = ''  // allow picking the same file twice
+    if (!file) return
+    let bundle: unknown
+    try {
+      const text = await file.text()
+      bundle = JSON.parse(text)
+    } catch {
+      alert('Invalid JSON file')
+      return
+    }
+
+    // Choice between additive merge and full replace. Replace is
+    // destructive — wipes all existing nodes — so confirm explicitly.
+    const replace = await confirm({
+      title: 'Import nodes',
+      body: (
+        <>
+          <p className="mb-2 text-sm text-gray-300">
+            How should this bundle be applied?
+          </p>
+          <ul className="text-xs text-gray-400 space-y-1 list-disc list-inside">
+            <li><b className="text-gray-200">Cancel:</b> abort the import.</li>
+            <li><b className="text-gray-200">OK (Replace):</b> wipe all existing nodes first, then insert from the bundle.</li>
+          </ul>
+          <p className="mt-3 text-xs text-yellow-500/90">
+            Tip: cancel here and re-run as additive merge by clicking Import again with replace=off (default — duplicates are skipped).
+          </p>
+        </>
+      ),
+      confirmLabel: 'Replace all',
+      cancelLabel: 'Cancel',
+      danger: true,
+    })
+
+    try {
+      const result = await nodesApi.importJSON(bundle, replace)
+      qc.invalidateQueries({ queryKey: ['nodes'] })
+      const errSuffix = result.errors?.length
+        ? `\nErrors:\n${result.errors.slice(0, 5).join('\n')}`
+        : ''
+      alert(
+        `Imported: ${result.imported}, skipped: ${result.skipped}${errSuffix}`,
+      )
+    } catch (err: unknown) {
+      alert('Import failed: ' + (err instanceof Error ? err.message : String(err)))
+    }
+  }
+
+  return (
+    <>
+      <input
+        ref={fileRef}
+        type="file"
+        accept="application/json,.json"
+        onChange={handleFile}
+        className="hidden"
+      />
+      <button
+        onClick={handleExport}
+        className="flex items-center gap-1.5 rounded-lg bg-gray-700 px-3 py-2 text-sm text-gray-200 hover:bg-gray-600 transition-colors"
+        title="Download all nodes as a JSON backup"
+      >
+        <FileDown className="h-4 w-4" />
+        Export JSON
+      </button>
+      <button
+        onClick={handlePickFile}
+        className="flex items-center gap-1.5 rounded-lg bg-gray-700 px-3 py-2 text-sm text-gray-200 hover:bg-gray-600 transition-colors"
+        title="Restore nodes from a JSON backup"
+      >
+        <FileUp className="h-4 w-4" />
+        Import JSON
+      </button>
+    </>
   )
 }

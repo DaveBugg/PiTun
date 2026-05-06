@@ -28,6 +28,16 @@ build/
 dist/
 backend/dist/
 frontend/dist/
+
+# Maintainer-side scratch space — Claude Code uses this for throwaway
+# helpers (SSH runners, deploy tarballs, ad-hoc test scripts) during
+# interactive work. Never committed; safe to wipe between sessions.
+.claude_temp/
+
+# Internal product/business roadmap, monetization plans, decisions log.
+# Lives in the repo for convenient editing alongside code, but never
+# committed — these are private notes not suitable for the public repo.
+roadmap/
 docs/design/
 
 # Node

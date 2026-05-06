@@ -9,6 +9,11 @@ import { useConfirm } from '@/components/ConfirmModal'
 import { ModalShell } from '@/components/ModalShell'
 import { useT } from '@/hooks/useT'
 import { useAppStore } from '@/store'
+import { useSystemSettings } from '@/hooks/useSystem'
+import {
+  GEO_PROFILES, detectActiveProfile, getProfile,
+  type QuickAddPreset,
+} from '@/lib/geoProfiles'
 import type { RoutingRule, RoutingRuleCreate, RuleType, BulkRuleCreate, V2RayRule } from '@/types'
 
 type Tab = 'rules' | 'devices'
@@ -37,14 +42,12 @@ const ACTION_BG_COLORS: Record<string, string> = {
   block:  'bg-red-900/40 text-red-300',
 }
 
-const PRESETS = [
-  { label: 'Bypass RU sites', rule_type: 'geosite' as RuleType, match_value: 'ru', action: 'direct' },
-  { label: 'Bypass CN sites', rule_type: 'geosite' as RuleType, match_value: 'cn', action: 'direct' },
-  { label: 'Block ads', rule_type: 'geosite' as RuleType, match_value: 'category-ads-all', action: 'block' },
-  { label: 'Block telemetry', rule_type: 'geosite' as RuleType, match_value: 'category-telemetry', action: 'block' },
-  { label: 'Proxy streaming', rule_type: 'domain' as RuleType, match_value: 'netflix.com,youtube.com,hulu.com,disneyplus.com,hbomax.com,spotify.com,twitch.tv', action: 'proxy' },
-  { label: 'Bypass local networks', rule_type: 'dst_ip' as RuleType, match_value: '192.168.0.0/16,10.0.0.0/8,172.16.0.0/12', action: 'direct' },
-]
+// Quick-Add presets are now provided by the active geo profile (see
+// `frontend/src/lib/geoProfiles.ts`). We pick the registry list at render
+// time based on which profile is detected from current settings — this
+// way runetfreedom-only presets (e.g. "Proxy blocked-in-RU sites") only
+// show when runetfreedom is the active source. Falls back to Loyalsoldier
+// presets when settings are 'custom'.
 
 export function Routing() {
   const t = useT()
@@ -94,6 +97,23 @@ export function Routing() {
     refetchInterval: 30_000,
   })
   const { data: nodes = [] } = useNodes()
+  const { data: sysSettings } = useSystemSettings()
+
+  // Quick-Add presets come from the geo profile that matches the
+  // current GeoData URLs. If the user has customised URLs (no profile
+  // match), fall back to Loyalsoldier's presets — those only reference
+  // categories that are also present upstream (`cn`, `category-ru`,
+  // `tld-ru`, `category-ads-all`, etc.) so the fallback is safe.
+  const activeProfileId = detectActiveProfile({
+    geoip_url: sysSettings?.geoip_url,
+    geosite_url: sysSettings?.geosite_url,
+    geoip_mmdb_url: sysSettings?.geoip_mmdb_url,
+  })
+  const activeProfile =
+    activeProfileId === 'custom'
+      ? GEO_PROFILES[0]  // Loyalsoldier — universally compatible defaults
+      : (getProfile(activeProfileId) ?? GEO_PROFILES[0])
+  const PRESETS = activeProfile.presets
 
   const createRule = useMutation({
     mutationFn: (data: RoutingRuleCreate) => routingApi.createRule(data),
@@ -264,16 +284,29 @@ export function Routing() {
     URL.revokeObjectURL(url)
   }
 
-  const handlePreset = (preset: typeof PRESETS[number]) => {
+  const handlePreset = async (preset: QuickAddPreset) => {
     setShowPresets(false)
-    createRule.mutate({
-      name: preset.label,
-      enabled: true,
-      rule_type: preset.rule_type,
-      match_value: preset.match_value,
-      action: preset.action as RoutingRuleCreate['action'],
-      order: rules.length,
-    })
+    // A preset can emit multiple rules (e.g. "Bypass RU sites" lays
+    // down BOTH a geosite rule for category-ru/tld-ru AND a domain
+    // rule for *.su / *.рф). Post sequentially — POST /routing/rules
+    // is fast enough that fanning out via Promise.all isn't worth the
+    // complexity, and serial keeps the order predictable.
+    const baseOrder = rules.length
+    for (let i = 0; i < preset.rules.length; i++) {
+      const r = preset.rules[i]
+      const ruleName =
+        preset.rules.length === 1
+          ? preset.label
+          : `${preset.label} (${i + 1}/${preset.rules.length})`
+      await createRule.mutateAsync({
+        name: ruleName,
+        enabled: true,
+        rule_type: r.rule_type,
+        match_value: r.match_value,
+        action: r.action as RoutingRuleCreate['action'],
+        order: baseOrder + i,
+      })
+    }
   }
 
   const handleBulkImport = () => {
@@ -454,19 +487,54 @@ export function Routing() {
                 Quick Add
               </button>
               {showPresets && (
-                <div className="absolute right-0 top-full mt-1 z-30 w-64 rounded-xl border border-gray-700 bg-gray-900 shadow-xl overflow-hidden">
-                  {PRESETS.map((preset) => (
-                    <button
-                      key={preset.label}
-                      onClick={() => handlePreset(preset)}
-                      className="flex items-center justify-between gap-2 w-full px-3 py-2.5 text-sm text-gray-300 hover:bg-gray-800 transition-colors text-left"
+                <div className="absolute right-0 top-full mt-1 z-30 w-80 rounded-xl border border-gray-700 bg-gray-900 shadow-xl overflow-hidden">
+                  {/* Profile indicator at top of dropdown — gives the
+                      user context on which category set is in use, plus
+                      a quick hop to the Geo profile picker if they want
+                      to switch (e.g. they expected runetfreedom-only
+                      "blocked-in-RU" preset and don't see it). */}
+                  <div className="border-b border-gray-800 bg-gray-950/60 px-3 py-2 text-[11px] text-gray-500 flex items-center justify-between">
+                    <span>
+                      Profile:{' '}
+                      <span className="text-gray-300">{activeProfile.label}</span>
+                      {activeProfileId === 'custom' && (
+                        <span className="text-yellow-500/80"> (custom URLs — using Loyalsoldier presets)</span>
+                      )}
+                    </span>
+                    <a
+                      href="/geodata"
+                      className="text-brand-400 hover:text-brand-300"
+                      title="Switch geo profile in GeoData"
                     >
-                      <span>{preset.label}</span>
-                      <span className={clsx('rounded px-1.5 py-0.5 text-[10px] font-medium', ACTION_BG_COLORS[preset.action] ?? 'bg-gray-700 text-gray-300')}>
-                        {preset.action}
-                      </span>
-                    </button>
-                  ))}
+                      change
+                    </a>
+                  </div>
+                  {PRESETS.map((preset) => {
+                    // Action badge shows the FIRST rule's action — for
+                    // multi-rule presets every rule typically shares the
+                    // same action ("Bypass RU sites" → both rules direct).
+                    const primaryAction = preset.rules[0]?.action ?? 'proxy'
+                    return (
+                      <button
+                        key={preset.label}
+                        onClick={() => handlePreset(preset)}
+                        className="block w-full px-3 py-2.5 text-sm text-gray-300 hover:bg-gray-800 transition-colors text-left border-b border-gray-800 last:border-b-0"
+                      >
+                        <div className="flex items-center justify-between gap-2">
+                          <span>{preset.label}</span>
+                          <span className={clsx('rounded px-1.5 py-0.5 text-[10px] font-medium', ACTION_BG_COLORS[primaryAction] ?? 'bg-gray-700 text-gray-300')}>
+                            {primaryAction}
+                            {preset.rules.length > 1 && (
+                              <span className="opacity-70"> ×{preset.rules.length}</span>
+                            )}
+                          </span>
+                        </div>
+                        {preset.hint && (
+                          <div className="mt-0.5 text-[11px] text-gray-500">{preset.hint}</div>
+                        )}
+                      </button>
+                    )
+                  })}
                 </div>
               )}
             </div>

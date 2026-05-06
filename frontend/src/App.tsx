@@ -14,6 +14,7 @@ import { NodeCircles } from '@/pages/NodeCircles'
 import { Devices } from '@/pages/Devices'
 import { Diagnostics } from '@/pages/Diagnostics'
 import { Settings } from '@/pages/Settings'
+import { Servers } from '@/pages/Servers'
 
 function isTokenValid(token: string): boolean {
   try {
@@ -46,6 +47,7 @@ export default function App() {
       >
         <Route path="/"              element={<Dashboard />} />
         <Route path="/nodes"         element={<Nodes />} />
+        <Route path="/servers"       element={<Servers />} />
         <Route path="/routing"       element={<Routing />} />
         <Route path="/balancers"     element={<Balancers />} />
         <Route path="/circles"       element={<NodeCircles />} />

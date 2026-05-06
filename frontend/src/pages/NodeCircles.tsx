@@ -1,3 +1,4 @@
+import * as React from 'react'
 import { useState } from 'react'
 import { Plus, Pencil, Trash2, ToggleLeft, ToggleRight, RefreshCw, Circle } from 'lucide-react'
 import { InfoTip } from '@/components/InfoTip'
@@ -5,6 +6,7 @@ import { clsx } from 'clsx'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { circleApi } from '@/api/client'
 import { useNodes } from '@/hooks/useNodes'
+import { useSystemSettings, useUpdateSettings } from '@/hooks/useSystem'
 import { useT } from '@/hooks/useT'
 import { useConfirm } from '@/components/ConfirmModal'
 import { ModalShell } from '@/components/ModalShell'
@@ -52,8 +54,12 @@ function CircleModal({ initial, nodeOptions, onSave, onCancel, loading }: ModalP
   const [name, setName] = useState(initial?.name ?? '')
   const [mode, setMode] = useState<'sequential' | 'random'>(initial?.mode ?? 'sequential')
   const [enabled, setEnabled] = useState(initial?.enabled ?? false)
-  const [intervalMin, setIntervalMin] = useState(initial?.interval_min ?? 5)
-  const [intervalMax, setIntervalMax] = useState(initial?.interval_max ?? 15)
+  // Interval inputs are kept as strings so the user can transiently clear
+  // the field while typing (`Number('')` = 0, which would lock them into
+  // a leading-zero state like "035"). We parse on submit; empty/invalid
+  // \u2192 1 (the underlying minimum the rotation scheduler accepts).
+  const [intervalMin, setIntervalMin] = useState(String(initial?.interval_min ?? 5))
+  const [intervalMax, setIntervalMax] = useState(String(initial?.interval_max ?? 15))
   const [selectedIds, setSelectedIds] = useState<Set<number>>(
     new Set(initial?.node_ids ?? [])
   )
@@ -67,9 +73,23 @@ function CircleModal({ initial, nodeOptions, onSave, onCancel, loading }: ModalP
     })
   }
 
+  // Select all / clear toggle for the node multi-select. If everything
+  // is already selected, the button switches to "Clear". On filtered/
+  // empty node lists it's effectively a no-op so we don't need a guard.
+  const allSelected =
+    nodeOptions.length > 0 && selectedIds.size === nodeOptions.length
+  const toggleAll = () => {
+    if (allSelected) setSelectedIds(new Set())
+    else setSelectedIds(new Set(nodeOptions.map((n) => n.id)))
+  }
+
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault()
-    if (intervalMin > intervalMax) {
+    // Parse the string inputs late \u2014 empty/invalid coerces to 1, the
+    // backend's rotation scheduler treats anything <1 as 1 anyway.
+    const minN = Math.max(1, parseInt(intervalMin, 10) || 1)
+    const maxN = Math.max(1, parseInt(intervalMax, 10) || 1)
+    if (minN > maxN) {
       alert('Min interval must be \u2264 Max interval')
       return
     }
@@ -77,8 +97,8 @@ function CircleModal({ initial, nodeOptions, onSave, onCancel, loading }: ModalP
       name,
       enabled,
       mode,
-      interval_min: intervalMin,
-      interval_max: intervalMax,
+      interval_min: minN,
+      interval_max: maxN,
       node_ids: Array.from(selectedIds),
     })
   }
@@ -100,7 +120,7 @@ function CircleModal({ initial, nodeOptions, onSave, onCancel, loading }: ModalP
       <div>
         <label className="flex items-center gap-1 text-xs font-medium text-gray-400 mb-1">
           Mode
-          <InfoTip className="ml-0.5" text={t(
+          <InfoTip position="bottom" className="ml-0.5" text={t(
             'Sequential rotates through nodes in order (1 -> 2 -> 3 -> 1). Random picks a different node each time (never the same one twice in a row).',
             'Sequential ротирует ноды по порядку (1 → 2 → 3 → 1). Random каждый раз выбирает другую ноду (никогда та же два раза подряд).',
           )} />
@@ -121,10 +141,15 @@ function CircleModal({ initial, nodeOptions, onSave, onCancel, loading }: ModalP
             Interval Min (minutes)
           </label>
           <input
+            // String-backed value lets the user transiently empty the
+            // field without `Number('')` collapsing the state to 0
+            // (which would force an annoying "035" leading-zero shape).
+            // Submission parses to int with a min-1 floor.
             type="number"
+            inputMode="numeric"
             min={1}
             value={intervalMin}
-            onChange={(e) => setIntervalMin(Number(e.target.value))}
+            onChange={(e) => setIntervalMin(e.target.value)}
             className="w-full rounded bg-gray-800 border border-gray-700 px-3 py-1.5 text-sm text-gray-100 focus:border-brand-500 focus:outline-none"
           />
         </div>
@@ -134,22 +159,39 @@ function CircleModal({ initial, nodeOptions, onSave, onCancel, loading }: ModalP
           </label>
           <input
             type="number"
+            inputMode="numeric"
             min={1}
             value={intervalMax}
-            onChange={(e) => setIntervalMax(Number(e.target.value))}
+            onChange={(e) => setIntervalMax(e.target.value)}
             className="w-full rounded bg-gray-800 border border-gray-700 px-3 py-1.5 text-sm text-gray-100 focus:border-brand-500 focus:outline-none"
           />
         </div>
       </div>
 
       <div>
-        <label className="flex items-center gap-1 text-xs font-medium text-gray-400 mb-1">
-          Nodes <span className="text-gray-600 font-normal">({selectedIds.size} selected)</span>
-          <InfoTip className="ml-0.5" text={t(
-            'Select at least 2 nodes for rotation. The circle will rotate through these nodes in the order they appear (sequential mode) or randomly.',
-            'Выберите минимум 2 ноды для ротации. Круг будет проходить по нодам в указанном порядке (sequential) или случайно (random).',
-          )} />
-        </label>
+        <div className="flex items-center justify-between mb-1">
+          <label className="flex items-center gap-1 text-xs font-medium text-gray-400">
+            Nodes <span className="text-gray-600 font-normal">({selectedIds.size} selected)</span>
+            <InfoTip position="bottom" className="ml-0.5" text={t(
+              'Select at least 2 nodes for rotation. The circle will rotate through these nodes in the order they appear (sequential mode) or randomly.',
+              'Выберите минимум 2 ноды для ротации. Круг будет проходить по нодам в указанном порядке (sequential) или случайно (random).',
+            )} />
+          </label>
+          {/* Select-all toggle button. Shown only when there's something
+              to select; switches label between "Select all" / "Clear" so
+              one button drives both directions. */}
+          {nodeOptions.length > 0 && (
+            <button
+              type="button"
+              onClick={toggleAll}
+              className="text-xs text-brand-400 hover:text-brand-300 transition-colors"
+            >
+              {allSelected
+                ? t('Clear', 'Снять все')
+                : t('Select all', 'Выбрать все')}
+            </button>
+          )}
+        </div>
         <div className="rounded bg-gray-800 border border-gray-700 max-h-48 overflow-y-auto divide-y divide-gray-700/50">
           {nodeOptions.length === 0 ? (
             <div className="px-3 py-4 text-sm text-gray-500 text-center">No nodes available</div>
@@ -157,7 +199,13 @@ function CircleModal({ initial, nodeOptions, onSave, onCancel, loading }: ModalP
             nodeOptions.map((node) => (
               <label
                 key={node.id}
-                className="flex items-center gap-3 px-3 py-2 cursor-pointer hover:bg-gray-700/50 transition-colors"
+                // `touch-manipulation` removes iOS Safari's 300ms double-tap-
+                // zoom delay (otherwise rapid tap-tap-tap on this list races
+                // the toggle and looks like checkmarks fall off behind a
+                // network round-trip). `select-none` stops a long-press
+                // from selecting the label text mid-scroll, which would
+                // also swallow the click.
+                className="flex items-center gap-3 px-3 py-2 cursor-pointer hover:bg-gray-700/50 transition-colors touch-manipulation select-none"
               >
                 <input
                   type="checkbox"
@@ -282,6 +330,8 @@ export function NodeCircles() {
           'Автоматическая ротация нод против DPI / антидетект. Xray перезагружается без разрыва соединений (текущие завершаются штатно, новые используют новую ноду).',
         )}
       </p>
+
+      <FailoverToggle />
 
       {circles.length === 0 ? (
         <div className="text-center py-12 text-gray-500">
@@ -420,6 +470,139 @@ export function NodeCircles() {
             />
           </div>
         </ModalShell>
+      )}
+    </div>
+  )
+}
+
+// ── Failover toggle ─────────────────────────────────────────────────────────
+//
+// Single global setting (`failover_enabled`) that controls whether the
+// HealthChecker tries to recover when an active node fails its probes.
+// Since 1.2.3, recovery is two-tier:
+//   1. If the failed node is in an enabled NodeCircle, ROTATE within the
+//      circle (uses the same pre-ping + retry as scheduled rotation).
+//   2. Otherwise (or if all circle siblings dead), fall through to the
+//      legacy `failover_node_ids` list.
+//
+// This component lives on the NodeCircles page because Tier 1 is the
+// reason most users will want to enable failover today — circle nodes
+// double as failover candidates without any extra config.
+
+function FailoverToggle() {
+  const t = useT()
+  const { data: settings } = useSystemSettings()
+  const update = useUpdateSettings()
+  const { data: nodes = [] } = useNodes()
+  const enabled = !!settings?.failover_enabled
+  // failover_node_ids may come back as `number[]`, an empty list, or
+  // (when the setting was never set) undefined. Normalise to `Set<number>`
+  // for cheap toggling.
+  const fallbackIds = React.useMemo(
+    () => new Set<number>(settings?.failover_node_ids ?? []),
+    [settings?.failover_node_ids],
+  )
+
+  const toggle = () => {
+    update.mutate({ failover_enabled: !enabled })
+  }
+
+  const toggleNode = (id: number) => {
+    const next = new Set(fallbackIds)
+    if (next.has(id)) next.delete(id)
+    else next.add(id)
+    update.mutate({ failover_node_ids: Array.from(next).sort((a, b) => a - b) })
+  }
+
+  return (
+    <div className="rounded-xl border border-gray-800 bg-gray-900/30 p-4 space-y-3">
+      <div className="flex items-start gap-3">
+        <button
+          onClick={toggle}
+          disabled={update.isPending}
+          className={clsx(
+            'mt-0.5 flex-shrink-0 rounded-lg p-1 transition-colors',
+            enabled
+              ? 'text-brand-400 hover:text-brand-300'
+              : 'text-gray-600 hover:text-gray-400',
+          )}
+          aria-label={t('Toggle failover', 'Переключить failover')}
+        >
+          {enabled
+            ? <ToggleRight className="h-6 w-6" />
+            : <ToggleLeft className="h-6 w-6" />}
+        </button>
+        <div className="flex-1">
+          <div className="flex items-center gap-1.5">
+            <span className="text-sm font-medium text-gray-200">
+              {t('Auto-failover on health check fail', 'Авто-failover при падении health check')}
+            </span>
+            <InfoTip position="bottom" text={t(
+              'When an active node fails its health checks repeatedly, automatically switch to a working sibling. Two-tier strategy: (1) if the failed node is in an enabled NodeCircle, rotate within the circle (pre-ping each candidate, pick first alive). (2) Otherwise (or if the circle has no live siblings), fall back to the manually-picked list below.',
+              'Когда активная нода стабильно проваливает health check, автоматически переключаемся на живую соседнюю. Двухтурная стратегия: (1) если упавшая нода в круге — recovery через круг (pre-ping каждого кандидата). (2) Иначе (или если в круге все мертвы) — список ниже.',
+            )} />
+          </div>
+          <p className="mt-1 text-xs text-gray-500 leading-relaxed">
+            {enabled ? (
+              t(
+                'Active. When the active node fails, PiTun rotates within its NodeCircle (if any) or falls back to the list below.',
+                'Включено. При падении активной ноды PiTun ротирует в её NodeCircle (если есть) или к списку ниже.',
+              )
+            ) : (
+              t(
+                'Disabled. Failed nodes stay active until you switch manually.',
+                'Выключено. Упавшие ноды остаются активными до ручного переключения.',
+              )
+            )}
+          </p>
+        </div>
+      </div>
+
+      {/* Fallback nodes list — only relevant when failover is on AND the
+          user wants the Tier-2 (no-circle) path to find candidates.
+          Hidden when toggle is off to reduce visual noise. */}
+      {enabled && (
+        <div className="border-t border-gray-800 pt-3">
+          <div className="flex items-center gap-1.5 mb-2">
+            <span className="text-xs font-medium text-gray-400 uppercase tracking-wider">
+              {t('Fallback nodes', 'Fallback-ноды')}
+            </span>
+            <InfoTip position="bottom" text={t(
+              'Used only when the failed node is NOT in any enabled NodeCircle (or the circle has no live siblings). PiTun probes these in order; the first alive one becomes active. Leave empty if you only use circles.',
+              'Используются когда упавшая нода НЕ в круге (или в круге все мертвы). PiTun пробит их по порядку; первая живая становится активной. Можно оставить пустым если используешь только круги.',
+            )} />
+            <span className="ml-auto text-[11px] text-gray-600">
+              {fallbackIds.size} {t('selected', 'выбрано')}
+            </span>
+          </div>
+          {nodes.length === 0 ? (
+            <p className="text-xs text-gray-500">
+              {t('No nodes available. Add nodes to use as fallback.', 'Нет нод. Добавьте на странице Nodes.')}
+            </p>
+          ) : (
+            <div className="flex flex-wrap gap-1.5">
+              {nodes.map((n) => {
+                const selected = fallbackIds.has(n.id)
+                return (
+                  <button
+                    key={n.id}
+                    onClick={() => toggleNode(n.id)}
+                    disabled={update.isPending}
+                    className={clsx(
+                      'rounded-full px-2.5 py-1 text-xs font-medium transition-colors disabled:opacity-50',
+                      selected
+                        ? 'bg-brand-600/30 border border-brand-600/60 text-brand-200'
+                        : 'bg-gray-800 border border-gray-700 text-gray-400 hover:bg-gray-700 hover:text-gray-300',
+                    )}
+                    title={`${n.protocol} · ${n.address}:${n.port}`}
+                  >
+                    {n.name}
+                  </button>
+                )
+              })}
+            </div>
+          )}
+        </div>
       )}
     </div>
   )

@@ -5,7 +5,7 @@ from typing import List
 # OpenAPI metadata, `/health` response, and `/system/status` so the
 # frontend can display it next to the xray version. Bump this on each
 # release — frontend keeps its own version in `frontend/package.json`.
-APP_VERSION = "1.2.2"
+APP_VERSION = "1.2.3"
 
 
 class Settings(BaseSettings):
@@ -36,6 +36,13 @@ class Settings(BaseSettings):
     gateway_ip: str = "192.168.1.100"
 
     # GeoData
+    # We use Loyalsoldier for both GeoIP and GeoSite — their datasets
+    # are the de-facto v2ray community standard for RU/CN audiences and
+    # provide convenient shortcut categories (`geoip:ru`, `geosite:ru`,
+    # `geoip:cn`, `geosite:cn`, plus `!ru`/`!cn` inverses) that upstream
+    # v2fly/domain-list-community does NOT expose. Switching geosite to
+    # v2fly's dlc.dat would silently break user-defined routing rules
+    # that reference `geosite:ru`. See `roadmap/decisions-log.md`.
     geoip_url: str = (
         "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geoip.dat"
     )
@@ -43,9 +50,12 @@ class Settings(BaseSettings):
         "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geosite.dat"
     )
     geoip_mmdb_path: str = "/usr/local/share/xray/GeoLite2-Country.mmdb"
-    geoip_mmdb_url: str = (
-        "https://github.com/P3TERX/GeoLite.mmdb/releases/latest/download/GeoLite2-Country.mmdb"
-    )
+    # MMDB via git.io shortener — historically `git.io/GeoLite2-Country.mmdb`
+    # has been the canonical "always-latest" URL across the v2ray
+    # ecosystem. GitHub froze new git.io shorturls in 2022 but existing
+    # redirects (including this one) still resolve to a current GeoLite2
+    # release asset.
+    geoip_mmdb_url: str = "https://git.io/GeoLite2-Country.mmdb"
 
     # xray stats API
     xray_api_port: int = 10085

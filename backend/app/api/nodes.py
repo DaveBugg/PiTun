@@ -1,17 +1,20 @@
 """Node CRUD, URI import, health check, speed test endpoints."""
 import asyncio
-from typing import List, Optional
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlmodel import select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
+from app.config import APP_VERSION
 from app.database import get_session
 from app.models import BalancerGroup, Node, RoutingRule
 from app.schemas import (
     HealthResult,
     NaiveSidecarLogs,
     NaiveSidecarStatus,
+    NodeBase,
     NodeCreate,
     NodeImportRequest,
     NodeImportResponse,
@@ -120,7 +123,7 @@ async def create_node(data: NodeCreate, session: AsyncSession = Depends(get_sess
     return node
 
 
-@router.get("/{node_id}", response_model=NodeRead)
+@router.get("/{node_id:int}", response_model=NodeRead)
 async def get_node(node_id: int, session: AsyncSession = Depends(get_session)):
     node = await session.get(Node, node_id)
     if not node:
@@ -128,7 +131,7 @@ async def get_node(node_id: int, session: AsyncSession = Depends(get_session)):
     return node
 
 
-@router.patch("/{node_id}", response_model=NodeRead)
+@router.patch("/{node_id:int}", response_model=NodeRead)
 async def update_node(node_id: int, data: NodeUpdate, session: AsyncSession = Depends(get_session)):
     node = await session.get(Node, node_id)
     if not node:
@@ -165,7 +168,7 @@ async def update_node(node_id: int, data: NodeUpdate, session: AsyncSession = De
     return node
 
 
-@router.delete("/{node_id}", status_code=204)
+@router.delete("/{node_id:int}", status_code=204)
 async def delete_node(node_id: int, session: AsyncSession = Depends(get_session)):
     import json
     import logging
@@ -341,9 +344,140 @@ async def import_nodes(
     )
 
 
+# ── JSON export / import (full-fidelity backup) ──────────────────────────────
+#
+# Distinct from `/import` which parses VPN URIs. This pair handles the
+# "back up everything to a file, restore later" use case — full Node
+# row roundtrip including transport / TLS / WireGuard / Hysteria / Naive
+# fields. Bundle envelope (`kind`, `version`, `exported_at`,
+# `pitun_version`) lets future versions migrate or refuse incompatible
+# imports. Same envelope shape is used by the Servers and (eventually)
+# Routing exports — reuse the helper functions in `app/core/io_bundle.py`.
+
+@router.get("/export-json")
+async def export_nodes_json(session: AsyncSession = Depends(get_session)):
+    """Return all nodes as a downloadable JSON bundle."""
+    rows = (await session.exec(select(Node).order_by(Node.order, Node.id))).all()
+    payload = {
+        "kind": "pitun-nodes-export",
+        "version": 1,
+        "exported_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "pitun_version": APP_VERSION,
+        "count": len(rows),
+        "nodes": [NodeRead.model_validate(n).model_dump(mode="json") for n in rows],
+    }
+    # Plain JSON response with a Content-Disposition for browser download.
+    from fastapi.responses import JSONResponse
+    return JSONResponse(
+        content=payload,
+        headers={
+            "Content-Disposition": (
+                f'attachment; filename="pitun-nodes-{datetime.now().strftime("%Y%m%d-%H%M%S")}.json"'
+            ),
+        },
+    )
+
+
+@router.post("/import-json", response_model=NodeImportResponse)
+async def import_nodes_json(
+    payload: Dict[str, Any],
+    replace: bool = Query(False, description="If true, delete existing nodes before import"),
+    session: AsyncSession = Depends(get_session),
+):
+    """Restore nodes from a previously-exported JSON bundle.
+
+    `replace=true` wipes existing nodes first (full restore). Default
+    `replace=false` is additive — duplicates by (protocol, address,
+    port, uuid) are skipped, new entries are inserted.
+    """
+    if not isinstance(payload, dict):
+        raise HTTPException(400, "Invalid bundle: expected a JSON object at the top level")
+    if payload.get("kind") != "pitun-nodes-export":
+        raise HTTPException(400, "Not a PiTun nodes export bundle (kind mismatch)")
+    if payload.get("version") != 1:
+        raise HTTPException(400, f"Unsupported export version: {payload.get('version')}")
+    nodes_in = payload.get("nodes")
+    if not isinstance(nodes_in, list):
+        raise HTTPException(400, "Bundle missing 'nodes' array")
+
+    imported = 0
+    skipped = 0
+    errors: List[str] = []
+    created: List[Node] = []
+
+    if replace:
+        # Wipe existing nodes. RoutingRule entries that referenced
+        # `node:<id>` will dangle, but the routing layer treats unknown
+        # node ids as direct anyway (graceful degradation). User who
+        # opts into `replace=true` accepts that consequence.
+        existing = (await session.exec(select(Node))).all()
+        for n in existing:
+            await session.delete(n)
+        await session.flush()
+
+    for nd in nodes_in:
+        try:
+            # Filter to only known NodeBase fields — silently drops
+            # unknown columns (forward-compat: a newer export with
+            # extra fields imports cleanly into older PiTun).
+            allowed = set(NodeBase.model_fields.keys())
+            clean = {k: v for k, v in nd.items() if k in allowed}
+            # Validate via NodeCreate (which extends NodeBase) — surfaces
+            # invalid protocol/transport/tls values as 422-style errors
+            # in our `errors` list rather than blowing up the whole import.
+            validated = NodeCreate(**clean)
+
+            # Dedup unless we're in replace mode (where we just wiped).
+            if not replace:
+                stmt = (
+                    select(Node)
+                    .where(Node.protocol == validated.protocol)
+                    .where(Node.address == validated.address)
+                    .where(Node.port == validated.port)
+                )
+                if validated.uuid:
+                    stmt = stmt.where(Node.uuid == validated.uuid)
+                if (await session.exec(stmt)).first():
+                    skipped += 1
+                    continue
+
+            node = Node(**validated.model_dump())
+            session.add(node)
+            await session.flush()
+            created.append(node)
+            imported += 1
+        except Exception as exc:  # noqa: BLE001 — surface per-row errors
+            errors.append(f"{nd.get('name', '?')}: {exc}")
+
+    await session.commit()
+    for n in created:
+        await session.refresh(n)
+
+    # Spin up sidecars for naive nodes, like /import does.
+    naive_imported = False
+    for n in created:
+        if n.protocol == "naive":
+            try:
+                await _ensure_naive_port(n, session)
+                if n.enabled:
+                    await _sync_naive_sidecar(n, enabled=True)
+                    naive_imported = True
+            except Exception as exc:
+                errors.append(f"{n.name}: sidecar start failed: {exc}")
+    if naive_imported:
+        await _refresh_naive_tproxy_bypass(session)
+
+    return NodeImportResponse(
+        imported=imported,
+        skipped=skipped,
+        nodes=[NodeRead.model_validate(n) for n in created],
+        errors=errors,
+    )
+
+
 # ── NaiveProxy sidecar endpoints ──────────────────────────────────────────────
 
-@router.get("/{node_id}/sidecar", response_model=NaiveSidecarStatus)
+@router.get("/{node_id:int}/sidecar", response_model=NaiveSidecarStatus)
 async def naive_sidecar_status(node_id: int, session: AsyncSession = Depends(get_session)):
     node = await session.get(Node, node_id)
     if not node:
@@ -363,7 +497,7 @@ async def naive_sidecar_status(node_id: int, session: AsyncSession = Depends(get
     )
 
 
-@router.post("/{node_id}/sidecar/restart", response_model=NaiveSidecarStatus)
+@router.post("/{node_id:int}/sidecar/restart", response_model=NaiveSidecarStatus)
 async def naive_sidecar_restart(node_id: int, session: AsyncSession = Depends(get_session)):
     node = await session.get(Node, node_id)
     if not node:
@@ -391,7 +525,7 @@ async def naive_sidecar_restart(node_id: int, session: AsyncSession = Depends(ge
     )
 
 
-@router.get("/{node_id}/sidecar/logs", response_model=NaiveSidecarLogs)
+@router.get("/{node_id:int}/sidecar/logs", response_model=NaiveSidecarLogs)
 async def naive_sidecar_logs(
     node_id: int,
     tail: int = Query(200, ge=1, le=5000),
@@ -410,7 +544,7 @@ async def naive_sidecar_logs(
 
 # ── Health checks ─────────────────────────────────────────────────────────────
 
-@router.post("/{node_id}/check", response_model=HealthResult)
+@router.post("/{node_id:int}/check", response_model=HealthResult)
 async def check_node_health(node_id: int, session: AsyncSession = Depends(get_session)):
     from app.core.healthcheck import health_checker
 
@@ -449,7 +583,7 @@ async def check_all_nodes():
 
 # ── Speed test ────────────────────────────────────────────────────────────────
 
-@router.post("/{node_id}/speedtest", response_model=SpeedTestResult)
+@router.post("/{node_id:int}/speedtest", response_model=SpeedTestResult)
 async def speedtest_node(node_id: int, session: AsyncSession = Depends(get_session)):
     from app.core.speedtest import speedtest_node as _speedtest
 

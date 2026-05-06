@@ -2,6 +2,7 @@ import { useState } from 'react'
 import type { Node, NodeCreate, Protocol, Transport, TlsMode } from '@/types'
 import { InfoTip } from '@/components/InfoTip'
 import { useT } from '@/hooks/useT'
+import { useServers } from '@/hooks/useServers'
 
 type FormData = Omit<NodeCreate, 'order'>
 
@@ -50,6 +51,7 @@ const DEFAULTS: FormData = {
   group: '',
   note: '',
   subscription_id: undefined,
+  server_id: undefined,
 }
 
 interface Props {
@@ -64,13 +66,23 @@ export function NodeForm({ initial, onSave, onCancel, loading, nodes = [] }: Pro
   const t = useT()
   const [form, setForm] = useState<FormData>({ ...DEFAULTS, ...initial })
   const [chainNodeId, setChainNodeId] = useState(initial?.chain_node_id?.toString() ?? '')
+  const [serverId, setServerId] = useState(initial?.server_id?.toString() ?? '')
+  // Servers list is small (1-5 typical) and the form is short-lived, so
+  // fetching here on mount keeps the API surface simple — we don't have
+  // to thread the list down through Nodes page → form.
+  const { data: servers = [] } = useServers()
 
   const set = <K extends keyof FormData>(key: K, value: FormData[K]) =>
     setForm((f) => ({ ...f, [key]: value }))
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault()
-    onSave({ ...form, order: initial?.order ?? 0, chain_node_id: chainNodeId ? Number(chainNodeId) : undefined })
+    onSave({
+      ...form,
+      order: initial?.order ?? 0,
+      chain_node_id: chainNodeId ? Number(chainNodeId) : undefined,
+      server_id: serverId ? Number(serverId) : undefined,
+    })
   }
 
   // ── render helpers (plain functions, NOT components) ─────────────
@@ -99,7 +111,7 @@ export function NodeForm({ initial, onSave, onCancel, loading, nodes = [] }: Pro
     </select>
   )
 
-  const fld = (label: string, children: React.ReactNode, hint?: string) => (
+  const fld = (label: React.ReactNode, children: React.ReactNode, hint?: string) => (
     <div>
       <label className="block text-xs font-medium text-gray-400 mb-1">{label}</label>
       {children}
@@ -311,6 +323,30 @@ export function NodeForm({ initial, onSave, onCancel, loading, nodes = [] }: Pro
           {fld('Group', inp('group', 'text', 'default'))}
           {fld('Note', inp('note'))}
         </div>
+        {/* Optional link to a Server (the VPS hosting this node). Pure
+            metadata — does not affect routing. Empty option is shown
+            even when no servers exist so the field doesn't look broken. */}
+        {fld(
+          <span className="flex items-center gap-1.5">
+            {t('Linked server', 'Привязанный сервер')}
+            <InfoTip text={t(
+              'Optional: link this node to one of the VPS instances on the Servers tab. Purely informational — helps you remember which physical machine hosts this node.',
+              'Опционально: привязать ноду к одному из серверов из вкладки Servers. Информационно — чтобы знать на какой машине крутится нода.',
+            )} />
+          </span>,
+          <select
+            value={serverId}
+            onChange={(e) => setServerId(e.target.value)}
+            className="w-full rounded bg-gray-800 border border-gray-700 px-3 py-1.5 text-sm text-gray-100 focus:border-brand-500 focus:outline-none"
+          >
+            <option value="">{t('— none —', '— нет —')}</option>
+            {servers.map((s) => (
+              <option key={s.id} value={s.id.toString()}>
+                {s.name} ({s.host})
+              </option>
+            ))}
+          </select>,
+        )}
       </section>
 
       {/* Chain tunnel */}

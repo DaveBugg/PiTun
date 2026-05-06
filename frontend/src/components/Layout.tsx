@@ -23,6 +23,7 @@ import {
   Settings2,
   Sun,
   Moon,
+  Cloud,
 } from 'lucide-react'
 import { clsx } from 'clsx'
 import { useAppStore } from '@/store'
@@ -45,6 +46,7 @@ function getUsername(): string {
 const NAV = [
   { to: '/',             icon: LayoutDashboard, label: 'Dashboard'     },
   { to: '/nodes',        icon: Server,          label: 'Nodes'         },
+  { to: '/servers',      icon: Cloud,           label: 'Servers'       },
   { to: '/circles',      icon: Circle,          label: 'NodeCircle'    },
   { to: '/routing',      icon: GitBranch,       label: 'Routing'       },
   { to: '/devices',      icon: Monitor,         label: 'Devices'       },
