@@ -709,7 +709,21 @@ async def import_servers_json(
             session.add(server)
             imported += 1
         except Exception as exc:  # noqa: BLE001 — per-row error reporting
-            errors.append(f"{sd.get('name', '?')}: {exc}")
+            # Don't leak the raw exception text into the API response —
+            # could surface internal paths, SQL fragments, library
+            # versions, or attribute names to API clients (CWE-209,
+            # CodeQL "Information exposure through an exception"). Log
+            # the full detail server-side so admins can debug from the
+            # backend logs, return only the exception class name to the
+            # client.
+            import logging
+            logging.getLogger(__name__).warning(
+                "Server import row failed: name=%s err=%s",
+                sd.get("name", "?"), exc,
+            )
+            errors.append(
+                f"{sd.get('name', '?')}: import failed ({type(exc).__name__})"
+            )
 
     await session.commit()
     return {

@@ -313,7 +313,18 @@ async def import_nodes(
             nodes.append(node)
             imported += 1
         except Exception as exc:
-            errors.append(f"{node_dict.get('name', '?')}: {exc}")
+            # Sanitize: log full exc server-side, return only the
+            # exception class to the API client. Prevents CWE-209
+            # information exposure through raw exception text (paths,
+            # SQL, lib versions, attribute names).
+            import logging
+            logging.getLogger(__name__).warning(
+                "Node import row failed: name=%s err=%s",
+                node_dict.get("name", "?"), exc,
+            )
+            errors.append(
+                f"{node_dict.get('name', '?')}: import failed ({type(exc).__name__})"
+            )
 
     await session.commit()
     for n in nodes:
@@ -329,7 +340,14 @@ async def import_nodes(
                     await _sync_naive_sidecar(n, enabled=True)
                     naive_imported = True
             except Exception as exc:
-                errors.append(f"{n.name}: sidecar start failed: {exc}")
+                import logging
+                logging.getLogger(__name__).warning(
+                    "Naive sidecar start after import failed: name=%s err=%s",
+                    n.name, exc,
+                )
+                errors.append(
+                    f"{n.name}: sidecar start failed ({type(exc).__name__})"
+                )
 
     # Single nftables refresh pass covering all naive nodes imported in
     # this batch (a bulk import may bring in several).
@@ -447,7 +465,16 @@ async def import_nodes_json(
             created.append(node)
             imported += 1
         except Exception as exc:  # noqa: BLE001 — surface per-row errors
-            errors.append(f"{nd.get('name', '?')}: {exc}")
+            # Sanitize raw exc out of API response (CWE-209). Mirror
+            # of the same fix in /api/servers/import-json.
+            import logging
+            logging.getLogger(__name__).warning(
+                "Node import-json row failed: name=%s err=%s",
+                nd.get("name", "?"), exc,
+            )
+            errors.append(
+                f"{nd.get('name', '?')}: import failed ({type(exc).__name__})"
+            )
 
     await session.commit()
     for n in created:
@@ -463,7 +490,14 @@ async def import_nodes_json(
                     await _sync_naive_sidecar(n, enabled=True)
                     naive_imported = True
             except Exception as exc:
-                errors.append(f"{n.name}: sidecar start failed: {exc}")
+                import logging
+                logging.getLogger(__name__).warning(
+                    "Naive sidecar start after import-json failed: name=%s err=%s",
+                    n.name, exc,
+                )
+                errors.append(
+                    f"{n.name}: sidecar start failed ({type(exc).__name__})"
+                )
     if naive_imported:
         await _refresh_naive_tproxy_bypass(session)
 
