@@ -57,22 +57,17 @@ jobs:
         uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
           node-version: '20'
-          # No cache: we don't track package-lock.json (regenerated each
-          # run, see "Install dependencies" below) so there's no key to
-          # build a cache against. setup-node@v4 fails fast if `cache:
-          # npm` is set but the lock file is missing — easier to just
-          # not cache at all. Adds ~30 s to each run, acceptable.
+          cache: 'npm'
+          cache-dependency-path: 'frontend/package-lock.json'
 
-      # `npm ci` is what we'd normally use, but our `package-lock.json`
-      # is generated on Windows and only carries the win32-msvc rollup
-      # native binary; on Linux runners npm fails with
-      # "Cannot find module @rollup/rollup-linux-x64-gnu" (npm/cli#4828).
-      # Until we ship a multi-platform lock, regenerate fresh on each
-      # CI run — slightly slower than `npm ci` but reproducible.
-      - name: Install dependencies (cross-platform workaround)
-        run: |
-          rm -f package-lock.json
-          npm install --no-audit --no-fund
+      # `npm ci` requires committed `package-lock.json` (re-tracked in
+      # v1.2.5 after we decided reproducible builds + supply-chain
+      # defense outweigh the Dependabot rebase friction of having both
+      # `package.json` and the lock in PRs). `--legacy-peer-deps`
+      # tolerates dev-only peer-range mismatches (e.g. lucide-react vs
+      # React 19 in older lockfiles) without weakening prod resolution.
+      - name: Install dependencies (npm ci, locked)
+        run: npm ci --legacy-peer-deps --no-audit --no-fund
       # `npm run lint` is intentionally skipped — there's no ESLint
       # config tracked in the repo yet (the `lint` script in
       # package.json invokes eslint without a `.eslintrc.*` /

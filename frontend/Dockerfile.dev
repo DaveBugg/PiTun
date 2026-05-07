@@ -2,8 +2,9 @@ FROM node:25-alpine
 
 WORKDIR /app
 
-COPY package.json package-lock.json* ./
-RUN npm install --legacy-peer-deps
+COPY package.json package-lock.json ./
+# `npm ci` for reproducible dev container (lockfile re-tracked v1.2.5).
+RUN npm ci --legacy-peer-deps
 
 COPY . .
 

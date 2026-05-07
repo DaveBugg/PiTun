@@ -7,8 +7,11 @@ FROM ${NODE_IMAGE} AS builder
 
 WORKDIR /app
 
-COPY package.json package-lock.json* ./
-RUN npm install --legacy-peer-deps && chmod -R +x node_modules/.bin
+COPY package.json package-lock.json ./
+# `npm ci` for reproducible builds (lockfile re-tracked in v1.2.5).
+# `--legacy-peer-deps` retained for tolerance of dev-only peer-range
+# mismatches; production resolution is unaffected.
+RUN npm ci --legacy-peer-deps && chmod -R +x node_modules/.bin
 
 COPY . .
 

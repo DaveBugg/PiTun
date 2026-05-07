@@ -55,8 +55,12 @@ updates:
         versions: [">=0.0.20"]
 
   # Frontend npm dependencies (React 19, Vite, TanStack Query, …).
-  # NOTE: we don't track package-lock.json, so dependabot updates only
-  # `package.json`. CI regenerates the lock on each run.
+  # `package-lock.json` is committed (re-tracked in v1.2.5); Dependabot
+  # updates BOTH `package.json` and the lock in each PR. CI uses
+  # `npm ci` for reproducible builds + supply-chain defense (locked
+  # transitive versions). Trade-off: occasional rebase friction when
+  # multiple PRs touch the lock back-to-back — solved by commenting
+  # `@dependabot rebase` on the conflicting PR.
   - package-ecosystem: npm
     directory: /frontend
     schedule:

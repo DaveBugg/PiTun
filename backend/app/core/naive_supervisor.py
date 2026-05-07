@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import random
 import threading
 import time
 from collections import deque
@@ -46,6 +47,22 @@ logger = logging.getLogger(__name__)
 RESTART_WINDOW_SEC = 60          # measuring window
 MAX_RESTARTS_PER_WINDOW = 5      # after this, stop retrying
 RECONNECT_BACKOFF_SEC = 5        # sleep after event stream error
+
+# Exponential backoff between consecutive restart attempts (per node).
+# Standard pattern; OOM-class failures benefit from breathing room
+# before the next attempt. Without this, on `mem_limit` exhaustion
+# Docker re-spawns the container instantly (sub-millisecond),
+# kernel OOM-kills it again, and we burn the 5/60s budget in <100 ms
+# before giving up — which made the v1.2.x naive sidecar look like
+# it just refused to come up. Backoff converts that pathological
+# tight loop into ~5+ seconds of real retry attempts.
+#
+# Schedule: 0.5s, 1s, 2s, 4s, 8s (capped). Each value gets ±25%
+# random jitter applied to spread lockstep restarts when several
+# sidecars die together (rare but harmless).
+_RESTART_BACKOFF_BASE_SEC = 0.5
+_RESTART_BACKOFF_CAP_SEC = 8.0
+_RESTART_BACKOFF_JITTER = 0.25
 
 _LABEL_KEY = "pitun"
 _LABEL_VAL = "naive"
@@ -234,6 +251,21 @@ class NaiveSupervisor:
                 )
             return
 
+        # Exponential backoff before the actual restart. `_should_restart`
+        # already recorded the current attempt in history, so the delay
+        # reflects "this is attempt N+1 with N priors".
+        delay = self._backoff_delay(node_id)
+        if delay > 0:
+            logger.debug(
+                "Naive node %d: backing off %.2fs before restart (attempt #%d)",
+                node_id, delay, len(self._restart_history.get(node_id, ())),
+            )
+            try:
+                await asyncio.sleep(delay)
+            except asyncio.CancelledError:
+                # Supervisor stopping mid-backoff — propagate cancellation
+                raise
+
         await self._restart_node(node_id)
 
     def _should_restart(self, node_id: int) -> bool:
@@ -249,6 +281,26 @@ class NaiveSupervisor:
             return False
         history.append(now)
         return True
+
+    def _backoff_delay(self, node_id: int) -> float:
+        """Exponential delay before the next restart attempt for `node_id`.
+        Caller invokes this AFTER `_should_restart()` has already recorded
+        the current attempt's timestamp, so `len(history)` includes the
+        in-flight attempt. The delay is computed for prior attempts only:
+            1st restart (1 entry in history) → 0.5s
+            2nd restart (2 entries)          → 1.0s
+            3rd restart (3 entries)          → 2.0s
+            4th restart (4 entries)          → 4.0s
+            5th restart (5 entries)          → 8.0s (capped)
+        ±25% jitter applied to spread lockstep restarts when several
+        sidecars die simultaneously.
+        """
+        history = self._restart_history.get(node_id)
+        attempts = len(history) if history else 1
+        prior = max(0, attempts - 1)
+        base = min(_RESTART_BACKOFF_BASE_SEC * (2 ** prior), _RESTART_BACKOFF_CAP_SEC)
+        jitter = 1.0 + random.uniform(-_RESTART_BACKOFF_JITTER, _RESTART_BACKOFF_JITTER)
+        return max(0.0, base * jitter)
 
     async def _restart_node(self, node_id: int) -> None:
         """Fetch the node from the DB and call naive_manager.start_node().

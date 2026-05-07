@@ -313,32 +313,35 @@ async def import_nodes(
             nodes.append(node)
             imported += 1
         except Exception as exc:
-            # Two security concerns colliding here:
+            # Three security concerns layered here:
             #   1. CWE-209 (info exposure via raw exception text in API
-            #      response) — solved by returning only the class name.
-            #   2. CWE-532 (clear-text logging of sensitive info) — the
-            #      raw `exc` object can stringify to include the input
-            #      that triggered it, e.g. an IntegrityError that
-            #      echoes the offending UUID/password column value, or
-            #      a Pydantic ValidationError that prints the input
-            #      dict. So we DON'T log `exc` directly; only the
-            #      exception class name. Admins can recreate the error
-            #      with a debug-level reproduction if needed; the
-            #      class name alone is enough to identify the bucket
-            #      (IntegrityError vs ValidationError vs TypeError).
-            #   3. CWE-117 (log injection via user-controlled `name`) —
-            #      `_NoNewlineFilter` on the root logger (added in
-            #      v1.2.2) already strips \n/\r, but we additionally
-            #      use `%r` here so CodeQL recognises the explicit
-            #      sanitiser and any oddities in the name surface
-            #      visibly as escape sequences.
+            #      response) — return only the class name, not str(exc).
+            #   2. CWE-532 (clear-text logging of sensitive info) —
+            #      raw `exc` can stringify to include the input that
+            #      triggered it (IntegrityError echoes the offending
+            #      column value; Pydantic ValidationError prints input
+            #      dict). Log only the class name.
+            #   3. CWE-117 (log injection via user-controlled `name`)
+            #      — `_NoNewlineFilter` on root logger (v1.2.2) strips
+            #      \n/\r; %r additionally satisfies CodeQL's sanitiser
+            #      detection.
+            #
+            # The pre-extracted local `row_name` (a typed `str`) detaches
+            # CodeQL's taint analysis from the parent `node_dict` —
+            # without this, CodeQL flags `dict.get(...)` accesses
+            # generically as "tainted" because the dict has sensitive
+            # sibling fields (password, private_key, uuid). See
+            # alert #21 (dismissed as FP, this closes it source-side).
+            row_name = node_dict.get("name", "?")
+            if not isinstance(row_name, str):
+                row_name = "?"
             import logging
             logging.getLogger(__name__).warning(
                 "Node import row failed: name=%r err_type=%s",
-                node_dict.get("name", "?"), type(exc).__name__,
+                row_name, type(exc).__name__,
             )
             errors.append(
-                f"{node_dict.get('name', '?')}: import failed ({type(exc).__name__})"
+                f"{row_name}: import failed ({type(exc).__name__})"
             )
 
     await session.commit()
@@ -355,15 +358,17 @@ async def import_nodes(
                     await _sync_naive_sidecar(n, enabled=True)
                     naive_imported = True
             except Exception as exc:
-                # See main `except Exception` above for why we don't
-                # log the raw exc object and use %r on the name.
+                # See main `except Exception` above. Pre-extract name
+                # to a local str to detach CodeQL taint analysis from
+                # the Node ORM object's sensitive attributes.
+                row_name = n.name if isinstance(n.name, str) else "?"
                 import logging
                 logging.getLogger(__name__).warning(
                     "Naive sidecar start after import failed: name=%r err_type=%s",
-                    n.name, type(exc).__name__,
+                    row_name, type(exc).__name__,
                 )
                 errors.append(
-                    f"{n.name}: sidecar start failed ({type(exc).__name__})"
+                    f"{row_name}: sidecar start failed ({type(exc).__name__})"
                 )
 
     # Single nftables refresh pass covering all naive nodes imported in
@@ -482,18 +487,19 @@ async def import_nodes_json(
             created.append(node)
             imported += 1
         except Exception as exc:  # noqa: BLE001 — surface per-row errors
-            # Same security envelope as the legacy `/import` handler
-            # above: don't expose raw exc to API client (CWE-209), don't
-            # log raw exc body (CWE-532 — IntegrityError text echoes
-            # offending column values), use %r on user-controlled name
-            # (CWE-117, belt-and-suspenders alongside _NoNewlineFilter).
+            # Same security envelope as `/import` (CWE-209/532/117).
+            # Pre-extract name to a local str — see CodeQL FP rationale
+            # in the legacy import handler above.
+            row_name = nd.get("name", "?")
+            if not isinstance(row_name, str):
+                row_name = "?"
             import logging
             logging.getLogger(__name__).warning(
                 "Node import-json row failed: name=%r err_type=%s",
-                nd.get("name", "?"), type(exc).__name__,
+                row_name, type(exc).__name__,
             )
             errors.append(
-                f"{nd.get('name', '?')}: import failed ({type(exc).__name__})"
+                f"{row_name}: import failed ({type(exc).__name__})"
             )
 
     await session.commit()
@@ -510,14 +516,15 @@ async def import_nodes_json(
                     await _sync_naive_sidecar(n, enabled=True)
                     naive_imported = True
             except Exception as exc:
-                # Same security envelope as above.
+                # Same security envelope as above. Pre-extract name to local str.
+                row_name = n.name if isinstance(n.name, str) else "?"
                 import logging
                 logging.getLogger(__name__).warning(
                     "Naive sidecar start after import-json failed: name=%r err_type=%s",
-                    n.name, type(exc).__name__,
+                    row_name, type(exc).__name__,
                 )
                 errors.append(
-                    f"{n.name}: sidecar start failed ({type(exc).__name__})"
+                    f"{row_name}: sidecar start failed ({type(exc).__name__})"
                 )
     if naive_imported:
         await _refresh_naive_tproxy_bypass(session)

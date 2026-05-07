@@ -129,13 +129,29 @@ fi
 
 # Read the running version (if any) for the upgrade banner. Best-effort
 # — if the backend container isn't responding or curl is missing, we
-# print "?" and move on.
+# print "?" and move on. Both running and target are normalised to
+# carry the `v` prefix so the summary reads symmetrically (`v1.2.5 →
+# v1.2.6`, never `1.2.5 → v1.2.6`).
 RUNNING_VERSION="?"
 if [[ "$IS_UPDATE" == "1" ]] && command -v curl &>/dev/null; then
     RUNNING_VERSION=$(curl -fsS --max-time 2 http://127.0.0.1:8000/health 2>/dev/null \
         | grep -oE '"version"\s*:\s*"[^"]*"' \
         | sed 's/"version"\s*:\s*"\([^"]*\)"/\1/' || true)
     RUNNING_VERSION="${RUNNING_VERSION:-?}"
+    # `/health` returns plain `1.2.5` (no `v` prefix) — add it for
+    # display consistency with the GitHub-tag-style target version.
+    if [[ -n "$RUNNING_VERSION" && "$RUNNING_VERSION" != "?" && "${RUNNING_VERSION#v}" == "$RUNNING_VERSION" ]]; then
+        RUNNING_VERSION="v${RUNNING_VERSION}"
+    fi
+fi
+
+# Same normalisation on the install target. `latest` stays as-is; any
+# concrete version string (e.g. `1.2.6` if user passed `--version 1.2.6`)
+# gets a `v` prepended for the banner.
+DISPLAY_VERSION="$VERSION"
+if [[ -n "$DISPLAY_VERSION" && "$DISPLAY_VERSION" != "latest" \
+      && "${DISPLAY_VERSION#v}" == "$DISPLAY_VERSION" ]]; then
+    DISPLAY_VERSION="v${DISPLAY_VERSION}"
 fi
 
 info "PiTun installer"
@@ -144,7 +160,7 @@ info "  Arch:    $ARCH_RAW ($ARCH)"
 info "  Distro:  $DISTRO_ID"
 info "  Kernel:  $KERNEL_VER"
 info "  Target:  $INSTALL_DIR"
-info "  Version: $VERSION"
+info "  Version: $DISPLAY_VERSION"
 [[ "$DRY_RUN" == "1" ]] && warn "DRY-RUN mode — no changes will be made."
 
 # Sanity warnings for older kernels (TPROXY needs >= 4.19, we suggest 5.4+).
@@ -222,6 +238,13 @@ elif [[ "$USE_BUILD" != "1" ]]; then
                         | head -n1 | sed 's/.*"\([^"]*\)"/\1/')
         info "Resolved version: $RESOLVED_TAG"
         VERSION="$RESOLVED_TAG"
+        # Re-derive display version now that `latest` has been resolved
+        # to a concrete tag — keeps the final summary's `→ vX.Y.Z`
+        # symmetric with the running version.
+        DISPLAY_VERSION="$VERSION"
+        if [[ -n "$DISPLAY_VERSION" && "${DISPLAY_VERSION#v}" == "$DISPLAY_VERSION" ]]; then
+            DISPLAY_VERSION="v${DISPLAY_VERSION}"
+        fi
     fi
 fi
 
@@ -646,7 +669,7 @@ fi
 HOST_IP=$(hostname -I 2>/dev/null | awk '{print $1}')
 echo ""
 if [[ "$IS_UPDATE" == "1" ]]; then
-    info "PiTun upgraded: $RUNNING_VERSION → $VERSION"
+    info "PiTun upgraded: $RUNNING_VERSION → $DISPLAY_VERSION"
 else
     info "PiTun is up."
 fi

@@ -228,7 +228,16 @@ class NaiveManager:
                     type=docker.types.LogConfig.types.JSON,
                     config={"max-size": "10m", "max-file": "3"},
                 ),
-                mem_limit="64m",
+                # 96 MB (was 64 MB through v1.2.5). Observed `exit=137`
+                # SIGKILL on cold start at 192.168.1.3 — Caddy's TLS
+                # session-ticket cache + naive's QUIC connection pool
+                # spike RSS briefly above 64 MB on a freshly provisioned
+                # container. 96 MB gives headroom without significant
+                # memory pressure on a Pi 4 (typical sidecar steady-state
+                # is ~30-40 MB). Combined with the supervisor's
+                # exponential backoff (v1.2.6), tight OOM-restart loops
+                # should no longer be reachable.
+                mem_limit="96m",
                 # Security hardening — naive needs only outbound TCP
                 read_only=True,
                 # Small tmpfs so naive can write transient state (QUIC session

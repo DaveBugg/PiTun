@@ -793,27 +793,22 @@ async def import_servers_json(
                     session.add(new_dep)
                     deployments_restored += 1
         except Exception as exc:  # noqa: BLE001 — per-row error reporting
-            # Three colliding concerns, hardened in v1.2.4:
-            #   * CWE-209 (info exposure via raw exception text in API
-            #     response) — return only the class name, not str(exc).
-            #   * CWE-532 (clear-text logging of sensitive info) —
-            #     don't log raw exc either; an IntegrityError can echo
-            #     the offending password/private_key column value, and
-            #     a Pydantic ValidationError prints the input dict.
-            #     Log only the class name; admins still know whether
-            #     the bucket is IntegrityError vs ValidationError.
-            #   * CWE-117 (log injection via user-controlled `name`) —
-            #     `_NoNewlineFilter` on the root logger from v1.2.2
-            #     already handles this, but %r additionally satisfies
-            #     CodeQL's sanitiser detection and surfaces escape
-            #     sequences in log output verbatim.
+            # Three colliding concerns (CWE-209/532/117) — see
+            # api/nodes.py for the full layered defence rationale.
+            # Pre-extract `row_name` as a typed `str` so CodeQL's
+            # taint analysis stops flagging dict.get() accesses as
+            # tainted just because the parent dict has sensitive
+            # sibling fields (password, private_key, passphrase).
+            row_name = sd.get("name", "?")
+            if not isinstance(row_name, str):
+                row_name = "?"
             import logging
             logging.getLogger(__name__).warning(
                 "Server import row failed: name=%r err_type=%s",
-                sd.get("name", "?"), type(exc).__name__,
+                row_name, type(exc).__name__,
             )
             errors.append(
-                f"{sd.get('name', '?')}: import failed ({type(exc).__name__})"
+                f"{row_name}: import failed ({type(exc).__name__})"
             )
 
     await session.commit()
