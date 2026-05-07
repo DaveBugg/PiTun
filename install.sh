@@ -106,9 +106,17 @@ print_help() {
     exit 0
 }
 
+# Track whether the user explicitly pinned a version (via `--version` or
+# `PITUN_VERSION`). When implicit ("latest"), we refuse to install
+# pre-release tags (`-beta`/`-rc`/`-alpha`) below — beta channels must
+# be opt-in to keep `curl … | sudo bash` cron jobs from accidentally
+# rolling production onto an in-flight beta.
+USER_PINNED_VERSION=0
+[[ "$VERSION" != "latest" ]] && USER_PINNED_VERSION=1
+
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --version)         VERSION="$2"; shift 2 ;;
+        --version)         VERSION="$2"; USER_PINNED_VERSION=1; shift 2 ;;
         --dir)             INSTALL_DIR="$2"; shift 2 ;;
         --build)           USE_BUILD=1; shift ;;
         --offline)         OFFLINE_DIR="$2"; shift 2 ;;
@@ -291,6 +299,44 @@ elif [[ "$USE_BUILD" != "1" ]]; then
         RESOLVED_TAG=$(grep -oE '"tag_name":\s*"[^"]+"' "$STAGING_DIR/release.json" \
                         | head -n1 | sed 's/.*"\([^"]*\)"/\1/')
         info "Resolved version: $RESOLVED_TAG"
+
+        # Pre-release safety net (since v1.2.8). Refuse to silently
+        # install a pre-release tag (`-beta.N`, `-rc.N`, `-alpha.N`,
+        # per semver 2.0) when the user didn't explicitly opt in.
+        # release.yml already marks such tags `prerelease: true` so
+        # the GitHub `/releases/latest` API skips them — this guard
+        # is defense-in-depth for cases where:
+        #   * release.yml hasn't published yet (race window)
+        #   * a maintainer manually flipped a beta to "Latest" in UI
+        #   * the resolved JSON came from a stale cache / CDN edge
+        # If user passed --version or PITUN_VERSION, they get whatever
+        # they asked for, no questions asked (rolling forward to or
+        # back from a beta is a deliberate choice).
+        if [[ "$USER_PINNED_VERSION" == "0" && "$RESOLVED_TAG" == *-* ]]; then
+            echo ""
+            warn "════════════════════════════════════════════════════════════════════"
+            warn "  ⛔ PRE-RELEASE BLOCKED — aborting."
+            warn ""
+            warn "    GitHub /releases/latest resolved to: $RESOLVED_TAG"
+            warn "    This is a pre-release (semver suffix '${RESOLVED_TAG#*-}')."
+            warn ""
+            warn "  The installer refuses to auto-install pre-release tags when no"
+            warn "  --version flag was given. Production hosts running this script"
+            warn "  in a cron / unattended workflow shouldn't roll onto an in-flight"
+            warn "  beta on accident."
+            warn ""
+            warn "  If you DO want this beta, opt in explicitly:"
+            warn "    sudo bash $0 --version $RESOLVED_TAG"
+            warn "  Or via env var:"
+            warn "    sudo PITUN_VERSION=$RESOLVED_TAG bash $0"
+            warn ""
+            warn "  If you expected a stable release, the most likely cause is that"
+            warn "  release.yml hasn't yet published the latest stable tag. Wait a"
+            warn "  few minutes and re-run."
+            warn "════════════════════════════════════════════════════════════════════"
+            exit 1
+        fi
+
         VERSION="$RESOLVED_TAG"
         # Re-derive display version now that `latest` has been resolved
         # to a concrete tag — keeps the final summary's `→ vX.Y.Z`

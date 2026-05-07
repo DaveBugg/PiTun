@@ -228,6 +228,27 @@ jobs:
       # runs on a real tag push (`v*.*.*`); a manual `workflow_dispatch`
       # against an arbitrary version string would skip this step,
       # since the inputs.version may not correspond to a real tag.
+      #
+      # Pre-release detection: any tag containing a hyphen-suffix
+      # (`-beta.1`, `-rc.2`, `-alpha.0`, etc., per semver 2.0) is
+      # marked `prerelease: true` and `make_latest: false`. This
+      # keeps the GitHub `/releases/latest` API pointing at the most
+      # recent STABLE release, so users running `curl … | sudo bash`
+      # without an explicit `--version` flag never auto-upgrade onto
+      # an in-flight beta. Beta testers opt in by running the
+      # installer with `--version vX.Y.Z-beta.N`.
+      - name: Detect pre-release tag
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+        id: prerelease
+        run: |
+          if [[ "${{ github.ref_name }}" == *-* ]]; then
+            echo "is_prerelease=true" >> "$GITHUB_OUTPUT"
+            echo "Tag ${{ github.ref_name }} contains a hyphen suffix → publishing as pre-release."
+          else
+            echo "is_prerelease=false" >> "$GITHUB_OUTPUT"
+            echo "Tag ${{ github.ref_name }} → publishing as stable release (Latest)."
+          fi
+
       - name: Create / update GitHub Release with assets
         if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@b4309332981a82ec1c5618f44dd2e27cc8bfbfda # v3.0.0
@@ -237,3 +258,8 @@ jobs:
           generate_release_notes: true
           fail_on_unmatched_files: true
           files: release/*
+          prerelease: ${{ steps.prerelease.outputs.is_prerelease }}
+          # `make_latest: legacy` (default) gives Latest only to
+          # non-prerelease tags. Be explicit so this stays correct
+          # if a future action version changes the default.
+          make_latest: ${{ steps.prerelease.outputs.is_prerelease == 'false' && 'true' || 'false' }}
