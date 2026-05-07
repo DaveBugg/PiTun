@@ -136,6 +136,31 @@ DISTRO_ID="unknown"
 
 KERNEL_VER="$(uname -r)"
 
+# IPv6 connectivity probe. Debian 13 (and any glibc with v6-preferring
+# resolver order) tries IPv6 first when DNS returns AAAA. On VPS or
+# corporate networks where IPv6 routes are advertised but TCP
+# connections silently drop, every curl hangs ~30-75s on a v6 attempt
+# before timing out and falling through to v4. Worse, half-pumped
+# responses leave the install in a broken state.
+#
+# Detect once at startup: try a tiny IPv6-only request to api.github.com
+# (the GitHub `/zen` endpoint returns ~30 bytes, no auth needed). If it
+# fails AND IPv4 succeeds, force `-4` on every subsequent curl. The
+# CURL_FORCE_IPV4 var is consumed by the `download()` function and
+# the Docker / Compose curl calls below.
+CURL_FORCE_IPV4=""
+if command -v curl &>/dev/null; then
+    if ! curl -6 --max-time 5 -fsS https://api.github.com/zen -o /dev/null 2>/dev/null; then
+        if curl -4 --max-time 5 -fsS https://api.github.com/zen -o /dev/null 2>/dev/null; then
+            warn "IPv6 to GitHub is broken (DNS returns AAAA but TCP fails) — forcing IPv4 (--ipv4) for all downloads."
+            CURL_FORCE_IPV4="-4"
+        fi
+        # If both v6 AND v4 fail, we don't set the flag — let the
+        # actual download attempts surface the real error so the
+        # admin sees it instead of a misleading "IPv6 broken" warning.
+    fi
+fi
+
 # Detect mode: first-install vs upgrade. The signal is the existence
 # of an `.env` file at the target — that file is generated once on
 # the very first run and never overwritten afterwards. docker-compose.yml
@@ -223,7 +248,9 @@ download() {
     # `--continue-at -` resumes a partial download if the server supports it.
     # `--retry-all-errors` makes the whole retry loop catch transient HTTP 5xx
     # too, not just connection errors.
-    curl -fL --progress-bar \
+    # `$CURL_FORCE_IPV4` is `-4` when initial connectivity probe found
+    # broken IPv6 (Debian 13 + IPv6-broken VPS pattern); empty otherwise.
+    curl ${CURL_FORCE_IPV4:-} -fL --progress-bar \
         --retry 5 --retry-delay 5 --retry-all-errors \
         --continue-at - \
         -o "${dst}.tmp" "$url" \
@@ -489,7 +516,10 @@ EOF
         # `get.docker.com` is the official auto-detecting installer.
         # Idempotent: re-running on a host with Docker already installed
         # is fine, but we skip the curl entirely above to be safe.
-        run sh -c "curl -fsSL https://get.docker.com | sh"
+        # Inject `$CURL_FORCE_IPV4` if our probe found IPv6 broken —
+        # otherwise the upstream get.docker.com curl can hang the same
+        # 30-75s on the IPv6 attempt before falling through.
+        run sh -c "curl ${CURL_FORCE_IPV4:-} -fsSL https://get.docker.com | sh"
         run systemctl enable --now docker
     else
         info "Docker already installed: $(docker --version)"
@@ -513,7 +543,7 @@ EOF
         esac
         if [[ "$DRY_RUN" != "1" ]]; then
             mkdir -p /usr/local/lib/docker/cli-plugins
-            curl -fsSL -o /usr/local/lib/docker/cli-plugins/docker-compose \
+            curl ${CURL_FORCE_IPV4:-} -fsSL -o /usr/local/lib/docker/cli-plugins/docker-compose \
                 "https://github.com/docker/compose/releases/download/v2.29.1/docker-compose-linux-${_compose_arch}"
             chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
         fi
