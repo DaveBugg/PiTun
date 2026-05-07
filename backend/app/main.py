@@ -109,6 +109,68 @@ async def lifespan(app: FastAPI):
     except Exception as exc:
         logger.warning("Naive sidecar sync on boot skipped: %s", exc)
 
+    # Heal `active_node_id` if it points to a node that no longer exists or
+    # is disabled — observed in the wild on a v1.2.2 install whose
+    # subscription rotation deleted the previous active node, leaving the
+    # setting pointing at id=64 with no row backing it. The next config
+    # generation then produced a config without any proxy outbound (only
+    # `direct`/`block`/`dns-out`), and traffic silently fell through to
+    # direct routing. A clear log line + auto-pick of the first enabled
+    # node lets the admin spot it on the next health check.
+    try:
+        from sqlmodel import select
+        from sqlmodel.ext.asyncio.session import AsyncSession
+        from app.database import get_async_engine
+        from app.models import Settings as DBSettings, Node
+
+        async with AsyncSession(get_async_engine()) as session:
+            row = (await session.exec(
+                select(DBSettings).where(DBSettings.key == "active_node_id")
+            )).first()
+            stale = False
+            if row and row.value:
+                try:
+                    target_id = int(row.value)
+                except (TypeError, ValueError):
+                    target_id = None
+                    stale = True
+                else:
+                    node = await session.get(Node, target_id)
+                    if node is None or not node.enabled:
+                        stale = True
+
+                if stale:
+                    enabled_nodes = (await session.exec(
+                        select(Node).where(Node.enabled == True).order_by(Node.id)
+                    )).all()
+                    new_id = enabled_nodes[0].id if enabled_nodes else None
+                    old_value = row.value
+                    if new_id is not None:
+                        row.value = str(new_id)
+                        session.add(row)
+                        await session.commit()
+                        logger.warning(
+                            "active_node_id healed on boot: %r -> %d (%r) "
+                            "— previous value referenced a missing or disabled node",
+                            old_value, new_id, enabled_nodes[0].name,
+                        )
+                    else:
+                        # No enabled nodes at all — clear the setting so
+                        # config_gen / auto-start skip cleanly. Admin will
+                        # add a node and pick it manually.
+                        row.value = ""
+                        session.add(row)
+                        await session.commit()
+                        logger.warning(
+                            "active_node_id cleared on boot: previous %r referenced "
+                            "a missing/disabled node, and there are no other enabled "
+                            "nodes to fall back to. Add a node and set it active.",
+                            old_value,
+                        )
+    except Exception as exc:
+        # Healing is best-effort — never block backend startup on it.
+        logger.warning("active_node_id integrity check skipped: %s", exc)
+
     # Auto-start xray on container boot if auto_restart is enabled and nodes exist
     try:
         from sqlmodel import select

@@ -109,7 +109,37 @@ DISTRO_ID="unknown"
 
 KERNEL_VER="$(uname -r)"
 
+# Detect mode: first-install vs upgrade. The signal is the existence
+# of an `.env` file at the target — that file is generated once on
+# the very first run and never overwritten afterwards. docker-compose.yml
+# alone is too weak (we always re-extract the source tarball, so it
+# would always be there during the upgrade pass).
+#
+# This flag is consulted later to:
+#   * suppress the "set admin password on first login" hint on upgrades
+#   * print a "Found existing install — upgrading" banner
+#   * take a SQLite snapshot before loading new backend images
+#   * skip the static-IP verification noise when the host has been
+#     running PiTun fine for months (the install either has it right
+#     already or the user's network really is fine with DHCP)
+IS_UPDATE=0
+if [[ -f "$INSTALL_DIR/.env" ]]; then
+    IS_UPDATE=1
+fi
+
+# Read the running version (if any) for the upgrade banner. Best-effort
+# — if the backend container isn't responding or curl is missing, we
+# print "?" and move on.
+RUNNING_VERSION="?"
+if [[ "$IS_UPDATE" == "1" ]] && command -v curl &>/dev/null; then
+    RUNNING_VERSION=$(curl -fsS --max-time 2 http://127.0.0.1:8000/health 2>/dev/null \
+        | grep -oE '"version"\s*:\s*"[^"]*"' \
+        | sed 's/"version"\s*:\s*"\([^"]*\)"/\1/' || true)
+    RUNNING_VERSION="${RUNNING_VERSION:-?}"
+fi
+
 info "PiTun installer"
+info "  Mode:    $([[ "$IS_UPDATE" == "1" ]] && echo "UPGRADE (current version: $RUNNING_VERSION)" || echo "FRESH INSTALL")"
 info "  Arch:    $ARCH_RAW ($ARCH)"
 info "  Distro:  $DISTRO_ID"
 info "  Kernel:  $KERNEL_VER"
@@ -269,12 +299,33 @@ info "All downloads complete. Internet may go down now — install continues off
 if [[ "$SKIP_HOST_PREP" != "1" ]]; then
     step "Preparing host"
 
+    # DNS-over-TCP fallback. Some networks (corporate firewalls, certain
+    # ISPs, hotel APs) silently drop UDP:53. Without this, `apt-get update`
+    # below dies with a cryptic "Temporary failure resolving" error and
+    # the user has to figure out it's DNS. The `options use-vc` line tells
+    # libc to use TCP for resolves. Idempotent — already-tcp configs stay
+    # the same; networks where UDP works skip this branch entirely.
+    if ! timeout 5 getent hosts deb.debian.org >/dev/null 2>&1 \
+       && ! timeout 5 getent hosts archive.ubuntu.com >/dev/null 2>&1; then
+        warn "DNS resolution failing — likely UDP:53 blocked. Switching to DNS over TCP…"
+        if [[ "$DRY_RUN" != "1" ]]; then
+            printf "nameserver 8.8.8.8\nnameserver 1.1.1.1\noptions use-vc\n" \
+                > /etc/resolv.conf
+        fi
+        if timeout 5 getent hosts deb.debian.org >/dev/null 2>&1; then
+            info "DNS-over-TCP fallback is working"
+        else
+            warn "DNS still failing — you may need to fix /etc/resolv.conf manually."
+        fi
+    fi
+
     info "Installing system packages…"
     run apt-get update -qq
     run apt-get install -y --no-install-recommends \
         curl wget ca-certificates gnupg lsb-release \
         nftables iproute2 net-tools iptables \
-        arp-scan dnsutils unzip jq cron
+        arp-scan dnsutils unzip jq cron \
+        sqlite3 git
 
     # avahi-daemon binds UDP/5353 — same port xray uses for DNS forwarding.
     if systemctl is-active --quiet avahi-daemon 2>/dev/null; then
@@ -312,6 +363,33 @@ EOF
         info "Docker already installed: $(docker --version)"
     fi
 
+    # Docker Compose v2. `get.docker.com` ships the plugin in fresh
+    # installs, but on hosts where Docker was put down via Debian's
+    # `docker.io` package without the plugin, `docker compose` is
+    # missing and `docker compose up -d` later in this script fails
+    # cryptically. Detect + install the plugin binary as a fallback.
+    if ! docker compose version &>/dev/null; then
+        info "Installing Docker Compose v2 plugin…"
+        # Top-level script — no `local`, but using a `_compose_arch`
+        # name to make it obvious the var is private to this block.
+        _compose_arch=$(uname -m)
+        case "$_compose_arch" in
+            aarch64) _compose_arch="aarch64" ;;
+            x86_64)  _compose_arch="x86_64"  ;;
+            armv7l)  _compose_arch="armv7"   ;;
+            *) error "Unsupported arch for Docker Compose: $_compose_arch" ;;
+        esac
+        if [[ "$DRY_RUN" != "1" ]]; then
+            mkdir -p /usr/local/lib/docker/cli-plugins
+            curl -fsSL -o /usr/local/lib/docker/cli-plugins/docker-compose \
+                "https://github.com/docker/compose/releases/download/v2.29.1/docker-compose-linux-${_compose_arch}"
+            chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
+        fi
+        info "Docker Compose installed: $(docker compose version 2>&1 | head -1)"
+    else
+        info "Docker Compose already available: $(docker compose version 2>&1 | head -1)"
+    fi
+
     # Docker log rotation — without this, `docker logs` will eat disk space
     # over months (xray + DNS query log are chatty).
     if [[ ! -f /etc/docker/daemon.json ]]; then
@@ -326,6 +404,29 @@ EOF
 EOF
             systemctl restart docker || true
         fi
+    fi
+
+    # Add the invoking user to the `docker` group so they can run
+    # `docker` and `docker compose` without sudo after a logout/login
+    # cycle. Without this, every `docker exec pitun-backend …` from a
+    # plain user shell hits "permission denied connecting to docker.sock"
+    # — exactly what bit one of our installs in the wild on v1.2.2.
+    #
+    # We pick `$SUDO_USER` (the original user that invoked sudo) when
+    # available; falls back to skipping if install.sh was run by root
+    # directly (no SUDO_USER) or by the docker user in a container.
+    TARGET_USER="${SUDO_USER:-}"
+    if [[ -n "$TARGET_USER" && "$TARGET_USER" != "root" ]]; then
+        if id -nG "$TARGET_USER" 2>/dev/null | tr ' ' '\n' | grep -qx docker; then
+            info "User '$TARGET_USER' already in 'docker' group"
+        else
+            info "Adding user '$TARGET_USER' to 'docker' group…"
+            run usermod -aG docker "$TARGET_USER"
+            warn "$TARGET_USER must log out and back in (or run 'newgrp docker') for the group to take effect."
+        fi
+    else
+        warn "Couldn't detect a non-root invoking user — skipping docker-group setup."
+        warn "If you'll run docker commands as a non-root user later: usermod -aG docker <username>"
     fi
 else
     info "Skipping host prep (--skip-host-prep)"
@@ -358,6 +459,33 @@ if [[ "$DRY_RUN" != "1" ]]; then
     mkdir -p "$INSTALL_DIR"
     # Strip the top-level dir from the tarball (PiTun-x.y.z/ → /).
     tar -xzf "$SRC_TARBALL" -C "$INSTALL_DIR" --strip-components=1
+fi
+
+# ── Backup SQLite before upgrade ─────────────────────────────────────────────
+# Pre-upgrade snapshot so a botched migration / new-version regression has
+# a one-line rollback. We use sqlite's online backup API via Python (the
+# container always has it) instead of a raw `cp` so concurrent backend
+# writes don't tear the file.
+if [[ "$IS_UPDATE" == "1" && "$DRY_RUN" != "1" ]]; then
+    step "Backing up SQLite (pre-upgrade snapshot)"
+    BACKUP_PATH="$INSTALL_DIR/data-backup-pre-${VERSION}-$(date +%s).db"
+    if docker ps --format '{{.Names}}' 2>/dev/null | grep -qx 'pitun-backend'; then
+        if docker exec pitun-backend python -c "
+import sqlite3
+src = sqlite3.connect('/app/data/pitun.db')
+dst = sqlite3.connect('/tmp/pitun-pre-upgrade.bak')
+src.backup(dst)
+dst.close(); src.close()
+" 2>/dev/null; then
+            docker cp pitun-backend:/tmp/pitun-pre-upgrade.bak "$BACKUP_PATH" 2>/dev/null && \
+                info "  Snapshot saved to $BACKUP_PATH" || \
+                warn "  Could not docker-cp snapshot — continuing without backup"
+        else
+            warn "  pitun-backend not responding — skipping pre-upgrade backup"
+        fi
+    else
+        warn "  pitun-backend container not running — skipping pre-upgrade backup"
+    fi
 fi
 
 # ── Load Docker images (release mode) ────────────────────────────────────────
@@ -474,18 +602,74 @@ if [[ "$DRY_RUN" != "1" ]]; then
     fi
 fi
 
+# ── Static IP / DHCP sanity check (both modes) ───────────────────────────────
+# PiTun is a default gateway for LAN devices. If its own LAN IP changes
+# (DHCP lease rolls), every device pointing at the old IP loses internet
+# until they re-DHCP. We don't try to fix DHCP for the user — too many
+# distros/tools (NetworkManager / dhcpcd / netplan / systemd-networkd) —
+# but we DO surface the warning every install and every upgrade.
+DEFAULT_IF=$(ip -o -4 route show to default 2>/dev/null | awk '{print $5}' | head -n1)
+if [[ -n "$DEFAULT_IF" ]]; then
+    IS_STATIC=0
+    # NetworkManager
+    if command -v nmcli &>/dev/null; then
+        NM_CON=$(nmcli -t -f NAME,DEVICE con show --active 2>/dev/null \
+                 | awk -F: -v ifc="$DEFAULT_IF" '$2==ifc{print $1; exit}')
+        if [[ -n "$NM_CON" ]]; then
+            METHOD=$(nmcli -t -f ipv4.method con show "$NM_CON" 2>/dev/null | cut -d: -f2)
+            [[ "$METHOD" == "manual" ]] && IS_STATIC=1
+        fi
+    fi
+    # dhcpcd-style: /etc/dhcpcd.conf with static config block
+    if [[ "$IS_STATIC" == "0" && -f /etc/dhcpcd.conf ]]; then
+        if grep -qE "^\s*interface\s+$DEFAULT_IF" /etc/dhcpcd.conf 2>/dev/null \
+           && grep -qE "^\s*static\s+ip_address" /etc/dhcpcd.conf 2>/dev/null; then
+            IS_STATIC=1
+        fi
+    fi
+    # systemd-networkd: any *.network file declaring a static Address=
+    if [[ "$IS_STATIC" == "0" && -d /etc/systemd/network ]]; then
+        if grep -lE "^\s*Address=" /etc/systemd/network/*.network 2>/dev/null | head -1 >/dev/null; then
+            IS_STATIC=1
+        fi
+    fi
+    if [[ "$IS_STATIC" == "0" ]]; then
+        warn "Network: $DEFAULT_IF appears to use DHCP. PiTun should run on a static IP —"
+        warn "         if the host's IP changes after a router reboot, every LAN device"
+        warn "         pointing at it as gateway will lose internet until they re-DHCP."
+        warn "         Configure a static lease (in your router) or static IP (NetworkManager /"
+        warn "         dhcpcd.conf / netplan) before relying on PiTun for production traffic."
+    fi
+fi
+
 # ── Summary ──────────────────────────────────────────────────────────────────
 HOST_IP=$(hostname -I 2>/dev/null | awk '{print $1}')
 echo ""
-info "PiTun is up."
+if [[ "$IS_UPDATE" == "1" ]]; then
+    info "PiTun upgraded: $RUNNING_VERSION → $VERSION"
+else
+    info "PiTun is up."
+fi
 echo ""
 echo -e "${GREEN}Web UI:${NC}  http://${HOST_IP:-<this-host>}/"
-echo -e "${GREEN}Login:${NC}   admin / password  (change on first login)"
+if [[ "$IS_UPDATE" == "1" ]]; then
+    echo -e "${GREEN}Backup:${NC}  ${BACKUP_PATH:-(no pre-upgrade snapshot — see warnings above)}"
+else
+    echo -e "${GREEN}Login:${NC}   admin / password  (change on first login)"
+fi
 echo ""
-echo -e "${YELLOW}Next steps:${NC}"
-echo "  1. Edit $INSTALL_DIR/.env if you haven't (LAN_CIDR / GATEWAY_IP / INTERFACE)"
-echo "  2. Set the host's LAN IP as static (not DHCP)"
-echo "  3. Point your devices' default gateway at this host"
+if [[ "$IS_UPDATE" == "1" ]]; then
+    echo -e "${YELLOW}Post-upgrade:${NC}"
+    echo "  • Verify the UI loads cleanly and your nodes/rules are intact"
+    echo "  • Check the Recent Events feed for any startup warnings"
+    echo "  • If anything broke: ${BACKUP_PATH:-pre-upgrade snapshot under $INSTALL_DIR/data-backup-pre-*.db}"
+    echo "    can be restored: stop backend, replace data/pitun.db, start backend"
+else
+    echo -e "${YELLOW}Next steps:${NC}"
+    echo "  1. Edit $INSTALL_DIR/.env if you haven't (LAN_CIDR / GATEWAY_IP / INTERFACE)"
+    echo "  2. Set the host's LAN IP as static (not DHCP)"
+    echo "  3. Point your devices' default gateway at this host"
+fi
 echo ""
 echo "Logs:    docker compose -f $INSTALL_DIR/docker-compose.yml logs -f"
 echo "Restart: docker compose -f $INSTALL_DIR/docker-compose.yml restart"

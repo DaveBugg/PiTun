@@ -607,11 +607,31 @@ async def export_servers_json(
     include_secrets: bool = Query(False, description="Include password/private_key/passphrase"),
     session: AsyncSession = Depends(get_session),
 ):
+    """Bundle envelope `version: 2` (since v1.2.5) — includes nested
+    `deployments` per server. v1 envelope (without deployments) is still
+    accepted by the import endpoint for backward compatibility, so an
+    older PiTun reading our export gracefully falls back to "servers
+    only".
+
+    Why deployments are nested under their server: a deployment row is
+    keyed by `(server_id, protocol)`; the only stable identity across
+    instances is the parent server, not the autoincrement id. Nesting
+    avoids a separate id-mapping table on the import side.
+    """
     from datetime import datetime as _dt, timezone as _tz
     from app.config import APP_VERSION as _APP_VERSION
     from fastapi.responses import JSONResponse as _JSON
 
     rows = (await session.exec(select(Server).order_by(Server.id))).all()
+
+    # Pull all deployments in one query, then bucket by server_id —
+    # avoids N+1 round-trips when the user has many servers.
+    deployments = (await session.exec(
+        select(ServerDeployment).order_by(ServerDeployment.id)
+    )).all()
+    by_server: dict[int, list[ServerDeployment]] = {}
+    for d in deployments:
+        by_server.setdefault(d.server_id, []).append(d)
 
     servers_out: List[dict] = []
     for s in rows:
@@ -627,11 +647,29 @@ async def export_servers_json(
             item["password"] = s.password
             item["private_key"] = s.private_key
             item["passphrase"] = s.passphrase
+
+        # Nested deployments. We DON'T export `last_node_id` — node ids
+        # don't survive instance migration, and the linkage will be
+        # re-established on the next "Create Node" click. We DO export
+        # `status` so a "deployed" deployment stays "deployed" after
+        # restore, otherwise the user would see the install script
+        # button again on a server where they already ran the script.
+        deps = by_server.get(s.id, [])
+        item["deployments"] = [
+            {
+                "protocol": d.protocol,
+                "config": json.loads(d.config_json) if d.config_json else {},
+                "status": d.status,
+                "created_at": d.created_at.isoformat() if d.created_at else None,
+                "updated_at": d.updated_at.isoformat() if d.updated_at else None,
+            }
+            for d in deps
+        ]
         servers_out.append(item)
 
     payload = {
         "kind": "pitun-servers-export",
-        "version": 1,
+        "version": 2,
         "exported_at": _dt.now(_tz.utc).isoformat(timespec="seconds"),
         "pitun_version": _APP_VERSION,
         "include_secrets": include_secrets,
@@ -666,21 +704,40 @@ async def import_servers_json(
         raise HTTPException(400, "Invalid bundle: expected a JSON object at the top level")
     if payload.get("kind") != "pitun-servers-export":
         raise HTTPException(400, "Not a PiTun servers export bundle (kind mismatch)")
-    if payload.get("version") != 1:
-        raise HTTPException(400, f"Unsupported export version: {payload.get('version')}")
+    bundle_version = payload.get("version")
+    # Accept v1 (servers only — pre-1.2.5) and v2 (servers + nested
+    # deployments — since 1.2.5). v1 imports skip deployments restoration
+    # entirely. Anything else is rejected so we don't silently lose data
+    # if a future v3 introduces structural changes.
+    if bundle_version not in (1, 2):
+        raise HTTPException(400, f"Unsupported export version: {bundle_version}")
     servers_in = payload.get("servers")
     if not isinstance(servers_in, list):
         raise HTTPException(400, "Bundle missing 'servers' array")
     has_secrets = bool(payload.get("include_secrets", False))
 
     if replace:
+        # Cascade: deleting Server rows takes their ServerDeployment rows
+        # with them via FK. last_node_id on deployments is set to NULL
+        # by the Node FK's ON DELETE SET NULL — but Node rows aren't
+        # touched here, so node linkage of NEW deployments stays clean
+        # if we re-create the same servers.
         existing = (await session.exec(select(Server))).all()
         for srv in existing:
+            # Manually clear deployments first to avoid relying on cascade
+            # at the SQLite level (we don't set up cascade in the schema
+            # — the ServerDeployment FK is a plain FK without ON DELETE).
+            existing_deps = (await session.exec(
+                select(ServerDeployment).where(ServerDeployment.server_id == srv.id)
+            )).all()
+            for d in existing_deps:
+                await session.delete(d)
             await session.delete(srv)
         await session.flush()
 
     imported = 0
     skipped = 0
+    deployments_restored = 0
     errors: List[str] = []
     for sd in servers_in:
         try:
@@ -707,7 +764,34 @@ async def import_servers_json(
 
             server = Server(**validated.model_dump())
             session.add(server)
+            # Need the autoincrement id before we can FK deployments
+            # to it. flush() pushes the INSERT but stays inside the
+            # outer transaction — the whole import is still one commit.
+            await session.flush()
+            await session.refresh(server)
             imported += 1
+
+            # v2 envelope: nested deployments. Quietly tolerate v1
+            # bundles that don't have the key or have it as None.
+            deps_in = sd.get("deployments") or []
+            if isinstance(deps_in, list):
+                for dep in deps_in:
+                    if not isinstance(dep, dict) or "protocol" not in dep:
+                        continue
+                    cfg = dep.get("config") or {}
+                    if not isinstance(cfg, dict):
+                        cfg = {}
+                    new_dep = ServerDeployment(
+                        server_id=server.id,
+                        protocol=str(dep["protocol"]),
+                        config_json=json.dumps(cfg),
+                        status=str(dep.get("status") or "configured"),
+                        # last_node_id intentionally not restored —
+                        # Node ids don't survive instance migration.
+                        # User clicks "Create Node" again to re-link.
+                    )
+                    session.add(new_dep)
+                    deployments_restored += 1
         except Exception as exc:  # noqa: BLE001 — per-row error reporting
             # Three colliding concerns, hardened in v1.2.4:
             #   * CWE-209 (info exposure via raw exception text in API
@@ -736,6 +820,7 @@ async def import_servers_json(
     return {
         "imported": imported,
         "skipped": skipped,
+        "deployments_restored": deployments_restored,
         "errors": errors,
         "has_secrets": has_secrets,
     }
