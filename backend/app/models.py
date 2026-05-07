@@ -327,3 +327,40 @@ class Event(SQLModel, table=True):
     title: str = Field(max_length=200)
     details: Optional[str] = Field(default=None, max_length=1000)
     entity_id: Optional[int] = Field(default=None, index=True)
+
+
+class Job(SQLModel, table=True):
+    """Persistent record of a long-running async operation
+    (v1.3.0 server-tasks subsystem).
+
+    Currently: `kind="deploy"` for SSH-driven proxy install on a
+    registered Server. Extensible to subscription_refresh,
+    circle_rotate, batch_import, etc. in later releases.
+
+    Hybrid persistence model — see `core/jobs.py.JobManager`:
+      * This row holds METADATA (status, timings, error summary,
+        config for retry, log_tail snapshot at finalization).
+      * Live stdout/stderr stream during a running job lives in
+        RAM only (`JobManager._buffers`), capped at ~2000 lines.
+        On completion, last ~4 KB combined is captured into
+        `log_tail` so post-completion UI still shows something.
+
+    On backend restart, `status='running'` rows older than ~1 hour
+    are healed to `status='failed'` with a "backend restarted"
+    error by `core.jobs.JobManager._heal_stale_jobs()`.
+    """
+    id: str = Field(primary_key=True)               # uuid hex (32 chars)
+    kind: str = Field(index=True, max_length=32)    # "deploy" | future kinds
+    target_id: Optional[int] = Field(default=None, index=True)
+    target_name: Optional[str] = Field(default=None, max_length=200)
+    protocol: Optional[str] = Field(default=None, max_length=32)
+    status: str = Field(default="running", index=True, max_length=16)
+    config_json: Optional[str] = None
+    started_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        index=True,
+    )
+    finished_at: Optional[datetime] = None
+    error: Optional[str] = Field(default=None, max_length=500)
+    result_json: Optional[str] = None
+    log_tail: Optional[str] = None                  # ~4 KB combined, NULL while running

@@ -31,7 +31,7 @@ import socket
 import struct
 import time
 from dataclasses import dataclass, field
-from typing import Optional, Tuple
+from typing import Any, Callable, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -511,6 +511,253 @@ async def exec_remote_script(
             duration_sec=round(time.monotonic() - started_at, 3),
         )
     except Exception as exc:  # noqa: BLE001 — auth/protocol errors verbatim
+        err = str(exc).strip() or exc.__class__.__name__
+        return DeployResult(
+            ok=False,
+            connect_latency_ms=tcp_rtt_ms,
+            error=err,
+            duration_sec=round(time.monotonic() - started_at, 3),
+        )
+
+
+# ── Streaming variant for the v1.3.0 server-tasks subsystem ──────────────────
+
+
+async def exec_remote_script_streaming(
+    *,
+    host: str,
+    port: int = 22,
+    username: str = "root",
+    password: Optional[str] = None,
+    private_key: Optional[str] = None,
+    passphrase: Optional[str] = None,
+    script_content: str,
+    env: Optional[dict[str, str]] = None,
+    timeout: float = _DEFAULT_DEPLOY_TIMEOUT_S,
+    on_line: Callable[[str, str], "asyncio.Future[Any] | Any"],
+) -> DeployResult:
+    """Same contract as `exec_remote_script` but invokes
+    `on_line(kind, line)` on every full output line as it arrives.
+
+    Used by `core.jobs.JobManager` to fan out lines to the live log
+    buffer + WS subscribers in real time, instead of buffering for
+    minutes and emitting everything at the end.
+
+    Implementation differs in one place: `conn.create_process()` +
+    parallel readers on stdout/stderr instead of `conn.run()` (which
+    waits for completion and returns whole streams). Everything
+    else — DNS bypass, SO_MARK, SFTP upload, env-prefix command,
+    cleanup — is identical.
+
+    `on_line` may be sync or async. Sync callables are awaited via
+    `asyncio.iscoroutine` check on the return value (no-op if it
+    returned None). This lets tests pass plain `lambda` mocks
+    alongside production `async def` JobManager hooks.
+    """
+    if not host:
+        return DeployResult(ok=False, error="host is required")
+    if not (private_key or password):
+        return DeployResult(ok=False, error="no credentials configured")
+    if not script_content:
+        return DeployResult(ok=False, error="empty script_content")
+
+    env = env or {}
+    started_at = time.monotonic()
+
+    try:
+        ip = await _resolve_direct(host)
+    except Exception as exc:  # noqa: BLE001
+        return DeployResult(ok=False, error=f"DNS: {exc}")
+
+    try:
+        import asyncssh  # type: ignore
+    except ImportError as exc:
+        return DeployResult(ok=False, error=f"asyncssh not installed: {exc}")
+
+    loop = asyncio.get_event_loop()
+    try:
+        sock, tcp_rtt_ms = await loop.run_in_executor(
+            None, _connect_marked, ip, port, _CONNECT_TIMEOUT_S
+        )
+    except (OSError, socket.timeout) as exc:
+        return DeployResult(ok=False, error=f"TCP: {exc}")
+
+    connect_kwargs: dict = {
+        "host": host,
+        "port": port,
+        "username": username,
+        "known_hosts": None,
+        "sock": sock,
+    }
+    if private_key:
+        try:
+            key_obj = asyncssh.import_private_key(
+                private_key,
+                passphrase=passphrase or None,
+            )
+        except Exception as exc:  # noqa: BLE001
+            sock.close()
+            return DeployResult(
+                ok=False,
+                connect_latency_ms=tcp_rtt_ms,
+                error=f"invalid private key: {exc}",
+            )
+        connect_kwargs["client_keys"] = [key_obj]
+    elif password:
+        connect_kwargs["password"] = password
+
+    remote_script_path = f"/tmp/pitun-deploy-{secrets.token_hex(8)}.sh"
+
+    # Buffers we'll return at the end (same as sync variant — caller
+    # gets the FULL stdout/stderr as well as having received per-line
+    # callbacks). 256 KB cap each, marker on overflow.
+    full_stdout_parts: list[str] = []
+    full_stderr_parts: list[str] = []
+    stdout_size = 0
+    stderr_size = 0
+
+    async def _safe_call(kind: str, line: str) -> None:
+        """Invoke on_line, tolerate sync vs async callables, swallow
+        callback errors (a buggy subscriber must NOT abort the deploy).
+        """
+        try:
+            ret = on_line(kind, line)
+            if asyncio.iscoroutine(ret):
+                await ret
+        except Exception as exc:  # noqa: BLE001 — log + continue
+            logger.debug("on_line callback raised (non-fatal): %s", exc)
+
+    async def _drain(stream, kind: str):
+        """Read a stream line-by-line, push to on_line + accumulate
+        in the full-output buffer. Stops on EOF or stream close."""
+        nonlocal stdout_size, stderr_size
+        try:
+            async for raw in stream:
+                # asyncssh streams yield strings already (decoded with
+                # the connection's encoding setting, default utf-8).
+                # Each yield is a chunk that may contain partial lines —
+                # we explicitly split on \n and keep a remainder.
+                # However, in practice asyncssh's process streams iterate
+                # by-line if `bufsize` was lined; we still defensively
+                # split.
+                text = raw if isinstance(raw, str) else raw.decode("utf-8", errors="replace")
+                for line in text.splitlines():
+                    if line == "" and not text:
+                        continue
+                    await _safe_call(kind, line)
+                    if kind == "stdout":
+                        if stdout_size < _OUTPUT_CAP_BYTES:
+                            full_stdout_parts.append(line + "\n")
+                            stdout_size += len(line) + 1
+                    else:
+                        if stderr_size < _OUTPUT_CAP_BYTES:
+                            full_stderr_parts.append(line + "\n")
+                            stderr_size += len(line) + 1
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("Stream %s drain ended: %s", kind, exc)
+
+    try:
+        async with asyncio.timeout(timeout + _CONNECT_TIMEOUT_S):
+            async with asyncssh.connect(**connect_kwargs) as conn:
+                # Upload script via SFTP — same as sync variant.
+                try:
+                    async with conn.start_sftp_client() as sftp:
+                        async with sftp.open(remote_script_path, "wb") as rf:
+                            await rf.write(script_content.encode("utf-8"))
+                        await sftp.chmod(remote_script_path, 0o755)
+                except Exception as exc:  # noqa: BLE001
+                    return DeployResult(
+                        ok=False,
+                        connect_latency_ms=tcp_rtt_ms,
+                        error=f"upload: {exc}",
+                        duration_sec=round(time.monotonic() - started_at, 3),
+                    )
+
+                cmd = _build_remote_command(remote_script_path, env)
+
+                # Use create_process for true streaming. wait() blocks
+                # until exit; we run drain coroutines in parallel so
+                # output flows to subscribers in real time.
+                try:
+                    proc = await conn.create_process(cmd)
+                except Exception as exc:  # noqa: BLE001
+                    return DeployResult(
+                        ok=False,
+                        connect_latency_ms=tcp_rtt_ms,
+                        error=f"exec: {exc}",
+                        duration_sec=round(time.monotonic() - started_at, 3),
+                    )
+
+                try:
+                    # Run drain tasks alongside the wait — gather
+                    # ensures we collect ALL output even after exit.
+                    await asyncio.wait_for(
+                        asyncio.gather(
+                            _drain(proc.stdout, "stdout"),
+                            _drain(proc.stderr, "stderr"),
+                            proc.wait(),
+                        ),
+                        timeout=timeout,
+                    )
+                except asyncio.TimeoutError:
+                    try:
+                        proc.terminate()
+                    except Exception:  # noqa: BLE001
+                        pass
+                    return DeployResult(
+                        ok=False,
+                        connect_latency_ms=tcp_rtt_ms,
+                        stdout=_truncate("".join(full_stdout_parts)),
+                        stderr=_truncate("".join(full_stderr_parts)),
+                        error=f"timeout: script exceeded {int(timeout)}s",
+                        duration_sec=round(time.monotonic() - started_at, 3),
+                    )
+                finally:
+                    # Cleanup — best-effort
+                    try:
+                        await conn.run(f"rm -f {shlex.quote(remote_script_path)}", check=False)
+                    except Exception as cleanup_exc:  # noqa: BLE001
+                        logger.debug(
+                            "Failed to clean up %s on %s: %s",
+                            remote_script_path, host, cleanup_exc,
+                        )
+
+                exit_code = proc.exit_status if proc.exit_status is not None else -1
+                stdout = _truncate("".join(full_stdout_parts))
+                stderr = _truncate("".join(full_stderr_parts))
+
+                ok = exit_code == 0
+                error: Optional[str] = None
+                if not ok:
+                    last_err = ""
+                    for line in reversed(stderr.splitlines()):
+                        line_s = line.strip()
+                        if line_s:
+                            last_err = line_s
+                            break
+                    error = (
+                        f"script exit={exit_code}"
+                        + (f": {last_err}" if last_err else "")
+                    )
+
+                return DeployResult(
+                    ok=ok,
+                    exit_code=exit_code,
+                    stdout=stdout,
+                    stderr=stderr,
+                    duration_sec=round(time.monotonic() - started_at, 3),
+                    error=error,
+                    connect_latency_ms=tcp_rtt_ms,
+                )
+
+    except asyncio.TimeoutError:
+        return DeployResult(
+            ok=False,
+            connect_latency_ms=tcp_rtt_ms,
+            error=f"timeout: SSH session exceeded {int(timeout + _CONNECT_TIMEOUT_S)}s",
+            duration_sec=round(time.monotonic() - started_at, 3),
+        )
+    except Exception as exc:  # noqa: BLE001
         err = str(exc).strip() or exc.__class__.__name__
         return DeployResult(
             ok=False,
