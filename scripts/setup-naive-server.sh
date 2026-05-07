@@ -609,3 +609,15 @@ if [[ "${INSTALL_FAIL2BAN:-no}" == "yes" ]]; then
     echo "    fail2ban-client unban <ip>     # unban an IP"
 fi
 echo "════════════════════════════════════════════════════════════════════"
+
+# ── Machine-readable contract ────────────────────────────────────────────────
+# A single deterministic line at end-of-output for PiTun's auto-deploy
+# pipeline (since v1.3.0): when this script is invoked over SSH from
+# `core/ssh.py.exec_remote_script()`, the backend parses stdout for
+# `URI=…` and inserts a Node row from the captured value. The `>&1` is
+# explicit so it survives even if the caller redirects stderr.
+#
+# Format: `URI=<uri>` on a line by itself, no surrounding whitespace,
+# no ANSI codes (note: NAIVE_URI was rendered without color escapes).
+# Keep this LAST in stdout so the parser can scan from end-of-stream.
+echo "URI=${NAIVE_URI}" >&1

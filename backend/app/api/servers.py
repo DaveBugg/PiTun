@@ -41,6 +41,8 @@ from app.models import Node, Server, ServerDeployment
 from app.schemas import (
     NodeRead,
     ServerCreate,
+    ServerDeployRequest,
+    ServerDeployResponse,
     ServerDeploymentRead,
     ServerDeploymentUpsert,
     ServerRead,
@@ -48,6 +50,10 @@ from app.schemas import (
     ServerTestResult,
     ServerUpdate,
 )
+
+import logging
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/servers", tags=["servers"])
 
@@ -208,6 +214,193 @@ async def test_server(
     if not server:
         raise HTTPException(status_code=404, detail="Server not found")
     return await _probe_one(server, session)
+
+
+@router.post("/{server_id:int}/deploy", response_model=ServerDeployResponse)
+async def deploy_to_server(
+    server_id: int,
+    body: ServerDeployRequest,
+    session: AsyncSession = Depends(get_session),
+):
+    """Auto-deploy a proxy install script over SSH (since v1.3.0).
+
+    Phase 1 of the auto-deploy epic — synchronous: the HTTP request
+    blocks for the entire duration of the SSH session (~3-5 min for a
+    typical naive provisioning, hard cap 10 min). Phase 2 will
+    refactor onto a background task with WebSocket log streaming.
+
+    Flow:
+      1. Resolve server, validate protocol against SUPPORTED_PROTOCOLS
+      2. Build deploy plan (env + script content) via core.deploy
+      3. SSH-exec the script via core.ssh.exec_remote_script
+      4. On exit 0 → parse URI from stdout → create Node row
+         → upsert ServerDeployment with status='deployed' / last_node_id
+      5. On non-zero / timeout / SSH error → upsert ServerDeployment
+         with status='failed' (deployment row exists for the audit
+         trail and so the UI can render a "last attempt failed" badge)
+    """
+    from app.core.deploy import build_plan, extract_uri, SUPPORTED_PROTOCOLS
+    from app.core.ssh import exec_remote_script
+    from app.core.uri_parser import parse_uri
+
+    server = await _get_server_or_404(server_id, session)
+
+    # Snapshot server fields we'll need AFTER session.commit() — that
+    # call expires SQLModel instance attributes, and any subsequent
+    # access (e.g. `server.id` in the failure logger) triggers a lazy
+    # reload that fails outside the awaitable with MissingGreenlet.
+    # Same pattern as v1.2.7's _self_heal_disable_geo_rules fix.
+    srv_id = server.id
+    srv_host = server.host
+    srv_port = server.port
+    srv_user = server.user
+    srv_auth_type = server.auth_type
+    srv_password = server.password
+    srv_private_key = server.private_key
+    srv_passphrase = server.passphrase
+
+    if body.protocol not in SUPPORTED_PROTOCOLS:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Unsupported protocol {body.protocol!r}; "
+                f"expected one of {SUPPORTED_PROTOCOLS}"
+            ),
+        )
+
+    # Compose the plan (env vars + script content). ValueError from
+    # build_plan signals invalid config (e.g. missing domain/email for
+    # naive); surface as 400, not 500.
+    try:
+        plan = build_plan(body.protocol, body.config)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except FileNotFoundError as exc:
+        # The setup-*.sh script went missing from the install — server
+        # bug, not user input.
+        raise HTTPException(status_code=500, detail=f"Install script missing: {exc}")
+
+    # Execute the script remotely. Long-running — 10 min cap inside
+    # exec_remote_script. We DON'T wrap this in our own timeout because
+    # the inner one already returns a structured error on overrun.
+    result = await exec_remote_script(
+        host=srv_host,
+        port=srv_port,
+        username=srv_user,
+        password=srv_password if srv_auth_type == "password" else None,
+        private_key=srv_private_key if srv_auth_type == "key" else None,
+        passphrase=srv_passphrase if srv_auth_type == "key" else None,
+        script_content=plan.script_content,
+        env=plan.env,
+    )
+
+    # Stash a tail of each stream for the response (full output went
+    # to backend logs at INFO level via asyncssh internals).
+    stdout_tail = result.stdout[-2000:] if result.stdout else ""
+    stderr_tail = result.stderr[-2000:] if result.stderr else ""
+
+    parsed_uri: Optional[str] = None
+    new_node_id: Optional[int] = None
+    final_status = "failed"
+
+    if result.ok:
+        # Parse the URI=… line from stdout.
+        parsed_uri = extract_uri(result.stdout, body.protocol)
+        if parsed_uri:
+            # Translate URI → node row via the existing parser. None
+            # means parse_uri couldn't decode it (corrupt / unknown
+            # scheme); we keep status='deployed_no_uri' so the admin
+            # at least sees the deployment succeeded and grabs
+            # credentials manually.
+            node_dict = parse_uri(parsed_uri)
+            if node_dict:
+                # Filter to fields actually on the Node model — same
+                # convention as `nodes.py` import handlers. Avoids
+                # unexpected ORM init kwargs from new uri-parser fields.
+                node = Node(**{
+                    k: v for k, v in node_dict.items() if hasattr(Node, k)
+                })
+                session.add(node)
+                await session.flush()
+                # Snapshot id BEFORE commit so post-commit attribute
+                # expiration doesn't trigger a lazy load (same pattern
+                # as v1.2.7's _self_heal_disable_geo_rules fix).
+                new_node_id = node.id
+                final_status = "deployed"
+            else:
+                final_status = "deployed_no_uri"
+        else:
+            final_status = "deployed_no_uri"
+
+    # Upsert ServerDeployment row keyed on (server_id, protocol).
+    existing_dep = (await session.exec(
+        select(ServerDeployment)
+        .where(ServerDeployment.server_id == srv_id)
+        .where(ServerDeployment.protocol == body.protocol)
+    )).first()
+
+    deployment_config = {
+        # Persist the env we ran with (minus secrets in plain text:
+        # naive_pass is part of the URI we just stored on the Node, no
+        # need to duplicate here. domain/email/user are useful for the
+        # "Naive configured" UI badge — keep those.)
+        "domain": plan.env.get("DOMAIN"),
+        "email": plan.env.get("EMAIL"),
+        "naive_user": plan.env.get("NAIVE_USER"),
+        # naive_pass intentionally omitted to avoid plain-text duplication
+    }
+    deployment_config_json = json.dumps(deployment_config)
+    now = datetime.now(timezone.utc)
+
+    if existing_dep:
+        existing_dep.config_json = deployment_config_json
+        existing_dep.status = final_status
+        existing_dep.updated_at = now
+        if new_node_id is not None:
+            existing_dep.last_node_id = new_node_id
+        session.add(existing_dep)
+        await session.flush()
+        deployment_id = existing_dep.id
+    else:
+        new_dep = ServerDeployment(
+            server_id=srv_id,
+            protocol=body.protocol,
+            config_json=deployment_config_json,
+            status=final_status,
+            last_node_id=new_node_id,
+        )
+        session.add(new_dep)
+        await session.flush()
+        deployment_id = new_dep.id
+
+    # Capture deployment_id BEFORE commit (post-commit attr access
+    # would lazy-load and trip MissingGreenlet — same as for srv_id).
+    deployment_id_snapshot = deployment_id
+
+    await session.commit()
+
+    if not result.ok:
+        # Defensive log so admin sees why we failed even if they only
+        # have the response body. CWE-209/532 sanitised: we already
+        # cap stdout/stderr in exec_remote_script and never log raw
+        # secrets at WARNING+.
+        logger.warning(
+            "Auto-deploy failed: server_id=%d protocol=%s exit=%d error=%r",
+            srv_id, body.protocol, result.exit_code, result.error,
+        )
+
+    return ServerDeployResponse(
+        deployment_id=deployment_id_snapshot,
+        node_id=new_node_id,
+        status=final_status,
+        exit_code=result.exit_code,
+        duration_sec=result.duration_sec,
+        stdout_tail=stdout_tail,
+        stderr_tail=stderr_tail,
+        parsed_uri=parsed_uri,
+        error=result.error,
+        connect_latency_ms=result.connect_latency_ms,
+    )
 
 
 @router.post("/test-all", response_model=ServerTestAllResult)

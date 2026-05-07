@@ -25,10 +25,12 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import secrets
+import shlex
 import socket
 import struct
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional, Tuple
 
 logger = logging.getLogger(__name__)
@@ -49,6 +51,28 @@ class SSHTestResult:
     latency_ms: Optional[int] = None
     error: Optional[str] = None
     remote_info: Optional[str] = None
+
+
+@dataclass
+class DeployResult:
+    """Outcome of `exec_remote_script`. The caller (api/servers.py
+    deploy endpoint) parses `stdout` for a `URI=…` contract line and
+    decides whether to insert a Node row.
+
+    On a clean run, `ok=True` + `exit_code=0`. Any non-zero exit, SSH
+    error, timeout, or upload failure produces `ok=False` with `error`
+    set; partial stdout/stderr capture is preserved when possible so
+    the admin can debug from the response body.
+    """
+    ok: bool
+    exit_code: int = -1
+    stdout: str = ""
+    stderr: str = ""
+    duration_sec: float = 0.0
+    error: Optional[str] = None
+    # SSH connect latency (TCP RTT) — useful for diagnosing slow
+    # provisioning runs vs slow networks.
+    connect_latency_ms: Optional[int] = None
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -249,3 +273,248 @@ async def test_ssh_connection(
     except Exception as exc:  # noqa: BLE001 — surface auth/protocol errors verbatim
         err = str(exc).strip() or exc.__class__.__name__
         return SSHTestResult(ok=False, latency_ms=tcp_rtt_ms, error=err)
+
+
+# ── Auto-deploy: upload + run a local script on the remote VPS ───────────────
+
+
+# Output capture cap. Provisioning scripts are chatty (Caddy install,
+# certbot, naive download, etc.) but a runaway loop could easily spew
+# hundreds of MB into the SSH session and OOM the backend. 256 KB per
+# stream is enough for the verbose `setup-*` scripts plus diagnostic
+# headroom; anything beyond that gets truncated with a marker.
+_OUTPUT_CAP_BYTES = 256 * 1024
+
+# Default deploy timeout (seconds). Naive provisioning is ~3-5 min on
+# a typical VPS (Caddy fetch, Let's Encrypt issuance, naive build);
+# 10 min cap leaves comfortable headroom without letting a hung run
+# wedge the API forever.
+_DEFAULT_DEPLOY_TIMEOUT_S = 600.0
+
+
+def _truncate(blob: str, cap: int = _OUTPUT_CAP_BYTES) -> str:
+    """Cap a captured stream; mark truncation so the admin sees it."""
+    if len(blob) <= cap:
+        return blob
+    head = blob[: cap - 100]
+    return f"{head}\n…[truncated, {len(blob) - cap + 100} more bytes]…"
+
+
+def _build_remote_command(
+    remote_script_path: str, env: dict[str, str]
+) -> str:
+    """Compose the remote shell command that runs the uploaded script
+    with the env-var assignments. Each value is shlex-quoted so a
+    domain or password containing spaces / special chars stays a
+    single argument. Final form:
+
+        DOMAIN='proxy.example.com' EMAIL='me@x' \\
+        NAIVE_USER='pitun' NAIVE_PASS='hunter2' bash /tmp/...sh
+
+    We use `bash` explicitly (not just exec'ing the script) so a
+    file-system mount option like `noexec` on /tmp doesn't reject it.
+    """
+    env_prefix = " ".join(
+        f"{k}={shlex.quote(v)}" for k, v in env.items()
+    )
+    return f"{env_prefix} bash {shlex.quote(remote_script_path)}"
+
+
+async def exec_remote_script(
+    *,
+    host: str,
+    port: int = 22,
+    username: str = "root",
+    password: Optional[str] = None,
+    private_key: Optional[str] = None,
+    passphrase: Optional[str] = None,
+    script_content: str,
+    env: Optional[dict[str, str]] = None,
+    timeout: float = _DEFAULT_DEPLOY_TIMEOUT_S,
+) -> DeployResult:
+    """Upload `script_content` to the remote host via SFTP, exec it
+    under the supplied user (typically root), capture stdout/stderr,
+    and clean up.
+
+    Mirrors `test_ssh_connection`'s SO_MARK / DNS-bypass plumbing so
+    the SSH session works alongside an active xray TPROXY ruleset on
+    the PiTun host.
+
+    Failure modes covered:
+      * DNS resolution fails               → ok=False, error="DNS: …"
+      * TCP connect fails / times out       → ok=False, error="TCP: …"
+      * SSH auth fails                      → ok=False, error="auth: …"
+      * SFTP upload fails                   → ok=False, error="upload: …"
+      * Script runs but exits non-zero      → ok=False, exit_code=N,
+                                              stdout/stderr captured
+      * Script hangs past `timeout`         → ok=False, error="timeout"
+      * stdout/stderr exceeds cap           → captured prefix + marker
+
+    Cleanup: temp file on the remote is removed in a `finally` so even
+    a failure / timeout doesn't leave deploy artifacts behind.
+    """
+    if not host:
+        return DeployResult(ok=False, error="host is required")
+    if not (private_key or password):
+        return DeployResult(ok=False, error="no credentials configured")
+    if not script_content:
+        return DeployResult(ok=False, error="empty script_content")
+
+    env = env or {}
+    started_at = time.monotonic()
+
+    # DNS bypass — same plumbing as test_ssh_connection.
+    try:
+        ip = await _resolve_direct(host)
+    except Exception as exc:  # noqa: BLE001
+        return DeployResult(ok=False, error=f"DNS: {exc}")
+
+    try:
+        import asyncssh  # type: ignore
+    except ImportError as exc:
+        return DeployResult(ok=False, error=f"asyncssh not installed: {exc}")
+
+    loop = asyncio.get_event_loop()
+    try:
+        sock, tcp_rtt_ms = await loop.run_in_executor(
+            None, _connect_marked, ip, port, _CONNECT_TIMEOUT_S
+        )
+    except (OSError, socket.timeout) as exc:
+        return DeployResult(ok=False, error=f"TCP: {exc}")
+
+    connect_kwargs: dict = {
+        "host": host,
+        "port": port,
+        "username": username,
+        "known_hosts": None,
+        "sock": sock,
+    }
+    if private_key:
+        try:
+            key_obj = asyncssh.import_private_key(
+                private_key,
+                passphrase=passphrase or None,
+            )
+        except Exception as exc:  # noqa: BLE001
+            sock.close()
+            return DeployResult(
+                ok=False,
+                connect_latency_ms=tcp_rtt_ms,
+                error=f"invalid private key: {exc}",
+            )
+        connect_kwargs["client_keys"] = [key_obj]
+    elif password:
+        connect_kwargs["password"] = password
+
+    # Random suffix on the remote script name so concurrent deploys to
+    # the same VPS don't stomp on each other (rare but possible if the
+    # admin clicks Install twice quickly). `secrets.token_hex(8)` gives
+    # 16 hex chars = 64 bits of entropy — collision-free in practice.
+    remote_script_path = f"/tmp/pitun-deploy-{secrets.token_hex(8)}.sh"
+
+    try:
+        # `asyncio.timeout()` wraps the whole SSH/SFTP/exec window —
+        # if the connection succeeds but the script hangs forever, we
+        # still bail at `timeout` seconds with a structured error.
+        async with asyncio.timeout(timeout + _CONNECT_TIMEOUT_S):
+            async with asyncssh.connect(**connect_kwargs) as conn:
+                # Upload via SFTP. asyncssh's start_sftp_client is the
+                # idiomatic way; falling back to `cat > file` over an
+                # exec channel would also work but is more error-prone
+                # with arbitrary content (escaping, signal handling).
+                try:
+                    async with conn.start_sftp_client() as sftp:
+                        # Write to remote in one shot — avoids a tmpfile
+                        # rename dance, our scripts are small (<100 KB).
+                        async with sftp.open(remote_script_path, "wb") as rf:
+                            await rf.write(script_content.encode("utf-8"))
+                        # chmod isn't strictly needed since we exec via
+                        # `bash <path>` not via `<path>` directly, but
+                        # +x is hygiene for log/inspection later if the
+                        # cleanup didn't run.
+                        await sftp.chmod(remote_script_path, 0o755)
+                except Exception as exc:  # noqa: BLE001 — many SFTP error subtypes
+                    return DeployResult(
+                        ok=False,
+                        connect_latency_ms=tcp_rtt_ms,
+                        error=f"upload: {exc}",
+                        duration_sec=round(time.monotonic() - started_at, 3),
+                    )
+
+                # Run with env-var prefix.
+                cmd = _build_remote_command(remote_script_path, env)
+                try:
+                    proc = await conn.run(
+                        cmd,
+                        timeout=timeout,
+                        check=False,
+                        # Don't merge — the URI parser scans stdout only.
+                        # Keep stderr separate for "what went wrong" surfacing.
+                        stderr=asyncssh.PIPE,  # type: ignore[attr-defined]
+                    )
+                except asyncio.TimeoutError:
+                    return DeployResult(
+                        ok=False,
+                        connect_latency_ms=tcp_rtt_ms,
+                        error=f"timeout: script exceeded {int(timeout)}s",
+                        duration_sec=round(time.monotonic() - started_at, 3),
+                    )
+                finally:
+                    # Cleanup — best-effort. Never raise out of cleanup;
+                    # we'd rather leave a small file behind than mask
+                    # the actual deploy result.
+                    try:
+                        await conn.run(f"rm -f {shlex.quote(remote_script_path)}", check=False)
+                    except Exception as cleanup_exc:  # noqa: BLE001
+                        logger.debug(
+                            "Failed to clean up %s on %s: %s",
+                            remote_script_path, host, cleanup_exc,
+                        )
+
+                stdout = proc.stdout if isinstance(proc.stdout, str) else ""
+                stderr = proc.stderr if isinstance(proc.stderr, str) else ""
+                exit_code = proc.exit_status if proc.exit_status is not None else -1
+
+                ok = exit_code == 0
+                error: Optional[str] = None
+                if not ok:
+                    # Pull a one-line summary from stderr's last
+                    # meaningful line for the response — the admin sees
+                    # the full stream too, this just gives them
+                    # "what went wrong" at a glance.
+                    last_err = ""
+                    for line in reversed(stderr.splitlines()):
+                        line = line.strip()
+                        if line:
+                            last_err = line
+                            break
+                    error = (
+                        f"script exit={exit_code}"
+                        + (f": {last_err}" if last_err else "")
+                    )
+
+                return DeployResult(
+                    ok=ok,
+                    exit_code=exit_code,
+                    stdout=_truncate(stdout),
+                    stderr=_truncate(stderr),
+                    duration_sec=round(time.monotonic() - started_at, 3),
+                    error=error,
+                    connect_latency_ms=tcp_rtt_ms,
+                )
+
+    except asyncio.TimeoutError:
+        return DeployResult(
+            ok=False,
+            connect_latency_ms=tcp_rtt_ms,
+            error=f"timeout: SSH session exceeded {int(timeout + _CONNECT_TIMEOUT_S)}s",
+            duration_sec=round(time.monotonic() - started_at, 3),
+        )
+    except Exception as exc:  # noqa: BLE001 — auth/protocol errors verbatim
+        err = str(exc).strip() or exc.__class__.__name__
+        return DeployResult(
+            ok=False,
+            connect_latency_ms=tcp_rtt_ms,
+            error=err,
+            duration_sec=round(time.monotonic() - started_at, 3),
+        )

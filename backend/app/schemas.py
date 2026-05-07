@@ -292,6 +292,62 @@ class ServerTestAllResult(BaseModel):
     results: List[ServerTestResult]
 
 
+# ── Auto-deploy (since v1.3.0) ───────────────────────────────────────────────
+#
+# `POST /api/servers/{id}/deploy` runs an install script remotely via SSH and,
+# on a successful exit, parses a `URI=<uri>` line from stdout and creates a
+# Node row. The request mirrors `ServerDeploymentBase` plus `config` is
+# protocol-specific (see core/deploy.build_naive_env for the naive contract).
+
+class ServerDeployRequest(BaseModel):
+    """Input for `POST /api/servers/{id}/deploy`.
+
+    Naive (Phase 1):
+      `config`: {"domain": str, "email": str,
+                 "naive_user": Optional[str],   # default: "pitun"
+                 "naive_pass": Optional[str]}   # default: token_urlsafe(24)
+
+    `protocol` is currently restricted to `"naive"` at the validator level —
+    other protocols will land in beta.2/beta.3 with their own setup-*.sh.
+    """
+    protocol: str
+    config: dict
+
+    @field_validator("protocol")
+    @classmethod
+    def _validate_protocol(cls, v: str) -> str:
+        # Mirror the gate in core/deploy.SUPPORTED_PROTOCOLS — kept in
+        # sync manually since this validator runs before the request
+        # body even reaches the endpoint.
+        if v not in ("naive",):
+            raise ValueError(f"Unsupported protocol: {v!r} (only 'naive' in v1.3.0-beta.1)")
+        return v
+
+
+class ServerDeployResponse(BaseModel):
+    """Result of `POST /api/servers/{id}/deploy`. The full stdout/stderr
+    is captured server-side (logged) but only tails are returned in the
+    response to keep the body manageable.
+    """
+    deployment_id: int
+    # Set when the deployment exited 0 AND we successfully parsed a URI
+    # AND inserted a Node row. None on any earlier failure.
+    node_id: Optional[int]
+    # `deployed`           — script exit 0, URI parsed, Node row created
+    # `deployed_no_uri`    — script exit 0 but no URI=... in stdout
+    #                        (admin must add the Node manually from
+    #                        whatever the script printed)
+    # `failed`             — script non-zero exit, SSH error, timeout, etc.
+    status: str
+    exit_code: int
+    duration_sec: float
+    stdout_tail: str
+    stderr_tail: str
+    parsed_uri: Optional[str]
+    error: Optional[str]
+    connect_latency_ms: Optional[int] = None
+
+
 # ─── Server deployments ──────────────────────────────────────────────────────
 #
 # A "deployment" persists the credentials the user picked when generating
