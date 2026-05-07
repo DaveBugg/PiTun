@@ -612,3 +612,67 @@ export interface ServerDeploymentUpsert {
   protocol: ServerDeploymentProtocol
   config: NaiveDeploymentConfig
 }
+
+
+// ── Server-tasks (Jobs) ─────────────────────────────────────────────────────
+//
+// Async job tracking for SSH-driven proxy deploys (since v1.3.0-beta.1).
+// `POST /servers/{id}/deploy` no longer blocks for the duration of the
+// install — it returns 202 + `DeployJobAccepted` immediately and the
+// frontend follows progress via the `/server-tasks` API + WS stream.
+
+export type JobKind = 'deploy'  // future: 'subscription_refresh' etc.
+export type JobStatus = 'running' | 'succeeded' | 'failed' | 'cancelled'
+
+/** 202 response shape for `POST /servers/{id}/deploy`. */
+export interface DeployJobAccepted {
+  job_id: string
+  server_id: number
+  protocol: ServerDeploymentProtocol
+}
+
+/** Result payload stored in `Job.result_json` for deploy jobs. The
+ * `status` here is the *deploy outcome* (deployed / deployed_no_uri /
+ * failed), distinct from the *job status* (succeeded / failed / cancelled
+ * — the wrapper around the runner). On runner-level success, the job
+ * status is `succeeded` and the deploy outcome lives in `result.status`. */
+export interface DeployJobResult {
+  deployment_id: number
+  node_id: number | null
+  status: 'deployed' | 'deployed_no_uri' | 'failed'
+  exit_code: number
+  duration_sec: number
+  parsed_uri: string | null
+  error: string | null
+  connect_latency_ms: number | null
+}
+
+/** Lightweight projection used by the list endpoint. */
+export interface JobSummary {
+  id: string
+  kind: JobKind
+  target_id: number | null
+  target_name: string | null
+  protocol: string | null
+  status: JobStatus
+  started_at: string
+  finished_at: string | null
+  error: string | null
+  result: DeployJobResult | Record<string, unknown> | null
+}
+
+/** Full row returned by `GET /server-tasks/{id}`. Includes log_tail (post-
+ * finalize log snapshot) and config (echo of the start request). */
+export interface JobRead extends JobSummary {
+  log_tail: string | null
+  config: Record<string, unknown> | null
+}
+
+export interface JobListResponse {
+  jobs: JobSummary[]
+}
+
+/** Wire format of WS frames on `/server-tasks/{id}/stream`. */
+export type JobStreamFrame =
+  | { event: 'log'; kind: 'stdout' | 'stderr'; line: string }
+  | { event: 'done'; status: JobStatus | 'unknown' }

@@ -15,6 +15,7 @@ import { Devices } from '@/pages/Devices'
 import { Diagnostics } from '@/pages/Diagnostics'
 import { Settings } from '@/pages/Settings'
 import { Servers } from '@/pages/Servers'
+import { ServerTasks } from '@/pages/ServerTasks'
 
 function isTokenValid(token: string): boolean {
   try {
@@ -48,6 +49,10 @@ export default function App() {
         <Route path="/"              element={<Dashboard />} />
         <Route path="/nodes"         element={<Nodes />} />
         <Route path="/servers"       element={<Servers />} />
+        {/* Server-tasks (async deploy jobs) — accessible only via the
+            "Tasks" link on the Servers page header, not in the main
+            sidebar (per the v1.3.0 design). */}
+        <Route path="/server-tasks"  element={<ServerTasks />} />
         <Route path="/routing"       element={<Routing />} />
         <Route path="/balancers"     element={<Balancers />} />
         <Route path="/circles"       element={<NodeCircles />} />

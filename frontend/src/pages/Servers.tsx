@@ -1,18 +1,21 @@
 import { useState } from 'react'
 import * as React from 'react'
 import { useQueryClient } from '@tanstack/react-query'
+import { Link } from 'react-router-dom'
 import {
   Cloud, Plus, Pencil, Trash2, Activity, ActivitySquare,
   Download, Clock, Wifi, WifiOff,
   HelpCircle, FileCode2, Terminal,
   Sparkles, Link2,
   FileDown, FileUp,
+  Rocket, ListChecks,
 } from 'lucide-react'
 
 import { serversApi, scriptsApi } from '@/api/client'
 import { ServerForm } from '@/components/ServerForm'
 import { ModalShell } from '@/components/ModalShell'
 import { useConfirm } from '@/components/ConfirmModal'
+import { DeployModal } from '@/components/DeployModal'
 import {
   useServers,
   useCreateServer,
@@ -58,6 +61,9 @@ export function Servers() {
     | { kind: 'manual' }
     | null
   >(null)
+  // Auto-deploy modal — runs install over SSH and streams the log.
+  // (since v1.3.0-beta.1 — companion to the manual-script flow.)
+  const [deployTarget, setDeployTarget] = useState<Server | null>(null)
 
   const openAdd = () => {
     setEditing(null)
@@ -109,6 +115,20 @@ export function Servers() {
           )}
         </p>
         <div className="ml-auto flex gap-2 flex-wrap">
+          {/* Server-tasks history — async deploy log, accessible only
+              from this page (per the v1.3.0 design — not in the main
+              sidebar). Show the link once the user has registered
+              at least one server, otherwise it's just noise. */}
+          {servers.length > 0 && (
+            <Link
+              to="/server-tasks"
+              className="rounded-lg border border-gray-700 px-3 py-1.5 text-sm text-gray-300 hover:bg-gray-800 transition-colors flex items-center gap-1.5"
+              title={t('Recent install / deploy jobs', 'Недавние задачи установки / деплоя')}
+            >
+              <ListChecks className="h-4 w-4" />
+              {t('Tasks', 'Задачи')}
+            </Link>
+          )}
           <button
             onClick={() => testAll.mutate()}
             disabled={testAll.isPending || servers.length === 0}
@@ -183,6 +203,7 @@ export function Servers() {
                   onEdit={() => openEdit(s)}
                   onDelete={() => handleDelete(s)}
                   onShowScript={() => setScriptModal({ kind: 'server', server: s })}
+                  onDeploy={() => setDeployTarget(s)}
                 />
               ))}
             </tbody>
@@ -202,6 +223,13 @@ export function Servers() {
         <NaiveScriptModal
           mode={scriptModal}
           onClose={() => setScriptModal(null)}
+        />
+      )}
+
+      {deployTarget && (
+        <DeployModal
+          server={deployTarget}
+          onClose={() => setDeployTarget(null)}
         />
       )}
     </div>
@@ -297,9 +325,10 @@ interface RowProps {
   onEdit: () => void
   onDelete: () => void
   onShowScript: () => void
+  onDeploy: () => void
 }
 
-function ServerRow({ server, testing, onTest, onEdit, onDelete, onShowScript }: RowProps) {
+function ServerRow({ server, testing, onTest, onEdit, onDelete, onShowScript, onDeploy }: RowProps) {
   const t = useT()
   const lastCheck = server.last_check
     ? new Date(server.last_check).toLocaleString()
@@ -361,6 +390,20 @@ function ServerRow({ server, testing, onTest, onEdit, onDelete, onShowScript }: 
             disabled={testing}
             icon={Activity}
             spinning={testing}
+          />
+          {/* Auto-deploy via SSH (since v1.3.0-beta.1). Distinct from
+              the Download button below — that emits a script the user
+              runs manually; this one runs it for them and streams the
+              log. We require the server's SSH probe to have succeeded
+              at least once, otherwise the deploy will fail loudly on
+              the first SFTP call anyway. Allow online OR unknown — a
+              fresh server hasn't been tested yet, but the user can
+              still try; offline is the only hard block. */}
+          <IconBtn
+            onClick={onDeploy}
+            title={t('Install proxy over SSH', 'Установить прокси по SSH')}
+            icon={Rocket}
+            disabled={server.status === 'offline'}
           />
           <IconBtn
             onClick={onShowScript}

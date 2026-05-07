@@ -18,6 +18,7 @@ import type {
   V2RayImportRequest, V2RayImportResult,
   Server, ServerCreate, ServerUpdate, ServerTestResult, ServerTestAllResult,
   ServerDeployment, ServerDeploymentUpsert, ServerDeploymentProtocol,
+  DeployJobAccepted, JobListResponse, JobRead, JobStatus,
 } from '@/types'
 
 const BASE = import.meta.env.VITE_API_BASE_URL || '/api'
@@ -432,6 +433,14 @@ export const serversApi = {
   createNodeFromDeployment: (serverId: number, protocol: ServerDeploymentProtocol) =>
     http.post<Node>(`/servers/${serverId}/deployments/${protocol}/create-node`).then(r => r.data),
 
+  // Auto-deploy (since v1.3.0-beta.1). Returns 202 + job_id; client
+  // follows progress via serverTasksApi.{get, stream}.
+  deploy: (
+    serverId: number,
+    body: { protocol: ServerDeploymentProtocol; config: Record<string, unknown> },
+  ) =>
+    http.post<DeployJobAccepted>(`/servers/${serverId}/deploy`, body).then(r => r.data),
+
   // JSON backup. `includeSecrets=false` (default) strips passwords and
   // private keys — safer to share or commit accidentally. With
   // `includeSecrets=true` the bundle is round-trip-perfect but
@@ -488,6 +497,43 @@ export const scriptsApi = {
     a.remove()
     URL.revokeObjectURL(url)
   },
+}
+
+// ── Server-tasks (Jobs) ─────────────────────────────────────────────────────
+//
+// Companion to `serversApi.deploy` — list / detail / cancel + a WS
+// connector for live log streams. Kept in this file (rather than a
+// dedicated module) for symmetry with the other endpoints; React Query
+// hooks live in `useServerTasks.ts`.
+
+export const serverTasksApi = {
+  list: (params?: {
+    server_id?: number; kind?: string; status?: JobStatus;
+    limit?: number; offset?: number;
+  }) =>
+    http.get<JobListResponse>('/server-tasks', { params }).then(r => r.data),
+
+  get: (jobId: string) =>
+    http.get<JobRead>(`/server-tasks/${jobId}`).then(r => r.data),
+
+  cancel: (jobId: string) =>
+    http.post<{ job_id: string; cancelled: boolean }>(
+      `/server-tasks/${jobId}/cancel`,
+    ).then(r => r.data),
+}
+
+/** Open a WebSocket on `/api/server-tasks/{jobId}/stream`. Returns the
+ * underlying WebSocket so the caller can attach `onmessage` / `onclose`
+ * / call `.close()` on unmount. The token query param is required by the
+ * backend; we read it from localStorage same as createLogSocket.
+ */
+export function createServerTaskSocket(jobId: string): WebSocket {
+  const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+  const wsBase = `${proto}//${window.location.host}/api`
+  const token = localStorage.getItem('pitun_token') || ''
+  return new WebSocket(
+    `${wsBase}/server-tasks/${encodeURIComponent(jobId)}/stream?token=${encodeURIComponent(token)}`,
+  )
 }
 
 // ── WebSocket log stream ──────────────────────────────────────────────────────
