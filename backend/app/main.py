@@ -91,6 +91,15 @@ async def lifespan(app: FastAPI):
     except Exception as exc:
         logger.warning("Events trim task failed to start: %s", exc)
 
+    # Server-tasks (Job) subsystem — heals stale `running` rows from a
+    # previous backend that died mid-deploy, then kicks off the hourly
+    # trim loop. v1.3.0-beta.1.
+    try:
+        from app.core.jobs import job_manager
+        await job_manager.start()
+    except Exception as exc:
+        logger.warning("JobManager failed to start: %s", exc)
+
     # Apply system-level toggles (IPv6, DNS over TCP) from DB — /proc/sys resets on reboot
     from app.api.system import apply_system_toggles_on_boot
     await apply_system_toggles_on_boot()
@@ -232,6 +241,11 @@ async def lifespan(app: FastAPI):
         _events_stop()
     except Exception:
         pass
+    try:
+        from app.core.jobs import job_manager
+        await job_manager.stop()
+    except Exception:
+        pass
     await xray_manager.stop()
 
 
@@ -254,7 +268,7 @@ app.add_middleware(
 )
 
 # ── Routers ───────────────────────────────────────────────────────────────────
-from app.api import nodes, routing, subscriptions, system, geodata, logs, dns, balancers, auth, nodecircle, devices, diagnostics, events, servers, scripts
+from app.api import nodes, routing, subscriptions, system, geodata, logs, dns, balancers, auth, nodecircle, devices, diagnostics, events, servers, scripts, server_tasks
 from app.core.auth import get_current_user
 
 app.include_router(auth.router, prefix="/api")
@@ -274,6 +288,12 @@ app.include_router(diagnostics.router, prefix="/api", dependencies=_auth)
 app.include_router(events.router, prefix="/api", dependencies=_auth)
 app.include_router(servers.router, prefix="/api", dependencies=_auth)
 app.include_router(scripts.router, prefix="/api", dependencies=_auth)
+# server_tasks: REST router is auth-gated globally; ws_router carries
+# the WS endpoint and skips the Bearer dependency (browsers can't set
+# Authorization headers on WebSockets), validating ?token=<jwt> itself
+# — same pattern as logs.router.
+app.include_router(server_tasks.router, prefix="/api", dependencies=_auth)
+app.include_router(server_tasks.ws_router, prefix="/api")
 
 
 # ── Health ────────────────────────────────────────────────────────────────────

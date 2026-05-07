@@ -324,28 +324,81 @@ class ServerDeployRequest(BaseModel):
         return v
 
 
-class ServerDeployResponse(BaseModel):
-    """Result of `POST /api/servers/{id}/deploy`. The full stdout/stderr
-    is captured server-side (logged) but only tails are returned in the
-    response to keep the body manageable.
+class DeployJobAccepted(BaseModel):
+    """202 Accepted shape for `POST /api/servers/{id}/deploy` (since v1.3.0
+    Phase 2.2). The endpoint now spawns an async job via
+    `core.jobs.JobManager.start_deploy` and returns the job_id immediately
+    — the client polls `GET /api/server-tasks/{job_id}` or subscribes to
+    `WS /api/server-tasks/{job_id}/stream` to follow progress.
+
+    Replaces the synchronous `ServerDeployResponse` from Phase 1: blocking
+    a single uvicorn worker for ~5 minutes per deploy starved every
+    other request, and there was no way to cancel a stuck deploy.
     """
-    deployment_id: int
-    # Set when the deployment exited 0 AND we successfully parsed a URI
-    # AND inserted a Node row. None on any earlier failure.
-    node_id: Optional[int]
-    # `deployed`           — script exit 0, URI parsed, Node row created
-    # `deployed_no_uri`    — script exit 0 but no URI=... in stdout
-    #                        (admin must add the Node manually from
-    #                        whatever the script printed)
-    # `failed`             — script non-zero exit, SSH error, timeout, etc.
-    status: str
-    exit_code: int
-    duration_sec: float
-    stdout_tail: str
-    stderr_tail: str
-    parsed_uri: Optional[str]
+    job_id: str
+    # Echoed for convenience so the frontend can group multiple jobs by
+    # server in the /server-tasks listing without an extra GET.
+    server_id: int
+    protocol: str
+
+
+# ─── Jobs (server-tasks) ─────────────────────────────────────────────────────
+#
+# Read-only schemas — jobs are CREATED by `POST /servers/{id}/deploy` and
+# similar action endpoints, never directly. See `core/jobs.py.JobManager`
+# for the persistence model. Frontend uses these for the `/server-tasks`
+# page (list/detail/cancel) and the WS log stream.
+
+class JobRead(BaseModel):
+    """Single-job read shape. Used by `GET /server-tasks/{id}`.
+
+    Mirrors `models.Job` but unpacks `result_json` into a typed dict so
+    the frontend doesn't need a second JSON.parse step.
+    """
+    id: str
+    kind: str
+    target_id: Optional[int]
+    target_name: Optional[str]
+    protocol: Optional[str]
+    status: str   # running | succeeded | failed | cancelled
+    started_at: datetime
+    finished_at: Optional[datetime]
     error: Optional[str]
-    connect_latency_ms: Optional[int] = None
+    # On success: e.g. {"node_id": 42, "deployment_id": 5, "parsed_uri": "..."}
+    result: Optional[dict] = None
+    # Snapshot of the last ~4 KB of combined stdout/stderr captured at
+    # finalization (see `core.jobs._LOG_TAIL_BYTES`). None while still
+    # `running` — clients should subscribe to the WS for live output.
+    log_tail: Optional[str] = None
+    # Echoed-back deploy config (domain, email, naive_user — never
+    # secrets). Useful for the "retry" affordance on the UI.
+    config: Optional[dict] = None
+
+
+class JobSummaryRead(BaseModel):
+    """Lightweight projection for `GET /server-tasks` list calls.
+    Skips the heavier fields (config, log_tail) so list views stay
+    cheap on backend boxes with hundreds of historical jobs.
+    """
+    id: str
+    kind: str
+    target_id: Optional[int]
+    target_name: Optional[str]
+    protocol: Optional[str]
+    status: str
+    started_at: datetime
+    finished_at: Optional[datetime]
+    error: Optional[str]
+    result: Optional[dict] = None
+
+
+class JobListResponse(BaseModel):
+    """Paginated list shape. `total` is omitted intentionally — counting
+    every match would defeat the index for big histories. Frontend
+    uses `limit + has_more` (limit + 1 query trick) instead, but the
+    initial release just returns the page; pagination UX can be
+    progressive."""
+    jobs: List[JobSummaryRead]
 
 
 # ─── Server deployments ──────────────────────────────────────────────────────

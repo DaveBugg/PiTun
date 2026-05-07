@@ -36,13 +36,13 @@ from sqlmodel import select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.core.ssh import test_ssh_connection
-from app.database import get_session
+from app.database import get_async_engine, get_session
 from app.models import Node, Server, ServerDeployment
 from app.schemas import (
+    DeployJobAccepted,
     NodeRead,
     ServerCreate,
     ServerDeployRequest,
-    ServerDeployResponse,
     ServerDeploymentRead,
     ServerDeploymentUpsert,
     ServerRead,
@@ -216,7 +216,11 @@ async def test_server(
     return await _probe_one(server, session)
 
 
-@router.post("/{server_id:int}/deploy", response_model=ServerDeployResponse)
+@router.post(
+    "/{server_id:int}/deploy",
+    response_model=DeployJobAccepted,
+    status_code=202,
+)
 async def deploy_to_server(
     server_id: int,
     body: ServerDeployRequest,
@@ -224,33 +228,54 @@ async def deploy_to_server(
 ):
     """Auto-deploy a proxy install script over SSH (since v1.3.0).
 
-    Phase 1 of the auto-deploy epic — synchronous: the HTTP request
-    blocks for the entire duration of the SSH session (~3-5 min for a
-    typical naive provisioning, hard cap 10 min). Phase 2 will
-    refactor onto a background task with WebSocket log streaming.
+    **Phase 2.2 (v1.3.0-beta.1)**: this endpoint now spawns a background
+    `Job` via `core.jobs.JobManager.start_deploy` and returns 202 +
+    `{job_id}` immediately. Synchronous Phase 1 (which blocked the
+    HTTP request for ~5 min) starved a single uvicorn worker and made
+    cancel impossible. Clients now follow progress via:
+      * `GET    /api/server-tasks/{job_id}` — poll for status / result
+      * `POST   /api/server-tasks/{job_id}/cancel` — stop a running deploy
+      * `WS     /api/server-tasks/{job_id}/stream` — live stdout/stderr
 
-    Flow:
-      1. Resolve server, validate protocol against SUPPORTED_PROTOCOLS
-      2. Build deploy plan (env + script content) via core.deploy
-      3. SSH-exec the script via core.ssh.exec_remote_script
-      4. On exit 0 → parse URI from stdout → create Node row
-         → upsert ServerDeployment with status='deployed' / last_node_id
-      5. On non-zero / timeout / SSH error → upsert ServerDeployment
-         with status='failed' (deployment row exists for the audit
-         trail and so the UI can render a "last attempt failed" badge)
+    Pre-flight (synchronous, fails before spawning a job):
+      1. Resolve server (404 if missing)
+      2. Validate protocol against SUPPORTED_PROTOCOLS
+      3. Build deploy plan (env + script content) via core.deploy —
+         ValueError → 400 (e.g. missing domain/email for naive)
+
+    Conflict semantics:
+      * Same `(server_id, protocol)` already running → 409 Conflict
+        (per-pair slot lock; different servers / different protocols
+        on the same server may run in parallel).
+
+    The job's runner (closure built below) wraps:
+      * `core.ssh.exec_remote_script_streaming` — pumps each line
+        into the JobManager buffer + WS subscribers
+      * URI parse (`core.deploy.extract_uri` + `core.uri_parser.parse_uri`)
+      * Node row creation
+      * ServerDeployment upsert
+
+    On runner exit, JobManager.persists final status:
+      * `succeeded` — script exit 0, URI parsed, Node created
+      * `succeeded` w/ `result.status="deployed_no_uri"` — script exit 0,
+        no URI line in stdout (admin must add Node manually)
+      * `failed` — non-zero exit / SSH error / timeout
+      * `cancelled` — operator-issued cancel (remote script keeps
+        running on VPS; we just stop pumping its output locally)
     """
-    from app.core.deploy import build_plan, extract_uri, SUPPORTED_PROTOCOLS
-    from app.core.ssh import exec_remote_script
-    from app.core.uri_parser import parse_uri
+    from app.core.deploy import build_plan, SUPPORTED_PROTOCOLS
+    from app.core.jobs import job_manager, SlotBusy
 
     server = await _get_server_or_404(server_id, session)
 
-    # Snapshot server fields we'll need AFTER session.commit() — that
-    # call expires SQLModel instance attributes, and any subsequent
-    # access (e.g. `server.id` in the failure logger) triggers a lazy
-    # reload that fails outside the awaitable with MissingGreenlet.
-    # Same pattern as v1.2.7's _self_heal_disable_geo_rules fix.
+    # Snapshot server fields BEFORE we hand off to the background runner.
+    # The session passed via Depends(get_session) is request-scoped —
+    # it'll be closed by FastAPI before the runner finishes. The runner
+    # opens its OWN session via AsyncSession(get_async_engine()).
+    # Snapshotting also avoids the post-commit MissingGreenlet trap (see
+    # v1.2.7 self-heal fix).
     srv_id = server.id
+    srv_name = server.name
     srv_host = server.host
     srv_port = server.port
     srv_user = server.user
@@ -268,9 +293,9 @@ async def deploy_to_server(
             ),
         )
 
-    # Compose the plan (env vars + script content). ValueError from
-    # build_plan signals invalid config (e.g. missing domain/email for
-    # naive); surface as 400, not 500.
+    # Pre-flight: build the plan now so a malformed config (missing
+    # domain/email, etc.) returns 400 synchronously instead of dying
+    # inside an async job 200ms later.
     try:
         plan = build_plan(body.protocol, body.config)
     except ValueError as exc:
@@ -280,126 +305,138 @@ async def deploy_to_server(
         # bug, not user input.
         raise HTTPException(status_code=500, detail=f"Install script missing: {exc}")
 
-    # Execute the script remotely. Long-running — 10 min cap inside
-    # exec_remote_script. We DON'T wrap this in our own timeout because
-    # the inner one already returns a structured error on overrun.
-    result = await exec_remote_script(
-        host=srv_host,
-        port=srv_port,
-        username=srv_user,
-        password=srv_password if srv_auth_type == "password" else None,
-        private_key=srv_private_key if srv_auth_type == "key" else None,
-        passphrase=srv_passphrase if srv_auth_type == "key" else None,
-        script_content=plan.script_content,
-        env=plan.env,
-    )
+    # Closures over plan + creds. The runner is the sole place that
+    # touches SSH from now on; JobManager doesn't know about ssh.py.
+    async def runner(job_id: str, on_line):
+        from app.core.ssh import exec_remote_script_streaming
+        from app.core.uri_parser import parse_uri
+        from app.core.deploy import extract_uri
 
-    # Stash a tail of each stream for the response (full output went
-    # to backend logs at INFO level via asyncssh internals).
-    stdout_tail = result.stdout[-2000:] if result.stdout else ""
-    stderr_tail = result.stderr[-2000:] if result.stderr else ""
+        result = await exec_remote_script_streaming(
+            host=srv_host,
+            port=srv_port,
+            username=srv_user,
+            password=srv_password if srv_auth_type == "password" else None,
+            private_key=srv_private_key if srv_auth_type == "key" else None,
+            passphrase=srv_passphrase if srv_auth_type == "key" else None,
+            script_content=plan.script_content,
+            env=plan.env,
+            on_line=on_line,
+        )
 
-    parsed_uri: Optional[str] = None
-    new_node_id: Optional[int] = None
-    final_status = "failed"
+        parsed_uri: Optional[str] = None
+        new_node_id: Optional[int] = None
+        final_status = "failed"
 
-    if result.ok:
-        # Parse the URI=… line from stdout.
-        parsed_uri = extract_uri(result.stdout, body.protocol)
-        if parsed_uri:
-            # Translate URI → node row via the existing parser. None
-            # means parse_uri couldn't decode it (corrupt / unknown
-            # scheme); we keep status='deployed_no_uri' so the admin
-            # at least sees the deployment succeeded and grabs
-            # credentials manually.
-            node_dict = parse_uri(parsed_uri)
-            if node_dict:
-                # Filter to fields actually on the Node model — same
-                # convention as `nodes.py` import handlers. Avoids
-                # unexpected ORM init kwargs from new uri-parser fields.
-                node = Node(**{
-                    k: v for k, v in node_dict.items() if hasattr(Node, k)
-                })
-                session.add(node)
-                await session.flush()
-                # Snapshot id BEFORE commit so post-commit attribute
-                # expiration doesn't trigger a lazy load (same pattern
-                # as v1.2.7's _self_heal_disable_geo_rules fix).
-                new_node_id = node.id
-                final_status = "deployed"
+        if result.ok:
+            parsed_uri = extract_uri(result.stdout, body.protocol)
+            if parsed_uri:
+                node_dict = parse_uri(parsed_uri)
+                if node_dict:
+                    # Open our own session — the request-scoped one is
+                    # long gone by now.
+                    async with AsyncSession(get_async_engine()) as s:
+                        node = Node(**{
+                            k: v for k, v in node_dict.items() if hasattr(Node, k)
+                        })
+                        s.add(node)
+                        await s.flush()
+                        new_node_id = node.id
+                        await s.commit()
+                    final_status = "deployed"
+                else:
+                    final_status = "deployed_no_uri"
             else:
                 final_status = "deployed_no_uri"
-        else:
-            final_status = "deployed_no_uri"
 
-    # Upsert ServerDeployment row keyed on (server_id, protocol).
-    existing_dep = (await session.exec(
-        select(ServerDeployment)
-        .where(ServerDeployment.server_id == srv_id)
-        .where(ServerDeployment.protocol == body.protocol)
-    )).first()
+        # Upsert ServerDeployment in a fresh session.
+        deployment_config = {
+            "domain": plan.env.get("DOMAIN"),
+            "email": plan.env.get("EMAIL"),
+            "naive_user": plan.env.get("NAIVE_USER"),
+            # naive_pass intentionally omitted (CWE-312 — it's already
+            # on the Node URI; no need to duplicate plain-text)
+        }
+        deployment_config_json = json.dumps(deployment_config)
+        now = datetime.now(timezone.utc)
 
-    deployment_config = {
-        # Persist the env we ran with (minus secrets in plain text:
-        # naive_pass is part of the URI we just stored on the Node, no
-        # need to duplicate here. domain/email/user are useful for the
-        # "Naive configured" UI badge — keep those.)
-        "domain": plan.env.get("DOMAIN"),
-        "email": plan.env.get("EMAIL"),
-        "naive_user": plan.env.get("NAIVE_USER"),
-        # naive_pass intentionally omitted to avoid plain-text duplication
-    }
-    deployment_config_json = json.dumps(deployment_config)
-    now = datetime.now(timezone.utc)
+        async with AsyncSession(get_async_engine()) as s:
+            existing_dep = (await s.exec(
+                select(ServerDeployment)
+                .where(ServerDeployment.server_id == srv_id)
+                .where(ServerDeployment.protocol == body.protocol)
+            )).first()
 
-    if existing_dep:
-        existing_dep.config_json = deployment_config_json
-        existing_dep.status = final_status
-        existing_dep.updated_at = now
-        if new_node_id is not None:
-            existing_dep.last_node_id = new_node_id
-        session.add(existing_dep)
-        await session.flush()
-        deployment_id = existing_dep.id
-    else:
-        new_dep = ServerDeployment(
+            if existing_dep:
+                existing_dep.config_json = deployment_config_json
+                existing_dep.status = final_status
+                existing_dep.updated_at = now
+                if new_node_id is not None:
+                    existing_dep.last_node_id = new_node_id
+                s.add(existing_dep)
+                await s.flush()
+                deployment_id = existing_dep.id
+            else:
+                new_dep = ServerDeployment(
+                    server_id=srv_id,
+                    protocol=body.protocol,
+                    config_json=deployment_config_json,
+                    status=final_status,
+                    last_node_id=new_node_id,
+                )
+                s.add(new_dep)
+                await s.flush()
+                deployment_id = new_dep.id
+            await s.commit()
+
+        if not result.ok:
+            # Surface the runner-level failure so the operator can grep
+            # logs by server_id without parsing job rows. CWE-209/532
+            # sanitised: stdout/stderr are already capped + the secret
+            # never goes through error.
+            logger.warning(
+                "Auto-deploy failed: server_id=%d protocol=%s exit=%d error=%r",
+                srv_id, body.protocol, result.exit_code, result.error,
+            )
+            # Returning a non-empty result dict (rather than raising)
+            # keeps the Job in "succeeded" status with the failure
+            # captured inside `result.status`. Choice: failed-deploy
+            # is part of the deploy lifecycle, not a JobManager-level
+            # crash. Frontend reads `result.status` to render the
+            # actual outcome. SSH errors / runner crashes still
+            # propagate as exceptions → JobManager flags `failed`.
+
+        # Result returned to JobManager — written to Job.result_json
+        # and surfaced via JobRead.result on the API. Frontend uses
+        # `result.node_id` / `result.parsed_uri` for the "Open node"
+        # affordance; `result.status` distinguishes deployed vs
+        # deployed_no_uri vs failed.
+        return {
+            "deployment_id": deployment_id,
+            "node_id": new_node_id,
+            "status": final_status,
+            "exit_code": result.exit_code,
+            "duration_sec": result.duration_sec,
+            "parsed_uri": parsed_uri,
+            "error": result.error,
+            "connect_latency_ms": result.connect_latency_ms,
+        }
+
+    try:
+        job_id = await job_manager.start_deploy(
             server_id=srv_id,
+            server_name=srv_name,
             protocol=body.protocol,
-            config_json=deployment_config_json,
-            status=final_status,
-            last_node_id=new_node_id,
+            config=body.config,
+            runner=runner,
         )
-        session.add(new_dep)
-        await session.flush()
-        deployment_id = new_dep.id
+    except SlotBusy as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
 
-    # Capture deployment_id BEFORE commit (post-commit attr access
-    # would lazy-load and trip MissingGreenlet — same as for srv_id).
-    deployment_id_snapshot = deployment_id
-
-    await session.commit()
-
-    if not result.ok:
-        # Defensive log so admin sees why we failed even if they only
-        # have the response body. CWE-209/532 sanitised: we already
-        # cap stdout/stderr in exec_remote_script and never log raw
-        # secrets at WARNING+.
-        logger.warning(
-            "Auto-deploy failed: server_id=%d protocol=%s exit=%d error=%r",
-            srv_id, body.protocol, result.exit_code, result.error,
-        )
-
-    return ServerDeployResponse(
-        deployment_id=deployment_id_snapshot,
-        node_id=new_node_id,
-        status=final_status,
-        exit_code=result.exit_code,
-        duration_sec=result.duration_sec,
-        stdout_tail=stdout_tail,
-        stderr_tail=stderr_tail,
-        parsed_uri=parsed_uri,
-        error=result.error,
-        connect_latency_ms=result.connect_latency_ms,
+    return DeployJobAccepted(
+        job_id=job_id,
+        server_id=srv_id,
+        protocol=body.protocol,
     )
 
 
