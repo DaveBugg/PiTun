@@ -19,4 +19,4 @@ docker==7.1.0
 # user-registered VPS hosts. Pure Python, depends on `cryptography` which
 # is already pulled in transitively by python-jose. Pinned to 2.x — the
 # 1.x line had several auth bugs we don't want to accidentally regress to.
-asyncssh==2.18.0
+asyncssh==2.22.0
