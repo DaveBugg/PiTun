@@ -875,15 +875,45 @@ async def _persist_validation_error(message: str | None) -> None:
         logger.debug("Could not persist last_xray_validation_error: %s", exc)
 
 
-async def write_config(config: Dict[str, Any]) -> None:
-    """Serialize config to JSON, write to disk, then run a pre-flight
-    `xray run -test` to catch obviously-invalid configs (typically a
-    routing rule referencing a geosite/geoip tag absent from the loaded
-    .dat). Validation failure does NOT block the write — semantics
-    match pre-1.2.5 behaviour where xray itself was the only validator.
-    But we now log a human-readable hint and persist the error so the
-    UI can surface it instead of leaving the admin staring at /health
-    503 with no clue why.
+def _parse_geo_heal_target(stderr: str) -> Optional[tuple[str, str]]:
+    """If the xray validation stderr reports a missing geosite / geoip
+    tag, return `(kind, tag)` so the caller can self-heal by disabling
+    referencing routing rules. Otherwise None.
+
+    Recognised patterns (case-insensitive on the tag, since xray
+    sometimes upper-cases it):
+        "code not found in geosite.dat: CATEGORY-TELEMETRY"
+        "code not found in geoip.dat: XX"
+    """
+    import re
+    m = re.search(r"code not found in geosite\.dat:\s*(\S+)", stderr, re.IGNORECASE)
+    if m:
+        return ("geosite", m.group(1).strip().lower())
+    m = re.search(r"code not found in geoip\.dat:\s*(\S+)", stderr, re.IGNORECASE)
+    if m:
+        return ("geoip", m.group(1).strip().lower())
+    return None
+
+
+async def write_config(
+    config: Dict[str, Any], *, validate: bool = True
+) -> Optional[tuple[str, str]]:
+    """Serialize config to JSON, write to disk, then (when `validate`)
+    run a pre-flight `xray run -test` to catch obviously-invalid configs
+    (typically a routing rule referencing a geosite/geoip tag absent
+    from the loaded .dat).
+
+    Validation failure does NOT block the write — semantics match
+    pre-1.2.5 behaviour where xray itself was the only validator. But
+    we log a human hint and persist it so the UI can surface it.
+
+    Returns:
+        None if validation passed (or was skipped).
+        (kind, tag) like ("geosite", "category-telemetry") if validation
+        failed with a recognisable missing-geo-tag error — caller can
+        self-heal by disabling the referencing routing rules and
+        re-writing the config (`validate=False` on the retry to avoid
+        loops).
     """
     import asyncio
 
@@ -896,15 +926,15 @@ async def write_config(config: Dict[str, Any]) -> None:
     await asyncio.to_thread(_write)
     logger.info("xray config written to %s", settings.xray_config_path)
 
+    if not validate:
+        return None
+
     # Pre-flight validation. Skipped silently if the xray binary isn't
     # present (test environments / CI use FastAPI in-process without
-    # the binary). This was previously only done in the auto-restart
-    # path (xray.py), which meant a UI-driven config change could write
-    # a broken config and the admin only saw the failure ~3 seconds
-    # later when xray crashed.
+    # the binary).
     try:
         if not Path(settings.xray_binary).exists():
-            return
+            return None
 
         proc = await asyncio.create_subprocess_exec(
             settings.xray_binary, "run", "-test", "-config", settings.xray_config_path,
@@ -920,12 +950,12 @@ async def write_config(config: Dict[str, Any]) -> None:
                 "xray config pre-flight validation timed out after 10s — "
                 "binary may be hung or geo data unusually large"
             )
-            return
+            return None
 
         if proc.returncode == 0:
             # Clear any previously-stored error so the UI stops showing it.
             await _persist_validation_error(None)
-            return
+            return None
 
         stderr_text = stderr.decode(errors="replace")
         hint = _explain_xray_stderr(stderr_text)
@@ -944,6 +974,9 @@ async def write_config(config: Dict[str, Any]) -> None:
                 stderr_text[-500:],
             )
             await _persist_validation_error(f"xray validation failed: {tail}")
+
+        return _parse_geo_heal_target(stderr_text)
     except Exception as exc:
         # Pre-flight is advisory — never block the write on a probe error.
         logger.debug("xray config pre-flight validation skipped: %s", exc)
+        return None

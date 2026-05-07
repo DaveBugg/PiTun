@@ -95,6 +95,17 @@ async def lifespan(app: FastAPI):
     from app.api.system import apply_system_toggles_on_boot
     await apply_system_toggles_on_boot()
 
+    # Parse geosite.dat / geoip.dat tag lists into the in-memory cache
+    # used by routing rule pre-flight validation + the /api/geo/categories
+    # autocomplete endpoint (both new in v1.2.7). Best-effort — a missing
+    # or unreadable .dat just leaves the cache empty (rule validation
+    # then fails open: don't reject what we can't validate).
+    try:
+        from app.core.geo import refresh_tag_cache
+        await asyncio.to_thread(refresh_tag_cache)
+    except Exception as exc:
+        logger.warning("Geo tag cache initial load failed: %s", exc)
+
     # Reconcile NaiveProxy sidecar containers with DB state. Non-fatal if
     # docker-proxy is unreachable or the pitun-naive image is missing —
     # the backend still starts and individual naive nodes will show as

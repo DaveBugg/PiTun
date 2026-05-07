@@ -576,6 +576,13 @@ class SystemStatus(BaseModel):
     # from `app.config.APP_VERSION`.
     version: Optional[str]
     app_version: Optional[str] = None
+    # Last xray config validation error, surfaced verbatim from the
+    # `last_xray_validation_error` Settings key written by
+    # `config_gen.write_config()` since v1.2.5. Empty string / None
+    # means the most recent validation passed. Frontend uses this to
+    # show a yellow-red banner in the topbar / Routing page so admins
+    # don't stare at a 503 /health with no clue why xray won't start.
+    last_xray_validation_error: Optional[str] = None
 
 
 class SystemVersions(BaseModel):

@@ -8,11 +8,38 @@
 # the same command, completed downloads are skipped and only the
 # missing/partial ones get retried.
 #
-# Quick start:
+# ─── Quick start (no flags — installs the latest release) ──────────────────
 #
 #   curl -fsSL https://raw.githubusercontent.com/DaveBugg/PiTun/master/install.sh | sudo bash
 #
-# Options (pass after `bash -s --`):
+# ─── Install a specific version ────────────────────────────────────────────
+#
+# THREE WORKING FORMS — pick whichever you find easiest. ANY of them works,
+# but the FIRST is the most foolproof and the one we recommend:
+#
+#   # 1. Download to a temp file, then run with the flag.
+#   #    Recommended — no shell-syntax pitfalls.
+#   curl -fsSL https://raw.githubusercontent.com/DaveBugg/PiTun/master/install.sh \
+#        -o /tmp/pitun-install.sh
+#   sudo bash /tmp/pitun-install.sh --version v1.2.7
+#
+#   # 2. Pipe-form with `bash -s --` separator (REQUIRED to pass flags).
+#   curl -fsSL https://raw.githubusercontent.com/DaveBugg/PiTun/master/install.sh \
+#        | sudo bash -s -- --version v1.2.7
+#
+#   # 3. Environment variable (works without `-s --`).
+#   curl -fsSL https://raw.githubusercontent.com/DaveBugg/PiTun/master/install.sh \
+#        | sudo PITUN_VERSION=v1.2.7 bash
+#
+# ─── COMMON MISTAKE — DO NOT do this: ──────────────────────────────────────
+#
+#   curl ... | sudo bash --version v1.2.7      ❌ WRONG
+#
+# `--version` is interpreted by BASH ITSELF (prints bash's version + exits)
+# before our installer ever runs. You'll see GNU bash copyright text and
+# nothing else. Use one of the three forms above instead.
+#
+# ─── Options ───────────────────────────────────────────────────────────────
 #
 #   --version vX.Y.Z       Install a specific release tag (default: latest).
 #   --dir PATH             Where to install PiTun (default: /opt/pitun).
@@ -245,6 +272,88 @@ elif [[ "$USE_BUILD" != "1" ]]; then
         if [[ -n "$DISPLAY_VERSION" && "${DISPLAY_VERSION#v}" == "$DISPLAY_VERSION" ]]; then
             DISPLAY_VERSION="v${DISPLAY_VERSION}"
         fi
+    fi
+fi
+
+# Downgrade detection — HARD ABORT.
+#
+# Scenario: user is on v1.2.6, runs `curl … | sudo bash` (default
+# --version latest). GitHub's /releases/latest API returns v1.2.2
+# (release.yml didn't publish newer ones, or the latest Release wasn't
+# marked make_latest=true, or the user's network MITMs api.github.com,
+# or unauthenticated rate-limit returned a cached old value). Without
+# this guard, the script would silently DOWNGRADE the install — pulls
+# old images, recreates containers, runs older alembic head. Possibly
+# data-destructive if a future release migrates the schema forward.
+#
+# Use `sort -V` (version sort) as a cheap semver comparator. Strips a
+# leading `v`, then asks whether running > resolved. If yes, abort.
+# Same-version (running == resolved) handled separately below.
+if [[ "$IS_UPDATE" == "1" \
+      && -n "$RUNNING_VERSION" && "$RUNNING_VERSION" != "?" ]]; then
+    _running_num="${RUNNING_VERSION#v}"
+    _target_num="${DISPLAY_VERSION#v}"
+    if [[ "$_running_num" != "$_target_num" \
+          && "$(printf '%s\n%s\n' "$_running_num" "$_target_num" | sort -V | tail -1)" == "$_running_num" ]]; then
+        echo ""
+        warn "════════════════════════════════════════════════════════════════════"
+        warn "  ⛔ DOWNGRADE DETECTED — aborting."
+        warn ""
+        warn "    Currently running: $RUNNING_VERSION"
+        warn "    Target version:    $DISPLAY_VERSION (resolved from --version=$VERSION)"
+        warn ""
+        warn "  The target is OLDER than what's already installed. This usually"
+        warn "  means GitHub's /releases/latest endpoint returned a stale value:"
+        warn "    • newer Release object wasn't marked 'Latest' on GitHub"
+        warn "    • CI release.yml hasn't published yet"
+        warn "    • api.github.com is rate-limited or unreachable from this host"
+        warn ""
+        warn "  Refusing to silently downgrade your install. Either:"
+        warn "    1. Wait for CI / GitHub UI 'Latest' flag and re-run."
+        warn "    2. Pin a specific newer version explicitly:"
+        warn "         sudo bash $0 --version v$_running_num"
+        warn "    3. If you intentionally want to roll back, force-pin to the older:"
+        warn "         sudo bash $0 --version $DISPLAY_VERSION"
+        warn "════════════════════════════════════════════════════════════════════"
+        exit 1
+    fi
+fi
+
+# Same-version detection. We've seen this in the wild: a user on
+# v1.2.2 runs `curl … | sudo bash` (default `--version latest`), the
+# GitHub `/releases/latest` API returns v1.2.2 because newer tags
+# don't have published Release objects yet (release.yml may still be
+# building or the tag was never released formally), and the script
+# happily proceeds to "upgrade" 1.2.2 → 1.2.2. Wastes time and
+# misleads the admin into thinking nothing happened despite their
+# explicit upgrade intent.
+#
+# Guard: warn loudly and pause for 5 seconds so the user can Ctrl+C.
+# We don't hard-abort because re-installing the same version IS
+# sometimes useful (recover from corrupt files, reset .env, etc.).
+if [[ "$IS_UPDATE" == "1" \
+      && -n "$RUNNING_VERSION" && "$RUNNING_VERSION" != "?" \
+      && "$RUNNING_VERSION" == "$DISPLAY_VERSION" ]]; then
+    echo ""
+    warn "════════════════════════════════════════════════════════════════════"
+    warn "  Already running ${RUNNING_VERSION}. The installer will re-pull the"
+    warn "  same images, re-extract source, and recreate containers."
+    warn ""
+    warn "  If you wanted a different version, abort now (Ctrl+C) and use:"
+    warn ""
+    warn "    # Foolproof — download, then run with the flag:"
+    warn "    curl -fsSL https://raw.githubusercontent.com/${GITHUB_REPO}/master/install.sh \\"
+    warn "         -o /tmp/pitun-install.sh"
+    warn "    sudo bash /tmp/pitun-install.sh --version vX.Y.Z"
+    warn ""
+    warn "    # Or pipe-form — note 'bash -s --' is REQUIRED to pass flags:"
+    warn "    curl -fsSL https://raw.githubusercontent.com/${GITHUB_REPO}/master/install.sh \\"
+    warn "         | sudo bash -s -- --version vX.Y.Z"
+    warn "════════════════════════════════════════════════════════════════════"
+    echo ""
+    if [[ "$NON_INTERACTIVE" != "1" && "$DRY_RUN" != "1" ]]; then
+        info "Continuing in 5s — press Ctrl+C to abort..."
+        sleep 5
     fi
 fi
 

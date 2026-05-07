@@ -161,6 +161,35 @@ export const routingApi = {
 
   listDevices: () =>
     http.get<ArpDevice[]>('/routing/devices').then(r => r.data),
+
+  // ── Auto-disabled rules inbox (v1.2.7) ──────────────────────────────────
+  // When `_regenerate_and_write` self-heals after xray rejects the config
+  // due to a missing geosite/geoip tag, rules referencing the tag are
+  // disabled and surfaced via these endpoints.
+  listAutoDisabled: () =>
+    http.get<{ items: AutoDisabledRule[] }>('/routing/auto-disabled').then(r => r.data),
+
+  reEnableAutoDisabled: (ruleId: number) =>
+    http.post(`/routing/auto-disabled/${ruleId}/re-enable`),
+
+  deleteAutoDisabled: (ruleId: number) =>
+    http.delete(`/routing/auto-disabled/${ruleId}`),
+
+  dismissAutoDisabledAll: () =>
+    http.post('/routing/auto-disabled/dismiss'),
+}
+
+// One auto-disabled inbox entry — server returns these as JSON inside
+// the `items` array. Shape is intentionally permissive (extra fields
+// from future versions just get ignored).
+export interface AutoDisabledRule {
+  rule_id: number
+  name?: string
+  rule_type?: string
+  match_value?: string
+  missing_kind: 'geosite' | 'geoip'
+  missing_tag: string
+  disabled_at?: string
 }
 
 // ── Subscriptions ─────────────────────────────────────────────────────────────

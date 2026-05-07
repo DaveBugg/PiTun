@@ -248,11 +248,39 @@ rename `.tmp → final`).
 curl -fsSL https://raw.githubusercontent.com/DaveBugg/PiTun/master/install.sh | sudo bash
 ```
 
-Полезные флаги (после `bash -s --`):
+> **Внимание — передача флагов через pipe.** Флаги вида `--flag` ниже
+> должны попадать в наш installer, а не в bash. Рабочих форм три,
+> выбирай ту, которую сложнее всего ошибиться при копипасте:
+>
+> **(A) Foolproof — скачать и запустить:**
+> ```bash
+> curl -fsSL https://raw.githubusercontent.com/DaveBugg/PiTun/master/install.sh \
+>      -o /tmp/pitun-install.sh
+> sudo bash /tmp/pitun-install.sh --version v1.2.7
+> ```
+>
+> **(B) Pipe с разделителем `bash -s --`** (`-s --` **обязателен**):
+> ```bash
+> curl -fsSL https://raw.githubusercontent.com/DaveBugg/PiTun/master/install.sh \
+>      | sudo bash -s -- --version v1.2.7
+> ```
+>
+> **(C) Через переменную окружения** (без `-s --` шаманства):
+> ```bash
+> curl -fsSL https://raw.githubusercontent.com/DaveBugg/PiTun/master/install.sh \
+>      | sudo PITUN_VERSION=v1.2.7 bash
+> ```
+>
+> ❌ **Так делать НЕ нужно:** `curl ... | sudo bash --version v1.2.7` —
+> bash съедает `--version` как свой собственный флаг (печатает версию
+> bash и выходит) до того как наш installer вообще запустится. Частая
+> ловушка копипаста.
+
+Полезные флаги (работают через любую из трёх форм выше; примеры в форме B):
 
 ```bash
 # Конкретная версия
-... | sudo bash -s -- --version v1.0.5
+... | sudo bash -s -- --version v1.2.7
 
 # Принудительная сборка из исходников (если релиза ещё нет или
 # тестируешь локальные изменения). Медленнее, нужен стабильный

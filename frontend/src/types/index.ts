@@ -182,6 +182,12 @@ export interface SystemStatus {
   // older backends don't send it — the sidebar hides the line if absent.
   version?: string
   app_version?: string
+  // Last xray config validation error (since v1.2.7). Written by
+  // `config_gen.write_config()` when `xray run -test` rejects the
+  // generated config — typically a routing rule references a
+  // geosite/geoip tag absent from the loaded .dat. Empty / undefined
+  // means the most recent validation passed.
+  last_xray_validation_error?: string | null
 }
 
 // Full version snapshot for the VersionPopover / Settings About tab.

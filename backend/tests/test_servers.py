@@ -639,3 +639,201 @@ class TestServerExportImportJSON:
             headers=auth_headers,
         )
         assert resp.status_code == 400
+
+
+# ── v1.2.7: Bundle envelope v2 — deployments round-trip ──────────────────────
+
+
+class TestEnvelopeV2Deployments:
+    """Server JSON Export/Import bundle envelope was bumped from v1
+    (servers only) to v2 (servers + nested per-protocol deployments)
+    in v1.2.5 / v1.2.7. Verify both export shape and import behaviour.
+
+    v1 envelopes (no `deployments` key) must still import gracefully —
+    they just produce empty deployments per server.
+    """
+
+    def test_export_uses_envelope_version_2(
+        self, client, admin_user, auth_headers, sample_server
+    ):
+        resp = client.get("/api/servers/export-json", headers=auth_headers)
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["version"] == 2
+
+    def test_export_nests_deployments_under_server(
+        self, client, admin_user, auth_headers, sample_server, session
+    ):
+        # Seed a deployment for the sample server
+        from app.models import ServerDeployment
+        import json
+        d = ServerDeployment(
+            server_id=sample_server.id,
+            protocol="naive",
+            config_json=json.dumps({
+                "domain": "naive.example.com",
+                "naive_user": "vasya",
+                "naive_pass": "abc123",
+                "email": "vasya@example.com",
+            }),
+            status="deployed",
+        )
+        session.add(d)
+        session.commit()
+
+        resp = client.get("/api/servers/export-json", headers=auth_headers)
+        body = resp.json()
+        assert body["count"] == 1
+        s = body["servers"][0]
+        assert "deployments" in s
+        assert len(s["deployments"]) == 1
+        dep = s["deployments"][0]
+        assert dep["protocol"] == "naive"
+        assert dep["status"] == "deployed"
+        # `config` was deserialised back from JSON and re-nested
+        assert dep["config"]["domain"] == "naive.example.com"
+        assert dep["config"]["naive_user"] == "vasya"
+        # `last_node_id` deliberately NOT exported (Node ids don't
+        # survive instance migration; re-link via "Create Node" click)
+        assert "last_node_id" not in dep
+
+    def test_v2_round_trip_preserves_deployments(
+        self, client, admin_user, auth_headers, sample_server, session
+    ):
+        # Seed deployment, export with secrets, wipe, re-import
+        from app.models import ServerDeployment, Server
+        import json
+        from sqlmodel import select
+
+        session.add(ServerDeployment(
+            server_id=sample_server.id,
+            protocol="naive",
+            config_json=json.dumps({"domain": "n.example.com", "naive_user": "u"}),
+            status="configured",
+        ))
+        session.commit()
+
+        bundle = client.get(
+            "/api/servers/export-json?include_secrets=true",
+            headers=auth_headers,
+        ).json()
+
+        # Wipe + import
+        resp = client.post(
+            "/api/servers/import-json?replace=true",
+            json=bundle,
+            headers=auth_headers,
+        )
+        body = resp.json()
+        assert body["imported"] == 1
+        assert body["deployments_restored"] == 1
+
+        session.expire_all()
+        servers = session.exec(select(Server)).all()
+        assert len(servers) == 1
+        deps = session.exec(
+            select(ServerDeployment).where(ServerDeployment.server_id == servers[0].id)
+        ).all()
+        assert len(deps) == 1
+        assert deps[0].protocol == "naive"
+        assert deps[0].status == "configured"
+        cfg = json.loads(deps[0].config_json)
+        assert cfg["domain"] == "n.example.com"
+        # last_node_id intentionally None — wasn't in the bundle
+        assert deps[0].last_node_id is None
+
+    def test_v1_envelope_imports_with_empty_deployments(
+        self, client, admin_user, auth_headers, session
+    ):
+        # Older PiTun produced v1 envelopes (no `deployments` key).
+        # Importing such a bundle must not crash; deployments end up
+        # empty for those servers.
+        from app.models import Server, ServerDeployment
+        from sqlmodel import select
+
+        v1_bundle = {
+            "kind": "pitun-servers-export",
+            "version": 1,
+            "include_secrets": False,
+            "servers": [
+                {"name": "OldSrv", "host": "old.example.com", "port": 22,
+                 "user": "root", "auth_type": "password"},
+            ],
+        }
+        resp = client.post(
+            "/api/servers/import-json", json=v1_bundle, headers=auth_headers
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["imported"] == 1
+        # Counter for v2 only — v1 imports should report 0 deps restored
+        assert body["deployments_restored"] == 0
+
+        session.expire_all()
+        servers = session.exec(select(Server)).all()
+        assert len(servers) == 1
+        deps = session.exec(
+            select(ServerDeployment).where(ServerDeployment.server_id == servers[0].id)
+        ).all()
+        assert deps == []
+
+    def test_unknown_envelope_version_rejected(self, client, admin_user, auth_headers):
+        # Future v3 schema must NOT silently degrade to v2 — that
+        # would risk dropping fields a future maintainer added.
+        # The envelope-version check should reject anything outside
+        # {1, 2}.
+        resp = client.post(
+            "/api/servers/import-json",
+            json={"kind": "pitun-servers-export", "version": 99, "servers": []},
+            headers=auth_headers,
+        )
+        assert resp.status_code == 400
+
+    def test_import_skips_malformed_deployments(
+        self, client, admin_user, auth_headers, session
+    ):
+        # Defense: a bundle with malformed deployment entries (missing
+        # `protocol`, non-dict config, etc.) should still import the
+        # server itself, just skipping the bad deployment row.
+        from app.models import Server, ServerDeployment
+        from sqlmodel import select
+
+        bundle = {
+            "kind": "pitun-servers-export",
+            "version": 2,
+            "include_secrets": False,
+            "servers": [
+                {
+                    "name": "MixedQuality", "host": "x.example.com",
+                    "port": 22, "user": "root", "auth_type": "password",
+                    "deployments": [
+                        {"protocol": "naive", "config": {"domain": "n"}, "status": "configured"},
+                        # Missing protocol → skipped
+                        {"config": {"hello": "world"}},
+                        # Non-dict config → coerced to empty dict
+                        {"protocol": "wireguard", "config": "not a dict", "status": "configured"},
+                        # Non-dict entry → skipped
+                        "not a dict",
+                    ],
+                },
+            ],
+        }
+        resp = client.post(
+            "/api/servers/import-json", json=bundle, headers=auth_headers,
+        )
+        body = resp.json()
+        assert resp.status_code == 200, body
+        # The server itself imported fine
+        assert body["imported"] == 1
+        # 2 valid deployments restored (naive + wireguard with coerced config)
+        assert body["deployments_restored"] == 2
+
+        # Verify in DB
+        session.expire_all()
+        srv = session.exec(select(Server)).first()
+        deps = session.exec(
+            select(ServerDeployment).where(ServerDeployment.server_id == srv.id)
+        ).all()
+        assert len(deps) == 2
+        protocols = {d.protocol for d in deps}
+        assert protocols == {"naive", "wireguard"}

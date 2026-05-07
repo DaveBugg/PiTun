@@ -248,11 +248,38 @@ and atomically renamed).
 curl -fsSL https://raw.githubusercontent.com/DaveBugg/PiTun/master/install.sh | sudo bash
 ```
 
-Useful flags (after `bash -s --`):
+> **Heads up — passing flags to a piped script.** The `--flag` arguments
+> below need to reach our installer, not bash. There are three working
+> forms; pick the one that's hardest to mistype:
+>
+> **(A) Foolproof — download then run:**
+> ```bash
+> curl -fsSL https://raw.githubusercontent.com/DaveBugg/PiTun/master/install.sh \
+>      -o /tmp/pitun-install.sh
+> sudo bash /tmp/pitun-install.sh --version v1.2.7
+> ```
+>
+> **(B) Pipe with `bash -s --` separator** (the `-s --` is **required**):
+> ```bash
+> curl -fsSL https://raw.githubusercontent.com/DaveBugg/PiTun/master/install.sh \
+>      | sudo bash -s -- --version v1.2.7
+> ```
+>
+> **(C) Environment variable** (no `-s --` voodoo needed):
+> ```bash
+> curl -fsSL https://raw.githubusercontent.com/DaveBugg/PiTun/master/install.sh \
+>      | sudo PITUN_VERSION=v1.2.7 bash
+> ```
+>
+> ❌ **Do NOT do this:** `curl ... | sudo bash --version v1.2.7` — bash
+> swallows `--version` as its own flag (prints bash's version + exits)
+> before our installer ever runs. Common copy-paste trap.
+
+Useful flags (work via any of the three forms above; examples use form B):
 
 ```bash
 # Pin a specific version
-... | sudo bash -s -- --version v1.0.5
+... | sudo bash -s -- --version v1.2.7
 
 # Force rebuilding from source (no published release available, or
 # you're testing local changes). Slower, needs reliable internet

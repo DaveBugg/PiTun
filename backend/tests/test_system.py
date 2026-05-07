@@ -95,6 +95,64 @@ class TestStatusWithMock:
             assert data["running"] is False
             assert data["mode"] == "rules"
 
+    def test_status_includes_app_version(self, client, admin_user, auth_headers, default_settings):
+        # `app_version` is sourced from `app.config.APP_VERSION` and
+        # surfaced for the version popover. v1.2.7 also added
+        # `last_xray_validation_error`; cover both fields together
+        # since they share the same handler path.
+        with (
+            patch("app.core.xray.xray_manager", _make_mock_xray()),
+            patch("app.core.nftables.nftables_manager", _make_mock_nftables()),
+        ):
+            resp = client.get("/api/system/status", headers=auth_headers)
+            assert resp.status_code == 200
+            data = resp.json()
+            assert "app_version" in data
+            # Either set to a real version string or null; never missing
+            assert "last_xray_validation_error" in data
+
+    def test_status_surfaces_xray_validation_error(
+        self, client, admin_user, auth_headers, default_settings, session
+    ):
+        # When `config_gen.write_config` has persisted a
+        # `last_xray_validation_error` Settings row (because
+        # `xray run -test` rejected the last config), `/system/status`
+        # must echo it so the frontend banner can render. v1.2.7.
+        from app.models import Settings as DBSettings
+        session.add(DBSettings(
+            key="last_xray_validation_error",
+            value="Routing rule references geosite tag 'category-telemetry' which is NOT present...",
+        ))
+        session.commit()
+
+        with (
+            patch("app.core.xray.xray_manager", _make_mock_xray()),
+            patch("app.core.nftables.nftables_manager", _make_mock_nftables()),
+        ):
+            resp = client.get("/api/system/status", headers=auth_headers)
+            assert resp.status_code == 200
+            data = resp.json()
+            assert data["last_xray_validation_error"] is not None
+            assert "category-telemetry" in data["last_xray_validation_error"]
+
+    def test_status_omits_validation_error_when_clean(
+        self, client, admin_user, auth_headers, default_settings, session
+    ):
+        # Empty Settings value → response field is None, not the empty
+        # string. Frontend conditional renders the banner only when
+        # truthy.
+        from app.models import Settings as DBSettings
+        session.add(DBSettings(key="last_xray_validation_error", value=""))
+        session.commit()
+
+        with (
+            patch("app.core.xray.xray_manager", _make_mock_xray()),
+            patch("app.core.nftables.nftables_manager", _make_mock_nftables()),
+        ):
+            resp = client.get("/api/system/status", headers=auth_headers)
+            assert resp.status_code == 200
+            assert resp.json()["last_xray_validation_error"] is None
+
 
 class TestStartStopWithMock:
     def test_start_proxy(self, client, admin_user, auth_headers, default_settings, sample_node):
@@ -103,7 +161,11 @@ class TestStartStopWithMock:
         )
         with (
             patch("app.core.config_gen.generate_config", return_value={}),
-            patch("app.core.config_gen.write_config", new_callable=AsyncMock),
+            # `write_config` returns Optional[(kind, tag)] since v1.2.7 —
+            # None means validation passed. Default AsyncMock returns a
+            # MagicMock (truthy), which would trick `_regenerate_and_write`
+            # into self-heal recursion. Pin to None for happy-path tests.
+            patch("app.core.config_gen.write_config", new_callable=AsyncMock, return_value=None),
             patch("app.core.xray.xray_manager", _make_mock_xray()),
             patch("app.core.nftables.nftables_manager", _make_mock_nftables()),
             patch("app.core.device_scanner.get_device_macs_for_mode", _make_mock_device_macs()),

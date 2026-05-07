@@ -41,6 +41,72 @@ async def _validate_action(session: AsyncSession, action: str) -> None:
         if bg is None:
             raise HTTPException(400, f"Action references missing balancer {bid}")
 
+
+def _validate_geo_tags(rule_type: str, match_value: str) -> None:
+    """Reject rule saves that reference a `geosite:X` or `geoip:X` tag
+    absent from the currently loaded `.dat` files.
+
+    Two shapes are checked:
+      * `rule_type` ∈ {"geosite", "geoip"} — entire match_value is a
+        comma-separated list of plain tags (no `geosite:` prefix).
+      * `rule_type == "domain"` — match_value may contain mixed
+        entries like `domain:foo,geosite:cn,geoip:ru`; we extract
+        only the geo-prefixed ones and validate those.
+
+    Fail-open semantics: if the corresponding tag cache is empty
+    (file missing / parse error / not yet loaded), we DON'T reject.
+    Better to let xray be the validator-of-last-resort than to brick
+    the rule-CRUD surface on a startup edge case. The Layout banner
+    written from `last_xray_validation_error` (also v1.2.7) covers
+    the missed cases.
+    """
+    if not match_value:
+        return
+    from app.core.geo import AVAILABLE_GEOSITE_TAGS, AVAILABLE_GEOIP_TAGS
+
+    # Collect (kind, raw_tag) pairs to validate.
+    to_check: list[tuple[str, str]] = []
+    parts = [p.strip() for p in match_value.split(",") if p.strip()]
+    if rule_type == "geosite":
+        for p in parts:
+            to_check.append(("geosite", p))
+    elif rule_type == "geoip":
+        for p in parts:
+            to_check.append(("geoip", p))
+    elif rule_type == "domain":
+        for p in parts:
+            if p.startswith("geosite:"):
+                to_check.append(("geosite", p[len("geosite:"):]))
+            elif p.startswith("geoip:"):
+                to_check.append(("geoip", p[len("geoip:"):]))
+            # `domain:...`, plain hostnames, regex matches — not our job
+    else:
+        return
+
+    if not to_check:
+        return
+
+    missing: list[str] = []
+    for kind, tag in to_check:
+        tag_lc = tag.lower()
+        cache = AVAILABLE_GEOSITE_TAGS if kind == "geosite" else AVAILABLE_GEOIP_TAGS
+        if not cache:
+            # Cache empty for this kind — fail-open (see docstring).
+            return
+        if tag_lc not in cache:
+            missing.append(f"{kind}:{tag}")
+
+    if missing:
+        joined = ", ".join(missing)
+        raise HTTPException(
+            400,
+            (
+                f"Tag(s) not found in current .dat: {joined}. "
+                "Switch the geo profile (Settings → GeoData → Update) to one that "
+                "includes these categories, or pick a different tag."
+            ),
+        )
+
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/routing", tags=["routing"])
@@ -67,9 +133,117 @@ async def list_rules(session: AsyncSession = Depends(get_session)):
     return list(rules)
 
 
+# ── Auto-disabled rules surface (since v1.2.7) ───────────────────────────────
+#
+# When `_regenerate_and_write` self-heals after xray rejects the config
+# due to a missing geosite/geoip tag, it disables the offending
+# RoutingRule rows and appends entries to the `auto_disabled_rules`
+# Settings key. The frontend reads `/auto-disabled` to render a banner
+# above the rules table.
+
+@router.get("/auto-disabled")
+async def list_auto_disabled(session: AsyncSession = Depends(get_session)):
+    """Return the JSON list of rules auto-disabled by the self-heal
+    pass. Empty list when there's nothing to surface.
+    """
+    from app.models import Settings as DBSettings
+    row = (await session.exec(
+        select(DBSettings).where(DBSettings.key == "auto_disabled_rules")
+    )).first()
+    if not row or not row.value:
+        return {"items": []}
+    try:
+        items = json.loads(row.value)
+        if not isinstance(items, list):
+            items = []
+    except Exception:
+        items = []
+    return {"items": items}
+
+
+@router.post("/auto-disabled/{rule_id}/re-enable", status_code=204)
+async def re_enable_auto_disabled(
+    rule_id: int, session: AsyncSession = Depends(get_session)
+):
+    """Re-enable a rule and remove it from the auto-disabled inbox.
+    Forces the user to acknowledge they understand the rule will
+    re-trigger validation; if the underlying tag is still missing in
+    the .dat, the next config write will self-disable it again.
+    """
+    from app.models import Settings as DBSettings
+    rule = await session.get(RoutingRule, rule_id)
+    if rule is not None:
+        rule.enabled = True
+        session.add(rule)
+
+    row = (await session.exec(
+        select(DBSettings).where(DBSettings.key == "auto_disabled_rules")
+    )).first()
+    if row and row.value:
+        try:
+            items = json.loads(row.value)
+            if isinstance(items, list):
+                items = [it for it in items if it.get("rule_id") != rule_id]
+                row.value = json.dumps(items)
+                session.add(row)
+        except Exception:
+            pass
+
+    await session.commit()
+    await _auto_reload_xray(session)
+
+
+@router.delete("/auto-disabled/{rule_id}", status_code=204)
+async def delete_auto_disabled(
+    rule_id: int, session: AsyncSession = Depends(get_session)
+):
+    """Permanently delete an auto-disabled rule and remove from the
+    inbox. The "this rule will never come back" path for users who
+    don't intend to switch geo profiles.
+    """
+    from app.models import Settings as DBSettings
+    rule = await session.get(RoutingRule, rule_id)
+    if rule is not None:
+        await session.delete(rule)
+
+    row = (await session.exec(
+        select(DBSettings).where(DBSettings.key == "auto_disabled_rules")
+    )).first()
+    if row and row.value:
+        try:
+            items = json.loads(row.value)
+            if isinstance(items, list):
+                items = [it for it in items if it.get("rule_id") != rule_id]
+                row.value = json.dumps(items)
+                session.add(row)
+        except Exception:
+            pass
+
+    await session.commit()
+    await _auto_reload_xray(session)
+
+
+@router.post("/auto-disabled/dismiss", status_code=204)
+async def dismiss_auto_disabled_all(session: AsyncSession = Depends(get_session)):
+    """Clear the entire auto-disabled inbox without touching the rule
+    rows. The rules stay disabled in the DB; the banner just goes
+    away. Use when the admin has decided "I'll deal with this later"
+    and doesn't want a persistent yellow banner.
+    """
+    from app.models import Settings as DBSettings
+    row = (await session.exec(
+        select(DBSettings).where(DBSettings.key == "auto_disabled_rules")
+    )).first()
+    if row:
+        row.value = ""
+        session.add(row)
+        await session.commit()
+
+
 @router.post("/rules", response_model=RoutingRuleRead, status_code=201)
 async def create_rule(data: RoutingRuleCreate, session: AsyncSession = Depends(get_session)):
     await _validate_action(session, data.action)
+    _validate_geo_tags(data.rule_type, data.match_value or "")
     rule = RoutingRule(**data.model_dump())
     session.add(rule)
     await session.commit()
@@ -94,6 +268,13 @@ async def update_rule(rule_id: int, data: RoutingRuleUpdate, session: AsyncSessi
     patch = data.model_dump(exclude_unset=True)
     if "action" in patch and patch["action"] is not None:
         await _validate_action(session, patch["action"])
+    # Validate geo tags against the resulting (post-patch) shape.
+    # Whichever of (rule_type, match_value) the patch supplies, fall
+    # back to the existing row for the other side.
+    new_rule_type = patch.get("rule_type", rule.rule_type)
+    new_match_value = patch.get("match_value", rule.match_value)
+    if new_rule_type in {"geosite", "geoip", "domain"}:
+        _validate_geo_tags(new_rule_type, new_match_value or "")
     for k, v in patch.items():
         setattr(rule, k, v)
     session.add(rule)

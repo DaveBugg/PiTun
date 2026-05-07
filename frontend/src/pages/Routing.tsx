@@ -655,6 +655,12 @@ export function Routing() {
       {/* Rules tab */}
       {tab === 'rules' && (
         <div className="space-y-2">
+          {/* Self-healing inbox: rules disabled by config_gen because
+              they referenced missing geosite/geoip tags (since v1.2.7).
+              Banner stays until the admin acts on each entry or
+              dismisses the whole list. */}
+          <AutoDisabledBanner />
+
           {/* View toggle */}
           {rules.length > 0 && (
             <div className="flex justify-end">
@@ -1138,6 +1144,140 @@ export function Routing() {
           </div>
         </ModalShell>
       )}
+    </div>
+  )
+}
+
+
+/**
+ * AutoDisabledBanner — sits above the rules table on the Routing page,
+ * surfaces routing rules that the v1.2.7 self-heal pass disabled
+ * because they referenced a `geosite:X` or `geoip:X` tag absent from
+ * the loaded `.dat`.
+ *
+ * Each row offers three actions:
+ *   • Re-enable: flips the rule back on; if the tag is still missing
+ *     the next config write will self-disable it again. User accepts
+ *     that risk.
+ *   • Delete: permanently removes the rule.
+ *   • (per-banner) Dismiss all: clears the inbox without touching
+ *     rules. The yellow banner just disappears; rules stay disabled
+ *     in the DB.
+ *
+ * Hidden when the inbox is empty — the banner doesn't render its own
+ * negative state.
+ */
+function AutoDisabledBanner() {
+  const t = useT()
+  const qc = useQueryClient()
+
+  const { data } = useQuery({
+    queryKey: ['routing', 'auto-disabled'],
+    queryFn: () => routingApi.listAutoDisabled(),
+  })
+
+  const reEnable = useMutation({
+    mutationFn: (ruleId: number) => routingApi.reEnableAutoDisabled(ruleId),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['routing'] })
+    },
+  })
+
+  const remove = useMutation({
+    mutationFn: (ruleId: number) => routingApi.deleteAutoDisabled(ruleId),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['routing'] })
+    },
+  })
+
+  const dismissAll = useMutation({
+    mutationFn: () => routingApi.dismissAutoDisabledAll(),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['routing', 'auto-disabled'] })
+    },
+  })
+
+  const items = data?.items ?? []
+  if (items.length === 0) return null
+
+  return (
+    <div
+      role="alert"
+      className="rounded-lg border border-yellow-700/50 bg-yellow-950/30 px-4 py-3 text-sm"
+    >
+      <div className="flex items-start justify-between gap-3 mb-2">
+        <div className="flex items-start gap-2 min-w-0">
+          <span className="text-yellow-300 text-lg leading-none mt-0.5">⚠</span>
+          <div>
+            <div className="font-semibold text-yellow-100">
+              {items.length}{' '}
+              {t(
+                items.length === 1 ? 'rule auto-disabled' : 'rules auto-disabled',
+                items.length === 1 ? 'правило отключено автоматически' : 'правил отключено автоматически',
+              )}
+            </div>
+            <div className="text-xs text-yellow-300/80 mt-0.5">
+              {t(
+                'Xray rejected the generated config because these rules reference geosite/geoip tags missing from your current .dat. Switch to a profile that includes them, re-enable individually, or delete.',
+                'Xray отклонил конфиг — эти правила ссылаются на geosite/geoip теги отсутствующие в вашем .dat. Переключите Geo профиль либо включите/удалите вручную.',
+              )}
+            </div>
+          </div>
+        </div>
+        <button
+          type="button"
+          onClick={() => dismissAll.mutate()}
+          disabled={dismissAll.isPending}
+          className="text-xs text-yellow-400 hover:text-yellow-200 underline disabled:opacity-50 flex-shrink-0"
+        >
+          {t('Dismiss all', 'Скрыть все')}
+        </button>
+      </div>
+      <ul className="divide-y divide-yellow-900/40 mt-2">
+        {items.map((it) => (
+          <li
+            key={`${it.rule_id}-${it.disabled_at ?? ''}`}
+            className="py-2 flex items-center justify-between gap-3 text-xs"
+          >
+            <div className="min-w-0 flex-1">
+              <div className="text-yellow-100 font-medium truncate">
+                {it.name || `Rule #${it.rule_id}`}
+              </div>
+              <div className="text-yellow-300/70 font-mono mt-0.5 truncate">
+                {it.rule_type}: {it.match_value}
+              </div>
+              <div className="text-yellow-400/60 mt-0.5">
+                {t('Missing:', 'Отсутствует:')}{' '}
+                <span className="font-mono">
+                  {it.missing_kind}:{it.missing_tag}
+                </span>
+              </div>
+            </div>
+            <div className="flex gap-2 flex-shrink-0">
+              <button
+                type="button"
+                onClick={() => reEnable.mutate(it.rule_id)}
+                disabled={reEnable.isPending}
+                className="rounded border border-yellow-700/60 bg-yellow-900/30 px-2 py-1 text-yellow-200 hover:bg-yellow-800/50 disabled:opacity-50"
+                title={t(
+                  'Re-enable this rule. If the tag is still missing it will be auto-disabled again on the next config write.',
+                  'Включить правило обратно. Если тег всё ещё отсутствует — на следующей записи конфига будет снова отключено.',
+                )}
+              >
+                {t('Re-enable', 'Включить')}
+              </button>
+              <button
+                type="button"
+                onClick={() => remove.mutate(it.rule_id)}
+                disabled={remove.isPending}
+                className="rounded border border-red-800/50 bg-red-950/30 px-2 py-1 text-red-300 hover:bg-red-900/40 disabled:opacity-50"
+              >
+                {t('Delete', 'Удалить')}
+              </button>
+            </div>
+          </li>
+        ))}
+      </ul>
     </div>
   )
 }

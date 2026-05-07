@@ -1,5 +1,5 @@
 import { useState, useEffect, FormEvent } from 'react'
-import { NavLink, Outlet } from 'react-router-dom'
+import { Link, NavLink, Outlet } from 'react-router-dom'
 import {
   LayoutDashboard,
   Server,
@@ -63,6 +63,7 @@ const NAV = [
 export function Layout() {
   const { sidebarCollapsed, toggleSidebar, lang, setLang, theme, setTheme } = useAppStore()
   const { data: status } = useSystemStatus()
+  const t = (en: string, ru: string) => (lang === 'ru' ? ru : en)
 
   // Keep `<html data-theme="…">` in sync with the store. main.tsx sets
   // the initial value before first paint; this effect handles live
@@ -336,6 +337,35 @@ export function Layout() {
           fixed icon-only sidebar when the sidebar is collapsed. Expanded
           sidebar just floats on top; the backdrop above catches taps. */}
       <main className="flex-1 overflow-y-auto pl-16 md:pl-0">
+        {/* Validation-error banner — shown at the top of every page when
+            the most recent xray config write failed validation. The hint
+            string is composed by `config_gen._explain_xray_stderr()` and
+            stored in the `last_xray_validation_error` Settings key.
+            Tapping "Routing" jumps to the rules table where v1.2.7's
+            self-healing banner identifies the offending rule(s). */}
+        {status?.last_xray_validation_error && (
+          <div
+            role="alert"
+            className="mx-4 mt-4 mb-0 rounded-lg border border-red-700/60 bg-red-950/40 px-4 py-3 text-sm text-red-200"
+          >
+            <div className="flex items-start gap-3">
+              <span className="text-lg leading-none mt-0.5">⚠</span>
+              <div className="flex-1 min-w-0">
+                <div className="font-semibold text-red-100">
+                  {t('Xray configuration validation failed', 'Валидация конфигурации Xray не прошла')}
+                </div>
+                <div className="mt-1 leading-snug break-words">
+                  {status.last_xray_validation_error}
+                </div>
+                <div className="mt-2 flex gap-3 text-xs">
+                  <Link to="/routing" className="text-red-300 hover:text-red-100 underline">
+                    {t('Open Routing →', 'Открыть Routing →')}
+                  </Link>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
         <Outlet />
       </main>
 

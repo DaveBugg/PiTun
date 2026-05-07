@@ -1,7 +1,12 @@
 import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { balancersApi } from '@/api/client'
+import { balancersApi, http } from '@/api/client'
 import type { RoutingRule, RoutingRuleCreate, RuleType } from '@/types'
+
+interface GeoCategories {
+  geosite: string[]
+  geoip: string[]
+}
 
 const RULE_TYPES: RuleType[] = ['mac', 'src_ip', 'dst_ip', 'domain', 'port', 'protocol', 'geoip', 'geosite']
 const ACTIONS = ['proxy', 'direct', 'block']
@@ -40,6 +45,21 @@ export function RuleEditor({ initial, nodeOptions = [], onSave, onCancel, loadin
   const { data: balancerGroups = [] } = useQuery({
     queryKey: ['balancers'],
     queryFn: () => balancersApi.list(),
+  })
+
+  // Available geosite/geoip tags from the loaded `.dat` (since v1.2.7).
+  // `staleTime: Infinity` because tags only change after a Geo update,
+  // which is a manual user action — no need to refetch on focus or
+  // poll. The endpoint returns empty arrays if the cache isn't ready,
+  // and we treat that as "autocomplete unavailable" rather than
+  // distinguish from genuine empty .dat (rare).
+  const { data: geoCategories } = useQuery<GeoCategories>({
+    queryKey: ['geo', 'categories'],
+    queryFn: async () => {
+      const r = await http.get<GeoCategories>('/geodata/categories')
+      return r.data
+    },
+    staleTime: Infinity,
   })
 
   const initialAction = initial?.action ?? 'proxy'
@@ -140,9 +160,25 @@ export function RuleEditor({ initial, nodeOptions = [], onSave, onCancel, loadin
           onChange={(e) => set('match_value', e.target.value)}
           required
           rows={3}
+          // `<datalist>` autocomplete only works on `<input>`, not
+          // `<textarea>`. Comma-separated multi-tag entry is a textarea
+          // here, so we keep the textarea for editing but show a
+          // browse-the-tag-list helper underneath when the rule_type
+          // is one we know how to autocomplete.
           className="w-full rounded bg-gray-800 border border-gray-700 px-3 py-1.5 text-sm text-gray-100 font-mono focus:border-brand-500 focus:outline-none resize-none"
           placeholder={RULE_TYPE_HINTS[form.rule_type]}
         />
+        {(form.rule_type === 'geosite' || form.rule_type === 'geoip') && geoCategories && (
+          <GeoTagPicker
+            available={form.rule_type === 'geosite' ? geoCategories.geosite : geoCategories.geoip}
+            currentValue={form.match_value}
+            onAppend={(tag) => {
+              // Append with comma-separator if there's existing content
+              const cur = form.match_value.trim()
+              set('match_value', cur ? `${cur},${tag}` : tag)
+            }}
+          />
+        )}
       </div>
 
       <div>
@@ -232,5 +268,108 @@ export function RuleEditor({ initial, nodeOptions = [], onSave, onCancel, loadin
         </button>
       </div>
     </form>
+  )
+}
+
+
+/**
+ * GeoTagPicker — search + click-to-append helper for routing rules
+ * referencing `geosite:*` or `geoip:*` tags. Lists all categories
+ * present in the currently loaded `.dat` (parsed once at backend
+ * startup; v1.2.7).
+ *
+ * Design notes:
+ *   * Filter is a simple substring-includes — fast enough for ~1500
+ *     tags (the v2fly geosite typical size); no need for fuzzy search.
+ *   * Already-included tags are dimmed but still clickable (no harm
+ *     appending a duplicate; xray dedups on its side, and the user
+ *     might want to write `category-cn,category-cn-foo` patterns).
+ *   * Collapsed by default to avoid blowing up the rule editor; the
+ *     full list is rendered only when the user expands.
+ */
+function GeoTagPicker({
+  available,
+  currentValue,
+  onAppend,
+}: {
+  available: string[]
+  currentValue: string
+  onAppend: (tag: string) => void
+}) {
+  const [filter, setFilter] = useState('')
+  const [open, setOpen] = useState(false)
+
+  if (available.length === 0) {
+    return (
+      <div className="mt-1 text-[11px] text-gray-600">
+        Tag autocomplete unavailable — the .dat cache is empty (Geo files not loaded).
+      </div>
+    )
+  }
+
+  const currentTags = new Set(
+    currentValue.split(',').map((s) => s.trim().toLowerCase()).filter(Boolean),
+  )
+  const f = filter.trim().toLowerCase()
+  const filtered = f
+    ? available.filter((t) => t.includes(f))
+    : available
+  const display = filtered.slice(0, 200)
+  const hidden = filtered.length - display.length
+
+  return (
+    <div className="mt-2 rounded border border-gray-800 bg-gray-900/50">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="w-full flex items-center justify-between px-3 py-1.5 text-xs text-gray-400 hover:text-gray-200 transition-colors"
+      >
+        <span>
+          {open ? '▼' : '▶'} Browse available tags ({available.length})
+        </span>
+        <span className="text-[11px] text-gray-600">
+          {currentTags.size} selected
+        </span>
+      </button>
+      {open && (
+        <div className="px-3 pb-3 pt-1 space-y-2">
+          <input
+            type="text"
+            value={filter}
+            onChange={(e) => setFilter(e.target.value)}
+            placeholder="Filter tags…"
+            className="w-full rounded bg-gray-800 border border-gray-700 px-2 py-1 text-xs text-gray-200 focus:border-brand-500 focus:outline-none"
+          />
+          <div className="flex flex-wrap gap-1 max-h-48 overflow-y-auto">
+            {display.map((tag) => {
+              const inUse = currentTags.has(tag)
+              return (
+                <button
+                  type="button"
+                  key={tag}
+                  onClick={() => onAppend(tag)}
+                  className={
+                    inUse
+                      ? 'rounded border border-gray-700 bg-gray-800/50 px-2 py-0.5 text-[11px] text-gray-500 font-mono hover:bg-gray-700'
+                      : 'rounded border border-gray-700 bg-gray-800 px-2 py-0.5 text-[11px] text-gray-300 font-mono hover:bg-brand-700 hover:border-brand-600 hover:text-white'
+                  }
+                  title={inUse ? 'Already in this rule (click to append again)' : 'Click to append'}
+                >
+                  {tag}
+                </button>
+              )
+            })}
+            {hidden > 0 && (
+              <span className="text-[11px] text-gray-600 self-center pl-2">
+                +{hidden} more — refine filter
+              </span>
+            )}
+            {filtered.length === 0 && (
+              <span className="text-[11px] text-gray-600">No tags match the filter.</span>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
   )
 }

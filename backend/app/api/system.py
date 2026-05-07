@@ -1,5 +1,6 @@
 """System control: start/stop/status/mode/settings."""
 import json
+import logging
 import subprocess
 from typing import List, Optional
 
@@ -23,6 +24,8 @@ from app.schemas import (
     SystemVersions,
     ThirdPartyVersions,
 )
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/system", tags=["system"])
 
@@ -215,6 +218,11 @@ async def get_status(session: AsyncSession = Depends(get_session)):
     version = xray_manager.version or await xray_manager.get_version()
     nft_active = await nftables_manager.is_active()
 
+    # Last xray config validation error (written by config_gen.write_config
+    # since v1.2.5). None / empty means the most recent validation passed
+    # — frontend hides the banner.
+    last_validation_error = await _get_setting(session, "last_xray_validation_error")
+
     from app.config import APP_VERSION
     return SystemStatus(
         running=xray_manager.is_running,
@@ -226,6 +234,7 @@ async def get_status(session: AsyncSession = Depends(get_session)):
         nftables_active=nft_active,
         version=version,
         app_version=APP_VERSION,
+        last_xray_validation_error=last_validation_error or None,
     )
 
 
@@ -727,7 +736,18 @@ async def update_settings(body: SettingsUpdate, session: AsyncSession = Depends(
 
 # ── Internal helpers ──────────────────────────────────────────────────────────
 
-async def _regenerate_and_write(session: AsyncSession) -> None:
+async def _regenerate_and_write(session: AsyncSession, *, _self_heal_attempts: int = 0) -> None:
+    """Re-generate xray config from current DB state and write it to
+    disk, with pre-flight `xray run -test` validation.
+
+    Self-healing (since v1.2.7): if validation fails because a routing
+    rule references a geosite/geoip tag absent from the loaded `.dat`,
+    we auto-disable the offending rules, append them to
+    `Settings.auto_disabled_rules` (JSON list — surfaced by the
+    frontend as a banner above the Routing table), and recursively
+    retry the write with the smaller ruleset. Bounded to 5 attempts
+    so a pathological `.dat` mismatch can't infinite-loop.
+    """
     from app.core.config_gen import generate_config, write_config
 
     settings_map = await _load_settings_map(session)
@@ -745,7 +765,143 @@ async def _regenerate_and_write(session: AsyncSession) -> None:
     dns_rules = list((await session.exec(select(DNSRule).where(DNSRule.enabled == True))).all())
     balancer_groups = list((await session.exec(select(BalancerGroup))).all())
     config = generate_config(active_node, all_nodes, rules, mode, settings_map, dns_rules, balancer_groups)
-    await write_config(config)
+
+    # On retry passes we skip pre-flight to avoid recursive cost — the
+    # outer attempt's pre-flight already proved which rules are bad,
+    # and disabling them can't introduce new validation issues. Last
+    # write of a healing chain re-runs with validate=True so the
+    # success path clears `last_xray_validation_error`.
+    heal_target = await write_config(config, validate=True)
+
+    # Strict shape check — `heal_target` should be either None or a
+    # 2-tuple of (str, str). Anything else (e.g. a stray mock or a
+    # future schema change) is treated as None to avoid running the
+    # self-heal path on garbage. Pre-1.2.7 callers + tests using
+    # `AsyncMock(write_config)` without `return_value=None` would
+    # otherwise see a MagicMock here and attempt recursion.
+    if not (
+        isinstance(heal_target, tuple)
+        and len(heal_target) == 2
+        and isinstance(heal_target[0], str)
+        and isinstance(heal_target[1], str)
+    ):
+        return
+
+    if _self_heal_attempts >= 5:
+        # Give up: keep the current `last_xray_validation_error` set so
+        # the admin still sees the underlying problem; don't loop.
+        logger.error(
+            "Self-heal exhausted (5 attempts) — leaving last_xray_validation_error in place"
+        )
+        return
+
+    kind, tag = heal_target
+    disabled_now = await _self_heal_disable_geo_rules(session, kind, tag)
+    if not disabled_now:
+        # No rules referenced the offending tag despite xray reporting
+        # one — likely the rule was re-enabled or the parser disagrees
+        # with xray. Stop trying to heal.
+        logger.warning(
+            "Self-heal: xray rejected %s:%s but no enabled rule references it; "
+            "leaving config + error untouched", kind, tag,
+        )
+        return
+
+    logger.info(
+        "Self-heal disabled %d rule(s) referencing %s:%s — retrying config write (attempt %d)",
+        len(disabled_now), kind, tag, _self_heal_attempts + 1,
+    )
+    await _regenerate_and_write(session, _self_heal_attempts=_self_heal_attempts + 1)
+
+
+async def _self_heal_disable_geo_rules(
+    session: AsyncSession, kind: str, tag: str
+) -> List[int]:
+    """Disable every enabled `RoutingRule` that references the given
+    geosite/geoip tag, and append a record to the
+    `Settings.auto_disabled_rules` JSON list. Returns the list of
+    rule ids actually flipped.
+    """
+    from app.models import RoutingRule
+    import json as _json
+    from datetime import datetime as _dt, timezone as _tz
+
+    rules = (await session.exec(
+        select(RoutingRule).where(RoutingRule.enabled == True)
+    )).all()
+
+    affected: List[RoutingRule] = []
+    needle_lc = tag.lower()
+    for r in rules:
+        rt = (r.rule_type or "").lower()
+        mv = (r.match_value or "").lower()
+        if rt == kind:
+            parts = [p.strip() for p in mv.split(",") if p.strip()]
+            if needle_lc in parts:
+                affected.append(r)
+        elif rt == "domain":
+            # Inline `geosite:X` / `geoip:X` inside a domain-mode rule.
+            inline = f"{kind}:{needle_lc}"
+            parts = [p.strip() for p in mv.split(",") if p.strip()]
+            if inline in parts:
+                affected.append(r)
+
+    if not affected:
+        return []
+
+    # Snapshot every attribute we'll need after commit() into plain
+    # tuples — `session.commit()` expires SQLModel instance attrs by
+    # default, and any subsequent attribute access triggers a lazy
+    # reload that fails outside an awaitable context with
+    # `MissingGreenlet` ("can't call await_only() here"). The
+    # snapshot lets us read the values back without re-touching the
+    # ORM after commit.
+    snapshots = [
+        (r.id, r.name, r.rule_type, r.match_value)
+        for r in affected
+    ]
+
+    for r in affected:
+        r.enabled = False
+        session.add(r)
+
+    # Append (rule_id, name, kind, tag, disabled_at) entries to the
+    # settings key so the UI banner can show what happened. The list
+    # acts as an inbox the admin clears explicitly via the banner's
+    # "Re-enable" / "Delete" / "Dismiss" actions.
+    row = (await session.exec(
+        select(DBSettings).where(DBSettings.key == "auto_disabled_rules")
+    )).first()
+    try:
+        existing = _json.loads(row.value) if row and row.value else []
+        if not isinstance(existing, list):
+            existing = []
+    except Exception:
+        existing = []
+
+    now_iso = _dt.now(_tz.utc).isoformat(timespec="seconds")
+    for rule_id, rule_name, rule_type, match_value in snapshots:
+        existing.append({
+            "rule_id": rule_id,
+            "name": rule_name,
+            "rule_type": rule_type,
+            "match_value": match_value,
+            "missing_kind": kind,
+            "missing_tag": tag,
+            "disabled_at": now_iso,
+        })
+
+    payload = _json.dumps(existing)
+    if row:
+        row.value = payload
+        session.add(row)
+    else:
+        session.add(DBSettings(key="auto_disabled_rules", value=payload))
+
+    await session.commit()
+    # IDs returned from the pre-commit snapshot — `affected[i].id`
+    # would re-fetch from the DB after the expire-on-commit.
+    return [s[0] for s in snapshots]
 
 
 async def _load_settings_map(session: AsyncSession) -> dict:
