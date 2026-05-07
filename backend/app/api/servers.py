@@ -709,17 +709,24 @@ async def import_servers_json(
             session.add(server)
             imported += 1
         except Exception as exc:  # noqa: BLE001 — per-row error reporting
-            # Don't leak the raw exception text into the API response —
-            # could surface internal paths, SQL fragments, library
-            # versions, or attribute names to API clients (CWE-209,
-            # CodeQL "Information exposure through an exception"). Log
-            # the full detail server-side so admins can debug from the
-            # backend logs, return only the exception class name to the
-            # client.
+            # Three colliding concerns, hardened in v1.2.4:
+            #   * CWE-209 (info exposure via raw exception text in API
+            #     response) — return only the class name, not str(exc).
+            #   * CWE-532 (clear-text logging of sensitive info) —
+            #     don't log raw exc either; an IntegrityError can echo
+            #     the offending password/private_key column value, and
+            #     a Pydantic ValidationError prints the input dict.
+            #     Log only the class name; admins still know whether
+            #     the bucket is IntegrityError vs ValidationError.
+            #   * CWE-117 (log injection via user-controlled `name`) —
+            #     `_NoNewlineFilter` on the root logger from v1.2.2
+            #     already handles this, but %r additionally satisfies
+            #     CodeQL's sanitiser detection and surfaces escape
+            #     sequences in log output verbatim.
             import logging
             logging.getLogger(__name__).warning(
-                "Server import row failed: name=%s err=%s",
-                sd.get("name", "?"), exc,
+                "Server import row failed: name=%r err_type=%s",
+                sd.get("name", "?"), type(exc).__name__,
             )
             errors.append(
                 f"{sd.get('name', '?')}: import failed ({type(exc).__name__})"
