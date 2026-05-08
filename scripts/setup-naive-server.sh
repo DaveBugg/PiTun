@@ -228,12 +228,33 @@ fi
 # ── 5. Build Caddy with klzgrad's forwardproxy plugin ───────────────────────
 CADDY_BIN=/usr/local/bin/caddy
 log "Building Caddy with klzgrad/forwardproxy@naive..."
-cd /tmp
+
+# Many small VPS images (Hetzner CX11, Contabo VPS S, etc.) mount /tmp
+# as tmpfs sized at ~50% of RAM. With 1 GB RAM that's ~480 MB — and
+# `xcaddy build` pulls 300+ Go modules whose intermediate `*.a` /
+# `importcfg` files easily exceed 1 GB. Without redirection the build
+# fails halfway with `no space left on device` writing to /tmp/go-build*
+# (observed during v1.3.0-beta.1 smoke testing). Use disk-backed
+# /var/tmp instead — Go honours TMPDIR for its build scratch dir.
+BUILD_TMP="$(mktemp -d -p /var/tmp xcaddy-build.XXXXXX)"
+chmod 0700 "$BUILD_TMP"
+trap 'rm -rf "$BUILD_TMP"' RETURN  # best-effort cleanup if scope returns
+export TMPDIR="$BUILD_TMP"
+export GOTMPDIR="$BUILD_TMP"
+info "Using $BUILD_TMP for Go build scratch (avoids small-tmpfs OOM)."
+
+cd "$BUILD_TMP"
 xcaddy build \
     --with github.com/caddyserver/forwardproxy@caddy2=github.com/klzgrad/forwardproxy@naive \
     --output "$CADDY_BIN"
 chmod +x "$CADDY_BIN"
 info "Caddy built: $($CADDY_BIN version)"
+
+# Done with the big scratch dir — release the disk space.
+unset TMPDIR GOTMPDIR
+rm -rf "$BUILD_TMP"
+trap - RETURN
+cd /tmp
 
 # ── 6. Create caddy user + directories ──────────────────────────────────────
 if ! id caddy >/dev/null 2>&1; then
