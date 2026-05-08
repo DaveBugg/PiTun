@@ -25,6 +25,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 import secrets
 import shlex
 import socket
@@ -286,10 +287,32 @@ async def test_ssh_connection(
 _OUTPUT_CAP_BYTES = 256 * 1024
 
 # Default deploy timeout (seconds). Naive provisioning is ~3-5 min on
-# a typical VPS (Caddy fetch, Let's Encrypt issuance, naive build);
-# 10 min cap leaves comfortable headroom without letting a hung run
-# wedge the API forever.
-_DEFAULT_DEPLOY_TIMEOUT_S = 600.0
+# a fast VPS in a good region. Slow upstream package mirrors, an
+# IPv6-broken host, or a first-time Caddy build can push the whole
+# install to 15-25 min, so the cap needs to be generous. Originally
+# 600s — bumped to 1800s (30 min) after a v1.3.0-beta.1 smoke test
+# hit the cap mid-`apt-get install` on a fresh Debian 13 test VPS.
+# Override via PITUN_DEPLOY_TIMEOUT_S env var if a really slow VPS
+# needs even more headroom.
+_DEFAULT_DEPLOY_TIMEOUT_S = float(os.environ.get("PITUN_DEPLOY_TIMEOUT_S", "1800"))
+
+
+# ANSI escape sequence pattern. Provisioning scripts colour their
+# progress lines with `\033[…m` (`info` / `warn` / etc). asyncssh
+# delivers those bytes verbatim, and the frontend log panel renders
+# raw text → users see literal `0;34m[i]0m` in the UI. Strip the
+# escapes server-side before emitting each line; the colours don't
+# carry semantic meaning here, only the message does.
+#
+# Pattern matches CSI sequences (ESC `[ … letter`) plus simple two-byte
+# escapes (`ESC ? letter`). Keeps the regex narrow so non-ANSI byte
+# sequences happen to start with `\033` aren't mangled.
+_ANSI_RE = re.compile(r"\x1b(?:\[[0-9;?]*[ -/]*[@-~]|[@-_])")
+
+
+def _strip_ansi(text: str) -> str:
+    """Remove ANSI escape sequences. Cheap; called per output line."""
+    return _ANSI_RE.sub("", text)
 
 
 def _truncate(blob: str, cap: int = _OUTPUT_CAP_BYTES) -> str:
@@ -644,6 +667,13 @@ async def exec_remote_script_streaming(
                 for line in text.splitlines():
                     if line == "" and not text:
                         continue
+                    # Strip ANSI escape sequences once on the server
+                    # side so subscribers (WS log panel + log_tail in
+                    # the DB) get clean text. setup-*-server.sh scripts
+                    # colourise progress lines with `\033[0;34m` etc;
+                    # without this strip the UI shows literal escape
+                    # bytes (`0;34m[i]0m Detected: …`).
+                    line = _strip_ansi(line)
                     await _safe_call(kind, line)
                     if kind == "stdout":
                         if stdout_size < _OUTPUT_CAP_BYTES:
@@ -678,8 +708,26 @@ async def exec_remote_script_streaming(
                 # Use create_process for true streaming. wait() blocks
                 # until exit; we run drain coroutines in parallel so
                 # output flows to subscribers in real time.
+                #
+                # Allocate a PTY (`term_type="dumb"`, no echo) so the
+                # remote bash and its child commands (apt, caddy, …) see
+                # an interactive terminal and switch to LINE-BUFFERED
+                # stdout. Without a PTY they default to BLOCK-buffered
+                # 4 KB chunks, which makes the live log appear to "hang"
+                # for minutes between the first banner and the eventual
+                # apt-get / Caddy build progress lines (observed in the
+                # wild during v1.3.0-beta.1 smoke testing). `dumb`
+                # avoids any colour-capability negotiation that would
+                # otherwise emit terminfo-specific escapes; we still
+                # strip whatever ANSI the script emits explicitly via
+                # `strip_ansi()` later.
                 try:
-                    proc = await conn.create_process(cmd)
+                    proc = await conn.create_process(
+                        cmd,
+                        term_type="dumb",
+                        # 80x24 is plenty for our progress lines
+                        term_size=(80, 24),
+                    )
                 except Exception as exc:  # noqa: BLE001
                     return DeployResult(
                         ok=False,
