@@ -48,6 +48,9 @@ services:
       - ./backend/app:/app/app
       - ./backend/alembic:/app/alembic              # migrations: picked up automatically by entrypoint.sh
       - ./backend/alembic.ini:/app/alembic.ini:ro
+      - ./scripts:/app/scripts:ro                   # provisioning scripts (setup-naive-server.sh etc.)
+                                                    # — read by core.deploy.load_script() during auto-deploy.
+                                                    # Read-only because the backend never writes here.
       - ./data:/app/data
       - /tmp/pitun:/tmp/pitun
       - /etc/pitun/naive:/etc/pitun/naive    # naive sidecar configs (host-shared)

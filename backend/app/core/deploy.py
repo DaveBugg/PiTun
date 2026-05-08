@@ -57,13 +57,30 @@ class DeployPlan:
 
 
 def _repo_root() -> Path:
-    """Locate the repo root (the dir containing both `backend/` and
-    `scripts/`). We resolve relative to this file so dev-server runs
-    (`uvicorn app.main:app`) and the Docker image both find it
-    regardless of cwd. The Docker image bind-mounts `./backend` and
-    `./scripts` at the same parent, so the layout matches.
+    """Locate the directory that contains the `scripts/` folder we need
+    to read install scripts from. Walks up from this module's path and
+    returns the first ancestor with a `scripts` subdir.
+
+    Why a walk-up instead of a fixed `parents[N]`:
+      * Dev / CI host: this file is at `<repo>/backend/app/core/deploy.py`
+        and `scripts/` lives at `<repo>/scripts/` — `parents[3]` worked.
+      * Production Docker container: bind-mount layout is
+        `/app/app/core/deploy.py` (3 dirs above = `/app`) and
+        `/app/scripts/` (sibling). `parents[3]` would resolve to `/`
+        which doesn't have `scripts/` — historic bug surfaced during
+        v1.3.0-beta.1 smoke testing on a VM.
+      * The walk-up is robust to either layout without hard-coding the
+        path-component count.
+
+    Falls back to `parents[3]` if no ancestor has `scripts/` so the
+    error message at `load_script()` still points at a sensible-looking
+    path (instead of `/`) for debugging.
     """
-    return Path(__file__).resolve().parents[3]
+    here = Path(__file__).resolve()
+    for parent in here.parents:
+        if (parent / "scripts").is_dir():
+            return parent
+    return here.parents[3]
 
 
 def load_script(protocol: str) -> str:
