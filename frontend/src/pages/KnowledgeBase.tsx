@@ -872,6 +872,143 @@ nftables TPROXY -> xray-core -> правила маршрутизации
     },
   },
 
+  /* 11b-2. Installing a proxy node on a Server (auto-deploy, v1.3.0+) */
+  {
+    id: 'install-on-server',
+    title: {
+      en: 'Installing a proxy node on a Server',
+      ru: 'Установка прокси на Server',
+    },
+    content: {
+      en: (
+        <>
+          <P>
+            Since <B>v1.3.0-beta.1</B>, PiTun can run an install script on a registered{' '}
+            <B>Server</B> over SSH and automatically create a Node from the
+            resulting URI. NaiveProxy is the only protocol shipped in beta.1;
+            VLESS+Reality / Hysteria2 / WireGuard arrive in beta.2 / beta.3.
+          </P>
+
+          <P><B>Prerequisites:</B></P>
+          <Ul>
+            <li>The Server is registered on the <em>Servers</em> page (host, port, user, password OR private key)</li>
+            <li>The SSH probe (Activity icon) succeeded at least once — auto-deploy is disabled for offline servers</li>
+            <li>For <em>naive</em>: a domain whose <code className="text-gray-400">A</code> record points at the VPS, plus an email address (Let's Encrypt registration)</li>
+            <li>The VPS is a fresh Debian 11+ / Ubuntu 22+ box with port 80 + 443 reachable from the Internet</li>
+          </Ul>
+
+          <P><B>Flow (per click on the Rocket button on a Server row):</B></P>
+          <Ul>
+            <li>Modal opens — fill in <code className="text-gray-400">domain</code> / <code className="text-gray-400">email</code> (auto-prefilled if you already saved a deployment plan via "Configure & download"); username defaults to <code className="text-gray-400">pitun</code>; leave password blank to have the VPS auto-generate one</li>
+            <li>Click <B>Run install</B> → PiTun POSTs to <code className="text-gray-400">/api/servers/{'{id}'}/deploy</code>, which spawns a background <B>Job</B> and returns <code className="text-gray-400">202 + job_id</code> immediately</li>
+            <li>The modal switches to a live log panel — every stdout/stderr line from the remote script streams in via WebSocket, with stderr highlighted red and auto-scroll</li>
+            <li>On success: the Caddy + naive_forwardproxy bootstrap finishes, the script prints <code className="text-gray-400">URI=naive+https://...</code>, PiTun parses it and creates a <B>Node</B> automatically. The status banner flips green and a <em>Open Nodes</em> link appears.</li>
+            <li>The corresponding <em>ServerDeployment</em> row is upserted with <code className="text-gray-400">status=deployed</code> + <code className="text-gray-400">last_node_id</code> so the badge under the server name shows "Naive deployed · linked to Node #N"</li>
+          </Ul>
+
+          <P><B>Slot lock:</B> only one deploy per <code className="text-gray-400">(server_id, protocol)</code> can run at once. Clicking <em>Install</em> twice on the same Server while the first is still running returns HTTP 409 with a clear message. Different protocols on the same Server (or the same protocol on a different Server) run in parallel — the lock is per-pair.</P>
+
+          <P><B>Cancel:</B> while the job is running you can press <em>Cancel</em>. Important caveat: this stops PiTun pumping the remote output into the live log buffer locally — the install script keeps running on the VPS to avoid a half-installed Caddy / certbot. If you really need to abort, SSH in and kill the process; otherwise let it finish and re-run the deploy if needed (it's idempotent).</P>
+
+          <P><B>Hide vs Close:</B> while running, the modal's footer button reads <em>Hide (keeps running)</em> — closing the modal does <em>not</em> cancel; the job keeps streaming, you can find it on the <code className="text-gray-400">/server-tasks</code> page (the "Tasks" link in the Servers page header).</P>
+
+          <P><B>Server-tasks page (<code className="text-gray-400">/server-tasks</code>):</B></P>
+          <Ul>
+            <li><B>Filter pills</B> across the top: by Server, by status (running / succeeded / failed / cancelled). Filter state lives in the URL — bookmark or share a link and the view restores</li>
+            <li><B>Master/detail layout</B>: list on the left (newest first, polls every 5s), detail panel on the right with the live WS log for running jobs and the captured <code className="text-gray-400">log_tail</code> for finalized ones</li>
+            <li><B>Cancel</B> button on the detail header for running jobs (same caveat as above)</li>
+            <li>Job rows older than 30 days are auto-pruned, and the table is capped at 500 rows total — no maintenance needed</li>
+          </Ul>
+
+          <P><B>Discoverability:</B> the page is intentionally <em>not</em> in the main sidebar — it's a Servers-page concern, not a top-level concept. Get there via the <em>Tasks</em> link in the Servers header (visible once you've registered at least one server) or the "All tasks" link at the top of the live log inside DeployModal.</P>
+
+          <P><B>Edge cases &amp; failure modes:</B></P>
+          <Ul>
+            <li>
+              <B>Status = <code className="text-gray-400">deployed_no_uri</code></B>: script exited 0 but didn't print the
+              <code className="text-gray-400"> URI=</code> contract line. The script may be from an older PiTun release, or got truncated.
+              No Node is created automatically; check the captured log and add the Node manually with whatever credentials the script printed.
+            </li>
+            <li>
+              <B>Backend restarted mid-deploy</B>: any Job stuck in <code className="text-gray-400">running</code> for more than 1 hour is healed to <code className="text-gray-400">failed</code> on the next backend boot with the message "backend restarted during deploy". The remote script may have completed regardless — check the VPS state, then re-run if needed.
+            </li>
+            <li>
+              <B>Slot conflict on retry after cancel</B>: cancellation only stops local streaming, so the slot is freed when the remote script eventually finishes. If you cancelled and the slot is still showing busy, wait until the original install times out (10 min hard cap) or reboot the VPS first.
+            </li>
+            <li>
+              <B>Naive sidecar (PiTun side)</B>: once the Node is created, PiTun automatically launches a <code className="text-gray-400">pitun-naive-{'{id}'}</code> Docker container that does the local naive client wiring + nftables bypass mark. If it doesn't come up, the Node row will show offline; check Logs and Diagnostics.
+            </li>
+          </Ul>
+
+          <P><B>Manual fallback:</B> the <em>Download .sh</em> button on the same row generates the same install script as a downloadable bash bootstrap — for users who don't want to give PiTun their SSH key, or for bulk provisioning via Ansible / cloud-init. The script prints the same <code className="text-gray-400">URI=</code> line; paste it into <em>Nodes → Import URI</em>.</P>
+        </>
+      ),
+      ru: (
+        <>
+          <P>
+            Начиная с <B>v1.3.0-beta.1</B>, PiTun умеет запускать установочный скрипт на зарегистрированном{' '}
+            <B>Server</B> по SSH и автоматически создавать Node из полученного URI.
+            В beta.1 поддержан только протокол <em>NaiveProxy</em>; VLESS+Reality / Hysteria2 / WireGuard
+            — в beta.2 / beta.3.
+          </P>
+
+          <P><B>Что нужно заранее:</B></P>
+          <Ul>
+            <li>Сервер добавлен на странице <em>Servers</em> (host, port, user, пароль ИЛИ приватный ключ)</li>
+            <li>SSH-проба (иконка Activity) хотя бы раз была успешной — для offline-серверов авто-деплой задизейблен</li>
+            <li>Для <em>naive</em>: домен с <code className="text-gray-400">A</code>-записью на VPS и email (для регистрации Let's Encrypt)</li>
+            <li>VPS — свежий Debian 11+ / Ubuntu 22+ с открытыми из интернета портами 80 и 443</li>
+          </Ul>
+
+          <P><B>Что происходит по клику на Rocket-иконке в строке сервера:</B></P>
+          <Ul>
+            <li>Открывается модалка — заполняешь <code className="text-gray-400">domain</code> / <code className="text-gray-400">email</code> (предзаполнятся, если ты уже сохранял план через «Configure &amp; download»); username по умолчанию <code className="text-gray-400">pitun</code>; пароль можно оставить пустым — VPS сгенерирует сам</li>
+            <li>Жмёшь <B>Run install</B> → фронт POST-ит на <code className="text-gray-400">/api/servers/{'{id}'}/deploy</code>, бэкенд порождает фоновый <B>Job</B> и сразу отвечает <code className="text-gray-400">202 + job_id</code></li>
+            <li>Модалка переключается в live-лог: каждая строка stdout/stderr со скрипта приходит по WebSocket, stderr подсвечен красным, автоскролл</li>
+            <li>На успехе: bootstrap Caddy + naive_forwardproxy завершается, скрипт печатает <code className="text-gray-400">URI=naive+https://...</code>, PiTun парсит его и создаёт <B>Node</B> автоматически. Status-баннер становится зелёным, появляется ссылка <em>Open Nodes</em>.</li>
+            <li>Соответствующая запись <em>ServerDeployment</em> upsert-ится со <code className="text-gray-400">status=deployed</code> + <code className="text-gray-400">last_node_id</code>, поэтому под именем сервера появится бейдж «Naive развернут · привязан к Node #N»</li>
+          </Ul>
+
+          <P><B>Slot-lock:</B> на одну пару <code className="text-gray-400">(server_id, protocol)</code> может бежать только одна установка. Двойной клик на <em>Install</em> на одном и том же сервере, пока первый ещё идёт, отдаст HTTP 409 с понятным сообщением. Разные протоколы на одном сервере (или один протокол на разных серверах) идут параллельно — лок попарный.</P>
+
+          <P><B>Cancel:</B> пока джоб бежит — есть кнопка <em>Cancel</em>. Важный нюанс: это останавливает только локальный поток вывода в PiTun. Скрипт на VPS продолжит работать, чтобы не оставить Caddy / certbot в полу-установленном состоянии. Если нужно действительно прервать — заходи по SSH и убивай процесс; иначе дай скрипту доработать и перезапусти деплой при необходимости (он идемпотентен).</P>
+
+          <P><B>Hide vs Close:</B> пока идёт установка, кнопка в футере модалки читается как <em>Hide (keeps running)</em> — закрытие модалки <em>не</em> отменяет джоб; он продолжит стримиться, а найти его можно на странице <code className="text-gray-400">/server-tasks</code> (ссылка «Tasks» в шапке страницы Servers).</P>
+
+          <P><B>Страница server-tasks (<code className="text-gray-400">/server-tasks</code>):</B></P>
+          <Ul>
+            <li><B>Фильтры</B> в виде «таблеток» сверху: по серверу, по статусу (running / succeeded / failed / cancelled). Состояние фильтров живёт в URL — закладка / шеринг ссылки восстановит вид</li>
+            <li><B>Master/detail</B>: слева список (новые сверху, опрос каждые 5с), справа панель деталей с live WS-логом для running и захваченным <code className="text-gray-400">log_tail</code> для завершённых</li>
+            <li><B>Cancel</B> на шапке детали — для running джобов (с тем же нюансом)</li>
+            <li>Записи старше 30 дней автоматически удаляются, плюс кэп 500 строк всего — обслуживания не нужно</li>
+          </Ul>
+
+          <P><B>Discoverability:</B> страница умышленно <em>не</em> в основном сайдбаре — это концерн страницы Servers, а не глобальная сущность. Попасть туда можно через ссылку <em>Tasks</em> в шапке страницы Servers (появляется, как только зарегистрирован хотя бы один сервер) либо через ссылку «All tasks» в шапке live-лога DeployModal.</P>
+
+          <P><B>Граничные случаи и failure-режимы:</B></P>
+          <Ul>
+            <li>
+              <B>Status = <code className="text-gray-400">deployed_no_uri</code></B>: скрипт завершился с кодом 0, но не напечатал контрактную строку
+              <code className="text-gray-400"> URI=</code>. Возможно, скрипт от старого релиза PiTun или вывод был обрезан.
+              Node автоматически не создаётся — посмотри лог и добавь Node вручную с теми credential-ами, что скрипт показал.
+            </li>
+            <li>
+              <B>Бэкенд перезапустился во время установки</B>: любой Job, провисевший в <code className="text-gray-400">running</code> дольше 1 часа, на следующем старте бэкенда лечится в <code className="text-gray-400">failed</code> с сообщением «backend restarted during deploy». Скрипт на VPS мог при этом успеть отработать — проверь VPS и запусти заново при необходимости.
+            </li>
+            <li>
+              <B>Конфликт slot после Cancel</B>: отмена останавливает только локальный стриминг, так что слот освобождается, когда удалённый скрипт реально допишет работу. Если ты отменил, а слот всё ещё «занят» — дождись хард-таймаута (10 мин) или ребутни VPS.
+            </li>
+            <li>
+              <B>Naive sidecar (на стороне PiTun)</B>: после создания Node PiTun автоматически поднимет Docker-контейнер <code className="text-gray-400">pitun-naive-{'{id}'}</code>, который делает локальную обвязку naive-клиента + bypass-метку nftables. Если он не поднимется, Node будет показан как offline — смотри Logs и Diagnostics.
+            </li>
+          </Ul>
+
+          <P><B>Ручной fallback:</B> кнопка <em>Download .sh</em> в той же строке генерирует тот же установочный скрипт в виде скачиваемого bash-bootstrap — для тех, кто не хочет давать PiTun SSH-ключ, или для массового provisioning через Ansible / cloud-init. Скрипт печатает ту же строку <code className="text-gray-400">URI=</code>; вставляй её в <em>Nodes → Import URI</em>.</P>
+        </>
+      ),
+    },
+  },
+
   /* 11c. Backup & Restore (JSON Export/Import) */
   {
     id: 'backup-restore',
