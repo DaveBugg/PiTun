@@ -14,7 +14,37 @@ import {
   useServerTaskStream,
   useServerTasks,
 } from '@/hooks/useServerTasks'
-import type { JobStatus, JobSummary, DeployJobResult } from '@/types'
+import type { JobRead, JobStatus, JobSummary, DeployJobResult } from '@/types'
+
+
+/**
+ * `Job.status` is the *runner wrapper* status — `succeeded` when our
+ * runner closure returned without an exception, `failed` only on
+ * runner crash / SSH-level error / cancel. For deploy jobs, the
+ * actual install outcome lives in `result.status` ("deployed",
+ * "deployed_no_uri", or "failed"). When the script exits non-zero the
+ * runner returns a result dict with `status:"failed"` rather than
+ * raising — so the wrapper is `succeeded` but the deploy is not.
+ *
+ * Without this projection the master list / detail header would paint
+ * those rows green ✓ and call them "SUCCEEDED" even though no Node
+ * was created and the script visibly errored — observed in the v1.3.0-
+ * beta.1 smoke test where two timeout/exit=-1 deploys looked successful.
+ *
+ * For UI status purposes, treat anything where `result.status` is
+ * `failed` or `deployed_no_uri` as visually `failed`. The detail banner
+ * still shows the original `result.status` text, so admins can tell
+ * "script exited 0 with no URI" apart from "script exited non-zero".
+ */
+function effectiveStatus(job: JobSummary | JobRead): JobStatus {
+  if (job.status === 'succeeded' && job.result && typeof job.result === 'object') {
+    const r = job.result as { status?: string }
+    if (r.status === 'failed' || r.status === 'deployed_no_uri') {
+      return 'failed'
+    }
+  }
+  return job.status
+}
 
 /**
  * `/server-tasks` page — recent install / deploy jobs (since v1.3.0-beta.1).
@@ -264,7 +294,7 @@ function JobListItem({
           (selected ? 'bg-brand-900/15' : 'hover:bg-gray-900/50')
         }
       >
-        <StatusIcon status={job.status} />
+        <StatusIcon status={effectiveStatus(job)} />
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2">
             <span className="text-sm font-medium text-gray-100 truncate">
@@ -326,14 +356,14 @@ function JobDetailPanel({ jobId }: { jobId: string | null }) {
     <div className="rounded-2xl border border-gray-800 bg-gray-900/30 overflow-hidden">
       {/* Header */}
       <div className="px-4 py-3 border-b border-gray-800/60 flex items-start gap-3">
-        <StatusIcon status={job.status} large />
+        <StatusIcon status={effectiveStatus(job)} large />
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 flex-wrap">
             <h2 className="text-base font-semibold text-gray-100 truncate">
               {job.kind} · {job.target_name || `#${job.target_id ?? '?'}`}
             </h2>
             <span className="text-xs text-gray-500 font-mono">{job.protocol}</span>
-            <StatusPill status={job.status} />
+            <StatusPill status={effectiveStatus(job)} />
           </div>
           <div className="mt-1 text-[11px] text-gray-500 font-mono break-all">
             id {job.id}
