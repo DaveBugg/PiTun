@@ -280,6 +280,38 @@ asset_url() {
 STAGING_DIR="${TMPDIR:-/tmp}/pitun-install"
 mkdir -p "$STAGING_DIR"
 
+# Cache invalidation (since v1.2.9). Every artifact in STAGING_DIR has a
+# version-agnostic filename (release.json, pitun-src.tar.gz,
+# pitun-backend.tar.gz, ...). Without this guard, re-running with a
+# different `--version` re-uses the previous run's cached artifacts and
+# silently "upgrades" to the cached version. Symptom in the wild
+# (v1.2.2 → v1.2.6 attempt): `Resolved version: v1.2.2` because
+# release.json was a stale cache from an earlier run.
+#
+# Strategy: stamp the cache with the requested VERSION on each run. If
+# it doesn't match (or VERSION == latest, which is symbolic and may
+# drift between runs), wipe the PiTun-versioned artifacts. We
+# deliberately keep geoip.dat / geosite.dat — they come from a separate
+# repo's "latest" and are version-independent on PiTun's side, so
+# preserving them avoids re-downloading ~15 MB on every install.
+STAMP_FILE="$STAGING_DIR/.cached-for"
+CACHED_VERSION=""
+[[ -f "$STAMP_FILE" ]] && CACHED_VERSION=$(cat "$STAMP_FILE" 2>/dev/null || true)
+if [[ -z "$OFFLINE_DIR" ]] && {
+    [[ "$VERSION" == "latest" ]] || [[ "$CACHED_VERSION" != "$VERSION" ]]
+}; then
+    if [[ -n "$CACHED_VERSION" ]]; then
+        info "Staging cache was for ${CACHED_VERSION}; wiping for ${VERSION}."
+    fi
+    rm -f \
+        "$STAGING_DIR/release.json" \
+        "$STAGING_DIR/pitun-src.tar.gz" \
+        "$STAGING_DIR/pitun-backend.tar.gz" \
+        "$STAGING_DIR/pitun-naive.tar.gz" \
+        "$STAGING_DIR/pitun-frontend.tar.gz"
+fi
+echo "$VERSION" > "$STAMP_FILE"
+
 if [[ -n "$OFFLINE_DIR" ]]; then
     info "Offline mode: using artifacts from $OFFLINE_DIR"
     [[ -d "$OFFLINE_DIR" ]] || error "Offline dir does not exist: $OFFLINE_DIR"
