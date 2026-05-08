@@ -127,6 +127,31 @@ def build_naive_env(
         "EMAIL": email,
         "NAIVE_USER": naive_user or "pitun",
         "NAIVE_PASS": naive_pass or secrets.token_urlsafe(24),
+        # Skip the script's interactive read prompts. setup-naive-server.sh
+        # uses bash `read -r -p` for SSH-hardening / fail2ban / "continue
+        # anyway?" questions, which block forever when the script runs
+        # under our auto-deploy PTY (see v1.3.0-beta.1 smoke test —
+        # the script slept on `read` waiting for input the user can't
+        # provide through the WS log panel). Each of these read calls
+        # has an env-var fallback; setting them up-front makes the
+        # script run end-to-end non-interactively.
+        #
+        # Defaults chosen for least-surprise on a remote auto-deploy:
+        #   HARDEN_SSH=no            — never touch the SSH config the
+        #                              admin used to register the
+        #                              Server in PiTun; locking
+        #                              ourselves out is the worst
+        #                              possible failure mode.
+        #   INSTALL_FAIL2BAN=yes     — recommended baseline brute-force
+        #                              protection, low risk to add.
+        #   PITUN_AUTO_CONTINUE=yes  — accept the script's late "continue
+        #                              anyway?" prompt (DNS warning,
+        #                              etc.) so a soft-warning doesn't
+        #                              wedge us. The script still hard-
+        #                              `err`s on actual blockers.
+        "HARDEN_SSH": "no",
+        "INSTALL_FAIL2BAN": "yes",
+        "PITUN_AUTO_CONTINUE": "yes",
     }
 
 

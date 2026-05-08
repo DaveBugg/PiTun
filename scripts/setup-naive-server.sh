@@ -176,8 +176,12 @@ RESOLVED_IP="$(getent hosts "$DOMAIN" | awk '{print $1}' | head -1 || true)"
 if [[ -n "$PUBLIC_IP" && -n "$RESOLVED_IP" && "$PUBLIC_IP" != "$RESOLVED_IP" ]]; then
     warn "$DOMAIN resolves to $RESOLVED_IP but this host is $PUBLIC_IP"
     warn "TLS certificate issuance will fail unless the A-record is correct."
-    read -r -p "Continue anyway? [y/N]: " cont
-    [[ "${cont:-N}" =~ ^[yY]$ ]] || exit 1
+    if [[ "${PITUN_AUTO_CONTINUE:-}" == "yes" ]]; then
+        warn "PITUN_AUTO_CONTINUE=yes — proceeding anyway (Let's Encrypt may still fail)."
+    else
+        read -r -p "Continue anyway? [y/N]: " cont
+        [[ "${cont:-N}" =~ ^[yY]$ ]] || exit 1
+    fi
 fi
 
 # ── 3. Install xcaddy ──────────────────────────────────────────────────────
