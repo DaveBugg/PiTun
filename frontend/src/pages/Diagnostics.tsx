@@ -76,7 +76,10 @@ function HealthChecks() {
           Refresh
         </button>
       </div>
-      <div className="grid grid-cols-2 sm:grid-cols-3 gap-0.5 p-2">
+      {/* Single column on phones — at 2-up the check name + value
+          truncated to "De..." / "Xr..." which made the check unreadable.
+          Stack to one row each below sm. */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-0.5 p-2">
         {isError ? (
           <div className="col-span-full"><ErrorBox message="Failed to load health checks" /></div>
         ) : isLoading ? (

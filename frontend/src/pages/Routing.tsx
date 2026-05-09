@@ -396,8 +396,10 @@ export function Routing() {
       onDragEnd={isDndEnabled ? () => setDragId(null) : undefined}
       onDragOver={isDndEnabled ? (e) => e.preventDefault() : undefined}
       onDrop={isDndEnabled ? () => handleRuleDrop(rule.id) : undefined}
+      // Tighter horizontal gap on mobile so the checkbox + grip
+      // don't eat half the row's width on a 360-wide phone.
       className={clsx(
-        'flex items-center gap-2',
+        'flex items-center gap-1 sm:gap-2',
         isDndEnabled && dragId === rule.id && 'opacity-50',
       )}
     >
@@ -405,22 +407,27 @@ export function Routing() {
         type="checkbox"
         checked={selectedIds.has(rule.id)}
         onChange={() => toggleSelect(rule.id)}
-        className="rounded border-gray-600 bg-gray-700 shrink-0"
+        className="rounded border-gray-600 bg-gray-700 shrink-0 ml-1 sm:ml-0"
       />
       {isDndEnabled && (
-        <div className="cursor-grab text-gray-600 hover:text-gray-400 shrink-0">
+        <div className="cursor-grab text-gray-600 hover:text-gray-400 shrink-0 hidden sm:block">
           <GripVertical className="h-4 w-4" />
         </div>
       )}
       <div
         className={clsx(
-          'flex-1 rounded-xl border p-4 transition-colors',
+          // Tighter padding on mobile so the rule body doesn't push
+          // the inline action buttons off the right edge of the card.
+          'flex-1 min-w-0 rounded-xl border p-3 sm:p-4 transition-colors',
           rule.enabled
             ? 'border-gray-800 bg-gray-900'
             : 'border-gray-800/50 bg-gray-900/50 opacity-60',
         )}
       >
-        <div className="flex items-center gap-3 flex-wrap">
+        {/* Mobile: stack rule meta + actions row vertically (each
+            line wraps cleanly inside the card). Tablet+: original
+            single-row inline layout. */}
+        <div className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-3 sm:flex-wrap">
           <span
             className={clsx(
               'rounded px-2 py-0.5 text-xs font-mono font-medium',
@@ -472,11 +479,18 @@ export function Routing() {
   )
 
   return (
-    <div className="p-6 space-y-5">
-      <div className="flex items-center justify-between flex-wrap gap-3">
+    <div className="p-4 sm:p-6 space-y-5">
+      <div className="flex items-start justify-between flex-wrap gap-3">
         <h1 className="text-xl font-bold text-gray-100">Routing</h1>
         {tab === 'rules' && (
-          <div className="flex items-center gap-2">
+          // Action buttons slide horizontally on phones (same pattern
+          // as Nodes header) to avoid wrapping into a tall multi-row
+          // mess on a 360-wide screen.
+          <div
+            className="flex items-center gap-2 -mx-4 sm:mx-0 px-4 sm:px-0
+                       overflow-x-auto sm:overflow-visible w-full sm:w-auto
+                       [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+          >
             {/* Quick Add Presets */}
             <div className="relative" ref={presetsRef}>
               <button

@@ -113,15 +113,22 @@ export function Nodes() {
   }
 
   return (
-    <div className="p-6 space-y-5">
-      {/* Header */}
-      <div className="flex items-center justify-between flex-wrap gap-3">
+    <div className="p-4 sm:p-6 space-y-5">
+      {/* Header — title on its own row on phones, action buttons
+          stack into a horizontally-scrollable row below it instead
+          of overflowing or wrapping awkwardly. Wider screens collapse
+          back to the original justify-between row. */}
+      <div className="flex items-start justify-between flex-wrap gap-3">
         <h1 className="text-xl font-bold text-gray-100">Nodes</h1>
-        <div className="flex items-center gap-2">
+        <div
+          className="flex items-center gap-2 -mx-4 sm:mx-0 px-4 sm:px-0
+                     overflow-x-auto sm:overflow-visible
+                     [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+        >
           <button
             onClick={() => checkAll.mutate()}
             disabled={checkAll.isPending}
-            className="flex items-center gap-1.5 rounded-lg bg-gray-800 px-3 py-2 text-sm text-gray-300 hover:bg-gray-700 transition-colors disabled:opacity-50"
+            className="flex items-center gap-1.5 rounded-lg bg-gray-800 px-3 py-2 text-sm text-gray-300 hover:bg-gray-700 transition-colors disabled:opacity-50 flex-shrink-0"
           >
             <Activity className={clsx('h-4 w-4', checkAll.isPending && 'animate-pulse')} />
             Test All
@@ -129,14 +136,14 @@ export function Nodes() {
           <button
             onClick={() => speedAll.mutate()}
             disabled={speedAll.isPending}
-            className="flex items-center gap-1.5 rounded-lg bg-gray-800 px-3 py-2 text-sm text-gray-300 hover:bg-gray-700 transition-colors disabled:opacity-50"
+            className="flex items-center gap-1.5 rounded-lg bg-gray-800 px-3 py-2 text-sm text-gray-300 hover:bg-gray-700 transition-colors disabled:opacity-50 flex-shrink-0"
           >
             <Gauge className={clsx('h-4 w-4', speedAll.isPending && 'animate-spin')} />
             {speedAll.isPending ? 'Testing…' : 'Speed All'}
           </button>
           <button
             onClick={() => setModal('import')}
-            className="flex items-center gap-1.5 rounded-lg bg-gray-700 px-3 py-2 text-sm text-gray-200 hover:bg-gray-600 transition-colors"
+            className="flex items-center gap-1.5 rounded-lg bg-gray-700 px-3 py-2 text-sm text-gray-200 hover:bg-gray-600 transition-colors flex-shrink-0"
             title="Import VPN URIs, Clash YAML, or xray JSON"
           >
             <Download className="h-4 w-4" />
@@ -148,7 +155,7 @@ export function Nodes() {
           <NodesJsonIO />
           <button
             onClick={() => { setEditNode(null); setModal('add') }}
-            className="flex items-center gap-1.5 rounded-lg bg-brand-600 px-3 py-2 text-sm font-medium text-white hover:bg-brand-500 transition-colors"
+            className="flex items-center gap-1.5 rounded-lg bg-brand-600 px-3 py-2 text-sm font-medium text-white hover:bg-brand-500 transition-colors flex-shrink-0"
           >
             <Plus className="h-4 w-4" />
             Add Node
@@ -156,9 +163,12 @@ export function Nodes() {
         </div>
       </div>
 
-      {/* Filters */}
+      {/* Filters — search input on its own row, protocol chips slide
+          horizontally below it on phones (instead of wrapping under a
+          tiny search box and pushing content down). Tablet+ collapses
+          back to one row. */}
       <div className="flex items-center gap-3 flex-wrap">
-        <div className="relative flex-1 min-w-48">
+        <div className="relative flex-1 min-w-0 sm:min-w-48 w-full sm:w-auto">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-500" />
           <input
             value={search}
@@ -167,14 +177,18 @@ export function Nodes() {
             className="w-full rounded-lg bg-gray-900 border border-gray-800 pl-9 pr-3 py-2 text-sm text-gray-100 focus:border-brand-500 focus:outline-none"
           />
         </div>
-        <div className="flex items-center gap-1">
-          <Filter className="h-4 w-4 text-gray-500" />
+        <div
+          className="flex items-center gap-1 -mx-4 sm:mx-0 px-4 sm:px-0
+                     overflow-x-auto sm:overflow-visible w-full sm:w-auto
+                     [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+        >
+          <Filter className="h-4 w-4 text-gray-500 flex-shrink-0" />
           {['', ...protocols].map((p) => (
             <button
               key={p || 'all'}
               onClick={() => setFilterProtocol(p)}
               className={clsx(
-                'rounded px-2 py-1 text-xs font-medium transition-colors',
+                'rounded px-2 py-1 text-xs font-medium transition-colors flex-shrink-0',
                 filterProtocol === p
                   ? 'bg-brand-600 text-white'
                   : 'bg-gray-800 text-gray-400 hover:bg-gray-700',
@@ -213,7 +227,12 @@ export function Nodes() {
               onDrop={() => handleDrop(node.id)}
               className={clsx('flex items-start gap-2', dragId === node.id && 'opacity-50')}
             >
-              <div className={clsx('mt-3 shrink-0', canDrag ? 'cursor-grab text-gray-600 hover:text-gray-400' : 'text-gray-800 cursor-not-allowed')}>
+              {/* Drag handle desktop-only — HTML5 DnD doesn't fire on
+                  touch events, so showing the grip on mobile would
+                  imply broken functionality. Mobile users reorder
+                  via the Edit modal's `order` field for now;
+                  full touch DnD is on the post-1.3.0 backlog. */}
+              <div className={clsx('mt-3 shrink-0 hidden sm:block', canDrag ? 'cursor-grab text-gray-600 hover:text-gray-400' : 'text-gray-800 cursor-not-allowed')}>
                 <GripVertical className="h-4 w-4" />
               </div>
               <div className="flex-1 min-w-0">

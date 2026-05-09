@@ -494,7 +494,7 @@ export function Dashboard() {
   ]
 
   return (
-    <div className="p-6 space-y-6">
+    <div className="p-4 sm:p-6 space-y-6">
       {/* Page header: title + xray version stamp. Lifecycle controls
           (Start / Restart / Stop) live INSIDE the xray tile of the
           Service Status grid below — they're a property of that
@@ -521,7 +521,10 @@ export function Dashboard() {
             'Управляет маршрутизацией трафика. Global — весь трафик через прокси вне зависимости от правил. Rules — маршрут по настроенным правилам (IP, домен, MAC и т.д.). Bypass — прокси отключён, весь трафик идёт напрямую.',
           )} />
         </h2>
-        <div className="grid grid-cols-3 gap-3">
+        {/* 3-up on tablet+, single column on phones — three side-by-
+            side proxy-mode cards on a 360-wide phone made every label
+            wrap awkwardly. Stack vertically below sm. */}
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
           {MODES.map(({ value, label, icon: Icon, desc }) => (
             <button
               key={value}
@@ -553,7 +556,9 @@ export function Dashboard() {
           )} />
         </h2>
         <div className="rounded-xl border border-gray-800 bg-gray-900/30 p-4 space-y-3">
-          <div className="grid grid-cols-3 gap-2">
+          {/* Same rationale as Proxy Mode above — 3 columns squashed
+              on mobile, stack vertically below sm. */}
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
             {INBOUND_MODES.map(({ value, label, desc, tip }) => (
               <button
                 key={value}

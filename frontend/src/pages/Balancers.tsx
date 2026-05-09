@@ -182,7 +182,7 @@ export function Balancers() {
   }
 
   return (
-    <div className="p-6 space-y-5">
+    <div className="p-4 sm:p-6 space-y-5">
       <div className="flex items-center justify-between flex-wrap gap-3">
         <div className="flex items-center gap-2">
           <Layers className="h-5 w-5 text-brand-400" />

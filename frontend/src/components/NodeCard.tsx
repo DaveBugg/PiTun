@@ -49,8 +49,13 @@ export function NodeCard({
           : 'border-gray-800 bg-gray-900/30 hover:border-gray-700',
       )}
     >
-      <div className="flex items-start justify-between gap-2">
-        <div className="flex items-start gap-3 min-w-0">
+      {/* Stack content above actions on phones — at flex-row, the
+          action icons row pushed past the right edge of narrow cards.
+          From sm+ collapse back to side-by-side. `min-w-0` on the
+          content column lets long names truncate instead of forcing
+          horizontal overflow on the parent flex. */}
+      <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-2">
+        <div className="flex items-start gap-3 min-w-0 flex-1">
           <div
             className={clsx(
               'mt-0.5 flex h-8 w-8 items-center justify-center rounded-lg flex-shrink-0',
@@ -115,7 +120,11 @@ export function NodeCard({
           </div>
         </div>
 
-        <div className="flex items-center gap-1 flex-shrink-0">
+        {/* Actions row — wraps within its own line on phones, stays
+            inline on tablet+. `justify-end` on sm+ keeps the visual
+            anchor where users expect (right edge of card) without
+            pushing content off-screen on narrow viewports. */}
+        <div className="flex items-center gap-1 flex-wrap sm:flex-nowrap sm:flex-shrink-0 sm:justify-end">
           {onSelect && (
             <button
               onClick={onSelect}

@@ -184,10 +184,17 @@ export function Servers() {
         </div>
       )}
 
-      {/* Table */}
+      {/* Table — horizontally scrollable on phones since the columns
+          (status / name / address / auth / last-check / actions)
+          don't fit in 360px without truncating to uselessness. The
+          outer rounded card stays in place so the visual frame is
+          intact; only the table itself slides. A future iteration
+          could collapse to card-list under sm: but the scroll
+          version at least makes everything reachable without
+          information loss. */}
       {servers.length > 0 && (
-        <div className="rounded-2xl border border-gray-800 bg-gray-900/30 overflow-hidden">
-          <table className="w-full text-sm">
+        <div className="rounded-2xl border border-gray-800 bg-gray-900/30 overflow-x-auto">
+          <table className="w-full min-w-[640px] text-sm">
             <thead className="text-xs uppercase tracking-wider text-gray-500 bg-gray-900/60">
               <tr>
                 <th className="px-4 py-3 text-left">{t('Status', 'Статус')}</th>

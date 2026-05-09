@@ -11,9 +11,19 @@ interface AppState {
   activeNode: Node | null
   setActiveNode: (n: Node | null) => void
 
-  // Sidebar collapse
+  // Sidebar collapse — desktop-only narrow/wide toggle (icon-only vs
+  // icon+label). Persisted across sessions.
   sidebarCollapsed: boolean
   toggleSidebar: () => void
+
+  // Mobile menu — separate from `sidebarCollapsed` because the two
+  // semantics differ: on desktop the sidebar is always present (just
+  // narrow or wide); on mobile (since v1.3.0-beta.6) the sidebar is
+  // hidden entirely by default and slides in as an overlay drawer
+  // when this flag is true. NOT persisted — opens fresh on every
+  // page load (the floating home button is the entry point).
+  mobileMenuOpen: boolean
+  setMobileMenuOpen: (v: boolean) => void
 
   // Theme (future)
   theme: 'dark' | 'light'
@@ -35,6 +45,9 @@ export const useAppStore = create<AppState>()(
 
       sidebarCollapsed: false,
       toggleSidebar: () => set((s) => ({ sidebarCollapsed: !s.sidebarCollapsed })),
+
+      mobileMenuOpen: false,
+      setMobileMenuOpen: (mobileMenuOpen) => set({ mobileMenuOpen }),
 
       theme: 'dark',
       setTheme: (theme) => set({ theme }),

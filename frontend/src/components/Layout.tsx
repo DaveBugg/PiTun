@@ -24,6 +24,7 @@ import {
   Sun,
   Moon,
   Cloud,
+  Menu,
 } from 'lucide-react'
 import { clsx } from 'clsx'
 import { useAppStore } from '@/store'
@@ -61,9 +62,45 @@ const NAV = [
 ]
 
 export function Layout() {
-  const { sidebarCollapsed, toggleSidebar, lang, setLang, theme, setTheme } = useAppStore()
+  const {
+    sidebarCollapsed, toggleSidebar,
+    mobileMenuOpen, setMobileMenuOpen,
+    lang, setLang, theme, setTheme,
+  } = useAppStore()
   const { data: status } = useSystemStatus()
   const t = (en: string, ru: string) => (lang === 'ru' ? ru : en)
+
+  // Always start with the mobile drawer closed on each fresh load —
+  // not persisted in store. Defensive reset in case a prior version
+  // of the store had it lingering. Cheap, runs once.
+  useEffect(() => {
+    setMobileMenuOpen(false)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  // Esc closes the mobile menu drawer too — same affordance as the
+  // tap-the-backdrop pattern. Hooked here so it doesn't fight with
+  // the password modal's own Esc handler (that one short-circuits
+  // when its modal is hidden).
+  useEscapeKey(() => setMobileMenuOpen(false), mobileMenuOpen)
+
+  // Track viewport size so the sidebar's bottom-section render
+  // branches (language toggle / status+version / user section) can
+  // pick "expanded" layout on mobile regardless of the desktop-only
+  // `sidebarCollapsed` flag. The drawer on mobile is always w-72,
+  // so it shouldn't display the icon-only collapsed variants.
+  const [isMobileViewport, setIsMobileViewport] = useState<boolean>(() =>
+    typeof window !== 'undefined' &&
+    window.matchMedia('(max-width: 767px)').matches
+  )
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    const mql = window.matchMedia('(max-width: 767px)')
+    const handler = (e: MediaQueryListEvent) => setIsMobileViewport(e.matches)
+    mql.addEventListener('change', handler)
+    return () => mql.removeEventListener('change', handler)
+  }, [])
+  const effectiveCollapsed = isMobileViewport ? false : sidebarCollapsed
 
   // Keep `<html data-theme="…">` in sync with the store. main.tsx sets
   // the initial value before first paint; this effect handles live
@@ -137,33 +174,42 @@ export function Layout() {
     // Text color inherits here so all pages get gray-100 default without
     // each one respecifying it.
     <div className="flex h-full text-gray-100">
-      {/* Backdrop shown when the sidebar is expanded on mobile. Tapping
-          it collapses the sidebar (standard mobile pattern). Hidden on
-          md+ since the sidebar is static there and doesn't overlay. */}
-      {!sidebarCollapsed && (
+      {/* Mobile-only backdrop. Visible when the off-canvas drawer is
+          open, tapping it slides the drawer back out. Desktop sidebar
+          is `static` and doesn't need a backdrop. */}
+      {mobileMenuOpen && (
         <div
-          onClick={toggleSidebar}
-          className="fixed inset-0 z-30 bg-black/50 md:hidden"
+          onClick={() => setMobileMenuOpen(false)}
+          className="fixed inset-0 z-30 bg-black/60 backdrop-blur-sm md:hidden"
           aria-hidden="true"
         />
       )}
 
-      {/* Sidebar — solid saturated gradient (dark navy → near-black in dark
-          theme; soft-slate in light). Reads as a distinct "frame" around
-          the translucent cards in main content.
+      {/* Sidebar — solid saturated gradient (dark navy → near-black in
+          dark theme; soft-slate in light).
 
-          Responsive layout:
-          - Mobile (< md): `fixed` overlay so expanding the sidebar
-            covers the page instead of crushing the content column into
-            an unreadable 150-pixel-wide strip.
-          - Desktop (md+): `static` flex item — sidebar + main split the
-            viewport as before. */}
+          Responsive layout (since v1.3.0-beta.6):
+          - **Mobile (< md):** completely hidden by default; slides in as
+            a full-height off-canvas drawer when `mobileMenuOpen=true`
+            (entry point: floating home button bottom-right). Always
+            full-width-ish (`w-72`) when open — no narrow icon-only
+            mode on mobile, since the user explicitly tapped the
+            menu and wants labels.
+          - **Desktop (md+):** static flex item; `sidebarCollapsed`
+            toggles between icon-only (`w-16`) and labeled (`w-56`).
+            The mobile drawer flag has no effect at this breakpoint. */}
       <aside
         style={{ backgroundImage: 'var(--sidebar-bg)' }}
         className={clsx(
-          'fixed inset-y-0 left-0 z-40 md:static md:z-auto',
+          // Base — flex column with gradient + right border.
           'flex flex-col border-r border-gray-800/70 transition-all duration-200',
-          sidebarCollapsed ? 'w-16' : 'w-56',
+          // Mobile (< md): fixed overlay, animated slide-in/out via
+          // translate-x. Width fixed at w-72 for legibility.
+          'fixed inset-y-0 left-0 z-40 w-72',
+          mobileMenuOpen ? 'translate-x-0' : '-translate-x-full',
+          // Desktop (md+): static, narrow/wide based on store flag.
+          'md:static md:z-auto md:translate-x-0',
+          sidebarCollapsed ? 'md:w-16' : 'md:w-56',
         )}
       >
         {/* Logo */}
@@ -174,9 +220,17 @@ export function Layout() {
           {/* `text-gray-100` instead of `text-white` so the logo flips
               to dark on the light theme (white would stay invisible on
               the soft-gray sidebar in light mode). */}
-          {!sidebarCollapsed && (
-            <span className="text-lg font-bold text-gray-100 tracking-tight">PiTun</span>
-          )}
+          {/* Logo label — hidden only when desktop sidebar is in
+              icon-only collapsed state. On mobile the drawer is
+              always expanded width, so the label always shows. */}
+          <span
+            className={clsx(
+              'text-lg font-bold text-gray-100 tracking-tight',
+              sidebarCollapsed && 'md:hidden',
+            )}
+          >
+            PiTun
+          </span>
         </div>
 
         {/* Nav */}
@@ -187,16 +241,15 @@ export function Layout() {
               to={to}
               end={to === '/'}
               onClick={() => {
-                // Auto-collapse the sidebar after a nav tap on mobile
-                // — otherwise the sidebar stays overlaying the page the
-                // user just navigated to, and they have to tap the
-                // backdrop to see anything.
+                // On mobile, close the off-canvas drawer after the
+                // user picks a destination — otherwise the drawer
+                // stays overlaying the page they just navigated to.
+                // Desktop sidebar is always present, no auto-collapse.
                 if (
-                  !sidebarCollapsed &&
                   typeof window !== 'undefined' &&
                   window.matchMedia('(max-width: 767px)').matches
                 ) {
-                  toggleSidebar()
+                  setMobileMenuOpen(false)
                 }
               }}
               className={({ isActive }) =>
@@ -209,7 +262,10 @@ export function Layout() {
               }
             >
               <Icon className="h-4 w-4 flex-shrink-0" />
-              {!sidebarCollapsed && <span>{label}</span>}
+              {/* Same rule as the logo: label disappears only when
+                  desktop sidebar is collapsed; mobile drawer always
+                  shows labels. */}
+              <span className={clsx(sidebarCollapsed && 'md:hidden')}>{label}</span>
             </NavLink>
           ))}
         </nav>
@@ -217,7 +273,7 @@ export function Layout() {
         {/* Language toggle */}
         <div className={clsx(
           'border-t border-gray-800 px-2 py-1.5',
-          sidebarCollapsed ? 'flex flex-col items-center gap-1' : 'flex items-center gap-1',
+          effectiveCollapsed ? 'flex flex-col items-center gap-1' : 'flex items-center gap-1',
         )}>
           {/* Theme toggle — moon/sun icon button. Toggles
               `<html data-theme="…">` via the store, which flips every
@@ -231,7 +287,7 @@ export function Layout() {
           </button>
 
           {/* Language selector */}
-          {!sidebarCollapsed && (
+          {!effectiveCollapsed && (
             <div className="flex items-center gap-1 ml-auto">
               {(['en', 'ru'] as const).map((l) => (
                 <button
@@ -259,7 +315,7 @@ export function Layout() {
             (nginx, socket-proxy, kernel, alembic rev, geo mtimes…).
             `relative` on the wrapper anchors the popover's absolute
             positioning to this sidebar row. */}
-        {!sidebarCollapsed && status && (
+        {!effectiveCollapsed && status && (
           <div className="relative px-4 py-3 border-t border-gray-800">
             <div className="flex items-center gap-2 text-xs text-gray-500">
               <span
@@ -279,9 +335,9 @@ export function Layout() {
         {/* User section */}
         <div className={clsx(
           'border-t border-gray-800 px-2 py-2',
-          sidebarCollapsed ? 'flex flex-col items-center gap-1' : 'flex items-center gap-2',
+          effectiveCollapsed ? 'flex flex-col items-center gap-1' : 'flex items-center gap-2',
         )}>
-          {sidebarCollapsed ? (
+          {effectiveCollapsed ? (
             <>
               <button
                 onClick={openChangePw}
@@ -322,21 +378,40 @@ export function Layout() {
           )}
         </div>
 
-        {/* Collapse toggle */}
+        {/* Collapse toggle — desktop-only (mobile drawer doesn't have
+            a narrow icon-mode, the user explicitly tapped the FAB to
+            see the full menu). Replaced on mobile by an X button at
+            the top-right of the drawer header for explicit close. */}
         <button
           onClick={toggleSidebar}
-          className="flex items-center justify-center py-3 border-t border-gray-800 text-gray-500 hover:text-gray-300 hover:bg-gray-800 transition-colors"
+          className="hidden md:flex items-center justify-center py-3 border-t border-gray-800 text-gray-500 hover:text-gray-300 hover:bg-gray-800 transition-colors"
+          aria-label={sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
         >
           {sidebarCollapsed ? <ChevronRight className="h-4 w-4" /> : <ChevronLeft className="h-4 w-4" />}
+        </button>
+
+        {/* Mobile-only Close button at the top of the drawer for
+            users who don't realise tapping the backdrop / Esc closes
+            it. Same affordance, more discoverable on a phone where
+            the backdrop area is small. */}
+        <button
+          onClick={() => setMobileMenuOpen(false)}
+          aria-label="Close menu"
+          className="md:hidden absolute top-3 right-3 rounded-full p-1.5 text-gray-500 hover:text-gray-200 hover:bg-gray-800 transition-colors"
+        >
+          <X className="h-4 w-4" />
         </button>
       </aside>
 
       {/* Main content.
-          `pl-16` on mobile: reserves the 64px strip (same as `w-16`
-          collapsed sidebar) so that content isn't hidden behind the
-          fixed icon-only sidebar when the sidebar is collapsed. Expanded
-          sidebar just floats on top; the backdrop above catches taps. */}
-      <main className="flex-1 overflow-y-auto pl-16 md:pl-0">
+          On mobile (since v1.3.0-beta.6) the sidebar is fully off-
+          canvas, so main content uses the entire viewport width — no
+          `pl-16` reservation. Bottom padding leaves room for the
+          floating home button (4rem ≈ 64px) on mobile so the
+          page-level scroll doesn't hide its last row under the
+          button. Desktop sidebar is `static` and inline; main flex-1
+          takes the rest naturally. */}
+      <main className="flex-1 overflow-y-auto pb-20 md:pb-0">
         {/* Validation-error banner — shown at the top of every page when
             the most recent xray config write failed validation. The hint
             string is composed by `config_gen._explain_xray_stderr()` and
@@ -368,6 +443,35 @@ export function Layout() {
         )}
         <Outlet />
       </main>
+
+      {/* Floating menu button — mobile-only entry point for the
+          off-canvas drawer above. Bottom-right, semi-transparent so
+          it doesn't fight content underneath, larger touch target
+          (min 48px) for accessibility. Hidden on desktop where the
+          sidebar is always visible inline. Hidden also when the
+          drawer is open (the drawer's own X button + tapping
+          backdrop are the close affordances — keeping the FAB
+          visible would be redundant + would overlap the drawer's
+          right edge on small screens).
+
+          We chose a Menu (hamburger) icon over Home because the
+          button's job is "open navigation," not "go home." */}
+      <button
+        type="button"
+        onClick={() => setMobileMenuOpen(true)}
+        aria-label={t('Open menu', 'Открыть меню')}
+        className={clsx(
+          'fixed bottom-4 right-4 z-30 md:hidden',
+          'flex items-center justify-center',
+          'h-12 w-12 rounded-full',
+          'bg-brand-600/85 text-white shadow-lg backdrop-blur',
+          'hover:bg-brand-500 active:scale-95 transition-all',
+          'border border-brand-400/40',
+          mobileMenuOpen && 'opacity-0 pointer-events-none',
+        )}
+      >
+        <Menu className="h-5 w-5" />
+      </button>
 
       {/* Change Password Modal */}
       {showChangePw && (
