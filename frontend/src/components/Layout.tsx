@@ -418,8 +418,18 @@ export function Layout() {
           floating home button (4rem ≈ 64px) on mobile so the
           page-level scroll doesn't hide its last row under the
           button. Desktop sidebar is `static` and inline; main flex-1
-          takes the rest naturally. */}
-      <main className="flex-1 overflow-y-auto pb-20 md:pb-0">
+          takes the rest naturally.
+
+          `min-w-0` is the classic flex-pitfall fix: a `flex-1` item's
+          default `min-width: auto` lets the item grow to fit the
+          intrinsic width of any wide child (long URLs, tables,
+          unbreakable mono spans), so a single mono span past the
+          viewport causes main itself to scroll horizontally even
+          though the root has `overflow-x-hidden`. Setting
+          `min-width: 0` lets main shrink to its parent's allotted
+          width and child overflows are contained by the explicit
+          `overflow-x-hidden` below. */}
+      <main className="flex-1 min-w-0 overflow-x-hidden overflow-y-auto pb-20 md:pb-0">
         {/* Validation-error banner — shown at the top of every page when
             the most recent xray config write failed validation. The hint
             string is composed by `config_gen._explain_xray_stderr()` and

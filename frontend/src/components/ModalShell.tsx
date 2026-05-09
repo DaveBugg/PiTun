@@ -1,4 +1,5 @@
 import { ReactNode } from 'react'
+import { createPortal } from 'react-dom'
 import { useEscapeKey } from '@/hooks/useEscapeKey'
 
 /**
@@ -37,7 +38,19 @@ interface ModalShellProps {
 export function ModalShell({ onClose, children, labelledBy, z = 50 }: ModalShellProps) {
   useEscapeKey(onClose)
 
-  return (
+  // Portal to document.body so the modal isn't a child of any
+  // page-level wrapper. Without this, callers that render the modal
+  // inline as a sibling inside a `space-y-N` container get a
+  // tailwind-injected `margin-top` on the dialog node — the margin
+  // is technically ignored for positioning by `position: fixed +
+  // inset:0`, but in some browsers (mobile Chrome / Safari) the
+  // dialog's own backdrop `bg-black/70` gets a visible top strip
+  // where the body background bleeds through, which looks like a
+  // partial overlay. Portal'ing breaks the parent chain entirely
+  // and the issue can't recur. SSR-safe via the `typeof document`
+  // guard (frontend currently is SPA-only, but the guard costs
+  // nothing).
+  const node = (
     <div
       role="dialog"
       aria-modal="true"
@@ -49,4 +62,7 @@ export function ModalShell({ onClose, children, labelledBy, z = 50 }: ModalShell
       <div onClick={(e) => e.stopPropagation()}>{children}</div>
     </div>
   )
+
+  if (typeof document === 'undefined') return node
+  return createPortal(node, document.body)
 }
