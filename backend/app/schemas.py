@@ -302,13 +302,21 @@ class ServerTestAllResult(BaseModel):
 class ServerDeployRequest(BaseModel):
     """Input for `POST /api/servers/{id}/deploy`.
 
-    Naive (Phase 1):
+    Naive (single-tunnel — `result.node_id` populated):
       `config`: {"domain": str, "email": str,
                  "naive_user": Optional[str],   # default: "pitun"
                  "naive_pass": Optional[str]}   # default: token_urlsafe(24)
 
-    `protocol` is currently restricted to `"naive"` at the validator level —
-    other protocols will land in beta.2/beta.3 with their own setup-*.sh.
+    WireGuard (multi-client — `result.client_id` populated; admin
+    exports to Node manually via Manage Clients UI):
+      `config`: {"client_name": str,           # required, [a-zA-Z0-9_-]+
+                 "server_port": Optional[int],  # default: 51820
+                 "wg_network_4": Optional[str], # default: 10.66.66.0/24
+                 "wg_network_6": Optional[str], # default: fd42:42:42::/64
+                 "dns_1": Optional[str],        # default: 1.1.1.1
+                 "dns_2": Optional[str],        # default: 1.0.0.1
+                 "allowed_ips": Optional[str],  # default: 0.0.0.0/0,::/0
+                 "server_pub_ip": Optional[str]}# default: autodetect on VPS
     """
     protocol: str
     config: dict
@@ -319,8 +327,10 @@ class ServerDeployRequest(BaseModel):
         # Mirror the gate in core/deploy.SUPPORTED_PROTOCOLS — kept in
         # sync manually since this validator runs before the request
         # body even reaches the endpoint.
-        if v not in ("naive",):
-            raise ValueError(f"Unsupported protocol: {v!r} (only 'naive' in v1.3.0-beta.1)")
+        if v not in ("naive", "wireguard"):
+            raise ValueError(
+                f"Unsupported protocol: {v!r} (expected 'naive' or 'wireguard')"
+            )
         return v
 
 
