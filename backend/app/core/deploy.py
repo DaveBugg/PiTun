@@ -32,18 +32,27 @@ logger = logging.getLogger(__name__)
 #      contract).
 #   2. Add the literal here + a config-validator + URI regex below.
 #   3. Add a script-name mapping in `_SCRIPT_PATH_BY_PROTOCOL`.
-SupportedProtocol = Literal["naive"]
-SUPPORTED_PROTOCOLS: tuple[str, ...] = ("naive",)
+SupportedProtocol = Literal["naive", "wireguard"]
+SUPPORTED_PROTOCOLS: tuple[str, ...] = ("naive", "wireguard")
 
 _SCRIPT_PATH_BY_PROTOCOL: dict[str, str] = {
     "naive": "scripts/setup-naive-server.sh",
+    "wireguard": "scripts/setup-wireguard-server.sh",
 }
 
 # URI scheme prefix per protocol — used both for the regex anchor below
 # and for response-shape sanity checks.
 _URI_SCHEME_BY_PROTOCOL: dict[str, str] = {
     "naive": "naive+https://",
+    "wireguard": "wireguard://",
 }
+
+# Protocols where each deploy invocation produces ONE peer config that
+# becomes a `DeploymentClient` row (and may later be exported to a
+# Node). Protocols outside this set follow the legacy single-tunnel
+# model: deploy → URI parse → Node row directly via
+# `ServerDeployment.last_node_id`.
+MULTI_CLIENT_PROTOCOLS: tuple[str, ...] = ("wireguard",)
 
 
 @dataclass(frozen=True)
@@ -155,6 +164,65 @@ def build_naive_env(
     }
 
 
+def build_wireguard_env(
+    *,
+    client_name: str,
+    server_port: Optional[int] = None,
+    wg_network_4: Optional[str] = None,
+    wg_network_6: Optional[str] = None,
+    dns_1: Optional[str] = None,
+    dns_2: Optional[str] = None,
+    allowed_ips: Optional[str] = None,
+    server_pub_ip: Optional[str] = None,
+    sub_command: Literal["install", "add-client", "remove-client", "list-clients", "get-conf"] = "install",
+) -> dict[str, str]:
+    """Build the env-var dict for `setup-wireguard-server.sh`.
+
+    The script's behaviour is sub-command driven (the first CLI arg).
+    `core/ssh.py.exec_remote_script_streaming` doesn't pass extra args
+    by default, so we encode the sub-command as the first command-line
+    arg via the `_build_remote_command` env injector — see
+    PITUN_WG_SUBCOMMAND below.
+
+    `client_name` is required for everything except `list-clients`;
+    we still validate non-empty here to surface API errors early.
+
+    Defaults mirror `setup-wireguard-server.sh`:
+      * server_port: 51820
+      * wg_network_4: 10.66.66.0/24
+      * wg_network_6: fd42:42:42::/64
+      * dns_1 / dns_2: 1.1.1.1 / 1.0.0.1
+      * allowed_ips: 0.0.0.0/0,::/0
+      * server_pub_ip: autodetected on the VPS
+    """
+    if sub_command != "list-clients" and not client_name:
+        raise ValueError("client_name is required for sub_command=" + sub_command)
+
+    env: dict[str, str] = {
+        # The sub-command is read by `_build_remote_command` to set $1.
+        # See `core/ssh.py` — when a SCRIPT_ARGS env var is set, the
+        # remote shell appends its tokens after the script path.
+        "PITUN_WG_SUBCOMMAND": sub_command,
+    }
+    if client_name:
+        env["CLIENT_NAME"] = client_name
+    if server_port is not None:
+        env["SERVER_PORT"] = str(server_port)
+    if wg_network_4:
+        env["WG_NETWORK_4"] = wg_network_4
+    if wg_network_6:
+        env["WG_NETWORK_6"] = wg_network_6
+    if dns_1:
+        env["DNS_1"] = dns_1
+    if dns_2:
+        env["DNS_2"] = dns_2
+    if allowed_ips:
+        env["ALLOWED_IPS"] = allowed_ips
+    if server_pub_ip:
+        env["SERVER_PUB_IP"] = server_pub_ip
+    return env
+
+
 def build_plan(protocol: str, config: dict) -> DeployPlan:
     """Compose a DeployPlan from a request body. `config` is the
     protocol-specific JSON object the API client sent.
@@ -167,6 +235,22 @@ def build_plan(protocol: str, config: dict) -> DeployPlan:
             email=config.get("email", ""),
             naive_user=config.get("naive_user"),
             naive_pass=config.get("naive_pass"),
+        )
+    elif protocol == "wireguard":
+        # WG `install` sub-command bootstraps the server AND adds the
+        # first client in one go. Subsequent add-client/remove/list/
+        # get-conf invocations are issued via dedicated API endpoints
+        # that build their own env (see api/server_clients.py).
+        env = build_wireguard_env(
+            client_name=config.get("client_name", ""),
+            server_port=config.get("server_port"),
+            wg_network_4=config.get("wg_network_4"),
+            wg_network_6=config.get("wg_network_6"),
+            dns_1=config.get("dns_1"),
+            dns_2=config.get("dns_2"),
+            allowed_ips=config.get("allowed_ips"),
+            server_pub_ip=config.get("server_pub_ip"),
+            sub_command="install",
         )
     else:
         raise ValueError(

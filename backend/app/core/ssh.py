@@ -334,13 +334,27 @@ def _build_remote_command(
         DOMAIN='proxy.example.com' EMAIL='me@x' \\
         NAIVE_USER='pitun' NAIVE_PASS='hunter2' bash /tmp/...sh
 
+    Sub-command dispatch: if the env dict contains
+    `PITUN_WG_SUBCOMMAND`, its value is appended as the script's
+    first positional argument (and the env entry itself is removed
+    from the prefix — it's just our internal channel for passing
+    the arg). This lets multi-mode scripts like
+    setup-wireguard-server.sh dispatch on $1 (`install`,
+    `add-client`, `remove-client`, …) without us having to broaden
+    `exec_remote_script` to take an args list across the whole
+    code-path.
+
     We use `bash` explicitly (not just exec'ing the script) so a
     file-system mount option like `noexec` on /tmp doesn't reject it.
     """
+    sub_command = env.pop("PITUN_WG_SUBCOMMAND", "")
     env_prefix = " ".join(
         f"{k}={shlex.quote(v)}" for k, v in env.items()
     )
-    return f"{env_prefix} bash {shlex.quote(remote_script_path)}"
+    cmd = f"{env_prefix} bash {shlex.quote(remote_script_path)}"
+    if sub_command:
+        cmd += f" {shlex.quote(sub_command)}"
+    return cmd
 
 
 async def exec_remote_script(
