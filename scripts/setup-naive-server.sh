@@ -370,9 +370,13 @@ fi
 DECOY_REPO="${DECOY_REPO:-https://github.com/daleharvey/pacman}"
 TEMPLATE_HTML_URL="${TEMPLATE_HTML_URL:-}"
 FORCE_DECOY="${FORCE_DECOY:-no}"
-# Auto-force when the user picked a single-file template through the
-# UI — the intent there is unambiguous ("apply this cover now").
-if [[ -n "$TEMPLATE_HTML_URL" ]]; then
+# Auto-force when the user picked ANY decoy explicitly through the
+# UI (single-file template OR a non-default git repo). Either way
+# the intent is unambiguous: "apply this cover now". Without this
+# auto-force, switching from Corporate → Pac-Man via the UI would
+# leave the previous corporate.html in place because /var/www/html
+# is already non-empty.
+if [[ "$EXPLICIT_DECOY" == "1" ]]; then
     FORCE_DECOY=yes
 fi
 
