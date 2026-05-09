@@ -21,6 +21,21 @@ class TestTemplatesRegistry:
         assert "github.com" in env["DECOY_REPO"]
         assert "TEMPLATE_HTML_URL" not in env
 
+    def test_pinned_git_template_emits_commit_sha(self):
+        # Templates with a `pinned_commit` should also emit
+        # DECOY_REPO_PINNED_COMMIT so the script can `git checkout`
+        # the exact known-good state. Pre-pinning callers (no
+        # pinned_commit field set) keep the legacy behaviour of
+        # following upstream HEAD.
+        from app.core.templates import resolve_to_env
+
+        env = resolve_to_env("2048")
+        assert "DECOY_REPO" in env
+        assert "DECOY_REPO_PINNED_COMMIT" in env
+        # Real SHA — 40 hex chars.
+        assert len(env["DECOY_REPO_PINNED_COMMIT"]) == 40
+        assert all(c in "0123456789abcdef" for c in env["DECOY_REPO_PINNED_COMMIT"])
+
     def test_resolve_unknown_id_is_empty(self):
         # Unknown / unset ids return {} so callers can `env.update(...)`
         # unconditionally without the script seeing junk vars.

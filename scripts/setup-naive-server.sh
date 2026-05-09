@@ -26,6 +26,14 @@
 #   DECOY_REPO=<git URL>   — clone any static site repo into /var/www/html
 #                            default: https://github.com/daleharvey/pacman
 #   DECOY_REPO=none        — keep a minimal "It works" stub
+#   DECOY_REPO_PINNED_COMMIT=<sha>
+#                          — after cloning DECOY_REPO, `git checkout <sha>`
+#                            so the served decoy is byte-deterministic
+#                            and immune to the upstream repo gaining
+#                            malicious commits later. Used by the UI's
+#                            built-in gallery to pin known-good states
+#                            of well-known projects (2048, tetris, etc.).
+#                            Empty / unset = follow upstream HEAD.
 #   FORCE_DECOY=yes        — replace /var/www/html on every run, even when
 #                            it already contains a non-stub site. Set
 #                            automatically by the script when an explicit
@@ -368,6 +376,7 @@ if [[ -n "${TEMPLATE_HTML_URL:-}" ]] || [[ -n "${DECOY_REPO:-}" ]]; then
     EXPLICIT_DECOY=1
 fi
 DECOY_REPO="${DECOY_REPO:-https://github.com/daleharvey/pacman}"
+DECOY_REPO_PINNED_COMMIT="${DECOY_REPO_PINNED_COMMIT:-}"
 TEMPLATE_HTML_URL="${TEMPLATE_HTML_URL:-}"
 FORCE_DECOY="${FORCE_DECOY:-no}"
 # Auto-force when the user picked ANY decoy explicitly through the
@@ -440,7 +449,25 @@ HTML
         log "Cloning decoy site from $DECOY_REPO ..."
         apt-get install -y -qq git
         TMP_DECOY="$(mktemp -d)"
-        if git clone --depth=1 "$DECOY_REPO" "$TMP_DECOY" 2>&1; then
+        # When pinning to a SHA, do a full (non-shallow) clone — git
+        # can't shallow-clone an arbitrary commit unless the remote
+        # has uploadpack.allowReachableSHA1InWant turned on, which
+        # GitHub does NOT enable by default for repos. Full clone is
+        # one-time per install and the repos in our gallery are tiny
+        # (~2-5 MB), so this is fine.
+        CLONE_OK=0
+        if [[ -n "$DECOY_REPO_PINNED_COMMIT" ]]; then
+            if git clone "$DECOY_REPO" "$TMP_DECOY" 2>&1 \
+               && (cd "$TMP_DECOY" && git checkout --quiet "$DECOY_REPO_PINNED_COMMIT" 2>&1); then
+                info "Pinned decoy to commit $DECOY_REPO_PINNED_COMMIT"
+                CLONE_OK=1
+            fi
+        else
+            if git clone --depth=1 "$DECOY_REPO" "$TMP_DECOY" 2>&1; then
+                CLONE_OK=1
+            fi
+        fi
+        if [[ "$CLONE_OK" == "1" ]]; then
             rm -rf /var/www/html/*
             # Copy everything except the .git directory
             find "$TMP_DECOY" -mindepth 1 -maxdepth 1 ! -name '.git' \

@@ -79,6 +79,15 @@ class DecoyTemplate:
 # stays first because it was the prior hard-coded default; users
 # upgrading from v1.3.0-beta.5 expect the same look unless they
 # explicitly switch.
+#
+# Git-mode entries pin a known-good commit SHA via `pinned_commit` so
+# the served decoy is byte-deterministic across deploys, and a
+# future commit on the upstream repo (well-meant refactor or
+# malicious takeover) doesn't silently change what every PiTun
+# install serves. Bump the SHA here when promoting a known-good
+# upstream change. The script (`setup-naive-server.sh`) does a full
+# clone + `git checkout <sha>` because GitHub doesn't expose
+# shallow-clone-by-SHA without the server flipping a config flag.
 TEMPLATES: List[DecoyTemplate] = [
     DecoyTemplate(
         id="pacman",
@@ -90,6 +99,43 @@ TEMPLATES: List[DecoyTemplate] = [
         ),
         kind="git_repo",
         source="https://github.com/daleharvey/pacman",
+        pinned_commit="3acc5e2bb10e93c8f08eceb1562e1a16d672a1c6",
+    ),
+    DecoyTemplate(
+        id="2048",
+        label="2048",
+        description=(
+            "The original gabrielecirulli/2048 by the actual "
+            "creator. ~150 KB, MIT-licensed, plays smoothly on "
+            "mobile + desktop. Looks like a legit indie game site."
+        ),
+        kind="git_repo",
+        source="https://github.com/gabrielecirulli/2048",
+        pinned_commit="478b6ec346e3787f589e4af751378d06ded4cbbc",
+    ),
+    DecoyTemplate(
+        id="tetris",
+        label="Tetris",
+        description=(
+            "jakesgordon/javascript-tetris — single-page Tetris "
+            "with retro CRT styling. ~80 KB, MIT. Visually "
+            "different from 2048 / Pac-Man for variety."
+        ),
+        kind="git_repo",
+        source="https://github.com/jakesgordon/javascript-tetris",
+        pinned_commit="e5c0c42f7dac0f3514a55eff656c6e22e95d68ed",
+    ),
+    DecoyTemplate(
+        id="coming-soon",
+        label="Coming Soon (Bootstrap)",
+        description=(
+            "StartBootstrap's polished countdown landing — fits "
+            "any domain that's plausibly 'about to launch'. ~1 MB "
+            "with full Bootstrap CSS + a hero image. MIT."
+        ),
+        kind="git_repo",
+        source="https://github.com/StartBootstrap/startbootstrap-coming-soon",
+        pinned_commit="5c428101c48f34b85bf45e4faf26476b2f43215d",
     ),
     DecoyTemplate(
         id="corporate",
@@ -173,7 +219,14 @@ def resolve_to_env(template_id: Optional[str]) -> dict[str, str]:
     if t is None:
         return {}
     if t.kind == "git_repo":
-        return {"DECOY_REPO": t.source}
+        env = {"DECOY_REPO": t.source}
+        # Pin the commit when set so the served decoy is byte-
+        # deterministic and doesn't drift if upstream lands new
+        # changes. The script handles the empty-string case as
+        # "follow HEAD" (current behaviour pre-pinning).
+        if t.pinned_commit:
+            env["DECOY_REPO_PINNED_COMMIT"] = t.pinned_commit
+        return env
     if t.kind == "single_html":
         return {"TEMPLATE_HTML_URL": f"{_REPO_RAW_BASE}/{t.source}"}
     return {}
