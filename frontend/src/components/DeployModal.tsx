@@ -4,7 +4,7 @@ import { useQueryClient } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
 import {
   Sparkles, Rocket, Loader2, Terminal, AlertTriangle, CheckCircle2,
-  Ban, ExternalLink,
+  Ban, ExternalLink, Shield, Network,
 } from 'lucide-react'
 
 import { serversApi } from '@/api/client'
@@ -20,6 +20,7 @@ import type {
   DeployJobResult,
   Server,
   ServerDeploymentProtocol,
+  WireGuardDeploymentConfig,
 } from '@/types'
 
 /**
@@ -58,29 +59,71 @@ export function DeployModal({
   // Pre-fill from existing deployment plan (if any).
   const { data: deployments = [] } = useDeployments(server.id)
   const existingNaive = deployments.find((d) => d.protocol === 'naive')
+  const existingWg = deployments.find((d) => d.protocol === 'wireguard')
 
-  const [domain, setDomain] = useState(existingNaive?.config.domain ?? '')
-  const [email, setEmail] = useState(existingNaive?.config.email ?? '')
-  const [naiveUser, setNaiveUser] = useState(
-    existingNaive?.config.naive_user ?? 'pitun',
+  // Protocol selector — defaults to whichever is already deployed; if
+  // neither, default to naive (the older / more common path).
+  const [protocol, setProtocol] = useState<ServerDeploymentProtocol>(
+    existingNaive ? 'naive' : (existingWg ? 'wireguard' : 'naive'),
   )
-  const [naivePass, setNaivePass] = useState(existingNaive?.config.naive_pass ?? '')
+
+  // Naive fields
+  const naiveCfg = (existingNaive?.config ?? {}) as {
+    domain?: string; email?: string; naive_user?: string; naive_pass?: string
+  }
+  const [domain, setDomain] = useState(naiveCfg.domain ?? '')
+  const [email, setEmail] = useState(naiveCfg.email ?? '')
+  const [naiveUser, setNaiveUser] = useState(naiveCfg.naive_user ?? 'pitun')
+  const [naivePass, setNaivePass] = useState(naiveCfg.naive_pass ?? '')
+
+  // WireGuard fields. Server-side ServerDeployment.config_json mirrors
+  // the WireGuardDeploymentConfig shape; we pre-fill from it so re-deploys
+  // are stable. `client_name` is per-deploy (the first peer to add) —
+  // not stored on the deployment row, so it always starts blank.
+  const wgCfg = (existingWg?.config ?? {}) as WireGuardDeploymentConfig
+  const [wgClientName, setWgClientName] = useState('')
+  const [wgServerPort, setWgServerPort] = useState(
+    wgCfg.server_port?.toString() ?? '51820',
+  )
+  const [wgDns1, setWgDns1] = useState(wgCfg.dns_1 ?? '1.1.1.1')
+  const [wgDns2, setWgDns2] = useState(wgCfg.dns_2 ?? '1.0.0.1')
+  const [wgAllowedIps, setWgAllowedIps] = useState(
+    wgCfg.allowed_ips ?? '0.0.0.0/0,::/0',
+  )
 
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState('')
   const [jobId, setJobId] = useState<string | null>(null)
+  const [submittedProtocol, setSubmittedProtocol] = useState<
+    ServerDeploymentProtocol
+  >('naive')
 
   const buildParams = (): Record<string, unknown> | null => {
-    if (!domain.trim() || !email.trim()) {
-      setError(t('Domain and email are required', 'Domain и email обязательны'))
+    if (protocol === 'naive') {
+      if (!domain.trim() || !email.trim()) {
+        setError(t('Domain and email are required', 'Domain и email обязательны'))
+        return null
+      }
+      return {
+        domain: domain.trim(),
+        email: email.trim(),
+        naive_user: naiveUser.trim() || undefined,
+        // Empty pass → backend will auto-generate `secrets.token_urlsafe(24)`
+        naive_pass: naivePass.trim() || undefined,
+      }
+    }
+    // wireguard
+    const port = wgServerPort.trim() ? Number(wgServerPort.trim()) : undefined
+    if (port !== undefined && (Number.isNaN(port) || port < 1 || port > 65535)) {
+      setError(t('Server port must be 1–65535', 'Порт сервера должен быть 1–65535'))
       return null
     }
     return {
-      domain: domain.trim(),
-      email: email.trim(),
-      naive_user: naiveUser.trim() || undefined,
-      // Empty pass → backend will auto-generate `secrets.token_urlsafe(24)`
-      naive_pass: naivePass.trim() || undefined,
+      server_port: port,
+      dns_1: wgDns1.trim() || undefined,
+      dns_2: wgDns2.trim() || undefined,
+      allowed_ips: wgAllowedIps.trim() || undefined,
+      client_name: wgClientName.trim() || undefined,
     }
   }
 
@@ -92,9 +135,10 @@ export function DeployModal({
     setSubmitting(true)
     try {
       const accepted = await serversApi.deploy(server.id, {
-        protocol: 'naive',
+        protocol,
         config: params,
       })
+      setSubmittedProtocol(protocol)
       setJobId(accepted.job_id)
     } catch (err: unknown) {
       // 409 SlotBusy or 400/500 — surface server message
@@ -114,13 +158,13 @@ export function DeployModal({
           </div>
           <div className="flex-1 min-w-0">
             <h2 id="deploy-modal-title" className="text-lg font-semibold text-gray-100">
-              {t('Install NaiveProxy on', 'Установить NaiveProxy на')}{' '}
+              {t('Install on', 'Установить на')}{' '}
               <span className="text-brand-400">{server.name}</span>
             </h2>
             <p className="text-xs text-gray-500 mt-0.5">
               {t(
-                `Runs the install script over SSH on ${server.user}@${server.host}:${server.port}, streams output live, creates a Node on success.`,
-                `Запустит установщик по SSH на ${server.user}@${server.host}:${server.port}, покажет вывод в реальном времени, создаст Node при успехе.`,
+                `Runs the install script over SSH on ${server.user}@${server.host}:${server.port}, streams output live.`,
+                `Запустит установщик по SSH на ${server.user}@${server.host}:${server.port}, покажет вывод в реальном времени.`,
               )}
             </p>
           </div>
@@ -128,23 +172,40 @@ export function DeployModal({
 
         {!jobId && (
           <DeployForm
+            protocol={protocol}
+            setProtocol={setProtocol}
             domain={domain}
             email={email}
             naiveUser={naiveUser}
             naivePass={naivePass}
+            wgClientName={wgClientName}
+            wgServerPort={wgServerPort}
+            wgDns1={wgDns1}
+            wgDns2={wgDns2}
+            wgAllowedIps={wgAllowedIps}
             error={error}
             submitting={submitting}
             setDomain={setDomain}
             setEmail={setEmail}
             setNaiveUser={setNaiveUser}
             setNaivePass={setNaivePass}
+            setWgClientName={setWgClientName}
+            setWgServerPort={setWgServerPort}
+            setWgDns1={setWgDns1}
+            setWgDns2={setWgDns2}
+            setWgAllowedIps={setWgAllowedIps}
             onSubmit={onStart}
             onCancel={onClose}
           />
         )}
 
         {jobId && (
-          <DeployRunning jobId={jobId} server={server} onClose={onClose} />
+          <DeployRunning
+            jobId={jobId}
+            server={server}
+            protocol={submittedProtocol}
+            onClose={onClose}
+          />
         )}
       </div>
     </ModalShell>
@@ -155,16 +216,26 @@ export function DeployModal({
 // ── Form (pre-start) ────────────────────────────────────────────────────────
 
 function DeployForm(props: {
+  protocol: ServerDeploymentProtocol
+  setProtocol: (p: ServerDeploymentProtocol) => void
   domain: string; email: string; naiveUser: string; naivePass: string
+  wgClientName: string; wgServerPort: string; wgDns1: string
+  wgDns2: string; wgAllowedIps: string
   error: string; submitting: boolean
   setDomain: (v: string) => void
   setEmail: (v: string) => void
   setNaiveUser: (v: string) => void
   setNaivePass: (v: string) => void
+  setWgClientName: (v: string) => void
+  setWgServerPort: (v: string) => void
+  setWgDns1: (v: string) => void
+  setWgDns2: (v: string) => void
+  setWgAllowedIps: (v: string) => void
   onSubmit: (e: React.FormEvent) => void
   onCancel: () => void
 }) {
   const t = useT()
+  const isNaive = props.protocol === 'naive'
   return (
     <form onSubmit={props.onSubmit}>
       {props.error && (
@@ -174,59 +245,62 @@ function DeployForm(props: {
         </div>
       )}
 
-      <div className="space-y-3">
-        <FieldL label={t('Domain', 'Домен')} hint={t('A-record points to the VPS', 'A-запись указывает на VPS')}>
-          <input
-            type="text"
-            value={props.domain}
-            onChange={(e) => props.setDomain(e.target.value)}
-            placeholder="proxy.example.com"
-            className={inputCls}
-            required
-            autoFocus
-          />
-        </FieldL>
-        <FieldL label={t("Let's Encrypt email", 'Email для Let\'s Encrypt')}>
-          <input
-            type="email"
-            value={props.email}
-            onChange={(e) => props.setEmail(e.target.value)}
-            placeholder="me@example.com"
-            className={inputCls}
-            required
-          />
-        </FieldL>
-        <FieldL label={t('Naive username', 'Имя пользователя Naive')} hint={t('default "pitun"', 'по умолчанию "pitun"')}>
-          <input
-            type="text"
-            value={props.naiveUser}
-            onChange={(e) => props.setNaiveUser(e.target.value)}
-            className={inputCls}
-          />
-        </FieldL>
-        <FieldL
-          label={t('Naive password', 'Пароль Naive')}
-          hint={t(
-            'leave blank — the server auto-generates one',
-            'оставьте пустым — сервер сгенерирует автоматически',
-          )}
-        >
-          <input
-            type="text"
-            value={props.naivePass}
-            onChange={(e) => props.setNaivePass(e.target.value)}
-            className={inputCls}
-          />
-        </FieldL>
+      {/* Protocol toggle — naive (single-tunnel) vs wireguard (multi-client). */}
+      <div className="mb-4 grid grid-cols-2 gap-2">
+        <ProtocolPick
+          active={isNaive}
+          icon={<Shield className="h-4 w-4" />}
+          title={t('NaiveProxy', 'NaiveProxy')}
+          subtitle={t('HTTPS over TLS, single tunnel', 'HTTPS поверх TLS, один туннель')}
+          onClick={() => props.setProtocol('naive')}
+        />
+        <ProtocolPick
+          active={!isNaive}
+          icon={<Network className="h-4 w-4" />}
+          title={t('WireGuard', 'WireGuard')}
+          subtitle={t('UDP, multi-client', 'UDP, много клиентов')}
+          onClick={() => props.setProtocol('wireguard')}
+        />
       </div>
+
+      {isNaive ? (
+        <NaiveFields
+          domain={props.domain}
+          email={props.email}
+          naiveUser={props.naiveUser}
+          naivePass={props.naivePass}
+          setDomain={props.setDomain}
+          setEmail={props.setEmail}
+          setNaiveUser={props.setNaiveUser}
+          setNaivePass={props.setNaivePass}
+        />
+      ) : (
+        <WireGuardFields
+          clientName={props.wgClientName}
+          serverPort={props.wgServerPort}
+          dns1={props.wgDns1}
+          dns2={props.wgDns2}
+          allowedIps={props.wgAllowedIps}
+          setClientName={props.setWgClientName}
+          setServerPort={props.setWgServerPort}
+          setDns1={props.setWgDns1}
+          setDns2={props.setWgDns2}
+          setAllowedIps={props.setWgAllowedIps}
+        />
+      )}
 
       <div className="rounded-lg border border-yellow-700/40 bg-yellow-900/10 px-3 py-2 mt-4 text-xs text-yellow-200 flex items-start gap-2">
         <Sparkles className="h-3.5 w-3.5 mt-0.5 flex-shrink-0 text-yellow-400" />
         <span>
-          {t(
-            'The install takes 2–5 minutes (apt update, Caddy build, Let\'s Encrypt cert). Output streams live below.',
-            'Установка займёт 2–5 минут (apt update, сборка Caddy, сертификат Let\'s Encrypt). Вывод появится ниже в реальном времени.',
-          )}
+          {isNaive
+            ? t(
+                'The install takes 2–5 minutes (apt update, Caddy build, Let\'s Encrypt cert). Output streams live below.',
+                'Установка займёт 2–5 минут (apt update, сборка Caddy, сертификат Let\'s Encrypt). Вывод появится ниже в реальном времени.',
+              )
+            : t(
+                'The install takes 1–2 minutes (apt update, wireguard-tools, sysctl + first peer). Each peer is a separate "client" — manage them after install via the Clients button.',
+                'Установка займёт 1–2 минуты (apt update, wireguard-tools, sysctl + первый клиент). Каждый клиент управляется после установки через кнопку Clients.',
+              )}
         </span>
       </div>
 
@@ -266,10 +340,12 @@ function DeployForm(props: {
 function DeployRunning({
   jobId,
   server,
+  protocol,
   onClose,
 }: {
   jobId: string
   server: Server
+  protocol: ServerDeploymentProtocol
   onClose: () => void
 }) {
   const t = useT()
@@ -285,12 +361,15 @@ function DeployRunning({
   const onCancel = () => cancel.mutate(jobId)
 
   // After finalize, refresh side-effects: nodes list (new naive node)
-  // + servers (new ServerDeployment).
+  // + servers (new ServerDeployment) + WG clients (new peer added on
+  // first WG install — Clients modal cache should pick it up
+  // immediately on next open).
   useEffect(() => {
     if (done && done !== 'unknown') {
       qc.invalidateQueries({ queryKey: ['nodes'] })
       qc.invalidateQueries({ queryKey: ['servers'] })
       qc.invalidateQueries({ queryKey: ['servers', server.id, 'deployments'] })
+      qc.invalidateQueries({ queryKey: ['servers', server.id, 'wg-clients'] })
     }
   }, [done, qc, server.id])
 
@@ -308,6 +387,7 @@ function DeployRunning({
       <StatusBanner
         status={finalStatus}
         result={result}
+        protocol={protocol}
         error={jobRow?.error || wsError}
       />
 
@@ -348,7 +428,10 @@ function DeployRunning({
             {cancel.isPending ? t('Cancelling…', 'Отмена…') : t('Cancel', 'Отменить')}
           </button>
         ) : (
-          // Finalized — offer "Open node" if we got one, or just Close
+          // Finalized — offer "Open Nodes" for naive (a node was created);
+          // for WG point at the Servers page where Clients modal lives
+          // (the freshly-added peer is one row in DeploymentClient, not
+          // a Node — admin chooses to export it manually).
           result?.node_id ? (
             <Link
               to={`/nodes`}
@@ -358,7 +441,16 @@ function DeployRunning({
               {t('Open Nodes', 'Открыть Nodes')}
               <ExternalLink className="h-4 w-4" />
             </Link>
-          ) : null
+          ) : (result?.client_id != null ? (
+            <Link
+              to={`/servers`}
+              onClick={onClose}
+              className="rounded-lg bg-brand-600 hover:bg-brand-500 text-white px-3 py-1.5 text-sm font-medium flex items-center gap-1.5 transition-colors"
+            >
+              {t('Open Servers', 'Открыть Серверы')}
+              <ExternalLink className="h-4 w-4" />
+            </Link>
+          ) : null)
         )}
 
         <div className="flex-1" />
@@ -376,15 +468,188 @@ function DeployRunning({
 }
 
 
+// ── Per-protocol field groups ───────────────────────────────────────────────
+
+function NaiveFields(props: {
+  domain: string; email: string; naiveUser: string; naivePass: string
+  setDomain: (v: string) => void
+  setEmail: (v: string) => void
+  setNaiveUser: (v: string) => void
+  setNaivePass: (v: string) => void
+}) {
+  const t = useT()
+  return (
+    <div className="space-y-3">
+      <FieldL label={t('Domain', 'Домен')} hint={t('A-record points to the VPS', 'A-запись указывает на VPS')}>
+        <input
+          type="text"
+          value={props.domain}
+          onChange={(e) => props.setDomain(e.target.value)}
+          placeholder="proxy.example.com"
+          className={inputCls}
+          required
+          autoFocus
+        />
+      </FieldL>
+      <FieldL label={t("Let's Encrypt email", 'Email для Let\'s Encrypt')}>
+        <input
+          type="email"
+          value={props.email}
+          onChange={(e) => props.setEmail(e.target.value)}
+          placeholder="me@example.com"
+          className={inputCls}
+          required
+        />
+      </FieldL>
+      <FieldL label={t('Naive username', 'Имя пользователя Naive')} hint={t('default "pitun"', 'по умолчанию "pitun"')}>
+        <input
+          type="text"
+          value={props.naiveUser}
+          onChange={(e) => props.setNaiveUser(e.target.value)}
+          className={inputCls}
+        />
+      </FieldL>
+      <FieldL
+        label={t('Naive password', 'Пароль Naive')}
+        hint={t(
+          'leave blank — the server auto-generates one',
+          'оставьте пустым — сервер сгенерирует автоматически',
+        )}
+      >
+        <input
+          type="text"
+          value={props.naivePass}
+          onChange={(e) => props.setNaivePass(e.target.value)}
+          className={inputCls}
+        />
+      </FieldL>
+    </div>
+  )
+}
+
+
+function WireGuardFields(props: {
+  clientName: string; serverPort: string; dns1: string; dns2: string
+  allowedIps: string
+  setClientName: (v: string) => void
+  setServerPort: (v: string) => void
+  setDns1: (v: string) => void
+  setDns2: (v: string) => void
+  setAllowedIps: (v: string) => void
+}) {
+  const t = useT()
+  return (
+    <div className="space-y-3">
+      <FieldL
+        label={t('First client name', 'Имя первого клиента')}
+        hint={t(
+          'leave blank → auto "client1"; alphanumeric + _-',
+          'оставьте пустым → автоматически "client1"; буквы/цифры/_/-',
+        )}
+      >
+        <input
+          type="text"
+          value={props.clientName}
+          onChange={(e) => props.setClientName(e.target.value)}
+          placeholder="phone-1"
+          className={inputCls}
+          autoFocus
+        />
+      </FieldL>
+      <FieldL
+        label={t('Server port (UDP)', 'Порт сервера (UDP)')}
+        hint={t('default 51820', 'по умолчанию 51820')}
+      >
+        <input
+          type="number"
+          min={1}
+          max={65535}
+          value={props.serverPort}
+          onChange={(e) => props.setServerPort(e.target.value)}
+          className={inputCls}
+        />
+      </FieldL>
+      <div className="grid grid-cols-2 gap-3">
+        <FieldL label={t('DNS 1', 'DNS 1')}>
+          <input
+            type="text"
+            value={props.dns1}
+            onChange={(e) => props.setDns1(e.target.value)}
+            placeholder="1.1.1.1"
+            className={inputCls}
+          />
+        </FieldL>
+        <FieldL label={t('DNS 2', 'DNS 2')}>
+          <input
+            type="text"
+            value={props.dns2}
+            onChange={(e) => props.setDns2(e.target.value)}
+            placeholder="1.0.0.1"
+            className={inputCls}
+          />
+        </FieldL>
+      </div>
+      <FieldL
+        label={t('AllowedIPs', 'AllowedIPs')}
+        hint={t(
+          'what client routes through tunnel — full tunnel by default',
+          'что клиент маршрутизирует в туннель — по умолчанию весь трафик',
+        )}
+      >
+        <input
+          type="text"
+          value={props.allowedIps}
+          onChange={(e) => props.setAllowedIps(e.target.value)}
+          placeholder="0.0.0.0/0,::/0"
+          className={inputCls}
+        />
+      </FieldL>
+    </div>
+  )
+}
+
+
+function ProtocolPick(props: {
+  active: boolean
+  icon: React.ReactNode
+  title: string
+  subtitle: string
+  onClick: () => void
+}) {
+  return (
+    <button
+      type="button"
+      onClick={props.onClick}
+      className={
+        'rounded-lg border px-3 py-2 text-left transition-colors flex items-start gap-2 ' +
+        (props.active
+          ? 'border-brand-500/60 bg-brand-600/10 text-brand-200'
+          : 'border-gray-800 bg-gray-900/40 text-gray-400 hover:border-gray-700 hover:text-gray-200')
+      }
+    >
+      <div className={props.active ? 'text-brand-400 mt-0.5' : 'text-gray-500 mt-0.5'}>
+        {props.icon}
+      </div>
+      <div className="min-w-0">
+        <div className="text-sm font-medium">{props.title}</div>
+        <div className="text-[11px] text-gray-500 mt-0.5">{props.subtitle}</div>
+      </div>
+    </button>
+  )
+}
+
+
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
 function StatusBanner({
   status,
   result,
+  protocol,
   error,
 }: {
   status: string
   result: DeployJobResult | null
+  protocol: ServerDeploymentProtocol
   error: string | null | undefined
 }) {
   const t = useT()
@@ -460,13 +725,28 @@ function StatusBanner({
       <CheckCircle2 className="h-4 w-4 mt-0.5" />
       <div className="min-w-0">
         <div className="font-medium">{t('Install succeeded', 'Установка прошла успешно')}</div>
-        {result?.node_id != null && (
+        {protocol === 'naive' && result?.node_id != null && (
           <div className="text-xs text-emerald-300/80 mt-0.5">
             {t('Node created: ', 'Создана нода: ')}
             <span className="font-mono">#{result.node_id}</span>
             {result.duration_sec ? (
               <span className="text-emerald-300/60"> · {Math.round(result.duration_sec)}s</span>
             ) : null}
+          </div>
+        )}
+        {protocol === 'wireguard' && result?.client_id != null && (
+          <div className="text-xs text-emerald-300/80 mt-0.5">
+            {t('First client added: ', 'Создан первый клиент: ')}
+            <span className="font-mono">#{result.client_id}</span>
+            {result.duration_sec ? (
+              <span className="text-emerald-300/60"> · {Math.round(result.duration_sec)}s</span>
+            ) : null}
+            <div className="text-[11px] text-emerald-300/60 mt-1">
+              {t(
+                'Open the server in Servers → Clients to download conf or export it as a Node.',
+                'Откройте сервер в разделе Серверы → Клиенты, чтобы скачать конфиг или экспортировать как Ноду.',
+              )}
+            </div>
           </div>
         )}
       </div>

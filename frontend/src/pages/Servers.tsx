@@ -571,12 +571,15 @@ function NaiveScriptModal({ mode, onClose }: { mode: ScriptModalMode; onClose: (
   const { data: deployments = [] } = useDeployments(serverIdForFetch)
   const existingNaive = deployments.find((d) => d.protocol === 'naive')
 
-  const [domain, setDomain] = useState(existingNaive?.config.domain ?? '')
-  const [email, setEmail] = useState(existingNaive?.config.email ?? '')
-  const [naiveUser, setNaiveUser] = useState(
-    existingNaive?.config.naive_user ?? 'pitun',
-  )
-  const [naivePass, setNaivePass] = useState(existingNaive?.config.naive_pass ?? '')
+  // Naive-specific config view — the union'd `DeploymentConfig` may also
+  // be a WireGuardDeploymentConfig once we mix protocols, so narrow here.
+  const naiveCfg = (existingNaive?.config ?? {}) as {
+    domain?: string; email?: string; naive_user?: string; naive_pass?: string
+  }
+  const [domain, setDomain] = useState(naiveCfg.domain ?? '')
+  const [email, setEmail] = useState(naiveCfg.email ?? '')
+  const [naiveUser, setNaiveUser] = useState(naiveCfg.naive_user ?? 'pitun')
+  const [naivePass, setNaivePass] = useState(naiveCfg.naive_pass ?? '')
   const [downloading, setDownloading] = useState(false)
   const [error, setError] = useState('')
 
@@ -594,7 +597,7 @@ function NaiveScriptModal({ mode, onClose }: { mode: ScriptModalMode; onClose: (
     // would print on the VPS.
     const finalPass =
       naivePass.trim() ||
-      existingNaive?.config.naive_pass ||
+      naiveCfg.naive_pass ||
       generateRandomPassword()
     return {
       domain: domain.trim(),

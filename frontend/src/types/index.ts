@@ -586,7 +586,7 @@ export interface ServerTestAllResult {
 // Lets the modal pre-fill on re-open and powers "Create node from this
 // deployment".
 
-export type ServerDeploymentProtocol = 'naive'
+export type ServerDeploymentProtocol = 'naive' | 'wireguard'
 
 export type ServerDeploymentStatus = 'configured' | 'deployed' | 'failed'
 
@@ -597,20 +597,91 @@ export interface NaiveDeploymentConfig {
   naive_pass?: string
 }
 
+/** WireGuard server-level state, persisted in `ServerDeployment.config_json`.
+ * Per-peer state lives in `DeploymentClient` rows. */
+export interface WireGuardDeploymentConfig {
+  server_port?: number          // default 51820
+  wg_network_4?: string         // default "10.66.66.0/24"
+  wg_network_6?: string         // default "fd42:42:42::/64"
+  dns_1?: string                // default "1.1.1.1"
+  dns_2?: string                // default "1.0.0.1"
+  allowed_ips?: string          // default "0.0.0.0/0,::/0"
+  // For the deploy request only (not stored on the server-level row):
+  client_name?: string          // first client to create on install
+  server_pub_ip?: string        // autodetected on the VPS if absent
+}
+
+export type DeploymentConfig = NaiveDeploymentConfig | WireGuardDeploymentConfig
+
 export interface ServerDeployment {
   id: number
   server_id: number
   protocol: ServerDeploymentProtocol
-  config: NaiveDeploymentConfig  // shape varies per protocol — naive only for now
+  config: DeploymentConfig
   status: ServerDeploymentStatus
-  last_node_id?: number | null
+  last_node_id?: number | null   // single-tunnel protocols only (naive)
   created_at?: string | null
   updated_at?: string | null
 }
 
 export interface ServerDeploymentUpsert {
   protocol: ServerDeploymentProtocol
-  config: NaiveDeploymentConfig
+  config: DeploymentConfig
+}
+
+
+// ── Multi-client protocols (WireGuard, since v1.3.0-beta.4) ─────────────────
+//
+// A DeploymentClient is one peer config on a server-side WG deployment.
+// Sits between ServerDeployment and Node:
+//   * Server adds peers (via "Add client" UI) → DeploymentClient rows
+//   * Sync re-lists from the server, importing new peers + flagging
+//     server-side-deleted ones as 'orphan'
+//   * "Export to Node" creates a Node from this row's conf, linking
+//     Node.from_deployment_client_id back here.
+
+export type DeploymentClientStatus = 'available' | 'exported' | 'orphan'
+
+/** Public read shape — does NOT include private key or PSK. */
+export interface DeploymentClient {
+  id: number
+  deployment_id: number
+  name: string
+  wg_public_key?: string | null
+  wg_endpoint?: string | null         // "host:port"
+  wg_local_address?: string | null    // "10.66.66.2/24,fd42:...:2/64"
+  wg_mtu: number
+  dns_servers?: string | null         // "1.1.1.1,1.0.0.1"
+  allowed_ips?: string | null         // "0.0.0.0/0,::/0"
+  status: DeploymentClientStatus
+  exported_node_ids: number[]
+  created_at?: string | null
+  last_synced_at?: string | null
+}
+
+export interface DeploymentClientList {
+  clients: DeploymentClient[]
+}
+
+/** Full WG conf with private key — fetched on demand for download / QR. */
+export interface DeploymentClientConf {
+  name: string
+  wg_conf: string
+}
+
+export interface DeploymentClientCreate {
+  name: string
+}
+
+export interface DeploymentClientSyncResult {
+  added: string[]
+  unchanged: string[]
+  orphaned: string[]
+}
+
+export interface ExportClientToNodeRequest {
+  node_name?: string
+  enabled?: boolean
 }
 
 
@@ -638,7 +709,12 @@ export interface DeployJobAccepted {
  * status is `succeeded` and the deploy outcome lives in `result.status`. */
 export interface DeployJobResult {
   deployment_id: number
+  /** Set on single-tunnel deploys (naive). Null on multi-client (WG). */
   node_id: number | null
+  /** Set on multi-client deploys (WG) — the freshly-created
+   * DeploymentClient row's id. Null on single-tunnel (naive). Frontend
+   * uses one or the other to render the post-deploy success affordance. */
+  client_id: number | null
   status: 'deployed' | 'deployed_no_uri' | 'failed'
   exit_code: number
   duration_sec: number

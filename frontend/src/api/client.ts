@@ -19,6 +19,9 @@ import type {
   Server, ServerCreate, ServerUpdate, ServerTestResult, ServerTestAllResult,
   ServerDeployment, ServerDeploymentUpsert, ServerDeploymentProtocol,
   DeployJobAccepted, JobListResponse, JobRead, JobStatus,
+  DeploymentClient, DeploymentClientList, DeploymentClientConf,
+  DeploymentClientCreate, DeploymentClientSyncResult,
+  ExportClientToNodeRequest,
 } from '@/types'
 
 const BASE = import.meta.env.VITE_API_BASE_URL || '/api'
@@ -440,6 +443,45 @@ export const serversApi = {
     body: { protocol: ServerDeploymentProtocol; config: Record<string, unknown> },
   ) =>
     http.post<DeployJobAccepted>(`/servers/${serverId}/deploy`, body).then(r => r.data),
+
+  // ── WireGuard server-side clients (since v1.3.0-beta.4) ──────────────────
+  // CRUD over the multi-client peer layer. All endpoints scoped to one
+  // (server, protocol=wireguard) deployment; sync reconciles against
+  // the server's actual peer list.
+
+  listClients: (serverId: number) =>
+    http.get<DeploymentClientList>(
+      `/servers/${serverId}/deployments/wireguard/clients`,
+    ).then(r => r.data),
+
+  addClient: (serverId: number, body: DeploymentClientCreate) =>
+    http.post<DeploymentClient>(
+      `/servers/${serverId}/deployments/wireguard/clients`,
+      body,
+    ).then(r => r.data),
+
+  removeClient: (serverId: number, name: string) =>
+    http.delete(
+      `/servers/${serverId}/deployments/wireguard/clients/${encodeURIComponent(name)}`,
+    ),
+
+  syncClients: (serverId: number) =>
+    http.post<DeploymentClientSyncResult>(
+      `/servers/${serverId}/deployments/wireguard/clients/sync`,
+    ).then(r => r.data),
+
+  getClientConf: (serverId: number, name: string) =>
+    http.get<DeploymentClientConf>(
+      `/servers/${serverId}/deployments/wireguard/clients/${encodeURIComponent(name)}/conf`,
+    ).then(r => r.data),
+
+  exportClientToNode: (
+    serverId: number, name: string, body: ExportClientToNodeRequest = {},
+  ) =>
+    http.post<Node>(
+      `/servers/${serverId}/deployments/wireguard/clients/${encodeURIComponent(name)}/export-node`,
+      body,
+    ).then(r => r.data),
 
   // JSON backup. `includeSecrets=false` (default) strips passwords and
   // private keys — safer to share or commit accidentally. With
