@@ -138,6 +138,26 @@ class TestDeployValidation:
         assert resp.status_code == 400
         assert "domain" in resp.json()["detail"].lower()
 
+    def test_uninstall_unknown_server_returns_404(
+        self, client, admin_user, auth_headers, reset_job_manager
+    ):
+        resp = client.post(
+            "/api/servers/99999/uninstall/naive",
+            headers=auth_headers,
+        )
+        assert resp.status_code == 404
+
+    def test_uninstall_unknown_protocol_returns_400(
+        self, client, admin_user, auth_headers, server, reset_job_manager
+    ):
+        resp = client.post(
+            f"/api/servers/{server.id}/uninstall/shadowsocks",
+            headers=auth_headers,
+        )
+        assert resp.status_code == 400
+        assert "shadowsocks" in resp.json()["detail"].lower() or \
+               "expected" in resp.json()["detail"].lower()
+
     def test_naive_missing_email_returns_400(
         self, client, admin_user, auth_headers, server, reset_job_manager
     ):

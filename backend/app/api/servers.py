@@ -549,6 +549,161 @@ async def deploy_to_server(
     )
 
 
+@router.post("/{server_id:int}/uninstall/{protocol}", response_model=DeployJobAccepted, status_code=202)
+async def uninstall_server(
+    server_id: int,
+    protocol: str,
+    session: AsyncSession = Depends(get_session),
+):
+    """Wipe the server-side state for `protocol` on `server_id` over
+    SSH (since v1.3.0-beta.6).
+
+    Symmetric to `POST /servers/{id}/deploy` — same JobManager + WS
+    streaming infrastructure, same per-(server,protocol) slot lock,
+    same 202 + job_id contract. The runner uploads
+    `scripts/uninstall-<protocol>-server.sh` via SFTP and runs it
+    with `YES=1` so the interactive confirm prompt is auto-accepted.
+
+    On success, the matching `ServerDeployment` row is deleted (the
+    install-side state is gone, the PiTun-side metadata becomes
+    stale → drop it). For WG, all `DeploymentClient` rows for the
+    deployment cascade-delete via the FK; any `Node`s exported from
+    those clients are kept but flagged `client_orphan=True` (same
+    semantics as the explicit "Remove client" flow).
+
+    Conflict semantics: same slot-lock as deploy — running an
+    uninstall while a deploy is in flight (or vice-versa) on the
+    same `(server, protocol)` returns 409.
+    """
+    from app.core.deploy import load_uninstall_script
+    from app.core.jobs import job_manager, SlotBusy
+    from app.models import DeploymentClient, Node, ServerDeployment
+
+    server = await _get_server_or_404(server_id, session)
+
+    # Same snapshot trick as deploy — request session is closed once
+    # FastAPI returns 202; the runner needs a clean copy of the
+    # creds + identifiers.
+    srv_id = server.id
+    srv_name = server.name
+    srv_host = server.host
+    srv_port = server.port
+    srv_user = server.user
+    srv_auth_type = server.auth_type
+    srv_password = server.password
+    srv_private_key = server.private_key
+    srv_passphrase = server.passphrase
+
+    # Pre-flight: verify protocol + script exists. Sync 400 / 500
+    # before spawning a job.
+    try:
+        script_content = load_uninstall_script(protocol)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except FileNotFoundError as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                f"Uninstall script for protocol={protocol!r} is missing "
+                f"from this PiTun install: {exc}. Check `scripts/`."
+            ),
+        )
+
+    async def runner(_job_id: str, on_line):
+        # Fresh session for the runner's own DB writes (same pattern
+        # as deploy). The outer request session is gone by the time
+        # this awaits.
+        from app.core.ssh import exec_remote_script_streaming
+
+        result = await exec_remote_script_streaming(
+            host=srv_host,
+            port=srv_port,
+            username=srv_user,
+            password=srv_password if srv_auth_type == "password" else None,
+            private_key=srv_private_key if srv_auth_type == "key" else None,
+            passphrase=srv_passphrase if srv_auth_type == "key" else None,
+            script_content=script_content,
+            env={"YES": "1"},  # non-interactive: skip confirm prompt
+            timeout=300.0,     # 5 min hard cap; uninstall is fast
+            on_line=on_line,
+        )
+
+        # Whether the script's exit code says "ok" or not, drop the
+        # PiTun-side ServerDeployment row when the script reported
+        # final-state cleanup. The script is idempotent — re-runs on
+        # already-clean systems also exit 0. Keep the deploy row only
+        # if the SSH invocation itself failed (so the user can retry
+        # without losing config).
+        deployment_id_for_log: Optional[int] = None
+        if result.ok:
+            async with AsyncSession(get_async_engine()) as runner_session:
+                dep = (await runner_session.exec(
+                    select(ServerDeployment)
+                    .where(ServerDeployment.server_id == srv_id)
+                    .where(ServerDeployment.protocol == protocol)
+                )).first()
+                if dep is not None:
+                    deployment_id_for_log = dep.id
+                    # WG: orphan exported Nodes (`client_orphan=True`)
+                    # before deleting the DC rows + the deployment.
+                    # Mirrors `api/server_clients.remove_client`.
+                    if protocol == "wireguard":
+                        dcs = (await runner_session.exec(
+                            select(DeploymentClient)
+                            .where(DeploymentClient.deployment_id == dep.id)
+                        )).all()
+                        dc_ids = [dc.id for dc in dcs if dc.id is not None]
+                        if dc_ids:
+                            orphan_nodes = (await runner_session.exec(
+                                select(Node).where(
+                                    Node.from_deployment_client_id.in_(dc_ids)  # type: ignore[attr-defined]
+                                )
+                            )).all()
+                            for n in orphan_nodes:
+                                n.client_orphan = True
+                                runner_session.add(n)
+                    # FK on DeploymentClient cascades on deployment
+                    # delete (migration 012). Naive's last_node_id
+                    # back-reference doesn't cascade — the Node row
+                    # stays, just the deployment row goes.
+                    await runner_session.delete(dep)
+                    await runner_session.commit()
+                    await on_line(
+                        "stdout",
+                        f"[pitun] Removed ServerDeployment row #{deployment_id_for_log}.",
+                    )
+
+        return {
+            "deployment_id": deployment_id_for_log,
+            "node_id": None,
+            "client_id": None,
+            "status": "uninstalled" if result.ok else "failed",
+            "exit_code": result.exit_code,
+            "duration_sec": result.duration_sec,
+            "parsed_uri": None,
+            "error": result.error,
+            "connect_latency_ms": result.connect_latency_ms,
+        }
+
+    try:
+        job_id = await job_manager.start_deploy(
+            server_id=srv_id,
+            server_name=srv_name,
+            protocol=protocol,
+            config={"action": "uninstall"},
+            runner=runner,
+            kind="uninstall",
+        )
+    except SlotBusy as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+
+    return DeployJobAccepted(
+        job_id=job_id,
+        server_id=srv_id,
+        protocol=protocol,
+    )
+
+
 @router.post("/test-all", response_model=ServerTestAllResult)
 async def test_all_servers(session: AsyncSession = Depends(get_session)):
     """Run the SSH probe against every server in parallel.

@@ -8,7 +8,7 @@ import {
   HelpCircle, FileCode2, Terminal,
   Sparkles, Link2,
   FileDown, FileUp,
-  Rocket, ListChecks, Users,
+  Rocket, ListChecks, Users, Trash,
 } from 'lucide-react'
 
 import { serversApi, scriptsApi } from '@/api/client'
@@ -18,6 +18,7 @@ import { useConfirm } from '@/components/ConfirmModal'
 import { DeployModal } from '@/components/DeployModal'
 import { ManageClientsModal } from '@/components/ManageClientsModal'
 import { TemplatePicker } from '@/components/TemplatePicker'
+import { UninstallModal } from '@/components/UninstallModal'
 import {
   useServers,
   useCreateServer,
@@ -70,6 +71,13 @@ export function Servers() {
   // Manage WireGuard clients (since v1.3.0-beta.4) — only available on
   // servers that have a WG ServerDeployment row.
   const [clientsTarget, setClientsTarget] = useState<Server | null>(null)
+  // Uninstall modal (since v1.3.0-beta.6) — wipes server-side state
+  // for one protocol. Tracks both target server AND protocol because
+  // a server can have multiple deployments and the user must be
+  // explicit about which one to nuke.
+  const [uninstallTarget, setUninstallTarget] = useState<{
+    server: Server; protocol: ServerDeploymentProtocol
+  } | null>(null)
 
   const openAdd = () => {
     setEditing(null)
@@ -218,6 +226,7 @@ export function Servers() {
                   onShowScript={() => setScriptModal({ kind: 'server', server: s })}
                   onDeploy={() => setDeployTarget(s)}
                   onManageClients={() => setClientsTarget(s)}
+                  onUninstall={(protocol) => setUninstallTarget({ server: s, protocol })}
                 />
               ))}
             </tbody>
@@ -251,6 +260,21 @@ export function Servers() {
         <ManageClientsModal
           server={clientsTarget}
           onClose={() => setClientsTarget(null)}
+        />
+      )}
+
+      {uninstallTarget && (
+        <UninstallModal
+          server={uninstallTarget.server}
+          protocol={uninstallTarget.protocol}
+          onClose={() => setUninstallTarget(null)}
+          onRedeploy={() => {
+            // After successful uninstall, jump straight into deploy
+            // for the same server — typical "wipe → reinstall fresh"
+            // flow during template / config testing.
+            setDeployTarget(uninstallTarget.server)
+            setUninstallTarget(null)
+          }}
         />
       )}
     </div>
@@ -366,6 +390,9 @@ interface RowProps {
   onShowScript: () => void
   onDeploy: () => void
   onManageClients: () => void
+  /** Open the uninstall modal for the chosen protocol. Only invoked
+   * when at least one deployment exists. */
+  onUninstall: (protocol: ServerDeploymentProtocol) => void
 }
 
 // onManageClients is wired through ServerRow → WireGuardBadge so the
@@ -373,6 +400,7 @@ interface RowProps {
 // keeping the icon column tidy.
 function ServerRow({
   server, testing, onTest, onEdit, onDelete, onShowScript, onDeploy, onManageClients,
+  onUninstall,
 }: RowProps) {
   const t = useT()
   const lastCheck = server.last_check
@@ -457,6 +485,31 @@ function ServerRow({
               onClick={onManageClients}
               title={t('Manage WireGuard clients', 'Управление клиентами WireGuard')}
               icon={Users}
+            />
+          )}
+          {/* Per-protocol "Wipe" buttons (since v1.3.0-beta.6) — one
+              icon per ServerDeployment that exists. Distinct from the
+              row-level Delete (Trash2) below: that drops the Server
+              record from PiTun's DB; this one runs an SSH-driven
+              uninstall script that wipes the actual VPS state.
+              Hidden entirely when no deployment is set up so the
+              icon strip stays compact for fresh servers. */}
+          {naive && (
+            <IconBtn
+              onClick={() => onUninstall('naive')}
+              title={t('Wipe NaiveProxy from VPS', 'Удалить NaiveProxy с VPS')}
+              icon={Trash}
+              danger
+              disabled={server.status === 'offline'}
+            />
+          )}
+          {wireguard && (
+            <IconBtn
+              onClick={() => onUninstall('wireguard')}
+              title={t('Wipe WireGuard from VPS', 'Удалить WireGuard с VPS')}
+              icon={Trash}
+              danger
+              disabled={server.status === 'offline'}
             />
           )}
           <IconBtn

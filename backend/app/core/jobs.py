@@ -243,8 +243,9 @@ class JobManager:
         protocol: str,
         config: dict,
         runner: Callable[[str, Callable[[str, str], Awaitable[None]]], Awaitable[dict]],
+        kind: str = "deploy",
     ) -> str:
-        """Spawn a deploy job. Returns the new job_id (uuid hex).
+        """Spawn a deploy / uninstall / similar job. Returns job_id.
 
         `runner` is a coroutine that does the actual SSH work; it
         accepts the new job_id and an `on_line(kind, line)` callback,
@@ -253,13 +254,19 @@ class JobManager:
         runner that wraps `core.ssh.exec_remote_script_streaming`
         + URI parse + Node creation + ServerDeployment upsert.
 
+        `kind` is stored verbatim on the Job row (for the
+        Server-Tasks page filter chip) and folded into the slot
+        key so a deploy and an uninstall on the same
+        (server, protocol) can't run simultaneously — the on-VPS
+        state would race in unpredictable ways.
+
         Raises `SlotBusy` if `(server_id, protocol)` already has a
-        running deploy. Caller maps to HTTP 409.
+        running job (deploy or uninstall). Caller maps to HTTP 409.
         """
         slot = (server_id, protocol)
         if self._slot_busy.get(slot):
             raise SlotBusy(
-                f"Deploy already running on server_id={server_id} protocol={protocol!r}"
+                f"{kind.capitalize()} already running on server_id={server_id} protocol={protocol!r}"
             )
 
         job_id = secrets.token_hex(16)  # 32 hex chars
@@ -271,7 +278,7 @@ class JobManager:
         async with AsyncSession(get_async_engine()) as session:
             session.add(Job(
                 id=job_id,
-                kind="deploy",
+                kind=kind,
                 target_id=server_id,
                 target_name=server_name,
                 protocol=protocol,

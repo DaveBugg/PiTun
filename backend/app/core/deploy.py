@@ -40,6 +40,16 @@ _SCRIPT_PATH_BY_PROTOCOL: dict[str, str] = {
     "wireguard": "scripts/setup-wireguard-server.sh",
 }
 
+# Symmetric uninstall scripts — wipe the server-side state the
+# install scripts above set up. Used by `POST /servers/{id}/uninstall/
+# {protocol}` for the "I want to redeploy from scratch on this VPS"
+# flow. The scripts are idempotent so re-running them on an already-
+# clean system is a safe no-op.
+_UNINSTALL_SCRIPT_PATH_BY_PROTOCOL: dict[str, str] = {
+    "naive": "scripts/uninstall-naive-server.sh",
+    "wireguard": "scripts/uninstall-wireguard-server.sh",
+}
+
 # URI scheme prefix per protocol — used both for the regex anchor below
 # and for response-shape sanity checks.
 _URI_SCHEME_BY_PROTOCOL: dict[str, str] = {
@@ -107,6 +117,22 @@ def load_script(protocol: str) -> str:
     script_path = _repo_root() / _SCRIPT_PATH_BY_PROTOCOL[protocol]
     if not script_path.exists():
         raise FileNotFoundError(f"install script not found at {script_path}")
+    return script_path.read_text(encoding="utf-8")
+
+
+def load_uninstall_script(protocol: str) -> str:
+    """Read the `uninstall-<protocol>-server.sh` script. Symmetric
+    to `load_script` but for the wipe path. Same SFTP-upload + env-
+    parametrise flow; the env we ship is just `YES=1` to skip the
+    interactive confirm prompt."""
+    if protocol not in _UNINSTALL_SCRIPT_PATH_BY_PROTOCOL:
+        raise ValueError(
+            f"Unsupported protocol {protocol!r}; expected one of "
+            f"{tuple(_UNINSTALL_SCRIPT_PATH_BY_PROTOCOL.keys())}"
+        )
+    script_path = _repo_root() / _UNINSTALL_SCRIPT_PATH_BY_PROTOCOL[protocol]
+    if not script_path.exists():
+        raise FileNotFoundError(f"uninstall script not found at {script_path}")
     return script_path.read_text(encoding="utf-8")
 
 
