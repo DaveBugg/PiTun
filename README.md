@@ -615,6 +615,12 @@ binary still has a valid ELF header (so `file` reports it as a
 plain executable), but executing instructions land on garbage
 addresses → segfault.
 
+> **RPi 4 / 5 with a USB3-connected SSD?** The most common cause
+> is the **UAS** USB-storage protocol corrupting bytes on heavy
+> writes — not actual disk damage. Skip directly to
+> [RPi 4 / 5 with USB-SATA / USB-NVMe SSD: disable UAS](#rpi-4--5-with-usb-sata--usb-nvme-ssd-disable-uas)
+> for the one-time kernel-cmdline fix.
+
 **Auto-detection.** Since v1.3.0-beta.5, `install.sh` re-runs
 `docker load` up to 3 times and verifies the bundled xray's
 sha256 against a pinned digest after each attempt. If all three
@@ -671,6 +677,67 @@ instead of leaving you with a non-bootable stack.
    machine and swap the SD card / SSD before re-installing.
    RPi 4 has no ECC RAM and SD cards are notoriously prone to
    silent bit-rot; an M.2 SSD via USB3 is much more reliable.
+
+### RPi 4 / 5 with USB-SATA / USB-NVMe SSD: disable UAS
+
+**Who this affects.** Raspberry Pi 4 / 5 owners running root from an
+SSD (or plain HDD) connected via a USB3 → SATA / NVMe adapter — i.e.
+*not* SD card, *not* PCIe-direct NVMe HAT. Common culprits are
+ASMedia bridges (`174c:1051`, `174c:1153`, `174c:1156`, `174c:55aa`)
+and JMicron (`152d:0578`, `152d:1561`, `152d:583*`). Check yours:
+
+```bash
+lsusb | grep -i -E 'asmedia|jmicron|realtek'
+lsusb -t   # look for "Driver=uas" — that's the trouble signal
+```
+
+**Why it breaks `install.sh`.** Most cheap USB-SATA bridges on Linux
+default to **UAS** (USB Attached SCSI) for speed, but several bridge
++ Pi-firmware combinations silently flip bytes during heavy single-
+stream writes — exactly the workload of `docker load < pitun-backend-
+*.tar.gz` (90 MB+). The result: bytes inside the bundled `xray`
+binary get corrupted on disk, the binary segfaults on first use,
+and the dashboard greets you with **"xray validation failed: (empty
+stderr)"**. SMART says the SSD is fine; the bridge / driver is the
+culprit. Forcing the slower **BOT** (Bulk-Only Transport) protocol
+trades ~20 % throughput for rock-solid integrity.
+
+**One-time fix (kernel cmdline quirk).** Replace `<VID:PID>` with
+your bridge's IDs from `lsusb`. The example below is for an Argon
+ONE M.2 + ASM1156 (`174c:1156`):
+
+```bash
+# 1. Find your bridge VID:PID
+lsusb -t                          # confirms "Driver=uas"
+lsusb | grep -i -E 'asmedia|jmicron|realtek'
+#   →  Bus 002 Device 002: ID 174c:1156 ASMedia Technology Inc. ...
+VIDPID=174c:1156                  # ← put YOUR VID:PID here
+
+# 2. Backup the current cmdline + insert the quirk
+sudo cp /boot/firmware/cmdline.txt /boot/firmware/cmdline.txt.bak
+sudo sed -i "1s|^|usb-storage.quirks=${VIDPID}:u |" /boot/firmware/cmdline.txt
+cat /boot/firmware/cmdline.txt    # verify
+
+# 3. Reboot
+sudo reboot
+
+# 4. After reboot — verify the driver flipped to usb-storage (not uas)
+lsusb -t                          # expect "Driver=usb-storage"
+sudo dmesg | grep -i 'uas is ignored'
+#   →  usb 2-2: UAS is ignored for this device, using usb-storage instead
+```
+
+After that, re-run `install.sh --version vX.Y.Z` — the new
+load-time sha verification (since v1.3.0-beta.5) will pass on the
+first attempt and any subsequent upgrade will be stable.
+
+**To revert** (if your bridge actually works fine on UAS and you
+want the speed back), restore `/boot/firmware/cmdline.txt.bak` over
+`cmdline.txt` and reboot.
+
+> The quirk only disables UAS for the matching VID:PID; other USB
+> mass-storage devices on the same Pi (USB stick, second drive)
+> are unaffected.
 
 ## Development
 
