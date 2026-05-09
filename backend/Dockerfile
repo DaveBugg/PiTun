@@ -37,6 +37,20 @@ RUN set -eux; \
 # ── 2. base ──────────────────────────────────────────────────────────────────
 FROM ${PYTHON_IMAGE} AS base
 
+# Don't write *.pyc files at runtime. Combined with the explicit `find …
+# -delete` after pip install below, this keeps the final image free of
+# bytecode caches. Why bother:
+#   * Cross-arch builds via QEMU (older release.yml flow) sometimes
+#     wrote *.pyc files that didn't match the runtime architecture's
+#     load alignment, surfacing as `bad marshal data` ImportError on
+#     RPi 4 — observed in v1.3.0-beta.1 / .2 arm64 image. Even with
+#     native runners (since v1.3.0-beta.3) we keep this guard belt-
+#     and-braces, since bind-mounted source on the host can carry
+#     stale .pyc from any earlier image's Python.
+#   * Smaller image (~30-40 MB savings on a slim base).
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     nftables \
@@ -49,7 +63,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /app
 
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# `--no-compile` skips the post-install `compileall` step so pip doesn't
+# generate *.pyc during install. The `find -delete` mop-up catches
+# anything wheels embedded directly (rare but happens). Together with
+# PYTHONDONTWRITEBYTECODE=1 (set above), the resulting image has zero
+# *.pyc files, removing an entire class of bytecode-vs-runtime mismatches.
+RUN pip install --no-cache-dir --no-compile -r requirements.txt && \
+    find /usr/local/lib -name '*.pyc' -delete 2>/dev/null && \
+    find /usr/local/lib -name '__pycache__' -type d -exec rm -rf {} + 2>/dev/null || true
 
 # Bundled xray-core binary. The geoip.dat / geosite.dat databases stay on
 # the host (bind-mounted RW into /usr/local/share/xray) so they remain

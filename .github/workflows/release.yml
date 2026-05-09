@@ -72,26 +72,39 @@ jobs:
 
   # Backend image must be built per-architecture because the Python wheels
   # (uvloop, httptools, watchfiles, etc.) are native binaries.
+  #
+  # Build on NATIVE runners per arch — `ubuntu-24.04-arm` for arm64,
+  # `ubuntu-24.04` for amd64 — instead of cross-building amd64 →
+  # arm64 via QEMU on a single amd64 runner. v1.3.0-beta.1 / .2 went
+  # out cross-built and the resulting arm64 wheel binaries SIGILL'd on
+  # an RPi 4 (Cortex-A72): same uvloop==0.22.1, identical pip freeze,
+  # identical Python 3.11.15, but different .so md5 vs the v1.2.4 build
+  # — `import uvicorn` exited 132 (illegal instruction). Native runners
+  # eliminate the cross-build path entirely.
+  #
+  # GitHub now provides free public ARM runners (announced 2025-01); the
+  # `ubuntu-24.04-arm` label maps to a 4-core Cobalt 100 (Neoverse N2)
+  # runner, which is binary-compatible with RPi 4 / 5.
   backend:
     name: Backend image (${{ matrix.platform }})
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
       matrix:
         include:
           - platform: linux/amd64
             arch: amd64
+            runner: ubuntu-24.04
           - platform: linux/arm64
             arch: arm64
+            runner: ubuntu-24.04-arm
 
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@ce360397dd3f832beb865e1373c09c0e9f86d70a # v4.0.0
-        with:
-          platforms: arm64
-
+      # No QEMU needed any more — runner is native arch. Buildx still
+      # required for the load: true output, but since target == host
+      # platform, no emulation runs under the hood.
       - name: Set up Buildx
         uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4.0.0
 
@@ -136,25 +149,27 @@ jobs:
           path: pitun-backend-*.tar.gz
           retention-days: 14
 
-  # Naive sidecar image — same multi-arch story.
+  # Naive sidecar image — same native-runner story as backend.
+  # naive doesn't have Python wheels (it's a Caddy + naive_forwardproxy
+  # binary), so it's less likely to hit instruction-set issues, but
+  # cross-build via QEMU has been a reliable source of weird subtleties
+  # (file corruption, mtime drift) — keep it consistent with backend.
   naive:
     name: Naive sidecar image (${{ matrix.platform }})
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
       matrix:
         include:
           - platform: linux/amd64
             arch: amd64
+            runner: ubuntu-24.04
           - platform: linux/arm64
             arch: arm64
+            runner: ubuntu-24.04-arm
 
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-
-      - uses: docker/setup-qemu-action@ce360397dd3f832beb865e1373c09c0e9f86d70a # v4.0.0
-        with:
-          platforms: arm64
 
       - uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4.0.0
 

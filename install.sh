@@ -55,13 +55,18 @@
 #                          the host yourself.
 #   --non-interactive      Don't ask any questions; pick safe defaults.
 #                          Required when piping from `curl | bash`.
+#   --ipv6                 Allow IPv6 for downloads. Default is IPv4-only
+#                          since v1.3.0-beta.3 — saw too many devices where
+#                          IPv6 to GitHub silently hangs (Debian 13 RPi,
+#                          some VPS on broken BGP routes). If you have a
+#                          v6-only network, opt in with this flag.
 #   --dry-run              Print every step without executing.
 #   --help                 Show this help.
 #
 # Environment variable equivalents (handy when piping from curl):
 #
 #   PITUN_VERSION, PITUN_DIR, PITUN_BUILD, PITUN_OFFLINE, PITUN_SKIP_HOST_PREP,
-#   PITUN_NON_INTERACTIVE.
+#   PITUN_NON_INTERACTIVE, PITUN_FORCE_IPV6.
 
 set -euo pipefail
 
@@ -122,6 +127,7 @@ while [[ $# -gt 0 ]]; do
         --offline)         OFFLINE_DIR="$2"; shift 2 ;;
         --skip-host-prep)  SKIP_HOST_PREP=1; shift ;;
         --non-interactive) NON_INTERACTIVE=1; shift ;;
+        --ipv6)            PITUN_FORCE_IPV6=1; shift ;;
         --dry-run)         DRY_RUN=1; shift ;;
         --help|-h)         print_help ;;
         *) error "Unknown option: $1 (use --help)" ;;
@@ -144,29 +150,62 @@ DISTRO_ID="unknown"
 
 KERNEL_VER="$(uname -r)"
 
-# IPv6 connectivity probe. Debian 13 (and any glibc with v6-preferring
-# resolver order) tries IPv6 first when DNS returns AAAA. On VPS or
-# corporate networks where IPv6 routes are advertised but TCP
-# connections silently drop, every curl hangs ~30-75s on a v6 attempt
-# before timing out and falling through to v4. Worse, half-pumped
-# responses leave the install in a broken state.
+# ── Kill-switch leftover cleanup (since v1.3.0-beta.3) ──────────────────────
 #
-# Detect once at startup: try a tiny IPv6-only request to api.github.com
-# (the GitHub `/zen` endpoint returns ~30 bytes, no auth needed). If it
-# fails AND IPv4 succeeds, force `-4` on every subsequent curl. The
-# CURL_FORCE_IPV4 var is consumed by the `download()` function and
-# the Docker / Compose curl calls below.
-CURL_FORCE_IPV4=""
-if command -v curl &>/dev/null; then
-    if ! curl -6 --max-time 5 -fsS https://api.github.com/zen -o /dev/null 2>/dev/null; then
-        if curl -4 --max-time 5 -fsS https://api.github.com/zen -o /dev/null 2>/dev/null; then
-            warn "IPv6 to GitHub is broken (DNS returns AAAA but TCP fails) — forcing IPv4 (--ipv4) for all downloads."
-            CURL_FORCE_IPV4="-4"
-        fi
-        # If both v6 AND v4 fail, we don't set the flag — let the
-        # actual download attempts surface the real error so the
-        # admin sees it instead of a misleading "IPv6 broken" warning.
-    fi
+# When PiTun is running with kill_switch=true, it installs an `inet pitun`
+# nftables table that TPROXYs all non-bypass traffic to xray (and a
+# matching `ip rule fwmark 0x1 lookup 100` policy route to deliver
+# returned packets via lo). If the backend dies (crash, OOM, kernel
+# panic, manual `docker compose down`) those rules stay in place,
+# silently dropping every outbound packet to the internet because
+# nothing is listening on 127.0.0.1:7893 anymore.
+#
+# That breaks install.sh on a fresh boot: even `curl -fsSL` to
+# api.github.com hangs because the kernel marks every TCP packet and
+# routes it into a dead loop. We've hit this twice on 1.3 and 10.2.
+#
+# Strategy: before doing ANY network work, sweep these leftover bits
+# out of the way. Backend will reinstall them at startup if it needs
+# kill_switch active.
+#
+# We only flush the `inet pitun` table (our own) — never touch the
+# `ip nat`/`ip filter` tables Docker manages.
+if command -v nft &>/dev/null && nft list table inet pitun &>/dev/null; then
+    warn "Detected leftover 'inet pitun' nftables table — flushing before install."
+    warn "  (kill-switch from a previous run was blocking outbound traffic)"
+    nft delete table inet pitun 2>/dev/null || true
+fi
+
+# Drop any `from all fwmark 0x1 lookup 100` policy-routing rules. These
+# survive `nft flush` because they live in the kernel's routing-policy
+# database, not nftables. Loop because there can be multiple in pathological
+# cases (re-applied without cleanup across upgrades).
+while ip rule show 2>/dev/null | grep -q 'fwmark 0x1 lookup 100'; do
+    ip rule del fwmark 0x1 lookup 100 2>/dev/null || break
+done
+
+# Flush table 100 too — it usually only contains `local default dev lo
+# scope host`, but the same applies as above.
+if ip route show table 100 2>/dev/null | grep -q .; then
+    ip route flush table 100 2>/dev/null || true
+fi
+
+# IPv6 / IPv4 connectivity policy. Historically we tried to be clever
+# (small IPv6 probe → if OK leave default; if broken force -4). That
+# auto-detect is fragile: a tiny `/zen` request can succeed via IPv6
+# while a 30 KB release-metadata request hangs (PMTU / partial-route
+# / BGP issues). We've burned hours on this twice. The fix:
+#   * Default behaviour now is to FORCE IPv4 (`-4`) for every curl —
+#     it's the reliable path on every device we've ever installed on.
+#   * Override with `--ipv6` flag or `PITUN_FORCE_IPV6=1` env var if you
+#     genuinely have a v6-only network and want to opt out.
+#
+# CURL_FORCE_IPV4 is consumed by the `download()` function and the
+# probe / API calls below.
+CURL_FORCE_IPV4="-4"
+if [[ "${PITUN_FORCE_IPV6:-0}" == "1" ]]; then
+    CURL_FORCE_IPV4=""
+    warn "PITUN_FORCE_IPV6=1 — letting curl pick IPv6 first (default behaviour)."
 fi
 
 # Detect mode: first-install vs upgrade. The signal is the existence
