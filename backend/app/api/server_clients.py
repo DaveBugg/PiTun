@@ -503,7 +503,7 @@ async def get_client_conf(
 # ── POST /{name}/export-node — create Node from this client ──────────────────
 
 
-@router.post("/{name}/export-node", response_model=NodeRead, status_code=201)
+@router.post("/{name}/export-node", response_model=NodeRead)
 async def export_to_node(
     server_id: int, name: str,
     body: ExportClientToNodeRequest,
@@ -515,10 +515,13 @@ async def export_to_node(
     server, and so we can flag `client_orphan` if the underlying
     DeploymentClient ever gets deleted on the server.
 
-    Multiple Nodes from the same client are allowed (the same conf
-    is re-imported into a fresh PiTun instance, etc.) — duplicate
-    detection at the (protocol+address+port+uuid) level happens in
-    the import-json endpoint, not here.
+    **Idempotent by default** — clicking "Export to Node" twice on
+    the same client returns the *existing* Node (HTTP 200) instead of
+    creating a duplicate. Set `body.force = true` to force a fresh
+    Node regardless (intentional re-import to a second PiTun
+    instance, chain-node setup, etc. — caller takes responsibility
+    for the duplicate). The 201 status code is kept only on the
+    create-fresh path so frontends can distinguish.
     """
     _server, dep = await _resolve_deployment(server_id, session)
 
@@ -540,6 +543,22 @@ async def export_to_node(
             ),
         )
 
+    # Idempotency check — if a Node already points back at this DC and
+    # the caller didn't explicitly ask for a duplicate, return it.
+    if not body.force and dc.id is not None:
+        existing = (await session.exec(
+            select(Node).where(Node.from_deployment_client_id == dc.id)
+        )).first()
+        if existing is not None:
+            # Optionally apply enabled-flag change without creating a
+            # new row — handy for "re-export to enable" flow.
+            if body.enabled is not None and existing.enabled != body.enabled:
+                existing.enabled = body.enabled
+                session.add(existing)
+                await session.commit()
+                await session.refresh(existing)
+            return existing
+
     node_name = body.node_name or dc.name
     address, port = (dc.wg_endpoint or ":").split(":", 1)
     try:
@@ -549,7 +568,7 @@ async def export_to_node(
 
     node = Node(
         name=node_name,
-        enabled=body.enabled,
+        enabled=(body.enabled if body.enabled is not None else True),
         protocol="wireguard",
         address=address,
         port=port_int,
@@ -571,7 +590,6 @@ async def export_to_node(
     )
     session.add(node)
     await session.flush()
-    new_node_id = node.id
 
     # Flip the DC status to 'exported' (idempotent — repeated exports
     # don't downgrade it). last_synced_at unchanged.

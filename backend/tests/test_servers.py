@@ -421,9 +421,11 @@ class TestServerDeployments:
     def test_unknown_protocol_rejected(
         self, client, admin_user, auth_headers, sample_server
     ):
+        # `wireguard` was added to the protocol whitelist in beta.4 — use
+        # a placeholder name for the negative test instead.
         resp = client.put(
-            f"/api/servers/{sample_server.id}/deployments/wireguard",
-            json={"protocol": "wireguard", "config": {}},
+            f"/api/servers/{sample_server.id}/deployments/shadowsocks",
+            json={"protocol": "shadowsocks", "config": {}},
             headers=auth_headers,
         )
         assert resp.status_code == 422
@@ -498,7 +500,10 @@ class TestCreateNodeFromDeployment:
                 f"/api/servers/{sample_server.id}/deployments/naive/create-node",
                 headers=auth_headers,
             )
-        assert resp.status_code == 201, resp.text
+        # 200 since the endpoint is now idempotent (was 201 prior to
+        # the v1.3.0-beta.5 fix); both first-create and existing-return
+        # paths use 200 — the response_model + body identify the row.
+        assert resp.status_code == 200, resp.text
         node = resp.json()
         assert node["protocol"] == "naive"
         assert node["address"] == "proxy.example.com"  # took domain, not server.host
@@ -515,6 +520,19 @@ class TestCreateNodeFromDeployment:
         ).json()
         assert deps[0]["status"] == "deployed"
         assert deps[0]["last_node_id"] == node["id"]
+
+        # Idempotency — a second POST returns the SAME node row, not a duplicate.
+        with (
+            patch("app.api.nodes._ensure_naive_port", new=AsyncMock(return_value=None)),
+            patch("app.api.nodes._sync_naive_sidecar", new=AsyncMock(return_value=None)),
+            patch("app.api.nodes._refresh_naive_tproxy_bypass", new=AsyncMock(return_value=None)),
+        ):
+            resp2 = client.post(
+                f"/api/servers/{sample_server.id}/deployments/naive/create-node",
+                headers=auth_headers,
+            )
+        assert resp2.status_code == 200
+        assert resp2.json()["id"] == node["id"]
 
     def test_create_node_404_no_deployment(
         self, client, admin_user, auth_headers, sample_server
@@ -544,7 +562,7 @@ class TestCreateNodeFromDeployment:
                 f"/api/servers/{sample_server.id}/deployments/naive/create-node",
                 headers=auth_headers,
             )
-        assert resp.status_code == 201
+        assert resp.status_code == 200
         assert resp.json()["address"] == sample_server.host
 
 

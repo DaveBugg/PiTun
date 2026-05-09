@@ -690,6 +690,10 @@ export interface DeploymentClientSyncResult {
 export interface ExportClientToNodeRequest {
   node_name?: string
   enabled?: boolean
+  /** Bypass the idempotency check and create a duplicate Node even if
+   * one already exists for this DeploymentClient. Default false —
+   * repeat-clicking "Export to Node" returns the existing Node. */
+  force?: boolean
 }
 
 

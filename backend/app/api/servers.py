@@ -830,11 +830,11 @@ async def delete_deployment(
 @router.post(
     "/{server_id:int}/deployments/{protocol}/create-node",
     response_model=NodeRead,
-    status_code=201,
 )
 async def create_node_from_deployment(
     server_id: int,
     protocol: str,
+    force: bool = False,
     session: AsyncSession = Depends(get_session),
 ):
     """Instantiate a Node entry from a saved deployment plan.
@@ -848,6 +848,12 @@ async def create_node_from_deployment(
     This is the "I ran the script on the VPS, now turn this into a real
     node" button. Doesn't talk to the VPS at all — purely a database
     convenience built around values the user already typed.
+
+    **Idempotent by default** — if `deployment.last_node_id` already
+    points at a live Node row, that one is returned instead of
+    creating a duplicate. Pass `?force=true` to bypass the check
+    (intentional re-creation, e.g. after the user manually deleted
+    the prior Node and wants the link rebuilt).
     """
     server = await _get_server_or_404(server_id, session)
     deployment = (
@@ -859,6 +865,15 @@ async def create_node_from_deployment(
     ).first()
     if not deployment:
         raise HTTPException(status_code=404, detail="Deployment not found")
+
+    # Idempotency — if we've already created a Node from this deployment
+    # and that Node is still around, just return it. Avoids the previous
+    # bug where double-clicking the "Create node" button silently
+    # produced duplicate Naive sidecars + duplicate Node rows.
+    if not force and deployment.last_node_id is not None:
+        existing = await session.get(Node, deployment.last_node_id)
+        if existing is not None:
+            return existing
 
     config = json.loads(deployment.config_json) if deployment.config_json else {}
 

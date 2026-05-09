@@ -552,10 +552,17 @@ class ExportClientToNodeRequest(BaseModel):
     All fields optional; sensible defaults derived from the client +
     server context if omitted:
       * `node_name` defaults to the client name
-      * `enabled` defaults to true
+      * `enabled` left as None on the existing-Node path (keeps the
+        previously-saved value) and treated as `True` when creating
+        a fresh Node
+      * `force` defaults to False — repeated exports of the same
+        client return the *existing* Node instead of duplicating;
+        set to True to intentionally create another copy (chain
+        nodes, multi-PiTun import scenarios)
     """
     node_name: Optional[str] = None
-    enabled: bool = True
+    enabled: Optional[bool] = None
+    force: bool = False
 
 
 # ─── Routing Rules ────────────────────────────────────────────────────────────

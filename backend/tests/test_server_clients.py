@@ -236,6 +236,140 @@ class TestRemoveClient:
         # FK handling; the orphan flag is the contract for the UI badge.
 
 
+class TestExportToNode:
+    def test_export_creates_node_first_time(
+        self, client, auth_headers, server, wg_deployment, session,
+    ):
+        """First export — creates a fresh Node row pointing back at the DC."""
+        dc = DeploymentClient(
+            deployment_id=wg_deployment.id, name="phone-1",
+            wg_public_key="pub", wg_private_key="priv",
+            wg_endpoint="vps.example.com:51820",
+            wg_local_address="10.66.66.2/24",
+            status="available",
+        )
+        session.add(dc)
+        session.commit()
+        session.refresh(dc)
+        dc_id = dc.id
+
+        resp = client.post(
+            f"/api/servers/{server.id}/deployments/wireguard/clients/phone-1/export-node",
+            json={},
+            headers=auth_headers,
+        )
+        assert resp.status_code in (200, 201)
+        body = resp.json()
+        assert body["protocol"] == "wireguard"
+        assert body["from_deployment_client_id"] == dc_id
+        assert body["enabled"] is True
+
+        # DC.status flipped to 'exported'
+        session.expire_all()
+        from sqlmodel import select
+        dc2 = session.exec(
+            select(DeploymentClient).where(DeploymentClient.id == dc_id)
+        ).first()
+        assert dc2.status == "exported"
+
+    def test_export_is_idempotent_by_default(
+        self, client, auth_headers, server, wg_deployment, session,
+    ):
+        """Two clicks on "Export to Node" → only one Node row, second
+        call returns the existing one. Regression guard for the
+        duplicate-Node UI bug surfaced during v1.3.0-beta.5 testing."""
+        dc = DeploymentClient(
+            deployment_id=wg_deployment.id, name="phone-1",
+            wg_public_key="pub", wg_private_key="priv",
+            wg_endpoint="vps.example.com:51820",
+            wg_local_address="10.66.66.2/24",
+            status="available",
+        )
+        session.add(dc)
+        session.commit()
+        session.refresh(dc)
+        dc_id = dc.id
+
+        # First click
+        r1 = client.post(
+            f"/api/servers/{server.id}/deployments/wireguard/clients/phone-1/export-node",
+            json={}, headers=auth_headers,
+        )
+        assert r1.status_code in (200, 201)
+        node_id_1 = r1.json()["id"]
+
+        # Second click — must return the SAME node, not create a new one
+        r2 = client.post(
+            f"/api/servers/{server.id}/deployments/wireguard/clients/phone-1/export-node",
+            json={}, headers=auth_headers,
+        )
+        assert r2.status_code == 200  # not 201 — no new resource created
+        assert r2.json()["id"] == node_id_1
+
+        # DB has exactly ONE Node from this DC
+        session.expire_all()
+        from sqlmodel import select
+        nodes = session.exec(
+            select(Node).where(Node.from_deployment_client_id == dc_id)
+        ).all()
+        assert len(nodes) == 1
+
+    def test_export_with_force_creates_duplicate(
+        self, client, auth_headers, server, wg_deployment, session,
+    ):
+        """force=true bypasses idempotency for intentional re-import
+        scenarios (chain nodes, second PiTun instance)."""
+        dc = DeploymentClient(
+            deployment_id=wg_deployment.id, name="phone-1",
+            wg_public_key="pub", wg_private_key="priv",
+            wg_endpoint="vps.example.com:51820",
+            wg_local_address="10.66.66.2/24",
+            status="available",
+        )
+        session.add(dc)
+        session.commit()
+        session.refresh(dc)
+        dc_id = dc.id
+
+        client.post(
+            f"/api/servers/{server.id}/deployments/wireguard/clients/phone-1/export-node",
+            json={}, headers=auth_headers,
+        )
+        r2 = client.post(
+            f"/api/servers/{server.id}/deployments/wireguard/clients/phone-1/export-node",
+            json={"force": True, "node_name": "phone-1-chain"},
+            headers=auth_headers,
+        )
+        assert r2.status_code in (200, 201)
+
+        session.expire_all()
+        from sqlmodel import select
+        nodes = session.exec(
+            select(Node).where(Node.from_deployment_client_id == dc_id)
+        ).all()
+        assert len(nodes) == 2
+
+    def test_export_refuses_synced_in_client_without_priv_key(
+        self, client, auth_headers, server, wg_deployment, session,
+    ):
+        """Sync-imported clients have no priv key — export must 400 with
+        a clear message instead of producing a useless Node."""
+        session.add(DeploymentClient(
+            deployment_id=wg_deployment.id, name="from-sync",
+            wg_public_key="pub", wg_private_key=None,
+            wg_endpoint="vps.example.com:51820",
+            status="available",
+        ))
+        session.commit()
+
+        resp = client.post(
+            f"/api/servers/{server.id}/deployments/wireguard/clients/from-sync/export-node",
+            json={}, headers=auth_headers,
+        )
+        assert resp.status_code == 400
+        assert "private key" in resp.json()["detail"].lower()
+
+
 class TestSyncClients:
     def test_sync_marks_missing_as_orphan(
         self, client, auth_headers, server, wg_deployment, session,
