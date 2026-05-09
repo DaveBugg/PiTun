@@ -295,6 +295,43 @@ export interface SystemSettings {
   lan_proxy_auth_enabled?: boolean
   lan_proxy_auth_user?: string
   lan_proxy_auth_pass?: string
+}
+
+
+// ── Geo update live progress (since v1.3.0-beta.6) ─────────────────────────
+//
+// Replaces the static "Download queued" toast with a real progress
+// view: per-file stage + bytes counter + per-file error surface. The
+// frontend polls `GET /api/geodata/update/progress` ~2 Hz while a
+// job is active; `useGeoUpdateProgress(active)` flips that on/off.
+
+export type GeoUpdateStage =
+  | 'queued'
+  | 'downloading'
+  | 'verifying'
+  | 'applying'
+  | 'done'
+  | 'failed'
+
+export interface GeoUpdateFileProgress {
+  stage: GeoUpdateStage
+  bytes_downloaded: number
+  bytes_total?: number | null
+  started_at?: number | null
+  finished_at?: number | null
+  error?: string | null
+  source_url?: string | null
+}
+
+export interface GeoUpdateProgress {
+  job_id: string
+  active: boolean
+  started_at?: number | null
+  finished_at?: number | null
+  tag_cache_refreshed: boolean
+  // Keys are 'geoip' | 'geosite' | 'mmdb' depending on what was
+  // requested in this job.
+  files: Record<string, GeoUpdateFileProgress>
   // GeoScheduler
   geo_auto_update?: boolean
   geo_update_interval_days?: number

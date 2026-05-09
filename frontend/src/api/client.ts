@@ -6,7 +6,7 @@ import type {
   BulkRuleCreate, BulkRuleResult,
   Subscription, SubscriptionCreate, SubscriptionUpdate,
   SystemStatus, SystemSettings, SystemVersions, ProxyMode,
-  GeoDataStatus,
+  GeoDataStatus, GeoUpdateProgress,
   DnsRule, DnsRuleCreate, DnsRuleUpdate, DnsSettings, DnsTestResult,
   DnsQueryLog, DnsQueryStats,
   HealthResult, SpeedTestResult,
@@ -256,6 +256,12 @@ export const geodataApi = {
 
   update: (urls?: { geoip_url?: string; geosite_url?: string; mmdb_url?: string; type?: string }) =>
     http.post('/geodata/update', urls ?? {}).then(r => r.data),
+
+  /** Live snapshot of the latest geo-update job. Polled while a
+   * download is in flight; idle response (no job since boot) has
+   * `active=false` and an empty `files` map. */
+  progress: () =>
+    http.get<GeoUpdateProgress>('/geodata/update/progress').then(r => r.data),
 }
 
 // ── DNS ───────────────────────────────────────────────────────────────────────

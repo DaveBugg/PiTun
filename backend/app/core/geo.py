@@ -13,25 +13,53 @@ from app.config import settings
 logger = logging.getLogger(__name__)
 
 
-async def _download_file(url: str, dest: str) -> None:
-    """Stream-download a file with progress logging."""
+async def _download_file(
+    url: str,
+    dest: str,
+    *,
+    progress_name: Optional[str] = None,
+) -> None:
+    """Stream-download a file with progress reporting.
+
+    When `progress_name` is set (e.g. 'geoip' / 'geosite' / 'mmdb'),
+    each chunk pushes (downloaded, total) into the geo_progress
+    singleton so the frontend's poll endpoint can render a live bar.
+    Stage is set to 'downloading' on first chunk and flipped to
+    'verifying' just before the atomic rename. Errors propagate to
+    the caller — `_do_update` in api/geodata.py wraps each download
+    in its own try/except and marks the corresponding file failed.
+    """
+    from app.core import geo_progress
+
     dest_path = Path(dest)
     dest_path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = str(dest_path) + ".tmp"
 
+    if progress_name:
+        geo_progress.set_stage(progress_name, "downloading", source_url=url)
+
     async with httpx.AsyncClient(follow_redirects=True, timeout=120) as client:
         async with client.stream("GET", url) as resp:
             resp.raise_for_status()
-            total = int(resp.headers.get("content-length", 0))
+            cl = resp.headers.get("content-length")
+            total: Optional[int] = int(cl) if cl else None
             downloaded = 0
             with open(tmp_path, "wb") as f:
                 async for chunk in resp.aiter_bytes(chunk_size=65536):
                     f.write(chunk)
                     downloaded += len(chunk)
+                    if progress_name:
+                        # Push every chunk — the state is in-process
+                        # and the poll endpoint just reads the latest
+                        # snapshot, so there's no I/O cost per push.
+                        geo_progress.update_bytes(progress_name, downloaded, total)
                     if total:
                         pct = downloaded * 100 // total
                         if pct % 20 == 0:
                             logger.debug("Download %s: %d%%", dest_path.name, pct)
+
+    if progress_name:
+        geo_progress.set_stage(progress_name, "verifying")
 
     os.replace(tmp_path, dest)
     logger.info("Downloaded %s (%d bytes) to %s", url, downloaded, dest)
@@ -39,17 +67,17 @@ async def _download_file(url: str, dest: str) -> None:
 
 async def update_geoip(url: Optional[str] = None) -> None:
     target_url = url or settings.geoip_url
-    await _download_file(target_url, settings.xray_geoip_path)
+    await _download_file(target_url, settings.xray_geoip_path, progress_name="geoip")
 
 
 async def update_geosite(url: Optional[str] = None) -> None:
     target_url = url or settings.geosite_url
-    await _download_file(target_url, settings.xray_geosite_path)
+    await _download_file(target_url, settings.xray_geosite_path, progress_name="geosite")
 
 
 async def update_mmdb(url: Optional[str] = None) -> None:
     target_url = url or settings.geoip_mmdb_url
-    await _download_file(target_url, settings.geoip_mmdb_path)
+    await _download_file(target_url, settings.geoip_mmdb_path, progress_name="mmdb")
 
 
 def get_geoip_info() -> dict:

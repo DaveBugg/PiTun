@@ -1040,6 +1040,33 @@ class GeoDataUpdateRequest(BaseModel):
     type: Optional[str] = None  # "geoip" | "geosite" | "mmdb" | "all"
 
 
+# Live-progress projection of `core.geo_progress.GeoUpdateState`.
+# Polled by the frontend ~2 Hz while a job is active. `started_at`
+# / `finished_at` are `time.monotonic()` floats in seconds — small
+# integers, easy to render as elapsed-time on the client side
+# (no timezone juggling). `error` is short user-facing text; full
+# stack traces stay in backend logs.
+class GeoUpdateFileProgress(BaseModel):
+    stage: str  # queued | downloading | verifying | applying | done | failed
+    bytes_downloaded: int = 0
+    bytes_total: Optional[int] = None
+    started_at: Optional[float] = None
+    finished_at: Optional[float] = None
+    error: Optional[str] = None
+    source_url: Optional[str] = None
+
+
+class GeoUpdateProgress(BaseModel):
+    """One job's progress snapshot. Empty dict + active=false on
+    first call after backend start (no job has run yet)."""
+    job_id: str
+    active: bool
+    started_at: Optional[float] = None
+    finished_at: Optional[float] = None
+    tag_cache_refreshed: bool = False
+    files: dict[str, GeoUpdateFileProgress] = {}
+
+
 # ─── DNS ──────────────────────────────────────────────────────────────────────
 
 class DNSRuleCreate(BaseModel):

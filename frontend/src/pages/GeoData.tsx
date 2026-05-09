@@ -1,9 +1,13 @@
 import { useState } from 'react'
-import { Download, Globe, RefreshCw, CheckCircle, XCircle, Layers } from 'lucide-react'
+import {
+  Download, Globe, RefreshCw, CheckCircle, XCircle, Layers,
+  AlertTriangle, Loader2,
+} from 'lucide-react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { geodataApi } from '@/api/client'
 import { useSystemSettings, useUpdateSettings } from '@/hooks/useSystem'
 import { GEO_PROFILES, detectActiveProfile, type GeoProfile } from '@/lib/geoProfiles'
+import type { GeoUpdateProgress, GeoUpdateFileProgress } from '@/types'
 
 function formatSize(bytes?: number | null): string {
   if (!bytes) return '—'
@@ -33,6 +37,14 @@ export function GeoData() {
       setTimeout(() => qc.invalidateQueries({ queryKey: ['geodata'] }), 3000)
     },
   })
+
+  // Live progress poll. `useGeoUpdateProgress` polls 2 Hz while
+  // active and stops automatically once `active` flips to false (one
+  // last cycle captures the final state). When idle and never run,
+  // returns the canonical zero-state so the UI can suppress the
+  // progress panel without a separate "has any job ever existed"
+  // signal.
+  const progress = useGeoUpdateProgress()
 
   const handleUpdateAll = () => {
     updateGeo.mutate({
@@ -167,18 +179,23 @@ export function GeoData() {
 
         <button
           onClick={handleUpdateAll}
-          disabled={updateGeo.isPending}
+          disabled={updateGeo.isPending || progress?.active}
           className="flex items-center gap-2 rounded-lg bg-brand-600 px-4 py-2 text-sm font-medium text-white hover:bg-brand-500 disabled:opacity-50 transition-colors"
         >
-          <RefreshCw className={updateGeo.isPending ? 'h-4 w-4 animate-spin' : 'h-4 w-4'} />
-          {updateGeo.isPending ? 'Downloading…' : 'Download All'}
+          <RefreshCw className={progress?.active ? 'h-4 w-4 animate-spin' : 'h-4 w-4'} />
+          {progress?.active ? 'Downloading…' : 'Download All'}
         </button>
 
-        {updateGeo.isSuccess && (
-          <p className="text-xs text-green-400">Download queued in background.</p>
-        )}
         {updateGeo.isError && (
           <p className="text-xs text-red-400">Error: {String(updateGeo.error)}</p>
+        )}
+
+        {/* Live progress — visible from the moment a job is in flight
+            until ~1s after it finishes (so the user sees the green
+            "done" bar before it disappears). Hidden entirely when no
+            job has been run since backend boot. */}
+        {progress && (progress.active || Object.keys(progress.files).length > 0) && (
+          <GeoProgressPanel progress={progress} />
         )}
       </div>
 
@@ -317,6 +334,140 @@ function ProfilePicker({
         <p className="text-[11px] text-yellow-500/80">
           ⚠ Current URLs don't match any registered profile. Quick-Add presets
           fall back to common categories (`category-ru`, `tld-ru`, `cn`, etc.).
+        </p>
+      )}
+    </div>
+  )
+}
+
+
+// ── Live update progress ────────────────────────────────────────────────────
+//
+// `useGeoUpdateProgress` polls `GET /api/geodata/update/progress` at
+// 2 Hz only while a job is in flight, then drops to 0 (manual refetch
+// only) once `active` flips false. This keeps the LAN traffic at
+// idle ≈ zero while still surfacing real progress during a download.
+//
+// We always do one immediate refetch on mount in case a job started
+// from another tab — covers the "user has GeoData open in two
+// windows and clicked Update in one" edge case.
+
+function useGeoUpdateProgress(): GeoUpdateProgress | undefined {
+  const { data } = useQuery({
+    queryKey: ['geodata', 'progress'],
+    queryFn: () => geodataApi.progress(),
+    refetchInterval: (query) => {
+      const last = query.state.data as GeoUpdateProgress | undefined
+      // Poll while active. After finish, do one more cycle (~500ms)
+      // so the UI captures the final 'done' state, then stop.
+      if (last?.active) return 500
+      return false
+    },
+    refetchOnWindowFocus: true,
+  })
+  return data
+}
+
+const FILE_LABELS: Record<string, string> = {
+  geoip: 'geoip.dat',
+  geosite: 'geosite.dat',
+  mmdb: 'GeoLite2-Country.mmdb',
+}
+
+function GeoProgressPanel({ progress }: { progress: GeoUpdateProgress }) {
+  const entries = Object.entries(progress.files)
+  if (entries.length === 0) return null
+
+  const allDone = entries.every(([, f]) => f.stage === 'done')
+  const anyFailed = entries.some(([, f]) => f.stage === 'failed')
+
+  return (
+    <div className="rounded-lg border border-gray-800 bg-gray-950/40 p-4 space-y-3">
+      <div className="flex items-center gap-2 text-xs">
+        {progress.active ? (
+          <>
+            <Loader2 className="h-3.5 w-3.5 animate-spin text-brand-400" />
+            <span className="text-brand-300">Update in progress…</span>
+          </>
+        ) : anyFailed ? (
+          <>
+            <AlertTriangle className="h-3.5 w-3.5 text-red-400" />
+            <span className="text-red-300">Update finished with errors</span>
+          </>
+        ) : allDone ? (
+          <>
+            <CheckCircle className="h-3.5 w-3.5 text-green-400" />
+            <span className="text-green-300">Update complete</span>
+            {progress.tag_cache_refreshed && (
+              <span className="text-[10px] text-gray-500">· tag cache reloaded into xray</span>
+            )}
+          </>
+        ) : null}
+      </div>
+      <div className="space-y-2">
+        {entries.map(([name, file]) => (
+          <FileProgressRow key={name} name={name} file={file} />
+        ))}
+      </div>
+    </div>
+  )
+}
+
+function FileProgressRow({ name, file }: { name: string; file: GeoUpdateFileProgress }) {
+  const label = FILE_LABELS[name] ?? name
+  // Determinate bar when we know `bytes_total`; striped indeterminate
+  // otherwise. `failed` and `done` get terminal colours.
+  const pct = file.bytes_total
+    ? Math.min(100, Math.round((file.bytes_downloaded / file.bytes_total) * 100))
+    : null
+
+  const stageColour = {
+    queued: 'text-gray-500',
+    downloading: 'text-brand-300',
+    verifying: 'text-brand-300',
+    applying: 'text-brand-300',
+    done: 'text-green-400',
+    failed: 'text-red-400',
+  }[file.stage] || 'text-gray-400'
+
+  const barColour = file.stage === 'failed'
+    ? 'bg-red-500/70'
+    : file.stage === 'done'
+      ? 'bg-green-500/80'
+      : 'bg-brand-500/80'
+
+  return (
+    <div>
+      <div className="flex items-center gap-2 text-xs mb-1">
+        <span className="font-mono text-gray-300 w-44 truncate">{label}</span>
+        <span className={`uppercase tracking-wider text-[10px] ${stageColour}`}>
+          {file.stage}
+        </span>
+        <span className="ml-auto font-mono text-[11px] text-gray-500">
+          {formatSize(file.bytes_downloaded)}
+          {file.bytes_total ? ` / ${formatSize(file.bytes_total)}` : ''}
+          {pct !== null ? ` · ${pct}%` : ''}
+        </span>
+      </div>
+      <div className="h-1.5 rounded bg-gray-800 overflow-hidden">
+        {pct !== null ? (
+          <div
+            className={`h-full ${barColour} transition-all duration-300`}
+            style={{ width: `${pct}%` }}
+          />
+        ) : file.stage === 'downloading' ? (
+          // Indeterminate (no Content-Length): striped sliding bar.
+          <div className="h-full w-1/3 bg-brand-500/60 animate-pulse" />
+        ) : null}
+      </div>
+      {file.error && (
+        <p className="mt-1 text-[11px] text-red-400 break-words">
+          {file.error}
+        </p>
+      )}
+      {file.source_url && file.stage === 'failed' && (
+        <p className="mt-0.5 text-[10px] text-gray-600 font-mono break-all">
+          source: {file.source_url}
         </p>
       )}
     </div>
