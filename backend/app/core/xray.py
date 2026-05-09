@@ -227,6 +227,25 @@ async def _auto_restart_if_enabled(*, from_boot: bool = False) -> None:
             if device_mode == "exclude_list":
                 bypass_macs.extend(device_info["exclude_macs"])
 
+            # Collect bypass destinations: explicit "dst_ip + direct" rules
+            # AND auto-bypass for naive sidecar upstreams. Without the
+            # latter, the host-netns naive sidecar's TCP socket to its
+            # remote Caddy gets caught by the tproxy mangle hook and loops
+            # back through xray → sidecar → forever (the sidecar can't
+            # set SO_MARK=255 the way xray's own outbounds do). This used
+            # to live only in `api/system._apply_nftables` — _that_ path
+            # is hit on `POST /system/start`, but the auto-restart-on-
+            # crash path here (and the boot-time auto-start in main.py)
+            # rebuilt the table without these entries, so a backend
+            # restart silently broke naive (the sidecar started fine,
+            # but every CONNECT got RST'd → speedtest "too small (0B)",
+            # actual traffic also failed). Mirror the helper here.
+            from app.api.system import _collect_bypass_dsts, _collect_naive_bypass_dsts
+            bypass_dsts = list(_collect_bypass_dsts(rules))
+            naive_dsts = await _collect_naive_bypass_dsts(session)
+            if naive_dsts:
+                bypass_dsts.extend(naive_dsts)
+
             mode = settings_map.get("mode", "rules")
             if mode == "bypass":
                 await nftables_manager.flush()
@@ -234,6 +253,7 @@ async def _auto_restart_if_enabled(*, from_boot: bool = False) -> None:
                 await nftables_manager.apply_rules(
                     inbound_mode=settings_map.get("inbound_mode", "tproxy"),
                     bypass_macs=bypass_macs,
+                    bypass_dst_cidrs=bypass_dsts,
                     include_macs=device_info["include_macs"] if device_mode == "include_only" else None,
                     device_routing_mode=device_mode,
                     tproxy_tcp=int(settings_map.get("tproxy_port_tcp", "7893")),
