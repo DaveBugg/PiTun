@@ -192,6 +192,17 @@ async def init_default_settings():
         "health_timeout": str(settings.health_timeout),
         "disable_ipv6": "false",
         "dns_over_tcp": "false",
+        # LAN proxy authentication (since v1.3.0-beta.6). Applies to
+        # the explicit SOCKS5 + HTTP inbounds (not TPROXY — that one
+        # is gated by nftables and stays passwordless). When `_enabled`
+        # is "true", xray injects `accounts: [{user, pass}]` on the
+        # matching inbound. Threat model is opportunistic LAN scanners,
+        # not at-rest encryption — credentials are stored plaintext.
+        # If enabled with empty creds, `_apply_nftables` / xray
+        # config-gen refuses to start with a clear error.
+        "lan_proxy_auth_enabled": "false",
+        "lan_proxy_auth_user": "",
+        "lan_proxy_auth_pass": "",
     }
 
     # Race-safe upsert: INSERT OR IGNORE on (key). Avoids the TOCTOU gap

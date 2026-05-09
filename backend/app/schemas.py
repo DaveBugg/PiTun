@@ -941,6 +941,14 @@ class SettingsRead(BaseModel):
     geo_update_window_end: int = 6
     # Display + scheduling timezone (IANA, e.g. "Europe/Moscow"). UTC default.
     timezone: str = "UTC"
+    # LAN proxy auth (since v1.3.0-beta.6) — covers SOCKS5 and HTTP
+    # inbounds. TPROXY stays passwordless (it's transparent + nftables-
+    # gated). One pair of credentials for both inbounds. Plaintext —
+    # see _apply_xray_config in core/config_gen for the threat-model
+    # rationale.
+    lan_proxy_auth_enabled: bool = False
+    lan_proxy_auth_user: str = ""
+    lan_proxy_auth_pass: str = ""
 
 
 class SettingsUpdate(BaseModel):
@@ -1005,6 +1013,10 @@ class SettingsUpdate(BaseModel):
     geo_update_window_end: Optional[int] = None
     # Timezone
     timezone: Optional[str] = None
+    # LAN proxy auth (see SettingsRead docstring)
+    lan_proxy_auth_enabled: Optional[bool] = None
+    lan_proxy_auth_user: Optional[str] = None
+    lan_proxy_auth_pass: Optional[str] = None
 
 
 # ─── GeoData ──────────────────────────────────────────────────────────────────

@@ -2,11 +2,14 @@ import { useState, useRef, useEffect } from 'react'
 import {
   Play, Square, RotateCw,
   ChevronDown, Globe, GitBranch, Slash, Network, ArrowUp, ArrowDown, Circle, RefreshCw,
-  Server, Shield, Database, Cloud,
+  Server, Shield, Database, Cloud, Eye, EyeOff, Lock, Unlock, Save,
 } from 'lucide-react'
 import { clsx } from 'clsx'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { useSystemStatus, useSystemVersions, useStartProxy, useStopProxy, useRestartProxy, useSetMode, useSetActiveNode } from '@/hooks/useSystem'
+import {
+  useSystemStatus, useSystemVersions, useStartProxy, useStopProxy, useRestartProxy,
+  useSetMode, useSetActiveNode, useUpdateSettings,
+} from '@/hooks/useSystem'
 import { useNodes } from '@/hooks/useNodes'
 import { StatusBadge, ModeBadge } from '@/components/StatusBadge'
 import { InfoTip } from '@/components/InfoTip'
@@ -102,6 +105,200 @@ function ServiceStatusTile({ icon: Icon, label, status, value, sub, badge, actio
     </div>
   )
 }
+
+/**
+ * LAN proxy auth controls under the Proxy Endpoints card. One (user,
+ * pass) pair shared by the explicit SOCKS5 + HTTP inbounds; TPROXY
+ * stays passwordless (it's transparent + nftables-gated).
+ *
+ * Threat model is opportunistic LAN scanners — credentials are
+ * stored plaintext on the backend, the eye toggle reveals them on
+ * demand. PATCH /system/settings auto-reloads xray, so toggling
+ * here takes effect within ~1 s without a manual restart.
+ */
+function LanProxyAuthControl({ settings }: { settings: SystemSettings }) {
+  const t = useT()
+  const updateSettings = useUpdateSettings()
+  const [editing, setEditing] = useState(false)
+  const [user, setUser] = useState(settings.lan_proxy_auth_user ?? '')
+  const [pass, setPass] = useState(settings.lan_proxy_auth_pass ?? '')
+  const [reveal, setReveal] = useState(false)
+  const [error, setError] = useState('')
+
+  const isEnabled = !!settings.lan_proxy_auth_enabled
+
+  // Reset local form when underlying settings change (e.g. another
+  // tab updated them, or after a successful save).
+  useEffect(() => {
+    setUser(settings.lan_proxy_auth_user ?? '')
+    setPass(settings.lan_proxy_auth_pass ?? '')
+    setError('')
+  }, [settings.lan_proxy_auth_user, settings.lan_proxy_auth_pass])
+
+  const handleToggle = async () => {
+    setError('')
+    if (!isEnabled) {
+      // Turning auth ON → must have non-empty creds. Open the editor
+      // so the user enters them; the actual enable happens on Save.
+      setEditing(true)
+      return
+    }
+    // Turning auth OFF → instant.
+    try {
+      await updateSettings.mutateAsync({ lan_proxy_auth_enabled: false })
+    } catch (err: unknown) {
+      setError(extractError(err) || 'Failed to disable auth')
+    }
+  }
+
+  const handleSave = async () => {
+    setError('')
+    if (!user.trim() || !pass) {
+      setError(t('Username and password required', 'Имя пользователя и пароль обязательны'))
+      return
+    }
+    try {
+      await updateSettings.mutateAsync({
+        lan_proxy_auth_enabled: true,
+        lan_proxy_auth_user: user.trim(),
+        lan_proxy_auth_pass: pass,
+      })
+      setEditing(false)
+    } catch (err: unknown) {
+      setError(extractError(err) || 'Failed to save credentials')
+    }
+  }
+
+  return (
+    <div className="mt-3 rounded-xl border border-gray-800 bg-gray-900/30 p-3">
+      <div className="flex items-center gap-2 flex-wrap">
+        <button
+          type="button"
+          onClick={handleToggle}
+          disabled={updateSettings.isPending}
+          className={clsx(
+            'inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-xs font-medium transition-colors disabled:opacity-50',
+            isEnabled
+              ? 'bg-emerald-900/40 text-emerald-300 hover:bg-emerald-900/60'
+              : 'bg-gray-800 text-gray-400 hover:bg-gray-700',
+          )}
+          title={t(
+            'Toggle Basic auth on the SOCKS5 + HTTP inbounds (TPROXY stays passwordless)',
+            'Включить/выключить Basic auth на SOCKS5 + HTTP (TPROXY всегда без пароля)',
+          )}
+        >
+          {isEnabled ? <Lock className="h-3.5 w-3.5" /> : <Unlock className="h-3.5 w-3.5" />}
+          {isEnabled
+            ? t('Auth enabled (SOCKS5 + HTTP)', 'Авторизация включена (SOCKS5 + HTTP)')
+            : t('No auth — open to LAN', 'Без авторизации — открыто LAN')}
+        </button>
+        {isEnabled && !editing && (
+          <>
+            <span className="text-xs text-gray-500 font-mono">
+              {settings.lan_proxy_auth_user || '—'}
+            </span>
+            <span className="text-xs text-gray-500 font-mono">
+              {reveal ? (settings.lan_proxy_auth_pass || '—') : '••••••••'}
+            </span>
+            <button
+              type="button"
+              onClick={() => setReveal((v) => !v)}
+              className="rounded p-1 text-gray-500 hover:text-brand-400 hover:bg-gray-800 transition-colors"
+              title={reveal
+                ? t('Hide password', 'Скрыть пароль')
+                : t('Reveal password', 'Показать пароль')}
+            >
+              {reveal ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
+            </button>
+            <button
+              type="button"
+              onClick={() => setEditing(true)}
+              className="ml-auto rounded p-1 text-xs text-gray-500 hover:text-brand-400 hover:bg-gray-800 px-2 py-0.5 transition-colors"
+            >
+              {t('Edit', 'Редактировать')}
+            </button>
+          </>
+        )}
+      </div>
+      {editing && (
+        <div className="mt-3 flex flex-wrap items-center gap-2">
+          <input
+            type="text"
+            value={user}
+            onChange={(e) => setUser(e.target.value)}
+            placeholder={t('username', 'имя пользователя')}
+            className="rounded-lg bg-gray-900 border border-gray-800 px-2.5 py-1.5 text-xs text-gray-100 focus:border-brand-500 focus:outline-none w-44"
+            autoFocus
+          />
+          <div className="flex items-center gap-1">
+            <input
+              type={reveal ? 'text' : 'password'}
+              value={pass}
+              onChange={(e) => setPass(e.target.value)}
+              placeholder={t('password', 'пароль')}
+              className="rounded-lg bg-gray-900 border border-gray-800 px-2.5 py-1.5 text-xs text-gray-100 focus:border-brand-500 focus:outline-none w-48"
+            />
+            <button
+              type="button"
+              onClick={() => setReveal((v) => !v)}
+              className="rounded p-1.5 text-gray-500 hover:text-brand-400 hover:bg-gray-800 transition-colors"
+              title={reveal
+                ? t('Hide', 'Скрыть')
+                : t('Reveal', 'Показать')}
+            >
+              {reveal ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
+            </button>
+          </div>
+          <button
+            type="button"
+            onClick={handleSave}
+            disabled={updateSettings.isPending}
+            className="inline-flex items-center gap-1 rounded-lg bg-brand-600 hover:bg-brand-500 text-white text-xs px-3 py-1.5 disabled:opacity-50 transition-colors"
+          >
+            <Save className="h-3.5 w-3.5" />
+            {updateSettings.isPending
+              ? t('Saving…', 'Сохранение…')
+              : t('Save', 'Сохранить')}
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              setEditing(false)
+              setUser(settings.lan_proxy_auth_user ?? '')
+              setPass(settings.lan_proxy_auth_pass ?? '')
+              setError('')
+            }}
+            className="rounded-lg border border-gray-700 hover:bg-gray-800 text-xs text-gray-400 px-3 py-1.5 transition-colors"
+          >
+            {t('Cancel', 'Отмена')}
+          </button>
+        </div>
+      )}
+      {error && (
+        <div className="mt-2 text-xs text-red-400">{error}</div>
+      )}
+      {!editing && (
+        <p className="mt-2 text-[11px] text-gray-600">
+          {t(
+            'TPROXY (transparent) is unaffected — it\'s nftables-gated. Auth changes apply on the fly without a restart.',
+            'TPROXY (прозрачный) не затрагивается — он защищён nftables. Изменения применяются на лету, без рестарта.',
+          )}
+        </p>
+      )}
+    </div>
+  )
+}
+
+function extractError(err: unknown): string {
+  if (typeof err === 'object' && err !== null) {
+    const e = err as { response?: { data?: { detail?: unknown } }, message?: string }
+    const detail = e.response?.data?.detail
+    if (typeof detail === 'string') return detail
+    if (e.message) return e.message
+  }
+  return ''
+}
+
 
 export function Dashboard() {
   const t = useT()
@@ -537,19 +734,34 @@ export function Dashboard() {
               'Три способа использовать прокси одновременно. TPROXY — прозрачный (измените gateway устройства). SOCKS5 — настройте в браузере/приложении (host: IP RPi). HTTP — для приложений только с HTTP-прокси. Все три используют одинаковые правила маршрутизации.',
             )} />
           </h2>
-          <div className="grid grid-cols-3 gap-3">
-            {[
-              { label: 'TPROXY', port: sysSettings.tproxy_port_tcp, desc: t('gateway=RPi (transparent)', 'gateway=RPi (прозрачный)'), color: 'text-green-400' },
-              { label: 'SOCKS5', port: sysSettings.socks_port,       desc: t('explicit proxy (LAN)', 'явный прокси (LAN)'),          color: 'text-blue-400' },
-              { label: 'HTTP',   port: sysSettings.http_port,         desc: t('HTTP proxy (LAN)', 'HTTP-прокси (LAN)'),               color: 'text-purple-400' },
-            ].map(({ label, port, desc, color }) => (
-              <div key={label} className="rounded-xl border border-gray-800 bg-gray-900/30 p-3">
-                <div className={`text-xs font-semibold ${color} mb-1`}>{label}</div>
-                <div className="font-mono text-gray-100 text-sm">:{port}</div>
-                <div className="text-xs text-gray-600 mt-0.5">{desc}</div>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+            <div className="rounded-xl border border-gray-800 bg-gray-900/30 p-3">
+              <div className="text-xs font-semibold text-green-400 mb-1">TPROXY</div>
+              <div className="font-mono text-gray-100 text-sm">:{sysSettings.tproxy_port_tcp}</div>
+              <div className="text-xs text-gray-600 mt-0.5">
+                {t('gateway=RPi (transparent)', 'gateway=RPi (прозрачный)')}
               </div>
-            ))}
+            </div>
+            <div className="rounded-xl border border-gray-800 bg-gray-900/30 p-3">
+              <div className="text-xs font-semibold text-blue-400 mb-1">SOCKS5</div>
+              <div className="font-mono text-gray-100 text-sm">:{sysSettings.socks_port}</div>
+              <div className="text-xs text-gray-600 mt-0.5">
+                {t('explicit proxy (LAN)', 'явный прокси (LAN)')}
+              </div>
+            </div>
+            <div className="rounded-xl border border-gray-800 bg-gray-900/30 p-3">
+              <div className="text-xs font-semibold text-purple-400 mb-1">HTTP</div>
+              <div className="font-mono text-gray-100 text-sm">:{sysSettings.http_port}</div>
+              <div className="text-xs text-gray-600 mt-0.5">
+                {t('HTTP proxy (LAN)', 'HTTP-прокси (LAN)')}
+              </div>
+            </div>
           </div>
+          {/* LAN auth row — single (user, pass) pair shared by SOCKS5 +
+              HTTP. TPROXY stays passwordless because it's transparent.
+              Inline so the user can flip it without leaving the
+              dashboard. */}
+          <LanProxyAuthControl settings={sysSettings} />
         </div>
       )}
 

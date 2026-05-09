@@ -590,6 +590,28 @@ def generate_config(
     socks_port = int(settings_map.get("socks_port", settings.socks_port))
     http_port = int(settings_map.get("http_port", settings.http_port))
 
+    # LAN proxy authentication (since v1.3.0-beta.6). Single (user, pass)
+    # pair applies to BOTH the explicit SOCKS and HTTP inbounds when
+    # enabled — TPROXY stays passwordless because it's transparent +
+    # nftables-gated. Plaintext storage is intentional: the threat
+    # model is an opportunistic LAN scanner, not at-rest encryption,
+    # and the user must be able to copy creds back into a client app.
+    lan_auth_enabled = (
+        settings_map.get("lan_proxy_auth_enabled", "false").lower() == "true"
+    )
+    lan_auth_user = settings_map.get("lan_proxy_auth_user", "").strip()
+    lan_auth_pass = settings_map.get("lan_proxy_auth_pass", "")
+    # Empty creds with auth enabled = config error. Surface it loudly
+    # so xray doesn't silently accept arbitrary connections (or worse,
+    # fail to start with an opaque error). The API enforces the same
+    # rule on PUT /settings — this is the defence-in-depth fallback.
+    if lan_auth_enabled and (not lan_auth_user or not lan_auth_pass):
+        raise ValueError(
+            "lan_proxy_auth_enabled=true but lan_proxy_auth_user / "
+            "lan_proxy_auth_pass is empty. Set both in Settings or "
+            "disable LAN proxy auth before starting xray."
+        )
+
     # DNS section (full, with rules)
     dns_section = _build_dns_section(settings_map, dns_rules)
 
@@ -627,7 +649,19 @@ def generate_config(
             "protocol": "socks",
             "port": socks_port,
             "listen": "0.0.0.0",
-            "settings": {"auth": "noauth", "udp": True},
+            # SOCKS settings: when LAN auth enabled, switch from
+            # `auth: noauth` to `auth: password` and inject the user
+            # account. `udp: True` stays — auth doesn't change the
+            # UDP-relay capability, only the gateway handshake.
+            "settings": (
+                {
+                    "auth": "password",
+                    "udp": True,
+                    "accounts": [{"user": lan_auth_user, "pass": lan_auth_pass}],
+                }
+                if lan_auth_enabled
+                else {"auth": "noauth", "udp": True}
+            ),
             "sniffing": {"enabled": dns_sniffing, "destOverride": sniff_dest, "routeOnly": True},
         },
         {
@@ -635,7 +669,15 @@ def generate_config(
             "protocol": "http",
             "port": http_port,
             "listen": "0.0.0.0",
-            "settings": {},
+            # HTTP inbound: empty `settings` = passwordless. With LAN
+            # auth enabled, inject the same single (user, pass) pair —
+            # xray's HTTP inbound treats `accounts` as Basic-auth
+            # required, returning 407 on missing/wrong creds.
+            "settings": (
+                {"accounts": [{"user": lan_auth_user, "pass": lan_auth_pass}]}
+                if lan_auth_enabled
+                else {}
+            ),
             "sniffing": {"enabled": dns_sniffing, "destOverride": sniff_dest, "routeOnly": True},
         },
     ]

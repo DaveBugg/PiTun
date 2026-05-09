@@ -288,6 +288,13 @@ export interface SystemSettings {
   dns_over_tcp?: boolean
   dns_query_log_max?: number
   device_scan_interval?: number
+  // LAN proxy auth (since v1.3.0-beta.6) — single (user, pass) pair
+  // applied to BOTH explicit SOCKS5 and HTTP inbounds. TPROXY stays
+  // passwordless. Plaintext on the wire by design (LAN-intruder
+  // threat model — see backend SettingsRead docstring).
+  lan_proxy_auth_enabled?: boolean
+  lan_proxy_auth_user?: string
+  lan_proxy_auth_pass?: string
   // GeoScheduler
   geo_auto_update?: boolean
   geo_update_interval_days?: number

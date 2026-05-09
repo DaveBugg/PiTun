@@ -619,6 +619,12 @@ async def get_settings(session: AsyncSession = Depends(get_session)):
         geo_update_window_start=_int("geo_update_window_start", 4),
         geo_update_window_end=_int("geo_update_window_end", 6),
         timezone=m.get("timezone", "UTC"),
+        # LAN proxy auth (since v1.3.0-beta.6) — single (user, pass)
+        # pair shared by the SOCKS5 and HTTP inbounds. Plaintext on
+        # the wire by design (LAN-intruder threat model).
+        lan_proxy_auth_enabled=m.get("lan_proxy_auth_enabled", "false").lower() == "true",
+        lan_proxy_auth_user=m.get("lan_proxy_auth_user", ""),
+        lan_proxy_auth_pass=m.get("lan_proxy_auth_pass", ""),
     )
 
 
@@ -698,6 +704,36 @@ async def get_system_metrics(
 @router.patch("/settings", status_code=204)
 async def update_settings(body: SettingsUpdate, session: AsyncSession = Depends(get_session)):
     patches = body.model_dump(exclude_unset=True)
+
+    # LAN proxy auth invariant — when the user enables auth, both
+    # username and password must be non-empty. Validate against the
+    # *post-merge* state: if the patch flips `_enabled=true` but
+    # doesn't ship creds, fall back to the existing DB values; if
+    # those are also empty, reject with 400 (rather than letting
+    # config_gen blow up on the next start_proxy call with a
+    # confusing ValueError).
+    if patches.get("lan_proxy_auth_enabled") is True:
+        existing = {r.key: r.value for r in (await session.exec(select(DBSettings))).all()}
+        new_user = (
+            patches.get("lan_proxy_auth_user")
+            if patches.get("lan_proxy_auth_user") is not None
+            else existing.get("lan_proxy_auth_user", "")
+        )
+        new_pass = (
+            patches.get("lan_proxy_auth_pass")
+            if patches.get("lan_proxy_auth_pass") is not None
+            else existing.get("lan_proxy_auth_pass", "")
+        )
+        if not (new_user or "").strip() or not new_pass:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "LAN proxy auth requires both `lan_proxy_auth_user` "
+                    "and `lan_proxy_auth_pass` to be non-empty when "
+                    "`lan_proxy_auth_enabled=true`."
+                ),
+            )
+
     for key, value in patches.items():
         if value is None:
             continue
@@ -732,6 +768,31 @@ async def update_settings(body: SettingsUpdate, session: AsyncSession = Depends(
                 f.write("\n".join(lines) + "\n")
         except Exception:
             pass
+
+    # LAN proxy auth changes affect the running xray config (SOCKS +
+    # HTTP inbounds get `accounts` injected/removed). Reload xray on
+    # the fly so the user sees the change without going to /restart —
+    # they toggle this from the Dashboard inline UI and expect
+    # immediate effect. Skipped silently if xray isn't running.
+    lan_auth_keys = {
+        "lan_proxy_auth_enabled",
+        "lan_proxy_auth_user",
+        "lan_proxy_auth_pass",
+    }
+    if patches.keys() & lan_auth_keys:
+        try:
+            from app.core.xray import xray_manager
+            if xray_manager.is_running:
+                await _regenerate_and_write(session)
+                await xray_manager.reload()
+        except Exception as exc:
+            # Log and continue — the next manual /start will pick up
+            # the new creds anyway. Don't 500 the PATCH because reload
+            # races with another lifecycle event.
+            import logging
+            logging.getLogger(__name__).warning(
+                "LAN proxy auth applied but xray reload failed: %s", exc,
+            )
 
 
 # ── Internal helpers ──────────────────────────────────────────────────────────

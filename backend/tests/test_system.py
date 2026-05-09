@@ -83,6 +83,138 @@ class TestSettings:
         assert resp2.json()["failover_node_ids"] == [sample_node.id]
 
 
+class TestLanProxyAuth:
+    """LAN proxy auth on the explicit SOCKS5 + HTTP inbounds —
+    settings round-trip, validation, and config_gen account injection.
+    Added in v1.3.0-beta.6."""
+
+    def test_default_off(self, client, admin_user, auth_headers, default_settings):
+        resp = client.get("/api/system/settings", headers=auth_headers)
+        body = resp.json()
+        assert body["lan_proxy_auth_enabled"] is False
+        assert body["lan_proxy_auth_user"] == ""
+        assert body["lan_proxy_auth_pass"] == ""
+
+    def test_enable_with_creds_succeeds(
+        self, client, admin_user, auth_headers, default_settings,
+    ):
+        resp = client.patch(
+            "/api/system/settings",
+            json={
+                "lan_proxy_auth_enabled": True,
+                "lan_proxy_auth_user": "alice",
+                "lan_proxy_auth_pass": "wonderland",
+            },
+            headers=auth_headers,
+        )
+        assert resp.status_code == 204
+        body = client.get("/api/system/settings", headers=auth_headers).json()
+        assert body["lan_proxy_auth_enabled"] is True
+        assert body["lan_proxy_auth_user"] == "alice"
+        assert body["lan_proxy_auth_pass"] == "wonderland"
+
+    def test_enable_without_creds_rejected(
+        self, client, admin_user, auth_headers, default_settings,
+    ):
+        # Empty user → 400. Don't let xray start with auth=password +
+        # empty accounts (would crash with an opaque error).
+        resp = client.patch(
+            "/api/system/settings",
+            json={"lan_proxy_auth_enabled": True},
+            headers=auth_headers,
+        )
+        assert resp.status_code == 400
+        assert "lan_proxy_auth_user" in resp.json()["detail"].lower() or \
+               "non-empty" in resp.json()["detail"].lower()
+
+    def test_enable_then_disable_roundtrip(
+        self, client, admin_user, auth_headers, default_settings,
+    ):
+        # Enable with creds.
+        client.patch(
+            "/api/system/settings",
+            json={
+                "lan_proxy_auth_enabled": True,
+                "lan_proxy_auth_user": "u",
+                "lan_proxy_auth_pass": "p",
+            },
+            headers=auth_headers,
+        )
+        # Disable (no creds change needed).
+        resp = client.patch(
+            "/api/system/settings",
+            json={"lan_proxy_auth_enabled": False},
+            headers=auth_headers,
+        )
+        assert resp.status_code == 204
+        body = client.get("/api/system/settings", headers=auth_headers).json()
+        assert body["lan_proxy_auth_enabled"] is False
+        # Saved creds are kept around so re-enabling doesn't force the
+        # user to re-type — same DX as the Dashboard inline widget.
+        assert body["lan_proxy_auth_user"] == "u"
+        assert body["lan_proxy_auth_pass"] == "p"
+
+    def test_config_gen_injects_accounts_when_enabled(self):
+        """generate_config wraps the SOCKS5 + HTTP inbounds with
+        `accounts` and flips SOCKS to `auth: password` when LAN auth
+        is on."""
+        from app.core.config_gen import generate_config
+
+        cfg = generate_config(
+            active_node=None,
+            all_nodes=[],
+            rules=[],
+            mode="rules",
+            settings_map={
+                "mode": "rules",
+                "lan_proxy_auth_enabled": "true",
+                "lan_proxy_auth_user": "alice",
+                "lan_proxy_auth_pass": "secret",
+            },
+        )
+        socks_in = next(i for i in cfg["inbounds"] if i.get("tag") == "socks-in")
+        http_in = next(i for i in cfg["inbounds"] if i.get("tag") == "http-in")
+        assert socks_in["settings"]["auth"] == "password"
+        assert socks_in["settings"]["accounts"] == [{"user": "alice", "pass": "secret"}]
+        assert http_in["settings"]["accounts"] == [{"user": "alice", "pass": "secret"}]
+
+    def test_config_gen_passwordless_when_disabled(self):
+        from app.core.config_gen import generate_config
+        cfg = generate_config(
+            active_node=None,
+            all_nodes=[],
+            rules=[],
+            mode="rules",
+            settings_map={"mode": "rules"},
+        )
+        socks_in = next(i for i in cfg["inbounds"] if i.get("tag") == "socks-in")
+        http_in = next(i for i in cfg["inbounds"] if i.get("tag") == "http-in")
+        # SOCKS stays noauth, HTTP `settings` empty — same shape as
+        # before the LAN-auth feature shipped.
+        assert socks_in["settings"]["auth"] == "noauth"
+        assert "accounts" not in socks_in["settings"]
+        assert http_in["settings"] == {}
+
+    def test_config_gen_raises_on_enabled_with_empty_creds(self):
+        """Defence in depth — even if a bad PATCH slips past the API
+        validator (or someone hand-edits the DB), config_gen refuses
+        to build xray config with auth-on + empty accounts."""
+        import pytest
+        from app.core.config_gen import generate_config
+        with pytest.raises(ValueError, match="lan_proxy_auth"):
+            generate_config(
+                active_node=None,
+                all_nodes=[],
+                rules=[],
+                mode="rules",
+                settings_map={
+                    "mode": "rules",
+                    "lan_proxy_auth_enabled": "true",
+                    # user + pass empty
+                },
+            )
+
+
 class TestStatusWithMock:
     def test_get_status(self, client, admin_user, auth_headers, default_settings):
         with (

@@ -14,6 +14,9 @@ import {
   XCircle,
   Database,
   Clock,
+  Lock,
+  Eye,
+  EyeOff,
 } from 'lucide-react'
 import { clsx } from 'clsx'
 import { useT } from '@/hooks/useT'
@@ -300,6 +303,50 @@ export function Settings() {
         </div>
       ))}
 
+      {/* LAN proxy auth — same controls as the inline Dashboard widget,
+          duplicated here so power users who live in Settings don't have
+          to bounce back to the dashboard for one toggle. Backend
+          enforces non-empty creds when enabled and auto-reloads xray
+          on apply, so flipping this here behaves identically. */}
+      {section(Lock, t('LAN proxy authentication', 'Авторизация LAN-прокси'),
+        t(
+          'Optional Basic auth on the explicit SOCKS5 + HTTP inbounds. TPROXY (transparent) stays passwordless — it\'s nftables-gated and only reachable from devices using this RPi as their gateway.',
+          'Опциональная Basic-авторизация на SOCKS5 + HTTP. TPROXY (прозрачный) всегда без пароля — он защищён nftables и доступен только с устройств, использующих этот RPi как gateway.',
+        ), (
+        <div className="space-y-3">
+          {toggle(
+            'lan_proxy_auth_enabled',
+            t('Require auth on SOCKS5 + HTTP', 'Требовать авторизацию на SOCKS5 + HTTP'),
+            t(
+              'When enabled, both inbounds reject connections without valid Basic credentials.',
+              'При включении оба inbound\'а отклоняют подключения без валидных Basic-credentials.',
+            ),
+          )}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            {field(
+              t('Username', 'Имя пользователя'),
+              textInput(
+                'lan_proxy_auth_user',
+                'pitun',
+                t('Required when auth is enabled', 'Обязательно при включённой авторизации'),
+              ),
+            )}
+            {field(
+              t('Password', 'Пароль'),
+              <PasswordField
+                value={val('lan_proxy_auth_pass')}
+                onChange={(v) => set('lan_proxy_auth_pass', v)}
+                draft={draft['lan_proxy_auth_pass'] !== undefined}
+                hint={t(
+                  'Stored plaintext (LAN-intruder threat model). Reveal with the eye button.',
+                  'Хранится открытым текстом (модель угрозы — локальный сканер). Кнопка-глаз раскрывает значение.',
+                )}
+              />,
+            )}
+          </div>
+        </div>
+      ))}
+
       {/* Safety */}
       {section(Shield, 'Safety', t('Traffic protection and auto-recovery', 'Защита трафика и автовосстановление'), (
         <div className="space-y-2">
@@ -394,6 +441,50 @@ export function Settings() {
           {toggle('dns_query_log_enabled', 'DNS Query Logging', t('Log all DNS queries (performance impact)', 'Логировать все DNS-запросы (влияет на производительность)'))}
         </div>
       ))}
+    </div>
+  )
+}
+
+
+/**
+ * Password input with a reveal-eye button. Used for the LAN proxy
+ * auth password field on Settings (storage is plaintext on the
+ * backend by design — see SystemSettings docstring). `draft=true`
+ * highlights the border to match the rest of the form's "unsaved
+ * change" affordance.
+ */
+function PasswordField({
+  value, onChange, draft, hint,
+}: {
+  value: string
+  onChange: (v: string) => void
+  draft: boolean
+  hint?: string
+}) {
+  const [reveal, setReveal] = useState(false)
+  return (
+    <div>
+      <div className="relative">
+        <input
+          type={reveal ? 'text' : 'password'}
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          className={clsx(
+            'w-full rounded-lg bg-gray-950 border pr-9 px-3 py-2 text-sm text-gray-100 focus:outline-none transition-colors',
+            draft ? 'border-brand-500' : 'border-gray-800 focus:border-gray-600',
+          )}
+          autoComplete="off"
+        />
+        <button
+          type="button"
+          onClick={() => setReveal((v) => !v)}
+          className="absolute right-1 top-1/2 -translate-y-1/2 rounded p-1.5 text-gray-500 hover:text-brand-400 hover:bg-gray-800 transition-colors"
+          title={reveal ? 'Hide' : 'Reveal'}
+        >
+          {reveal ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
+        </button>
+      </div>
+      {hint && <p className="text-[11px] text-gray-600 mt-1">{hint}</p>}
     </div>
   )
 }
