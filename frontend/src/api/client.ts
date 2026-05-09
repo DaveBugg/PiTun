@@ -418,6 +418,35 @@ export const serversApi = {
     URL.revokeObjectURL(url)
   },
 
+  /** Per-server WireGuard install bootstrap. Same Blob-download pattern
+   * as the Naive variant — see comments above for why we don't use a
+   * direct <a download>. All params optional; the underlying script
+   * has sensible defaults if a field is omitted. */
+  downloadWireguardInstallScript: async (
+    id: number,
+    params: {
+      client_name?: string
+      server_port?: number
+      dns_1?: string
+      dns_2?: string
+      allowed_ips?: string
+    },
+  ): Promise<void> => {
+    const r = await http.get(`/servers/${id}/wireguard-install-script`, {
+      params,
+      responseType: 'text',
+    })
+    const blob = new Blob([r.data], { type: 'text/x-shellscript' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `wireguard-install-${id}.sh`
+    document.body.appendChild(a)
+    a.click()
+    a.remove()
+    URL.revokeObjectURL(url)
+  },
+
   // ── Deployments (persistent install plans per protocol) ───────────────────
 
   listDeployments: (serverId: number) =>
@@ -534,6 +563,33 @@ export const scriptsApi = {
     const a = document.createElement('a')
     a.href = url
     a.download = 'naive-install.sh'
+    document.body.appendChild(a)
+    a.click()
+    a.remove()
+    URL.revokeObjectURL(url)
+  },
+
+  /** Server-agnostic WireGuard manual-install script. Mirrors
+   * `downloadNaive` but for the WG sub-command pipeline. All params
+   * optional; backend defaults kick in for omitted fields. */
+  downloadWireguard: async (
+    params: {
+      client_name?: string
+      server_port?: number
+      dns_1?: string
+      dns_2?: string
+      allowed_ips?: string
+    },
+  ): Promise<void> => {
+    const r = await http.get('/scripts/wireguard-install', {
+      params,
+      responseType: 'text',
+    })
+    const blob = new Blob([r.data], { type: 'text/x-shellscript' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = 'wireguard-install.sh'
     document.body.appendChild(a)
     a.click()
     a.remove()

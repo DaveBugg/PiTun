@@ -30,7 +30,7 @@ import {
   useDeploymentClients,
 } from '@/hooks/useServers'
 import { useT } from '@/hooks/useT'
-import type { Server, ServerCreate, ServerUpdate } from '@/types'
+import type { Server, ServerCreate, ServerUpdate, ServerDeploymentProtocol } from '@/types'
 
 /**
  * Servers page — list of SSH-reachable VPS instances the user manages from
@@ -59,8 +59,8 @@ export function Servers() {
   //   - manual (no Server registered, generic header)
   // Both share the same form fields and Blob-download flow.
   const [scriptModal, setScriptModal] = useState<
-    | { kind: 'server'; server: Server }
-    | { kind: 'manual' }
+    | { kind: 'server'; server: Server; protocol?: ServerDeploymentProtocol }
+    | { kind: 'manual'; protocol?: ServerDeploymentProtocol }
     | null
   >(null)
   // Auto-deploy modal — runs install over SSH and streams the log.
@@ -159,7 +159,7 @@ export function Servers() {
           registering anything (the typical first-time flow). One card
           per available script; today there's only naive, future cards
           for WG / Hy2 will land here. */}
-      <ManualScriptsSection onRunNaive={() => setScriptModal({ kind: 'manual' })} />
+      <ManualScriptsSection onRunScript={(protocol) => setScriptModal({ kind: 'manual', protocol })} />
 
       {/* Empty state */}
       {!isLoading && servers.length === 0 && (
@@ -226,7 +226,7 @@ export function Servers() {
       )}
 
       {scriptModal && (
-        <NaiveScriptModal
+        <ManualScriptModal
           mode={scriptModal}
           onClose={() => setScriptModal(null)}
         />
@@ -255,7 +255,11 @@ export function Servers() {
 // are no servers yet — so the typical "buy VPS, get script, run it"
 // flow doesn't require a server registration first.
 
-function ManualScriptsSection({ onRunNaive }: { onRunNaive: () => void }) {
+function ManualScriptsSection({
+  onRunScript,
+}: {
+  onRunScript: (protocol: ServerDeploymentProtocol) => void
+}) {
   const t = useT()
   return (
     <section className="mb-5">
@@ -282,7 +286,21 @@ function ManualScriptsSection({ onRunNaive }: { onRunNaive: () => void }) {
             'Получит сертификат Let\'s Encrypt, настроит forward-proxy, напечатает naive+https:// URI для импорта в Nodes.',
           )}
           actionLabel={t('Configure & download', 'Настроить и скачать')}
-          onAction={onRunNaive}
+          onAction={() => onRunScript('naive')}
+        />
+        <ScriptCard
+          icon={FileCode2}
+          title="WireGuard"
+          subtitle={t(
+            'wg-quick + first peer on a fresh VPS',
+            'wg-quick + первый клиент на чистом VPS',
+          )}
+          description={t(
+            'Installs wireguard-tools, generates server keypair, enables wg-quick@wg0, and adds your first peer. Prints the wireguard:// URI + an INI conf block to scan / import.',
+            'Установит wireguard-tools, сгенерирует ключи сервера, включит wg-quick@wg0 и добавит первого клиента. Напечатает wireguard:// URI и INI conf для импорта.',
+          )}
+          actionLabel={t('Configure & download', 'Настроить и скачать')}
+          onAction={() => onRunScript('wireguard')}
         />
       </div>
     </section>
@@ -435,7 +453,7 @@ function ServerRow({
           )}
           <IconBtn
             onClick={onShowScript}
-            title={t('Get NaiveProxy install script', 'Получить скрипт установки NaiveProxy')}
+            title={t('Get install script (naive / WireGuard)', 'Получить скрипт установки (naive / WireGuard)')}
             icon={Download}
           />
           <IconBtn
@@ -623,20 +641,40 @@ function IconBtn({
 // parameters and call `serversApi.downloadNaiveInstallScript`.
 
 type ScriptModalMode =
-  | { kind: 'server'; server: Server }
-  | { kind: 'manual' }
+  | { kind: 'server'; server: Server; protocol?: ServerDeploymentProtocol }
+  | { kind: 'manual'; protocol?: ServerDeploymentProtocol }
 
-function NaiveScriptModal({ mode, onClose }: { mode: ScriptModalMode; onClose: () => void }) {
+/** Unified install-script modal (since v1.3.0-beta.5).
+ *
+ * Replaces the original NaiveScriptModal with a protocol toggle so naive
+ * and wireguard share the same form-collect → save-deployment → download
+ * pipeline. Each protocol has its own field set + builder + download
+ * call, but the shell (mode handling, button row, save logic, error
+ * surface) is shared.
+ *
+ * `mode.protocol` is just the *initial* selection — once the modal is
+ * open the user can switch via the toggle. Form values for the
+ * unselected protocol are kept in state so flipping back doesn't lose
+ * user input. */
+function ManualScriptModal({ mode, onClose }: { mode: ScriptModalMode; onClose: () => void }) {
   const t = useT()
 
-  // Pre-fill from existing deployment when this modal is opened on a
-  // specific server. For manual mode there's no deployment to fetch.
+  // Pre-fill from any existing deployment (per protocol) when this modal
+  // is opened on a specific server. Manual mode has no deployments.
   const serverIdForFetch = mode.kind === 'server' ? mode.server.id : null
   const { data: deployments = [] } = useDeployments(serverIdForFetch)
   const existingNaive = deployments.find((d) => d.protocol === 'naive')
+  const existingWg = deployments.find((d) => d.protocol === 'wireguard')
 
-  // Naive-specific config view — the union'd `DeploymentConfig` may also
-  // be a WireGuardDeploymentConfig once we mix protocols, so narrow here.
+  // Default the toggle to whichever protocol was clicked; if absent,
+  // pick whatever's already configured on this server, falling back
+  // to naive (the older / more common path).
+  const initialProtocol: ServerDeploymentProtocol =
+    mode.protocol ??
+    (existingWg ? 'wireguard' : 'naive')
+  const [protocol, setProtocol] = useState<ServerDeploymentProtocol>(initialProtocol)
+
+  // Naive-specific config view — narrow the union'd DeploymentConfig.
   const naiveCfg = (existingNaive?.config ?? {}) as {
     domain?: string; email?: string; naive_user?: string; naive_pass?: string
   }
@@ -644,25 +682,40 @@ function NaiveScriptModal({ mode, onClose }: { mode: ScriptModalMode; onClose: (
   const [email, setEmail] = useState(naiveCfg.email ?? '')
   const [naiveUser, setNaiveUser] = useState(naiveCfg.naive_user ?? 'pitun')
   const [naivePass, setNaivePass] = useState(naiveCfg.naive_pass ?? '')
+
+  // WireGuard-specific. `client_name` is per-deploy and not stored on
+  // ServerDeployment.config (the script picks it up from env), so it
+  // always starts blank. The rest pre-fill from any saved deployment.
+  const wgCfg = (existingWg?.config ?? {}) as import('@/types').WireGuardDeploymentConfig
+  const [wgClientName, setWgClientName] = useState('')
+  const [wgServerPort, setWgServerPort] = useState(wgCfg.server_port?.toString() ?? '51820')
+  const [wgDns1, setWgDns1] = useState(wgCfg.dns_1 ?? '1.1.1.1')
+  const [wgDns2, setWgDns2] = useState(wgCfg.dns_2 ?? '1.0.0.1')
+  const [wgAllowedIps, setWgAllowedIps] = useState(wgCfg.allowed_ips ?? '0.0.0.0/0,::/0')
+
   const [downloading, setDownloading] = useState(false)
   const [error, setError] = useState('')
 
   const upsertDeployment = useUpsertDeployment()
 
-  /** Validate + assemble params used by both Save and Save&Download. */
-  const buildParams = (): { domain: string; email: string; naive_user?: string; naive_pass: string } | null => {
+  type NaiveParams = { domain: string; email: string; naive_user?: string; naive_pass: string }
+  type WgParams = {
+    client_name?: string
+    server_port?: number
+    dns_1?: string
+    dns_2?: string
+    allowed_ips?: string
+  }
+
+  /** Validate + assemble params for the active protocol. */
+  const buildNaiveParams = (): NaiveParams | null => {
     if (!domain.trim() || !email.trim()) {
       setError(t('Domain and email are required', 'Domain и email обязательны'))
       return null
     }
-    // If password left blank: reuse saved one (deployment update without
-    // password change), or generate a new one client-side. We always
-    // know the value so the saved deployment matches what the script
-    // would print on the VPS.
-    const finalPass =
-      naivePass.trim() ||
-      naiveCfg.naive_pass ||
-      generateRandomPassword()
+    // Password left blank: reuse saved → else generate client-side so
+    // the script + deployment row stay in sync.
+    const finalPass = naivePass.trim() || naiveCfg.naive_pass || generateRandomPassword()
     return {
       domain: domain.trim(),
       email: email.trim(),
@@ -671,8 +724,23 @@ function NaiveScriptModal({ mode, onClose }: { mode: ScriptModalMode; onClose: (
     }
   }
 
-  /** Persist the deployment plan on a Server. Manual mode is a no-op. */
-  const persist = async (params: NonNullable<ReturnType<typeof buildParams>>) => {
+  const buildWgParams = (): WgParams | null => {
+    const port = wgServerPort.trim() ? Number(wgServerPort.trim()) : undefined
+    if (port !== undefined && (Number.isNaN(port) || port < 1 || port > 65535)) {
+      setError(t('Server port must be 1–65535', 'Порт сервера должен быть 1–65535'))
+      return null
+    }
+    return {
+      client_name: wgClientName.trim() || undefined,
+      server_port: port,
+      dns_1: wgDns1.trim() || undefined,
+      dns_2: wgDns2.trim() || undefined,
+      allowed_ips: wgAllowedIps.trim() || undefined,
+    }
+  }
+
+  /** Persist the deployment plan to the Server (server mode only). */
+  const persistNaive = async (params: NaiveParams) => {
     if (mode.kind !== 'server') return
     await upsertDeployment.mutateAsync({
       serverId: mode.server.id,
@@ -689,8 +757,29 @@ function NaiveScriptModal({ mode, onClose }: { mode: ScriptModalMode; onClose: (
     })
   }
 
+  const persistWg = async (params: WgParams) => {
+    if (mode.kind !== 'server') return
+    // ServerDeployment.config_json keeps server-level state; client_name
+    // is per-deploy and intentionally NOT persisted here (each manual
+    // re-run can pick a different first peer). Mirrors how DeployModal
+    // builds the WG config — see frontend/src/types/index.ts.
+    await upsertDeployment.mutateAsync({
+      serverId: mode.server.id,
+      protocol: 'wireguard',
+      data: {
+        protocol: 'wireguard',
+        config: {
+          server_port: params.server_port,
+          dns_1: params.dns_1,
+          dns_2: params.dns_2,
+          allowed_ips: params.allowed_ips,
+        } as import('@/types').WireGuardDeploymentConfig,
+      },
+    })
+  }
+
   /** Trigger the .sh download via Blob, server-bound or manual. */
-  const download = async (params: NonNullable<ReturnType<typeof buildParams>>) => {
+  const downloadNaive = async (params: NaiveParams) => {
     if (mode.kind === 'server') {
       await serversApi.downloadNaiveInstallScript(mode.server.id, params)
     } else {
@@ -698,14 +787,26 @@ function NaiveScriptModal({ mode, onClose }: { mode: ScriptModalMode; onClose: (
     }
   }
 
+  const downloadWg = async (params: WgParams) => {
+    if (mode.kind === 'server') {
+      await serversApi.downloadWireguardInstallScript(mode.server.id, params)
+    } else {
+      await scriptsApi.downloadWireguard(params)
+    }
+  }
+
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault()
     setError('')
-    const params = buildParams()
-    if (!params) return
     setDownloading(true)
     try {
-      await persist(params)
+      if (protocol === 'naive') {
+        const p = buildNaiveParams(); if (!p) return
+        await persistNaive(p)
+      } else {
+        const p = buildWgParams(); if (!p) return
+        await persistWg(p)
+      }
       onClose()
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Save failed')
@@ -716,12 +817,17 @@ function NaiveScriptModal({ mode, onClose }: { mode: ScriptModalMode; onClose: (
 
   const handleSaveAndDownload = async () => {
     setError('')
-    const params = buildParams()
-    if (!params) return
     setDownloading(true)
     try {
-      await persist(params)
-      await download(params)
+      if (protocol === 'naive') {
+        const p = buildNaiveParams(); if (!p) return
+        await persistNaive(p)
+        await downloadNaive(p)
+      } else {
+        const p = buildWgParams(); if (!p) return
+        await persistWg(p)
+        await downloadWg(p)
+      }
       onClose()
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Download failed')
@@ -730,14 +836,17 @@ function NaiveScriptModal({ mode, onClose }: { mode: ScriptModalMode; onClose: (
     }
   }
 
-  // Manual mode: only download makes sense (no Server to attach to).
   const handleDownloadOnly = async () => {
     setError('')
-    const params = buildParams()
-    if (!params) return
     setDownloading(true)
     try {
-      await download(params)
+      if (protocol === 'naive') {
+        const p = buildNaiveParams(); if (!p) return
+        await downloadNaive(p)
+      } else {
+        const p = buildWgParams(); if (!p) return
+        await downloadWg(p)
+      }
       onClose()
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Download failed')
@@ -746,9 +855,6 @@ function NaiveScriptModal({ mode, onClose }: { mode: ScriptModalMode; onClose: (
     }
   }
 
-  // Subtitle shows the target server when in server-bound mode; manual
-  // mode gets a generic "no server registered" line so the user knows
-  // they're getting the standalone version.
   const subtitle =
     mode.kind === 'server'
       ? t(
@@ -760,21 +866,55 @@ function NaiveScriptModal({ mode, onClose }: { mode: ScriptModalMode; onClose: (
           'Самодостаточный установщик — запустите на любом чистом VPS под root.',
         )
 
-  // Default form submit (Enter in any input) hits the primary action:
-  // "Save" in server mode, "Download" in manual mode. Reach the
-  // "Save & download" path explicitly with its own button.
   const onFormSubmit = mode.kind === 'server' ? handleSave : handleDownloadOnly
 
   return (
-    <ModalShell onClose={onClose} labelledBy="naive-script-title">
+    <ModalShell onClose={onClose} labelledBy="manual-script-title">
       <form
         onSubmit={onFormSubmit}
-        className="w-full max-w-lg rounded-2xl bg-gray-950/95 border border-gray-800 p-6 m-4"
+        className="w-full max-w-lg rounded-2xl bg-gray-950/95 border border-gray-800 p-6 m-4 max-h-[90vh] overflow-y-auto"
       >
-        <h2 id="naive-script-title" className="text-lg font-semibold text-gray-100 mb-1">
-          {t('NaiveProxy install script', 'Скрипт установки NaiveProxy')}
+        <h2 id="manual-script-title" className="text-lg font-semibold text-gray-100 mb-1">
+          {protocol === 'naive'
+            ? t('NaiveProxy install script', 'Скрипт установки NaiveProxy')
+            : t('WireGuard install script', 'Скрипт установки WireGuard')}
         </h2>
         <p className="text-xs text-gray-500 mb-4">{subtitle}</p>
+
+        {/* Protocol toggle — same affordance as the Deploy modal so the
+            user's mental model stays consistent. */}
+        <div className="mb-4 grid grid-cols-2 gap-2">
+          <button
+            type="button"
+            onClick={() => setProtocol('naive')}
+            className={
+              'rounded-lg border px-3 py-2 text-left transition-colors text-sm ' +
+              (protocol === 'naive'
+                ? 'border-brand-500/60 bg-brand-600/10 text-brand-200'
+                : 'border-gray-800 bg-gray-900/40 text-gray-400 hover:border-gray-700 hover:text-gray-200')
+            }
+          >
+            <div className="font-medium">NaiveProxy</div>
+            <div className="text-[11px] text-gray-500 mt-0.5">
+              {t('HTTPS over TLS, single tunnel', 'HTTPS поверх TLS, один туннель')}
+            </div>
+          </button>
+          <button
+            type="button"
+            onClick={() => setProtocol('wireguard')}
+            className={
+              'rounded-lg border px-3 py-2 text-left transition-colors text-sm ' +
+              (protocol === 'wireguard'
+                ? 'border-brand-500/60 bg-brand-600/10 text-brand-200'
+                : 'border-gray-800 bg-gray-900/40 text-gray-400 hover:border-gray-700 hover:text-gray-200')
+            }
+          >
+            <div className="font-medium">WireGuard</div>
+            <div className="text-[11px] text-gray-500 mt-0.5">
+              {t('UDP, multi-client', 'UDP, много клиентов')}
+            </div>
+          </button>
+        </div>
 
         {error && (
           <div className="mb-3 rounded-lg bg-red-900/30 border border-red-700/50 px-3 py-2 text-sm text-red-300">
@@ -782,51 +922,120 @@ function NaiveScriptModal({ mode, onClose }: { mode: ScriptModalMode; onClose: (
           </div>
         )}
 
-        <div className="space-y-3">
-          <FieldL label={t('Domain', 'Домен')} hint={t('A-record points to the VPS', 'A-запись указывает на VPS')}>
-            <input
-              type="text"
-              value={domain}
-              onChange={(e) => setDomain(e.target.value)}
-              placeholder="proxy.example.com"
-              className={inputCls}
-              required
-              autoFocus
-            />
-          </FieldL>
-          <FieldL label={t("Let's Encrypt email", 'Email для Let\'s Encrypt')}>
-            <input
-              type="email"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              placeholder="me@example.com"
-              className={inputCls}
-              required
-            />
-          </FieldL>
-          <FieldL label={t('Naive username', 'Имя пользователя Naive')} hint={t('default "pitun"', 'по умолчанию "pitun"')}>
-            <input
-              type="text"
-              value={naiveUser}
-              onChange={(e) => setNaiveUser(e.target.value)}
-              className={inputCls}
-            />
-          </FieldL>
-          <FieldL
-            label={t('Naive password', 'Пароль Naive')}
-            hint={t(
-              'leave blank — auto-generated; saved with the deployment',
-              'оставьте пустым — сгенерируется автоматически и сохранится',
-            )}
-          >
-            <input
-              type="text"
-              value={naivePass}
-              onChange={(e) => setNaivePass(e.target.value)}
-              className={inputCls}
-            />
-          </FieldL>
-        </div>
+        {protocol === 'naive' ? (
+          <div className="space-y-3">
+            <FieldL label={t('Domain', 'Домен')} hint={t('A-record points to the VPS', 'A-запись указывает на VPS')}>
+              <input
+                type="text"
+                value={domain}
+                onChange={(e) => setDomain(e.target.value)}
+                placeholder="proxy.example.com"
+                className={inputCls}
+                required
+                autoFocus
+              />
+            </FieldL>
+            <FieldL label={t("Let's Encrypt email", 'Email для Let\'s Encrypt')}>
+              <input
+                type="email"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                placeholder="me@example.com"
+                className={inputCls}
+                required
+              />
+            </FieldL>
+            <FieldL label={t('Naive username', 'Имя пользователя Naive')} hint={t('default "pitun"', 'по умолчанию "pitun"')}>
+              <input
+                type="text"
+                value={naiveUser}
+                onChange={(e) => setNaiveUser(e.target.value)}
+                className={inputCls}
+              />
+            </FieldL>
+            <FieldL
+              label={t('Naive password', 'Пароль Naive')}
+              hint={t(
+                'leave blank — auto-generated; saved with the deployment',
+                'оставьте пустым — сгенерируется автоматически и сохранится',
+              )}
+            >
+              <input
+                type="text"
+                value={naivePass}
+                onChange={(e) => setNaivePass(e.target.value)}
+                className={inputCls}
+              />
+            </FieldL>
+          </div>
+        ) : (
+          <div className="space-y-3">
+            <FieldL
+              label={t('First client name', 'Имя первого клиента')}
+              hint={t(
+                'leave blank → "client1"; alphanumeric + _-',
+                'оставьте пустым → "client1"; буквы/цифры/_/-',
+              )}
+            >
+              <input
+                type="text"
+                value={wgClientName}
+                onChange={(e) => setWgClientName(e.target.value)}
+                placeholder="phone-1"
+                className={inputCls}
+                autoFocus
+              />
+            </FieldL>
+            <FieldL
+              label={t('Server port (UDP)', 'Порт сервера (UDP)')}
+              hint={t('default 51820', 'по умолчанию 51820')}
+            >
+              <input
+                type="number"
+                min={1}
+                max={65535}
+                value={wgServerPort}
+                onChange={(e) => setWgServerPort(e.target.value)}
+                className={inputCls}
+              />
+            </FieldL>
+            <div className="grid grid-cols-2 gap-3">
+              <FieldL label={t('DNS 1', 'DNS 1')}>
+                <input
+                  type="text"
+                  value={wgDns1}
+                  onChange={(e) => setWgDns1(e.target.value)}
+                  placeholder="1.1.1.1"
+                  className={inputCls}
+                />
+              </FieldL>
+              <FieldL label={t('DNS 2', 'DNS 2')}>
+                <input
+                  type="text"
+                  value={wgDns2}
+                  onChange={(e) => setWgDns2(e.target.value)}
+                  placeholder="1.0.0.1"
+                  className={inputCls}
+                />
+              </FieldL>
+            </div>
+            <FieldL
+              label={t('AllowedIPs', 'AllowedIPs')}
+              hint={t(
+                'what client routes through tunnel — full tunnel by default',
+                'что клиент маршрутизирует в туннель — по умолчанию весь трафик',
+              )}
+            >
+              <input
+                type="text"
+                value={wgAllowedIps}
+                onChange={(e) => setWgAllowedIps(e.target.value)}
+                placeholder="0.0.0.0/0,::/0"
+                className={inputCls}
+              />
+            </FieldL>
+          </div>
+        )}
 
         {/* Footer button row.
             Server mode: 3 buttons — Cancel, Save, Save & download.

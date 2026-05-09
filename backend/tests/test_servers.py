@@ -300,6 +300,82 @@ class TestNaiveInstallScript:
         assert resp.status_code == 404
 
 
+# ── WireGuard manual install script ──────────────────────────────────────────
+#
+# Sister of the naive script generator. Wraps `setup-wireguard-server.sh`
+# with env-var exports for the install sub-command (bootstraps server +
+# adds first peer in one go).
+
+
+class TestWireguardInstallScript:
+    def test_per_server_basic(self, client, admin_user, auth_headers, sample_server):
+        resp = client.get(
+            f"/api/servers/{sample_server.id}/wireguard-install-script",
+            params={
+                "client_name": "phone-1",
+                "server_port": 51821,
+                "dns_1": "8.8.8.8",
+                "allowed_ips": "10.0.0.0/8",
+            },
+            headers=auth_headers,
+        )
+        assert resp.status_code == 200
+        body = resp.text
+        # Sub-command dispatch + env vars present.
+        assert "PITUN_WG_SUBCOMMAND" in body and '"install"' in body
+        assert "export CLIENT_NAME=phone-1" in body
+        assert "export SERVER_PORT=51821" in body
+        assert "export DNS_1=8.8.8.8" in body
+        assert "export ALLOWED_IPS=10.0.0.0/8" in body
+        # The bootstrap fetches the canonical setup-wireguard-server.sh.
+        assert "setup-wireguard-server.sh" in body
+        # Per-server filename suffix.
+        assert f'filename="wireguard-install-{sample_server.id}.sh"' in \
+            resp.headers["content-disposition"]
+
+    def test_defaults_when_fields_absent(
+        self, client, admin_user, auth_headers, sample_server
+    ):
+        resp = client.get(
+            f"/api/servers/{sample_server.id}/wireguard-install-script",
+            headers=auth_headers,
+        )
+        assert resp.status_code == 200
+        body = resp.text
+        # client_name still gets a default since `install` always needs
+        # one peer to create.
+        assert 'export CLIENT_NAME="client1"' in body
+        # Optional knobs (port/dns/allowed_ips) NOT injected — the
+        # underlying script's defaults take over. We assert their
+        # absence so the user can still override them via env on the
+        # command line if they want.
+        assert "export SERVER_PORT" not in body
+        assert "export DNS_1" not in body
+        assert "export ALLOWED_IPS" not in body
+
+    def test_404_for_unknown_server(self, client, admin_user, auth_headers):
+        resp = client.get(
+            "/api/servers/9999/wireguard-install-script",
+            headers=auth_headers,
+        )
+        assert resp.status_code == 404
+
+    def test_manual_endpoint(self, client, admin_user, auth_headers):
+        # Server-agnostic variant under /scripts/wireguard-install
+        resp = client.get(
+            "/api/scripts/wireguard-install",
+            params={"client_name": "phone-2", "server_port": 51820},
+            headers=auth_headers,
+        )
+        assert resp.status_code == 200
+        body = resp.text
+        assert "manual / unregistered server" in body
+        assert "export CLIENT_NAME=phone-2" in body
+        assert "export SERVER_PORT=51820" in body
+        assert 'filename="wireguard-install.sh"' in \
+            resp.headers["content-disposition"]
+
+
 # ── Manual (server-agnostic) install scripts ─────────────────────────────────
 #
 # Companion endpoint at /api/scripts/naive-install — same generator, no

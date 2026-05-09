@@ -701,6 +701,131 @@ async def naive_install_script(
     )
 
 
+# ── WireGuard manual-install bootstrap (since v1.3.0-beta.5) ────────────────
+#
+# Sister to `build_naive_install_script` for users who don't want to give
+# PiTun their SSH key. Wraps `scripts/setup-wireguard-server.sh` (env-var
+# driven, sub-command dispatched) with the right exports baked in for
+# the `install` sub-command, which bootstraps the server AND adds the
+# first peer in one go. Subsequent peer add/remove still happens via the
+# Clients modal (which talks to the server over SSH) — we don't ship a
+# separate "add a single client" manual script because it's only useful
+# in the no-SSH world, and in that world the user can re-run this same
+# install script with a different `CLIENT_NAME` (the script is idempotent
+# on already-installed wg-quick + only adds the new peer).
+
+
+def build_wireguard_install_script(
+    *,
+    client_name: Optional[str] = None,
+    server_port: Optional[int] = None,
+    dns_1: Optional[str] = None,
+    dns_2: Optional[str] = None,
+    allowed_ips: Optional[str] = None,
+    server_label: Optional[str] = None,
+    suggested_filename: str = "wireguard-install.sh",
+) -> str:
+    """Render the bash bootstrap that fetches setup-wireguard-server.sh
+    from the PiTun repo and runs it with credentials pre-filled.
+
+    All fields optional — the underlying script has sensible defaults
+    (port 51820, networks 10.66.66.0/24 + fd42:42:42::/64, DNS 1.1.1.1
+    + 1.0.0.1, AllowedIPs 0.0.0.0/0,::/0). We only export values the
+    caller explicitly set, so the user can override later via env vars
+    on the command line if they want.
+    """
+    label_line = (
+        f"# PiTun — WireGuard install bootstrap for server '{server_label}'\n"
+        if server_label
+        else "# PiTun — WireGuard install bootstrap (manual / unregistered server)\n"
+    )
+
+    # Build the env-var assignments dynamically so the script doesn't
+    # ship empty-string overrides that would shadow the underlying
+    # script's defaults. shlex.quote everything user-controlled.
+    exports: list[str] = []
+    if client_name:
+        exports.append(f"export CLIENT_NAME={shlex.quote(client_name)}")
+    else:
+        exports.append('export CLIENT_NAME="client1"')
+    if server_port is not None:
+        exports.append(f"export SERVER_PORT={int(server_port)}")
+    if dns_1:
+        exports.append(f"export DNS_1={shlex.quote(dns_1)}")
+    if dns_2:
+        exports.append(f"export DNS_2={shlex.quote(dns_2)}")
+    if allowed_ips:
+        exports.append(f"export ALLOWED_IPS={shlex.quote(allowed_ips)}")
+    # Sub-command dispatch — install bootstraps + adds first peer.
+    exports.append('export PITUN_WG_SUBCOMMAND="install"')
+
+    exports_block = "\n".join(exports)
+
+    return f"""#!/usr/bin/env bash
+{label_line}# Generated {datetime.now(timezone.utc).isoformat(timespec='seconds')}.
+#
+# Run on the target VPS as root:
+#
+#   sudo bash {suggested_filename}
+#
+# What it does:
+#   1. Fetches scripts/setup-wireguard-server.sh from the PiTun repo
+#   2. Runs the `install` sub-command — installs wireguard-tools,
+#      enables IP forwarding via sysctl, generates the server keypair,
+#      writes /etc/wireguard/wg0.conf, enables wg-quick@wg0, and adds
+#      the first peer ($CLIENT_NAME).
+#   3. Prints `URI=wireguard://...` plus a `PITUN-CLIENT-CONF-BEGIN
+#      <name> ... -END <name>` block — copy the latter into a `.conf`
+#      file on the device that should connect (or hand the URI to PiTun
+#      → Nodes → Import URI).
+#
+# Re-run safe: setup-wireguard-server.sh skips the bootstrap parts on
+# subsequent runs and just adds another peer with the new CLIENT_NAME.
+
+set -euo pipefail
+
+{exports_block}
+
+curl -fsSL https://raw.githubusercontent.com/DaveBugg/PiTun/master/scripts/setup-wireguard-server.sh \\
+  -o /tmp/setup-wireguard-server.sh
+chmod +x /tmp/setup-wireguard-server.sh
+sudo -E bash /tmp/setup-wireguard-server.sh "$PITUN_WG_SUBCOMMAND"
+"""
+
+
+@router.get(
+    "/{server_id:int}/wireguard-install-script", response_class=PlainTextResponse
+)
+async def wireguard_install_script(
+    server_id: int,
+    client_name: Optional[str] = Query(None, description="First peer name (defaults to 'client1')"),
+    server_port: Optional[int] = Query(None, description="UDP port (default 51820)"),
+    dns_1: Optional[str] = Query(None, description="Primary DNS for clients (default 1.1.1.1)"),
+    dns_2: Optional[str] = Query(None, description="Secondary DNS for clients (default 1.0.0.1)"),
+    allowed_ips: Optional[str] = Query(None, description="Default 0.0.0.0/0,::/0"),
+    session: AsyncSession = Depends(get_session),
+):
+    server = await session.get(Server, server_id)
+    if not server:
+        raise HTTPException(status_code=404, detail="Server not found")
+
+    filename = f"wireguard-install-{server.id}.sh"
+    script = build_wireguard_install_script(
+        client_name=client_name,
+        server_port=server_port,
+        dns_1=dns_1,
+        dns_2=dns_2,
+        allowed_ips=allowed_ips,
+        server_label=f"{server.name} (id={server.id})",
+        suggested_filename=filename,
+    )
+    return PlainTextResponse(
+        content=script,
+        media_type="text/x-shellscript",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
 # ── Deployments ──────────────────────────────────────────────────────────────
 #
 # A "deployment" persists the credentials the user picked when generating
