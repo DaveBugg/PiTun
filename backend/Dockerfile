@@ -17,13 +17,34 @@ ARG XRAY_VERSION=26.3.27
 FROM ${PYTHON_IMAGE} AS xray-fetcher
 ARG XRAY_VERSION
 ARG TARGETARCH
+# SHA-256 digests of the unpacked xray binary per arch, taken from the
+# upstream XTLS/Xray-core v${XRAY_VERSION} release. Pinning the digest
+# at build-time gives us defence-in-depth against:
+#   1. **Upstream republish**: the GitHub release of a tagged version is
+#      mutable — if upstream silently re-uploads a binary with the same
+#      tag, our supply chain would change underneath us. Pinning makes
+#      any such change a hard build failure that we have to consciously
+#      bump.
+#   2. **Transport corruption** during curl: in-flight bit-flips on the
+#      build runner's network or storage that don't trip TLS/Content-
+#      Length checks. (Observed on a 1.3 user device during v1.3.0-
+#      beta.4 install — see the post-mortem in notes.md.)
+#
+# When bumping XRAY_VERSION above, regenerate these by:
+#   for a in 64 arm64-v8a arm32-v7a; do
+#     curl -sL https://github.com/XTLS/Xray-core/releases/download/v${VER}/Xray-linux-$a.zip \
+#       | bsdtar -xOf- xray | sha256sum | awk -v a=$a '{print a, $1}'
+#   done
+ARG XRAY_SHA256_AMD64=8255dd939c34cf966cc91517b6324dd3c8d0bcf49ffac8beca049a38c46845ed
+ARG XRAY_SHA256_ARM64=c2d20a7045250497083afea0d79db0672f6c89a25aaaf37c92de034d6b764b04
+ARG XRAY_SHA256_ARM=b7ea2a82185f0f7a59510b01b24a93cc3c45529dabbf3c97970ad66c49c6b882
 RUN set -eux; \
     apt-get update; \
     apt-get install -y --no-install-recommends ca-certificates curl unzip; \
     case "${TARGETARCH:-amd64}" in \
-        amd64) XRAY_ARCH=64 ;; \
-        arm64) XRAY_ARCH=arm64-v8a ;; \
-        arm)   XRAY_ARCH=arm32-v7a ;; \
+        amd64) XRAY_ARCH=64;          EXPECTED_SHA="${XRAY_SHA256_AMD64}" ;; \
+        arm64) XRAY_ARCH=arm64-v8a;   EXPECTED_SHA="${XRAY_SHA256_ARM64}" ;; \
+        arm)   XRAY_ARCH=arm32-v7a;   EXPECTED_SHA="${XRAY_SHA256_ARM}"   ;; \
         *) echo "Unsupported TARGETARCH: ${TARGETARCH}" >&2; exit 1 ;; \
     esac; \
     URL="https://github.com/XTLS/Xray-core/releases/download/v${XRAY_VERSION}/Xray-linux-${XRAY_ARCH}.zip"; \
@@ -31,6 +52,10 @@ RUN set -eux; \
     curl -fsSL --retry 3 -o /tmp/xray.zip "${URL}"; \
     mkdir -p /tmp/xray-extract; \
     unzip -q /tmp/xray.zip -d /tmp/xray-extract; \
+    # Pinned-sha verification — fails the build if the unpacked binary
+    # doesn't match the expected digest for this arch. See the ARG
+    # block above for what to do when the version changes.
+    echo "${EXPECTED_SHA}  /tmp/xray-extract/xray" | sha256sum -c -; \
     install -m 0755 /tmp/xray-extract/xray /usr/local/bin/xray; \
     /usr/local/bin/xray version | head -1
 

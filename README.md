@@ -595,6 +595,83 @@ in CI. Just re-run the installer with `--version v1.3.0-beta.3` (or
 later); the new image loads cleanly on every Cortex-A72 / A76 we've
 tested.
 
+### Banner: `xray validation failed: (empty stderr)` after upgrade
+
+**Symptom.** Right after a fresh `install.sh` run the dashboard
+displays a red banner *"Валидация конфигурации Xray не прошла /
+xray validation failed: (empty stderr)"*. Backend logs show
+`xray process died unexpectedly (rc=-11)` (SIGSEGV, exit 139)
+and `Auto-restart aborted: config verification failed:` with no
+stderr — `xray -test -config …` segfaults before it can print
+anything.
+
+**Cause.** The bundled `xray` binary inside the freshly-loaded
+Docker image is bit-corrupted. The release tarball on GitHub is
+fine (verified by per-arch sha256 pinning at build time, since
+v1.3.0-beta.5), but `docker load < tarball` writes layer files
+to local storage, and on a flaky SD card / SSD or with active
+ext4 metadata corruption, individual bytes flip silently. The
+binary still has a valid ELF header (so `file` reports it as a
+plain executable), but executing instructions land on garbage
+addresses → segfault.
+
+**Auto-detection.** Since v1.3.0-beta.5, `install.sh` re-runs
+`docker load` up to 3 times and verifies the bundled xray's
+sha256 against a pinned digest after each attempt. If all three
+fail, the installer aborts with a pointer to this section
+instead of leaving you with a non-bootable stack.
+
+**Recovery.**
+
+1. **Verify the diagnosis** — confirm the binary is corrupted
+   (and isn't just a config error):
+   ```bash
+   docker run --rm --entrypoint sha256sum pitun-backend:latest \
+     /usr/local/bin/xray
+   ```
+   Compare to the pinned values in `backend/Dockerfile`
+   (`XRAY_SHA256_AMD64` / `_ARM64` / `_ARM`). If they don't
+   match, you've hit storage corruption.
+
+2. **Check the filesystem** — the most common root cause is
+   ext4 hash-tree (htree) corruption; one or more of:
+   ```bash
+   sudo dumpe2fs -h /dev/<rootdev> | grep -E 'state|First error|Last error'
+   sudo dmesg -T | grep -iE 'ext4|mmc|sd|ata'
+   sudo smartctl -a /dev/<rootdev>   # for SSD/NVMe
+   ```
+   `Filesystem state: clean with errors` plus recent
+   `EFSCORRUPTED` events is a strong signal.
+
+3. **Repair** — schedule an fsck on the next boot:
+   ```bash
+   sudo touch /forcefsck
+   sudo tune2fs -c 1 /dev/<rootdev>
+   sudo reboot
+   ```
+   On a Pi, the boot will pause for fsck (1–10 min depending on
+   disk size and damage). After the reboot, `dumpe2fs` should
+   show `Filesystem state: clean` with no error timestamps.
+
+4. **Recover the data** — `install.sh` makes a pre-upgrade
+   SQLite snapshot at `/opt/pitun/data-backup-pre-vX.Y.Z-*.db`
+   on every run. Compose's `data:/app/data` bind mount also
+   keeps the live DB at `/opt/pitun/data/pitun.db`. Either is a
+   safe starting point if the running stack got into a bad
+   state.
+
+5. **Re-install** — wipe `/var/lib/docker/{overlay2,image,containers}/*`
+   while the daemon is stopped (orphaned layers from the
+   corrupted attempt won't auto-clean), then run `install.sh
+   --version vX.Y.Z` again. The retry loop in step 2 of the
+   installer should now pass.
+
+6. **If it keeps recurring** — the storage hardware is dying.
+   Back up `/opt/pitun/data` + `/opt/pitun/.env` to another
+   machine and swap the SD card / SSD before re-installing.
+   RPi 4 has no ECC RAM and SD cards are notoriously prone to
+   silent bit-rot; an M.2 SSD via USB3 is much more reliable.
+
 ## Development
 
 ```bash

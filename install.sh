@@ -834,7 +834,89 @@ if [[ "$USE_BUILD" != "1" ]]; then
         # prior build (wrong code) or — on a fresh device with no
         # `:latest` at all — falls back to `build:` which needs
         # internet for pip + npm pulls. Both break offline install.
-        be_loaded=$(docker load < "$BACKEND_IMG" | sed -n 's/^Loaded image: //p' | head -n1)
+        # Per-arch sha256 of the unpacked xray binary inside the backend
+        # image. Pinned so we can detect post-`docker load` corruption
+        # (observed on a 1.3 user device during v1.3.0-beta.4 install:
+        # ext4 htree corruption silently flipped bytes in overlay2
+        # layers, producing a binary that segfaulted on `xray version`
+        # while the release tarball itself was bit-perfect — see the
+        # post-mortem in notes.md). The Dockerfile also pins these at
+        # build-time; this is the runtime check on the target device.
+        XRAY_SHA_AMD64="${PITUN_XRAY_SHA_AMD64:-8255dd939c34cf966cc91517b6324dd3c8d0bcf49ffac8beca049a38c46845ed}"
+        XRAY_SHA_ARM64="${PITUN_XRAY_SHA_ARM64:-c2d20a7045250497083afea0d79db0672f6c89a25aaaf37c92de034d6b764b04}"
+        XRAY_SHA_ARM="${PITUN_XRAY_SHA_ARM:-b7ea2a82185f0f7a59510b01b24a93cc3c45529dabbf3c97970ad66c49c6b882}"
+
+        # Wrap docker load + xray-sha verification in a retry loop. Each
+        # attempt: nuke any stale tag, load fresh, run sha256sum on the
+        # bundled xray binary, compare to the pinned expectation. On
+        # mismatch, remove the loaded image + retry up to 3 times.
+        # If all attempts fail, surface a loud error pointing at the
+        # most likely cause (storage corruption — fsck the device).
+        host_arch=$(uname -m 2>/dev/null || echo unknown)
+        case "$host_arch" in
+            x86_64|amd64)        EXPECTED_XRAY_SHA="$XRAY_SHA_AMD64" ;;
+            aarch64|arm64)       EXPECTED_XRAY_SHA="$XRAY_SHA_ARM64" ;;
+            armv7l|armhf|arm)    EXPECTED_XRAY_SHA="$XRAY_SHA_ARM"   ;;
+            *)
+                warn "  Unknown host arch '$host_arch' — skipping xray sha verification"
+                EXPECTED_XRAY_SHA=""
+                ;;
+        esac
+
+        # Helper: load image tarball + verify it (for backend; sha
+        # check applies because xray lives in this image only).
+        load_backend_with_verify() {
+            local attempt
+            for attempt in 1 2 3; do
+                # Clean any remnants of a prior failed attempt so we get
+                # a fresh layer materialisation each retry.
+                docker rmi -f pitun-backend:latest >/dev/null 2>&1 || true
+                be_loaded=$(docker load < "$BACKEND_IMG" \
+                            | sed -n 's/^Loaded image: //p' | head -n1)
+                if [[ -z "$be_loaded" ]]; then
+                    warn "  Backend load (attempt $attempt) returned no tag — retrying"
+                    continue
+                fi
+                if [[ -z "$EXPECTED_XRAY_SHA" ]]; then
+                    # No expected sha for this arch — accept and move on.
+                    return 0
+                fi
+                got_sha=$(docker run --rm --entrypoint sha256sum \
+                            "$be_loaded" /usr/local/bin/xray 2>/dev/null \
+                          | awk '{print $1}')
+                if [[ "$got_sha" == "$EXPECTED_XRAY_SHA" ]]; then
+                    info "  xray sha verified (attempt $attempt) ✓"
+                    return 0
+                fi
+                warn "  xray sha MISMATCH on attempt $attempt — got '$got_sha'"
+                warn "  expected '$EXPECTED_XRAY_SHA' — retrying load…"
+                docker rmi -f "$be_loaded" >/dev/null 2>&1 || true
+            done
+            return 1
+        }
+
+        if ! load_backend_with_verify; then
+            error "Backend image's xray binary is corrupted after $((attempt:-3)) load attempts.
+
+This usually means the host's filesystem or storage hardware is
+flipping bytes during write — the release tarball itself is fine
+(verified by build-time digest pinning).
+
+Recommended actions:
+  1. Reboot the device and run fsck on the root filesystem:
+       sudo touch /forcefsck && sudo reboot
+     (RPi: ext4 may show 'state: clean with errors' — see
+     'sudo dumpe2fs -h /dev/<rootdev> | grep error')
+  2. Check storage health:
+       sudo smartctl -a /dev/<rootdev>     # for SSD/NVMe
+       dmesg | grep -i 'mmc\\|sd\\|ata\\|ext4'  # for SD card
+  3. If fsck finds errors repeatedly, the device's storage is
+     dying — back up /opt/pitun/data + .env to another machine
+     and replace the SD card / SSD before re-installing.
+
+The pre-upgrade snapshot is safe in /opt/pitun/data-backup-pre-*.db"
+        fi
+
         nv_loaded=$(docker load < "$NAIVE_IMG"   | sed -n 's/^Loaded image: //p' | head -n1)
         info "  Loaded backend: ${be_loaded:-<unknown>}"
         info "  Loaded naive:   ${nv_loaded:-<unknown>}"
