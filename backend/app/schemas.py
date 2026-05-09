@@ -442,6 +442,99 @@ class ServerDeploymentRead(ServerDeploymentBase):
     updated_at: Optional[datetime] = None
 
 
+# ─── Deployment clients (multi-client protocols, since v1.3.0-beta.4) ────────
+#
+# A DeploymentClient is one peer config on a server-side deployment.
+# Currently only WireGuard uses this layer; naive stays on the simpler
+# ServerDeployment.last_node_id flow (single-tunnel by nature).
+#
+# The status field tracks lifecycle:
+#   * `available` — fresh, not exported to a Node yet
+#   * `exported`  — at least one Node was created from this client
+#   * `orphan`    — sync detected this client is missing on the server
+#                   (peer was removed via wg-quick / by another PiTun
+#                   instance / via the host's CLI). Row is kept for
+#                   forensics; admin decides whether to re-create on
+#                   the server or delete locally.
+
+class DeploymentClientBase(BaseModel):
+    name: str  # human-readable peer name, e.g. "phone"
+
+
+class DeploymentClientCreate(DeploymentClientBase):
+    """Request body for `POST /servers/{id}/deployments/wireguard/clients`.
+
+    Just the name — server-side keys + IP allocation happen on the
+    remote VPS as part of the script run, then the resulting peer
+    config is parsed back into a DeploymentClient row.
+    """
+    pass
+
+
+class DeploymentClientRead(DeploymentClientBase):
+    """API shape for client listing — does NOT include `wg_private_key`
+    or `wg_preshared_key` by default. Those are exposed only via
+    `GET /clients/{name}/conf` when the user explicitly downloads the
+    config (e.g. for QR-code generation on a phone). Same threat model
+    as Node: PiTun is LAN-only, but minimising secret exposure across
+    list calls is cheap.
+    """
+    id: int
+    deployment_id: int
+    wg_public_key: Optional[str] = None
+    wg_endpoint: Optional[str] = None       # "host:port"
+    wg_local_address: Optional[str] = None  # "10.66.66.2/24,fd42:...:2/64"
+    wg_mtu: int = 1420
+    dns_servers: Optional[str] = None
+    allowed_ips: Optional[str] = None
+    status: str
+    # Set when the client has been exported to one or more Nodes. Lets
+    # the UI show "linked to Node #42" without an extra query.
+    exported_node_ids: List[int] = []
+    created_at: Optional[datetime] = None
+    last_synced_at: Optional[datetime] = None
+
+
+class DeploymentClientConf(BaseModel):
+    """Full per-client config (including private key) — used by
+    `GET /clients/{name}/conf` to return the WireGuard `.conf` text
+    for download / QR display. Returned ONCE on demand; never in
+    list endpoints.
+    """
+    name: str
+    wg_conf: str  # ready-to-paste [Interface]+[Peer] INI
+
+
+class DeploymentClientList(BaseModel):
+    clients: List[DeploymentClientRead]
+
+
+class DeploymentClientSyncResult(BaseModel):
+    """Outcome of `POST /servers/{id}/deployments/wireguard/clients/sync`.
+
+    Reconcile pass against the server's current peer list:
+      * `added`    — server-only peers we just imported into our DB
+      * `unchanged` — peers we already knew about, status unchanged
+      * `orphaned` — PiTun-side peers that aren't on the server any
+                     more (status flipped to `orphan`)
+    """
+    added: List[str] = []
+    unchanged: List[str] = []
+    orphaned: List[str] = []
+
+
+class ExportClientToNodeRequest(BaseModel):
+    """Body for `POST /servers/{id}/deployments/wireguard/clients/{name}/export-node`.
+
+    All fields optional; sensible defaults derived from the client +
+    server context if omitted:
+      * `node_name` defaults to the client name
+      * `enabled` defaults to true
+    """
+    node_name: Optional[str] = None
+    enabled: bool = True
+
+
 # ─── Routing Rules ────────────────────────────────────────────────────────────
 
 class RoutingRuleBase(BaseModel):
