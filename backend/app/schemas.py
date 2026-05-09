@@ -435,10 +435,17 @@ class ServerDeploymentBase(BaseModel):
     @field_validator("protocol")
     @classmethod
     def validate_protocol(cls, v: str) -> str:
-        # Only naive shipped in this release; gate here so a typo at the
-        # API doesn't quietly create a "wireguard" row that nothing else
-        # knows about. Loosen when WG / Hy2 deployments land.
-        valid = {"naive"}
+        # Gate the protocol string on **both** request and response paths.
+        # The runner/router code branches on this value, so a typo here
+        # would silently create a row nothing else can deserialise. As
+        # of v1.3.0-beta.4 we accept naive (single-tunnel) and wireguard
+        # (multi-client via DeploymentClient). Loosen further when Hy2 /
+        # XTLS deployments land. NB: the read path also uses this base
+        # — when adding a new protocol, both ServerDeployRequest's
+        # validator (in core/deploy.SUPPORTED_PROTOCOLS) AND this set
+        # need to grow in lockstep, otherwise listing existing rows
+        # 500s on the new protocol.
+        valid = {"naive", "wireguard"}
         if v not in valid:
             raise ValueError(f"protocol must be one of {valid}")
         return v
