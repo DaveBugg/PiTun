@@ -310,7 +310,7 @@ async def deploy_to_server(
     async def runner(job_id: str, on_line):
         from app.core.ssh import exec_remote_script_streaming
         from app.core.uri_parser import parse_uri
-        from app.core.deploy import extract_uri
+        from app.core.deploy import extract_uri, MULTI_CLIENT_PROTOCOLS
 
         result = await exec_remote_script_streaming(
             host=srv_host,
@@ -326,68 +326,176 @@ async def deploy_to_server(
 
         parsed_uri: Optional[str] = None
         new_node_id: Optional[int] = None
+        new_client_id: Optional[int] = None
         final_status = "failed"
+
+        is_multi_client = body.protocol in MULTI_CLIENT_PROTOCOLS
 
         if result.ok:
             parsed_uri = extract_uri(result.stdout, body.protocol)
             if parsed_uri:
                 node_dict = parse_uri(parsed_uri)
                 if node_dict:
-                    # Open our own session — the request-scoped one is
-                    # long gone by now.
-                    async with AsyncSession(get_async_engine()) as s:
-                        node = Node(**{
-                            k: v for k, v in node_dict.items() if hasattr(Node, k)
-                        })
-                        s.add(node)
-                        await s.flush()
-                        new_node_id = node.id
-                        await s.commit()
-                    final_status = "deployed"
+                    # ── Single-client path (naive, …) ───────────────────
+                    # Result of deploy = one Node directly. Same flow
+                    # as v1.3.0-beta.3 and earlier.
+                    if not is_multi_client:
+                        async with AsyncSession(get_async_engine()) as s:
+                            node = Node(**{
+                                k: v for k, v in node_dict.items() if hasattr(Node, k)
+                            })
+                            node.server_id = srv_id  # link to source Server
+                            s.add(node)
+                            await s.flush()
+                            new_node_id = node.id
+                            await s.commit()
+                        final_status = "deployed"
+                    else:
+                        # ── Multi-client path (wireguard) ───────────────
+                        # Result of deploy = one DeploymentClient row,
+                        # NOT a Node. Admin clicks "Export to Node" later
+                        # to actually route traffic through this peer.
+                        # The rest of the WG client lifecycle (add more,
+                        # remove, sync) goes through
+                        # /servers/{id}/deployments/wireguard/clients
+                        # endpoints (see api/server_clients.py).
+                        from app.models import DeploymentClient
+                        client_name = plan.env.get("CLIENT_NAME") or "client"
+                        # Pull the inline INI conf from script stdout
+                        # so future "Download conf" works without
+                        # re-asking the server.
+                        from app.api.server_clients import (
+                            _extract_inline_conf, _parse_ini_field,
+                        )
+                        inline_conf = _extract_inline_conf(
+                            result.stdout, client_name
+                        )
+                        async with AsyncSession(get_async_engine()) as s:
+                            # Need the deployment row first — create it
+                            # if missing, then attach the client.
+                            existing_dep = (await s.exec(
+                                select(ServerDeployment)
+                                .where(ServerDeployment.server_id == srv_id)
+                                .where(ServerDeployment.protocol == body.protocol)
+                            )).first()
+                            if not existing_dep:
+                                # WG-specific config: server-level state
+                                # (port, network, DNS) — peers go to
+                                # DeploymentClient rows below.
+                                wg_dep_config = {
+                                    "server_port": int(plan.env.get("SERVER_PORT", "51820")),
+                                    "wg_network_4": plan.env.get("WG_NETWORK_4", "10.66.66.0/24"),
+                                    "wg_network_6": plan.env.get("WG_NETWORK_6", "fd42:42:42::/64"),
+                                    "dns_1": plan.env.get("DNS_1", "1.1.1.1"),
+                                    "dns_2": plan.env.get("DNS_2", "1.0.0.1"),
+                                    "allowed_ips": plan.env.get("ALLOWED_IPS", "0.0.0.0/0,::/0"),
+                                }
+                                existing_dep = ServerDeployment(
+                                    server_id=srv_id,
+                                    protocol=body.protocol,
+                                    config_json=json.dumps(wg_dep_config),
+                                    status="deployed",
+                                )
+                                s.add(existing_dep)
+                                await s.flush()
+                            client = DeploymentClient(
+                                deployment_id=existing_dep.id,
+                                name=client_name,
+                                wg_private_key=node_dict.get("wg_private_key"),
+                                wg_public_key=node_dict.get("wg_public_key"),
+                                wg_preshared_key=node_dict.get("wg_preshared_key"),
+                                wg_endpoint=node_dict.get("wg_endpoint"),
+                                wg_mtu=node_dict.get("wg_mtu", 1420),
+                                wg_local_address=node_dict.get("wg_local_address"),
+                                dns_servers=_parse_ini_field(inline_conf, "DNS"),
+                                allowed_ips=_parse_ini_field(inline_conf, "AllowedIPs"),
+                                config_json=(
+                                    json.dumps({"client_conf_ini": inline_conf})
+                                    if inline_conf else None
+                                ),
+                                status="available",
+                                last_synced_at=datetime.now(timezone.utc),
+                            )
+                            s.add(client)
+                            await s.flush()
+                            new_client_id = client.id
+                            await s.commit()
+                        final_status = "deployed"  # client landed
                 else:
                     final_status = "deployed_no_uri"
             else:
                 final_status = "deployed_no_uri"
 
-        # Upsert ServerDeployment in a fresh session.
-        deployment_config = {
-            "domain": plan.env.get("DOMAIN"),
-            "email": plan.env.get("EMAIL"),
-            "naive_user": plan.env.get("NAIVE_USER"),
-            # naive_pass intentionally omitted (CWE-312 — it's already
-            # on the Node URI; no need to duplicate plain-text)
-        }
-        deployment_config_json = json.dumps(deployment_config)
+        # Upsert ServerDeployment in a fresh session — for naive only;
+        # WG already created/looked-up the row above.
         now = datetime.now(timezone.utc)
+        if not is_multi_client:
+            deployment_config = {
+                "domain": plan.env.get("DOMAIN"),
+                "email": plan.env.get("EMAIL"),
+                "naive_user": plan.env.get("NAIVE_USER"),
+                # naive_pass intentionally omitted (CWE-312 — it's already
+                # on the Node URI; no need to duplicate plain-text)
+            }
+            deployment_config_json = json.dumps(deployment_config)
 
-        async with AsyncSession(get_async_engine()) as s:
-            existing_dep = (await s.exec(
-                select(ServerDeployment)
-                .where(ServerDeployment.server_id == srv_id)
-                .where(ServerDeployment.protocol == body.protocol)
-            )).first()
+            async with AsyncSession(get_async_engine()) as s:
+                existing_dep = (await s.exec(
+                    select(ServerDeployment)
+                    .where(ServerDeployment.server_id == srv_id)
+                    .where(ServerDeployment.protocol == body.protocol)
+                )).first()
 
-            if existing_dep:
-                existing_dep.config_json = deployment_config_json
-                existing_dep.status = final_status
-                existing_dep.updated_at = now
-                if new_node_id is not None:
-                    existing_dep.last_node_id = new_node_id
-                s.add(existing_dep)
-                await s.flush()
-                deployment_id = existing_dep.id
-            else:
-                new_dep = ServerDeployment(
-                    server_id=srv_id,
-                    protocol=body.protocol,
-                    config_json=deployment_config_json,
-                    status=final_status,
-                    last_node_id=new_node_id,
-                )
-                s.add(new_dep)
-                await s.flush()
-                deployment_id = new_dep.id
-            await s.commit()
+                if existing_dep:
+                    existing_dep.config_json = deployment_config_json
+                    existing_dep.status = final_status
+                    existing_dep.updated_at = now
+                    if new_node_id is not None:
+                        existing_dep.last_node_id = new_node_id
+                    s.add(existing_dep)
+                    await s.flush()
+                    deployment_id = existing_dep.id
+                else:
+                    new_dep = ServerDeployment(
+                        server_id=srv_id,
+                        protocol=body.protocol,
+                        config_json=deployment_config_json,
+                        status=final_status,
+                        last_node_id=new_node_id,
+                    )
+                    s.add(new_dep)
+                    await s.flush()
+                    deployment_id = new_dep.id
+                await s.commit()
+        else:
+            # WG: deployment row already created above. Re-fetch its id.
+            async with AsyncSession(get_async_engine()) as s:
+                existing_dep = (await s.exec(
+                    select(ServerDeployment)
+                    .where(ServerDeployment.server_id == srv_id)
+                    .where(ServerDeployment.protocol == body.protocol)
+                )).first()
+                deployment_id = existing_dep.id if existing_dep else None
+                # On failed runs we still want a deployment row to
+                # surface the failure in the UI badge, even if no
+                # client landed.
+                if existing_dep is None:
+                    new_dep = ServerDeployment(
+                        server_id=srv_id,
+                        protocol=body.protocol,
+                        config_json="{}",
+                        status=final_status,
+                        last_node_id=None,
+                    )
+                    s.add(new_dep)
+                    await s.flush()
+                    deployment_id = new_dep.id
+                    await s.commit()
+                elif final_status != "deployed":
+                    existing_dep.status = final_status
+                    existing_dep.updated_at = now
+                    s.add(existing_dep)
+                    await s.commit()
 
         if not result.ok:
             # Surface the runner-level failure so the operator can grep
@@ -408,12 +516,13 @@ async def deploy_to_server(
 
         # Result returned to JobManager — written to Job.result_json
         # and surfaced via JobRead.result on the API. Frontend uses
-        # `result.node_id` / `result.parsed_uri` for the "Open node"
-        # affordance; `result.status` distinguishes deployed vs
-        # deployed_no_uri vs failed.
+        # `result.node_id` (single-client) or `result.client_id`
+        # (multi-client) for the post-deploy affordance; `result.status`
+        # distinguishes deployed vs deployed_no_uri vs failed.
         return {
             "deployment_id": deployment_id,
-            "node_id": new_node_id,
+            "node_id": new_node_id,           # single-client only
+            "client_id": new_client_id,       # multi-client (WG) only
             "status": final_status,
             "exit_code": result.exit_code,
             "duration_sec": result.duration_sec,
