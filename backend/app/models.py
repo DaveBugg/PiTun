@@ -109,6 +109,20 @@ class Node(SQLModel, table=True):
     # delete (FK ON DELETE SET NULL handled in migration).
     server_id: Optional[int] = Field(default=None, foreign_key="server.id")
 
+    # Multi-client provenance (since v1.3.0-beta.4). Set when this Node was
+    # created via "Export to Node" from a `DeploymentClient` row (currently
+    # WireGuard peer configs). Lets the Nodes UI show "from <Server> ·
+    # <client_name>" instead of treating the Node as a free-floating import.
+    # Nullable: pre-multi-client Nodes (URI imports, manual adds) leave it NULL.
+    from_deployment_client_id: Optional[int] = None
+
+    # Set when a sync against the server detects the source DeploymentClient
+    # is missing on the server (peer was removed externally — manual wg-quick,
+    # another PiTun instance, host CLI). The Node row is NOT auto-deleted —
+    # admin choice; UI shows a "server-side client deleted" badge so it's
+    # visible at a glance that the tunnel will fail to handshake.
+    client_orphan: bool = False
+
 
 class ServerDeployment(SQLModel, table=True):
     """A configured "deployment plan" for a specific protocol on a Server.
@@ -150,6 +164,81 @@ class ServerDeployment(SQLModel, table=True):
 
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class DeploymentClient(SQLModel, table=True):
+    """Server-side client config tracked separately from Node (v1.3.0-beta.4).
+
+    For multi-client protocols (initially WireGuard), one Server can host
+    many independent peer configs. We persist them here BEFORE deciding
+    whether to expose them as Nodes — gives the user a "browse server-side
+    state" layer without polluting the Node table with every peer the
+    server admin happens to have configured.
+
+    Workflow:
+      * Initial deploy / Add client (via UI button) → SSH to the server,
+        run `setup-wireguard-server.sh add-client <name>`, parse the URI
+        it returns, INSERT a row here with status='available'.
+      * Sync (UI button) → `setup-wireguard-server.sh list-clients`
+        returns JSON of currently-configured peers. Reconcile:
+          - server-only → INSERT here (admin from another machine added
+            it; we want it visible)
+          - PiTun-only → flip status='orphan' (peer was removed
+            externally; we keep the row for forensics)
+      * Export to Node → create a `Node` row, copy the wg_* fields,
+        link Node.from_deployment_client_id back to this row, set
+        DeploymentClient.status='exported'. Multiple Nodes may be
+        exported from the same client (rare but allowed — e.g. when
+        re-importing into a fresh PiTun instance after an init).
+      * Remove client → SSH `remove-client <name>` + DELETE this row.
+        If any Node was exported, it's NOT auto-deleted — instead its
+        client_orphan flag goes true on the next sync (or immediately
+        from the Remove handler).
+
+    Naive (single-tunnel by nature) keeps the existing
+    ServerDeployment.last_node_id flow in beta.4 and may be unified
+    into this model later for consistency.
+    """
+
+    __table_args__ = (
+        UniqueConstraint(
+            "deployment_id", "name", name="uq_deploymentclient_deployment_name"
+        ),
+    )
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    deployment_id: int = Field(foreign_key="serverdeployment.id", index=True)
+    # Human-readable peer name. Sane charset enforced by add-client
+    # subcommand (alphanumeric + - _ only) so the script's local
+    # variables / file paths can't be tampered with.
+    name: str = Field(max_length=100)
+
+    # WireGuard peer fields. Values mirror Node.wg_* one-to-one so
+    # "Export to Node" is a flat copy. Stored here as well because the
+    # server's wg0.conf only has the peer's PUBLIC key + AllowedIPs;
+    # the client's PRIVATE key is generated at add-client time and not
+    # retrievable from the server afterwards. Lose this row → lose
+    # the client conf entirely.
+    wg_private_key: Optional[str] = None
+    wg_public_key: Optional[str] = None
+    wg_preshared_key: Optional[str] = None
+    wg_endpoint: Optional[str] = None      # "host:port"
+    wg_mtu: int = 1420
+    wg_local_address: Optional[str] = None  # "10.66.66.2/24,fd42:42:42::2/64"
+
+    # Server context (denormalized so export-to-Node is one SELECT).
+    dns_servers: Optional[str] = None      # "1.1.1.1,1.0.0.1"
+    allowed_ips: Optional[str] = None      # "0.0.0.0/0,::/0"
+
+    # Free-form JSON for protocol extras / verbatim conf backup.
+    # WG: full INI conf (so admin can re-download .conf even after
+    # exporting). Future protocols can stash whatever they need here.
+    config_json: Optional[str] = None
+
+    # Lifecycle: available | exported | orphan
+    status: str = Field(default="available", max_length=16)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    last_synced_at: Optional[datetime] = None
 
 
 class Server(SQLModel, table=True):
