@@ -7,6 +7,7 @@ import type {
   Subscription, SubscriptionCreate, SubscriptionUpdate,
   SystemStatus, SystemSettings, SystemVersions, ProxyMode,
   GeoDataStatus, GeoUpdateProgress,
+  DecoyTemplate,
   DnsRule, DnsRuleCreate, DnsRuleUpdate, DnsSettings, DnsTestResult,
   DnsQueryLog, DnsQueryStats,
   HealthResult, SpeedTestResult,
@@ -250,6 +251,17 @@ export const systemApi = {
 
 // ── GeoData ───────────────────────────────────────────────────────────────────
 
+// ── Decoy templates (since v1.3.0-beta.6) ───────────────────────────────────
+
+export const templatesApi = {
+  /** Curated gallery of decoy-site options the user can pick when
+   * deploying NaiveProxy. Read-only in Phase 1 — Phase 2 will add
+   * a POST /upload endpoint here for user-supplied .zip archives. */
+  list: () =>
+    http.get<DecoyTemplate[]>('/templates').then(r => r.data),
+}
+
+
 export const geodataApi = {
   status: () =>
     http.get<GeoDataStatus>('/geodata/status').then(r => r.data),
@@ -407,7 +419,7 @@ export const serversApi = {
   // and pays a tiny memory cost (script is ~1 KB).
   downloadNaiveInstallScript: async (
     id: number,
-    params: { domain: string; email: string; naive_user?: string; naive_pass?: string },
+    params: { domain: string; email: string; naive_user?: string; naive_pass?: string; template_id?: string },
   ): Promise<void> => {
     const r = await http.get(`/servers/${id}/naive-install-script`, {
       params,
@@ -558,7 +570,7 @@ export const serversApi = {
 
 export const scriptsApi = {
   downloadNaiveInstall: async (
-    params: { domain: string; email: string; naive_user?: string; naive_pass?: string },
+    params: { domain: string; email: string; naive_user?: string; naive_pass?: string; template_id?: string },
   ): Promise<void> => {
     const r = await http.get('/scripts/naive-install', {
       params,

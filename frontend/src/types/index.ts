@@ -647,6 +647,29 @@ export interface NaiveDeploymentConfig {
   email?: string
   naive_user?: string
   naive_pass?: string
+  /** Decoy-site template id from `GET /api/templates`. When set,
+   * the install script either curls a single-file template into
+   * `/var/www/html/index.html` or git-clones a multi-file repo,
+   * depending on the template's `kind`. Unset = script default
+   * (currently `pacman` git repo). Since v1.3.0-beta.6. */
+  template_id?: string
+}
+
+
+// ── Decoy-site templates (since v1.3.0-beta.6) ─────────────────────────────
+//
+// Curated gallery the user picks from in the Naive install forms.
+// Backend resolves the id to the right env var (TEMPLATE_HTML_URL or
+// DECOY_REPO) when generating the install script. See
+// `backend/app/core/templates.py` for the source of truth.
+
+export type DecoyTemplateKind = 'single_html' | 'git_repo'
+
+export interface DecoyTemplate {
+  id: string
+  label: string
+  description: string
+  kind: DecoyTemplateKind
 }
 
 /** WireGuard server-level state, persisted in `ServerDeployment.config_json`.

@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Margaret's Notebook — Notes on systems, design, and the occasional pastry</title>
+<meta name="description" content="Personal blog by Margaret R. — software, design, and the slow life.">
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+html{font-family:Georgia,"Times New Roman",serif;color:#222;background:#fafaf7;line-height:1.7}
+body{max-width:680px;margin:0 auto;padding:3rem 1.5rem}
+header{margin-bottom:3rem;padding-bottom:1.5rem;border-bottom:1px solid #d4d4c8}
+h1.site{font-size:1.5rem;font-weight:400;font-style:italic;color:#5a4a3a}
+header p{color:#888;font-size:.9rem;margin-top:.25rem}
+nav{margin-top:1rem;font-size:.875rem}
+nav a{color:#777;text-decoration:none;margin-right:1.5rem}
+nav a:hover{color:#222}
+article{margin-bottom:3rem}
+article h2{font-size:1.5rem;font-weight:700;margin-bottom:.5rem;color:#1a1a1a}
+article h2 a{color:inherit;text-decoration:none}
+article h2 a:hover{color:#5a4a3a}
+.meta{color:#999;font-size:.85rem;margin-bottom:1rem;font-family:-apple-system,BlinkMacSystemFont,sans-serif}
+.meta time{margin-right:.75rem}
+.tag{background:#ede8dd;color:#5a4a3a;padding:.1rem .5rem;border-radius:3px;font-size:.75rem;text-decoration:none;margin-right:.25rem}
+article p{margin-bottom:1rem;color:#3a3a3a}
+article p.excerpt::after{content:" Read more →";color:#5a4a3a;font-style:italic}
+hr{border:none;border-top:1px dotted #d4d4c8;margin:2.5rem 0}
+footer{margin-top:4rem;padding-top:1.5rem;border-top:1px solid #d4d4c8;text-align:center;color:#888;font-size:.875rem;font-family:-apple-system,sans-serif}
+</style>
+</head>
+<body>
+<header>
+  <h1 class="site">Margaret's Notebook</h1>
+  <p>Notes on systems, design, and the occasional pastry.</p>
+  <nav>
+    <a href="#">Home</a>
+    <a href="#archive">Archive</a>
+    <a href="#about">About</a>
+    <a href="#feed">RSS</a>
+  </nav>
+</header>
+
+<article>
+  <h2><a href="#">The case for boring infrastructure</a></h2>
+  <div class="meta">
+    <time datetime="2026-04-18">April 18, 2026</time>
+    <a class="tag" href="#">infrastructure</a>
+    <a class="tag" href="#">opinion</a>
+  </div>
+  <p class="excerpt">Last week I migrated a side project off Kubernetes and onto a single $5 VPS running systemd. The latency dropped, the bill dropped, and — most importantly — I started shipping again. Here's what I learned, and why I think most teams under thirty engineers should resist the urge to "scale" preemptively.</p>
+</article>
+
+<hr>
+
+<article>
+  <h2><a href="#">Sourdough is just a slow database</a></h2>
+  <div class="meta">
+    <time datetime="2026-03-30">March 30, 2026</time>
+    <a class="tag" href="#">cooking</a>
+    <a class="tag" href="#">analogy</a>
+  </div>
+  <p class="excerpt">A loaf of bread is the result of a four-day write-ahead log: feed the starter, ferment the dough, shape, retard, bake. Skip a stage and the loaf gets gummy. That's exactly how I think about deploys at work — every shortcut is a future midnight page.</p>
+</article>
+
+<hr>
+
+<article>
+  <h2><a href="#">Six months of using a fountain pen for code review</a></h2>
+  <div class="meta">
+    <time datetime="2026-02-12">February 12, 2026</time>
+    <a class="tag" href="#">workflow</a>
+    <a class="tag" href="#">tools</a>
+  </div>
+  <p class="excerpt">Yes, really. I print the diff and walk to a café with a Pilot Custom 74 and a Hobonichi Techo. I find issues I would have missed on screen — but the surprising win wasn't bug-finding. It was that the coworkers I review for started writing better PR descriptions.</p>
+</article>
+
+<hr>
+
+<article>
+  <h2><a href="#">A small grammar of error messages</a></h2>
+  <div class="meta">
+    <time datetime="2026-01-22">January 22, 2026</time>
+    <a class="tag" href="#">writing</a>
+    <a class="tag" href="#">UX</a>
+  </div>
+  <p class="excerpt">Most error messages tell you what failed. Good ones also tell you what to do next. Great ones treat you like a colleague. I collected the patterns I keep coming back to in postmortems and PR comments — fewer "invalid input" walls, more "did you mean…?".</p>
+</article>
+
+<footer>
+  © 2026 Margaret R. · Built with care, not automation · <a href="#" style="color:inherit">Subscribe</a>
+</footer>
+</body>
+</html>

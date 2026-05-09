@@ -17,6 +17,7 @@ import { ModalShell } from '@/components/ModalShell'
 import { useConfirm } from '@/components/ConfirmModal'
 import { DeployModal } from '@/components/DeployModal'
 import { ManageClientsModal } from '@/components/ManageClientsModal'
+import { TemplatePicker } from '@/components/TemplatePicker'
 import {
   useServers,
   useCreateServer,
@@ -684,11 +685,13 @@ function ManualScriptModal({ mode, onClose }: { mode: ScriptModalMode; onClose: 
   // Naive-specific config view — narrow the union'd DeploymentConfig.
   const naiveCfg = (existingNaive?.config ?? {}) as {
     domain?: string; email?: string; naive_user?: string; naive_pass?: string
+    template_id?: string
   }
   const [domain, setDomain] = useState(naiveCfg.domain ?? '')
   const [email, setEmail] = useState(naiveCfg.email ?? '')
   const [naiveUser, setNaiveUser] = useState(naiveCfg.naive_user ?? 'pitun')
   const [naivePass, setNaivePass] = useState(naiveCfg.naive_pass ?? '')
+  const [naiveTemplateId, setNaiveTemplateId] = useState<string | undefined>(naiveCfg.template_id)
 
   // WireGuard-specific. `client_name` is per-deploy and not stored on
   // ServerDeployment.config (the script picks it up from env), so it
@@ -705,7 +708,10 @@ function ManualScriptModal({ mode, onClose }: { mode: ScriptModalMode; onClose: 
 
   const upsertDeployment = useUpsertDeployment()
 
-  type NaiveParams = { domain: string; email: string; naive_user?: string; naive_pass: string }
+  type NaiveParams = {
+    domain: string; email: string; naive_user?: string; naive_pass: string
+    template_id?: string
+  }
   type WgParams = {
     client_name?: string
     server_port?: number
@@ -728,6 +734,7 @@ function ManualScriptModal({ mode, onClose }: { mode: ScriptModalMode; onClose: 
       email: email.trim(),
       naive_user: naiveUser.trim() || undefined,
       naive_pass: finalPass,
+      template_id: naiveTemplateId,
     }
   }
 
@@ -759,6 +766,7 @@ function ManualScriptModal({ mode, onClose }: { mode: ScriptModalMode; onClose: 
           email: params.email,
           naive_user: params.naive_user,
           naive_pass: params.naive_pass,
+          template_id: params.template_id,
         },
       },
     })
@@ -972,6 +980,18 @@ function ManualScriptModal({ mode, onClose }: { mode: ScriptModalMode; onClose: 
                 value={naivePass}
                 onChange={(e) => setNaivePass(e.target.value)}
                 className={inputCls}
+              />
+            </FieldL>
+            <FieldL
+              label={t('Decoy site (cover page)', 'Обложка-приманка')}
+              hint={t(
+                'what unauthenticated visitors see at the proxy domain',
+                'что увидит случайный посетитель на домене прокси',
+              )}
+            >
+              <TemplatePicker
+                value={naiveTemplateId}
+                onChange={(id) => setNaiveTemplateId(id)}
               />
             </FieldL>
           </div>

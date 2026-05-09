@@ -32,6 +32,7 @@ async def naive_install(
     email: str = Query(..., description="Let's Encrypt registration email"),
     naive_user: Optional[str] = Query(None, description="Defaults to 'pitun'"),
     naive_pass: Optional[str] = Query(None, description="Auto-generated if absent"),
+    template_id: Optional[str] = Query(None, description="Decoy template id (see /api/templates)"),
 ):
     """Server-agnostic NaiveProxy install bootstrap.
 
@@ -47,6 +48,7 @@ async def naive_install(
         naive_pass=naive_pass,
         server_label=None,
         suggested_filename=filename,
+        template_id=template_id,
     )
     return PlainTextResponse(
         content=script,

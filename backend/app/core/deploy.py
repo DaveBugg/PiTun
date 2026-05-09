@@ -116,6 +116,7 @@ def build_naive_env(
     email: str,
     naive_user: Optional[str] = None,
     naive_pass: Optional[str] = None,
+    template_id: Optional[str] = None,
 ) -> dict[str, str]:
     """Build the env-var dict for `setup-naive-server.sh`.
 
@@ -131,11 +132,22 @@ def build_naive_env(
         raise ValueError("domain is required")
     if not email:
         raise ValueError("email is required")
+
+    # Resolve the optional decoy-site template id to its env-var
+    # representation. Unknown / unset ids fall back to the script's
+    # built-in default (DECOY_REPO=daleharvey/pacman). See
+    # `app.core.templates.resolve_to_env` for the full mapping.
+    from app.core.templates import resolve_to_env as _tpl_env
+    template_env = _tpl_env(template_id)
+
     return {
         "DOMAIN": domain,
         "EMAIL": email,
         "NAIVE_USER": naive_user or "pitun",
         "NAIVE_PASS": naive_pass or secrets.token_urlsafe(24),
+        # Template overrides (mutually exclusive at the script level —
+        # `TEMPLATE_HTML_URL` wins when both are set).
+        **template_env,
         # Skip the script's interactive read prompts. setup-naive-server.sh
         # uses bash `read -r -p` for SSH-hardening / fail2ban / "continue
         # anyway?" questions, which block forever when the script runs
@@ -235,6 +247,7 @@ def build_plan(protocol: str, config: dict) -> DeployPlan:
             email=config.get("email", ""),
             naive_user=config.get("naive_user"),
             naive_pass=config.get("naive_pass"),
+            template_id=config.get("template_id"),
         )
     elif protocol == "wireguard":
         # WG `install` sub-command bootstraps the server AND adds the

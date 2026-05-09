@@ -9,6 +9,7 @@ import {
 
 import { serversApi } from '@/api/client'
 import { ModalShell } from '@/components/ModalShell'
+import { TemplatePicker } from '@/components/TemplatePicker'
 import { useT } from '@/hooks/useT'
 import { useDeployments } from '@/hooks/useServers'
 import {
@@ -70,11 +71,18 @@ export function DeployModal({
   // Naive fields
   const naiveCfg = (existingNaive?.config ?? {}) as {
     domain?: string; email?: string; naive_user?: string; naive_pass?: string
+    template_id?: string
   }
   const [domain, setDomain] = useState(naiveCfg.domain ?? '')
   const [email, setEmail] = useState(naiveCfg.email ?? '')
   const [naiveUser, setNaiveUser] = useState(naiveCfg.naive_user ?? 'pitun')
   const [naivePass, setNaivePass] = useState(naiveCfg.naive_pass ?? '')
+  // Decoy-site template (since v1.3.0-beta.6). `undefined` = let
+  // the script use its built-in default; the picker renders it as
+  // first-card-selected so the user sees what's going to be used.
+  const [naiveTemplateId, setNaiveTemplateId] = useState<string | undefined>(
+    naiveCfg.template_id,
+  )
 
   // WireGuard fields. Server-side ServerDeployment.config_json mirrors
   // the WireGuardDeploymentConfig shape; we pre-fill from it so re-deploys
@@ -110,6 +118,7 @@ export function DeployModal({
         naive_user: naiveUser.trim() || undefined,
         // Empty pass → backend will auto-generate `secrets.token_urlsafe(24)`
         naive_pass: naivePass.trim() || undefined,
+        template_id: naiveTemplateId,
       }
     }
     // wireguard
@@ -178,6 +187,7 @@ export function DeployModal({
             email={email}
             naiveUser={naiveUser}
             naivePass={naivePass}
+            naiveTemplateId={naiveTemplateId}
             wgClientName={wgClientName}
             wgServerPort={wgServerPort}
             wgDns1={wgDns1}
@@ -189,6 +199,7 @@ export function DeployModal({
             setEmail={setEmail}
             setNaiveUser={setNaiveUser}
             setNaivePass={setNaivePass}
+            setNaiveTemplateId={setNaiveTemplateId}
             setWgClientName={setWgClientName}
             setWgServerPort={setWgServerPort}
             setWgDns1={setWgDns1}
@@ -219,6 +230,7 @@ function DeployForm(props: {
   protocol: ServerDeploymentProtocol
   setProtocol: (p: ServerDeploymentProtocol) => void
   domain: string; email: string; naiveUser: string; naivePass: string
+  naiveTemplateId: string | undefined
   wgClientName: string; wgServerPort: string; wgDns1: string
   wgDns2: string; wgAllowedIps: string
   error: string; submitting: boolean
@@ -226,6 +238,7 @@ function DeployForm(props: {
   setEmail: (v: string) => void
   setNaiveUser: (v: string) => void
   setNaivePass: (v: string) => void
+  setNaiveTemplateId: (v: string | undefined) => void
   setWgClientName: (v: string) => void
   setWgServerPort: (v: string) => void
   setWgDns1: (v: string) => void
@@ -269,10 +282,12 @@ function DeployForm(props: {
           email={props.email}
           naiveUser={props.naiveUser}
           naivePass={props.naivePass}
+          templateId={props.naiveTemplateId}
           setDomain={props.setDomain}
           setEmail={props.setEmail}
           setNaiveUser={props.setNaiveUser}
           setNaivePass={props.setNaivePass}
+          setTemplateId={props.setNaiveTemplateId}
         />
       ) : (
         <WireGuardFields
@@ -472,10 +487,12 @@ function DeployRunning({
 
 function NaiveFields(props: {
   domain: string; email: string; naiveUser: string; naivePass: string
+  templateId: string | undefined
   setDomain: (v: string) => void
   setEmail: (v: string) => void
   setNaiveUser: (v: string) => void
   setNaivePass: (v: string) => void
+  setTemplateId: (v: string | undefined) => void
 }) {
   const t = useT()
   return (
@@ -521,6 +538,18 @@ function NaiveFields(props: {
           value={props.naivePass}
           onChange={(e) => props.setNaivePass(e.target.value)}
           className={inputCls}
+        />
+      </FieldL>
+      <FieldL
+        label={t('Decoy site (cover page)', 'Обложка-приманка')}
+        hint={t(
+          'what unauthenticated visitors see at the proxy domain',
+          'что увидит случайный посетитель на домене прокси',
+        )}
+      >
+        <TemplatePicker
+          value={props.templateId}
+          onChange={(id) => props.setTemplateId(id)}
         />
       </FieldL>
     </div>

@@ -268,7 +268,7 @@ app.add_middleware(
 )
 
 # ── Routers ───────────────────────────────────────────────────────────────────
-from app.api import nodes, routing, subscriptions, system, geodata, logs, dns, balancers, auth, nodecircle, devices, diagnostics, events, servers, scripts, server_tasks, server_clients
+from app.api import nodes, routing, subscriptions, system, geodata, logs, dns, balancers, auth, nodecircle, devices, diagnostics, events, servers, scripts, server_tasks, server_clients, templates
 from app.core.auth import get_current_user
 
 app.include_router(auth.router, prefix="/api")
@@ -288,6 +288,7 @@ app.include_router(diagnostics.router, prefix="/api", dependencies=_auth)
 app.include_router(events.router, prefix="/api", dependencies=_auth)
 app.include_router(servers.router, prefix="/api", dependencies=_auth)
 app.include_router(scripts.router, prefix="/api", dependencies=_auth)
+app.include_router(templates.router, prefix="/api", dependencies=_auth)
 # server_tasks: REST router is auth-gated globally; ws_router carries
 # the WS endpoint and skips the Bearer dependency (browsers can't set
 # Authorization headers on WebSockets), validating ?token=<jwt> itself

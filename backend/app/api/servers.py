@@ -623,6 +623,7 @@ def build_naive_install_script(
     naive_pass: Optional[str] = None,
     server_label: Optional[str] = None,
     suggested_filename: str = "naive-install.sh",
+    template_id: Optional[str] = None,
 ) -> str:
     """Render the bash bootstrap that fetches setup-naive-server.sh from
     the PiTun repo and runs it with credentials pre-filled.
@@ -644,6 +645,15 @@ def build_naive_install_script(
     # depth — admin trust boundary already gates this endpoint, but it
     # keeps the generated script well-formed even if someone pastes weird
     # characters into the form.
+    # Resolve the optional decoy-template id to a single env line
+    # so the generated script doesn't carry empty / commented vars
+    # for the unselected mode. See `core.templates.resolve_to_env`
+    # for which env var each template kind maps to.
+    from app.core.templates import resolve_to_env as _tpl_env
+    template_env_lines = "\n".join(
+        f"export {k}={shlex.quote(v)}" for k, v in _tpl_env(template_id).items()
+    )
+
     return f"""#!/usr/bin/env bash
 {label_line}# Generated {datetime.now(timezone.utc).isoformat(timespec='seconds')}.
 #
@@ -666,6 +676,7 @@ export DOMAIN={shlex.quote(domain)}
 export EMAIL={shlex.quote(email)}
 export NAIVE_USER={shlex.quote(user)}
 export NAIVE_PASS={shlex.quote(pwd)}
+{template_env_lines}
 
 curl -fsSL https://raw.githubusercontent.com/DaveBugg/PiTun/master/scripts/setup-naive-server.sh \\
   | sudo -E bash
@@ -679,6 +690,7 @@ async def naive_install_script(
     email: str = Query(..., description="Let's Encrypt registration email"),
     naive_user: Optional[str] = Query(None, description="Defaults to 'pitun'"),
     naive_pass: Optional[str] = Query(None, description="Auto-generated if absent"),
+    template_id: Optional[str] = Query(None, description="Decoy template id (see /api/templates)"),
     session: AsyncSession = Depends(get_session),
 ):
     server = await session.get(Server, server_id)
@@ -693,6 +705,7 @@ async def naive_install_script(
         naive_pass=naive_pass,
         server_label=f"{server.name} (id={server.id})",
         suggested_filename=filename,
+        template_id=template_id,
     )
     return PlainTextResponse(
         content=script,

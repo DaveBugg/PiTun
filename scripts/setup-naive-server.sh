@@ -18,6 +18,11 @@
 #        bash setup-naive-server.sh
 #
 # Optional decoy site override (anyone without proxy auth sees this):
+#   TEMPLATE_HTML_URL=<URL> — curl a single-file HTML to /var/www/html/
+#                             index.html (no apt/git overhead). Used by
+#                             the PiTun UI's built-in template gallery
+#                             (since v1.3.0-beta.6); takes precedence
+#                             over DECOY_REPO when both are set.
 #   DECOY_REPO=<git URL>   — clone any static site repo into /var/www/html
 #                            default: https://github.com/daleharvey/pacman
 #   DECOY_REPO=none        — keep a minimal "It works" stub
@@ -346,6 +351,7 @@ chmod 640 /etc/caddy/Caddyfile
 # Override by exporting DECOY_REPO=<git URL> before running the script, or
 # set DECOY_REPO="none" to keep a minimal stub.
 DECOY_REPO="${DECOY_REPO:-https://github.com/daleharvey/pacman}"
+TEMPLATE_HTML_URL="${TEMPLATE_HTML_URL:-}"
 
 mkdir -p /var/www/html
 # Only replace the decoy if the directory is empty or contains just our stub
@@ -355,7 +361,38 @@ if [[ "$DECOY_EXISTING" -eq 0 ]] || \
    ([[ "$DECOY_EXISTING" -eq 1 ]] && [[ -f /var/www/html/index.html ]] && \
     grep -q "This is the default page" /var/www/html/index.html 2>/dev/null); then
 
-    if [[ "$DECOY_REPO" == "none" ]]; then
+    # Preferred path (since v1.3.0-beta.6): single-file template via
+    # `curl`. Faster, no apt install, deterministic. Used by the
+    # PiTun UI's built-in template gallery for the corporate / blog /
+    # docs / maintenance covers. Falls through to the git-clone path
+    # if curl fails so a transient network hiccup doesn't leave the
+    # server with a default Caddy "It works" page that screams "I am
+    # a fresh proxy".
+    if [[ -n "$TEMPLATE_HTML_URL" ]]; then
+        log "Fetching single-file decoy template from $TEMPLATE_HTML_URL ..."
+        TMP_HTML="$(mktemp)"
+        if curl -fsSL --max-time 30 -o "$TMP_HTML" "$TEMPLATE_HTML_URL"; then
+            # Sanity-check: must look like HTML (not a 404 page that
+            # snuck past `-f`, not an empty file from a CDN race).
+            if [[ -s "$TMP_HTML" ]] && head -c 64 "$TMP_HTML" | grep -qiE '<!doctype|<html'; then
+                rm -rf /var/www/html/*
+                install -m 0644 "$TMP_HTML" /var/www/html/index.html
+                info "Decoy installed from $TEMPLATE_HTML_URL"
+                rm -f "$TMP_HTML"
+                # Skip the DECOY_REPO branch below — done.
+                TEMPLATE_HTML_INSTALLED=1
+            else
+                warn "Downloaded file doesn't look like HTML — falling back to DECOY_REPO"
+                rm -f "$TMP_HTML"
+            fi
+        else
+            warn "Failed to fetch $TEMPLATE_HTML_URL — falling back to DECOY_REPO"
+            rm -f "$TMP_HTML"
+        fi
+    fi
+
+    if [[ "${TEMPLATE_HTML_INSTALLED:-0}" != "1" ]]; then
+      if [[ "$DECOY_REPO" == "none" ]]; then
         log "Writing minimal decoy stub (DECOY_REPO=none)..."
         cat >/var/www/html/index.html <<'HTML'
 <!DOCTYPE html>
@@ -366,7 +403,7 @@ if [[ "$DECOY_EXISTING" -eq 0 ]] || \
 <body><h1>It works!</h1><p>This is the default page.</p></body>
 </html>
 HTML
-    else
+      else
         log "Cloning decoy site from $DECOY_REPO ..."
         apt-get install -y -qq git
         TMP_DECOY="$(mktemp -d)"
@@ -384,6 +421,7 @@ HTML
 HTML
         fi
         rm -rf "$TMP_DECOY"
+      fi
     fi
 
     # robots.txt — sanitiser-friendly; real sites have it

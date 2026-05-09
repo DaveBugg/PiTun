@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>libsleep — Documentation</title>
+<meta name="description" content="libsleep — a tiny Python library for time-based testing.">
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+html{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#1a1a1a;background:#fff;line-height:1.6}
+body{display:grid;grid-template-columns:240px 1fr;min-height:100vh}
+aside{background:#fafafa;border-right:1px solid #e5e5e5;padding:2rem 1.25rem;position:sticky;top:0;height:100vh;overflow-y:auto}
+aside h2{font-size:1.1rem;font-weight:700;margin-bottom:.5rem}
+aside p.tagline{color:#888;font-size:.85rem;margin-bottom:1.5rem}
+aside h3{font-size:.75rem;text-transform:uppercase;letter-spacing:.05em;color:#888;margin:1.25rem 0 .5rem}
+aside ul{list-style:none}
+aside ul li a{display:block;padding:.35rem 0;color:#444;text-decoration:none;font-size:.9rem;border-radius:4px}
+aside ul li a:hover{color:#0066cc}
+aside ul li a.active{color:#0066cc;font-weight:500}
+main{padding:3rem;max-width:780px}
+.breadcrumb{font-size:.85rem;color:#888;margin-bottom:1rem}
+.breadcrumb a{color:inherit;text-decoration:none}
+h1{font-size:2.25rem;font-weight:700;margin-bottom:1rem}
+.lede{font-size:1.1rem;color:#555;margin-bottom:2rem;padding-bottom:1.5rem;border-bottom:1px solid #e5e5e5}
+h2{font-size:1.5rem;font-weight:700;margin:2rem 0 .75rem;padding-top:1rem;border-top:1px solid #f0f0f0}
+h3{font-size:1.15rem;font-weight:600;margin:1.5rem 0 .5rem}
+p{margin-bottom:1rem}
+code{font-family:"SF Mono","Monaco",Consolas,monospace;background:#f5f5f5;padding:.1rem .35rem;border-radius:3px;font-size:.875em;color:#c5174a}
+pre{background:#1e1e2e;color:#cdd6f4;padding:1rem 1.25rem;border-radius:6px;overflow-x:auto;margin:1rem 0;font-size:.85rem;line-height:1.5}
+pre code{background:none;padding:0;color:inherit}
+.note{background:#eef6ff;border-left:3px solid #0066cc;padding:.75rem 1rem;margin:1rem 0;border-radius:0 4px 4px 0;font-size:.92rem}
+.note strong{color:#0066cc}
+table{width:100%;border-collapse:collapse;margin:1rem 0;font-size:.92rem}
+th,td{text-align:left;padding:.6rem .75rem;border-bottom:1px solid #e5e5e5}
+th{background:#fafafa;font-weight:600}
+@media (max-width:768px){body{grid-template-columns:1fr}aside{position:static;height:auto;border-right:none;border-bottom:1px solid #e5e5e5}main{padding:2rem 1.25rem}}
+</style>
+</head>
+<body>
+<aside>
+  <h2>libsleep</h2>
+  <p class="tagline">Predictable time for tests.</p>
+  <h3>Getting started</h3>
+  <ul>
+    <li><a href="#" class="active">Introduction</a></li>
+    <li><a href="#">Installation</a></li>
+    <li><a href="#">Quick example</a></li>
+  </ul>
+  <h3>Guides</h3>
+  <ul>
+    <li><a href="#">Mocking time.sleep</a></li>
+    <li><a href="#">Parametrising clocks</a></li>
+    <li><a href="#">Async support</a></li>
+  </ul>
+  <h3>Reference</h3>
+  <ul>
+    <li><a href="#">FakeClock</a></li>
+    <li><a href="#">advance()</a></li>
+    <li><a href="#">freeze_time</a></li>
+  </ul>
+</aside>
+<main>
+  <div class="breadcrumb"><a href="#">Docs</a> / Introduction</div>
+  <h1>Introduction</h1>
+  <p class="lede">libsleep is a tiny Python library that replaces <code>time.sleep</code> with a deterministic clock for unit tests. No threads, no real wall-clock, no flaky timing assertions.</p>
+
+  <h2>The problem</h2>
+  <p>Suppose you have a function that retries with exponential backoff:</p>
+  <pre><code>def retry(fn, max_attempts=5):
+    for i in range(max_attempts):
+        try:
+            return fn()
+        except Exception:
+            time.sleep(2 ** i)
+    raise</code></pre>
+  <p>Testing this realistically takes <code>1+2+4+8 = 15s</code> per failed call. You either patch <code>time.sleep</code> with <code>MagicMock()</code> (loses the cumulative-time invariant) or you use <code>freezegun</code> (heavyweight, slow on import).</p>
+
+  <h2>The solution</h2>
+  <p>libsleep exposes a <code>FakeClock</code> that replaces <code>time.sleep</code> for the duration of a context. Calls record requested durations into a virtual clock you can advance manually:</p>
+  <pre><code>from libsleep import FakeClock
+
+with FakeClock() as clk:
+    retry(flaky_func, max_attempts=4)
+    assert clk.elapsed == 7.0  # 1+2+4</code></pre>
+
+  <div class="note"><strong>Note.</strong> libsleep doesn't patch <code>asyncio.sleep</code>. Use the companion <code>libsleep.aio</code> module — see the Async support guide.</div>
+
+  <h2>Installation</h2>
+  <pre><code>pip install libsleep</code></pre>
+  <p>Python 3.9+ is required. No mandatory dependencies; <code>pytest</code> is suggested for the included plugin.</p>
+
+  <h2>Compatibility</h2>
+  <table>
+    <thead><tr><th>Python</th><th>Status</th><th>Notes</th></tr></thead>
+    <tbody>
+      <tr><td>3.9</td><td>Supported</td><td>Full feature set</td></tr>
+      <tr><td>3.10</td><td>Supported</td><td>Full feature set</td></tr>
+      <tr><td>3.11</td><td>Supported</td><td>Recommended</td></tr>
+      <tr><td>3.12</td><td>Supported</td><td>Recommended</td></tr>
+      <tr><td>3.13</td><td>Beta</td><td>Pending CPython 3.13.2 release</td></tr>
+    </tbody>
+  </table>
+</main>
+</body>
+</html>

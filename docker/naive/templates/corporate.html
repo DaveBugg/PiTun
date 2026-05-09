@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Aether Systems — Cloud Infrastructure</title>
+<meta name="description" content="Aether Systems delivers reliable cloud infrastructure to growing teams.">
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+html{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;color:#1a202c;background:#f7fafc;line-height:1.6}
+body{min-height:100vh;display:flex;flex-direction:column}
+header{padding:1.25rem 2rem;background:#fff;border-bottom:1px solid #e2e8f0;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:1rem}
+.logo{font-weight:700;font-size:1.25rem;color:#2563eb;display:flex;align-items:center;gap:.5rem}
+.logo span{display:inline-block;width:24px;height:24px;border-radius:6px;background:linear-gradient(135deg,#2563eb,#7c3aed)}
+nav a{margin-left:1.5rem;color:#4a5568;text-decoration:none;font-size:.95rem}
+nav a:hover{color:#2563eb}
+.hero{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;padding:4rem 2rem;max-width:900px;margin:0 auto}
+.eyebrow{display:inline-block;background:#dbeafe;color:#1e40af;padding:.25rem .75rem;border-radius:999px;font-size:.8rem;font-weight:500;margin-bottom:1.25rem}
+h1{font-size:clamp(2rem,5vw,3.5rem);font-weight:800;margin-bottom:1rem;line-height:1.15;color:#1a202c}
+h1 em{font-style:normal;color:#2563eb}
+.lede{font-size:clamp(1rem,2vw,1.25rem);color:#4a5568;max-width:650px;margin-bottom:2rem}
+.cta{display:flex;gap:1rem;flex-wrap:wrap;justify-content:center}
+.btn{padding:.75rem 1.5rem;border-radius:8px;text-decoration:none;font-weight:500;font-size:.95rem;transition:transform .1s}
+.btn:hover{transform:translateY(-1px)}
+.btn-primary{background:#2563eb;color:#fff}
+.btn-secondary{background:#fff;color:#2563eb;border:1px solid #cbd5e0}
+.features{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:2rem;padding:4rem 2rem;max-width:1100px;margin:0 auto}
+.feature h3{font-size:1.1rem;margin-bottom:.5rem;color:#1a202c}
+.feature p{color:#4a5568;font-size:.95rem}
+.feature .icon{width:40px;height:40px;border-radius:8px;background:#dbeafe;color:#2563eb;display:flex;align-items:center;justify-content:center;margin-bottom:.75rem;font-size:1.25rem}
+footer{padding:2rem;text-align:center;color:#718096;font-size:.875rem;border-top:1px solid #e2e8f0;background:#fff}
+@media (max-width:640px){header{padding:1rem;flex-direction:column;align-items:flex-start}nav{width:100%}nav a{margin-left:0;margin-right:1.25rem}}
+</style>
+</head>
+<body>
+<header>
+  <div class="logo"><span></span> Aether Systems</div>
+  <nav>
+    <a href="#features">Features</a>
+    <a href="#pricing">Pricing</a>
+    <a href="#docs">Docs</a>
+    <a href="#contact">Contact</a>
+  </nav>
+</header>
+<section class="hero">
+  <span class="eyebrow">PRIVATE BETA</span>
+  <h1>Cloud infrastructure that <em>just works</em>.</h1>
+  <p class="lede">Deploy reliable, secure infrastructure in minutes. Built for teams that move fast and care about uptime.</p>
+  <div class="cta">
+    <a href="#" class="btn btn-primary">Get Started</a>
+    <a href="#docs" class="btn btn-secondary">Read the Docs</a>
+  </div>
+</section>
+<section class="features" id="features">
+  <div class="feature"><div class="icon">⚡</div><h3>Fast deploys</h3><p>Push-to-deploy in under 30 seconds. Atomic rollbacks if anything goes wrong.</p></div>
+  <div class="feature"><div class="icon">🔒</div><h3>Secure by default</h3><p>End-to-end TLS, SSO, audit logs, and SOC 2 Type II ready out of the box.</p></div>
+  <div class="feature"><div class="icon">🌍</div><h3>Global edge</h3><p>14 regions, automatic failover, and consistent sub-50ms p95 latency worldwide.</p></div>
+  <div class="feature"><div class="icon">📊</div><h3>Built-in observability</h3><p>Metrics, logs, and traces in one place. No agent install, no extra cost.</p></div>
+</section>
+<footer>© 2026 Aether Systems, Inc. · Privacy · Terms · Status</footer>
+</body>
+</html>
