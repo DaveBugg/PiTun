@@ -26,6 +26,13 @@
 #   DECOY_REPO=<git URL>   — clone any static site repo into /var/www/html
 #                            default: https://github.com/daleharvey/pacman
 #   DECOY_REPO=none        — keep a minimal "It works" stub
+#   FORCE_DECOY=yes        — replace /var/www/html on every run, even when
+#                            it already contains a non-stub site. Set
+#                            automatically by the script when an explicit
+#                            TEMPLATE_HTML_URL is passed (which means the
+#                            user picked it via the UI and wants it
+#                            applied), so re-running the installer with a
+#                            different template actually swaps the cover.
 #
 # Optional SSH hardening (asked interactively if none set):
 #   HARDEN_SSH=yes|no            — enable/skip
@@ -350,14 +357,36 @@ chmod 640 /etc/caddy/Caddyfile
 # game): small (~2 MB), recognisable, diverse asset mix (html+css+js+mp3).
 # Override by exporting DECOY_REPO=<git URL> before running the script, or
 # set DECOY_REPO="none" to keep a minimal stub.
+# Track whether the user passed an explicit decoy choice via env vs.
+# fell through to our default — if they explicitly chose, force-swap
+# even on re-runs so the UI's "pick a different template" flow
+# actually changes anything visible. Without this guard, the
+# original "don't clobber custom content" check would skip the swap
+# because /var/www/html already contains the previous decoy.
+EXPLICIT_DECOY=0
+if [[ -n "${TEMPLATE_HTML_URL:-}" ]] || [[ -n "${DECOY_REPO:-}" ]]; then
+    EXPLICIT_DECOY=1
+fi
 DECOY_REPO="${DECOY_REPO:-https://github.com/daleharvey/pacman}"
 TEMPLATE_HTML_URL="${TEMPLATE_HTML_URL:-}"
+FORCE_DECOY="${FORCE_DECOY:-no}"
+# Auto-force when the user picked a single-file template through the
+# UI — the intent there is unambiguous ("apply this cover now").
+if [[ -n "$TEMPLATE_HTML_URL" ]]; then
+    FORCE_DECOY=yes
+fi
 
 mkdir -p /var/www/html
-# Only replace the decoy if the directory is empty or contains just our stub
-# (avoid clobbering an intentionally customised site on re-runs).
+# Replace the decoy if any of:
+#   - the directory is empty (fresh install)
+#   - it contains only our minimal "It works" stub (script's own
+#     fallback that no real user would intentionally keep)
+#   - FORCE_DECOY=yes (explicit re-run with a new template)
+# Otherwise leave it alone — preserves an intentionally-customised
+# site across re-runs of the install script.
 DECOY_EXISTING="$(find /var/www/html -mindepth 1 -maxdepth 1 2>/dev/null | wc -l)"
-if [[ "$DECOY_EXISTING" -eq 0 ]] || \
+if [[ "$FORCE_DECOY" == "yes" ]] || \
+   [[ "$DECOY_EXISTING" -eq 0 ]] || \
    ([[ "$DECOY_EXISTING" -eq 1 ]] && [[ -f /var/www/html/index.html ]] && \
     grep -q "This is the default page" /var/www/html/index.html 2>/dev/null); then
 
