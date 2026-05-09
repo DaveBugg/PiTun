@@ -483,14 +483,11 @@ export function Routing() {
       <div className="flex items-start justify-between flex-wrap gap-3">
         <h1 className="text-xl font-bold text-gray-100">Routing</h1>
         {tab === 'rules' && (
-          // Action buttons slide horizontally on phones (same pattern
-          // as Nodes header) to avoid wrapping into a tall multi-row
-          // mess on a 360-wide screen.
-          <div
-            className="flex items-center gap-2 -mx-4 sm:mx-0 px-4 sm:px-0
-                       overflow-x-auto sm:overflow-visible w-full sm:w-auto
-                       [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
-          >
+          // Action buttons wrap to multiple rows on phones — same
+          // pattern as the Servers + Nodes pages so the discovery
+          // affordance stays consistent (a horizontal-scroll strip
+          // wasn't obvious enough that the row was scrollable).
+          <div className="flex items-center gap-2 flex-wrap">
             {/* Quick Add Presets */}
             <div className="relative" ref={presetsRef}>
               <button

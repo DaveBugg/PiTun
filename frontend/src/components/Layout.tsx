@@ -173,7 +173,15 @@ export function Layout() {
     // Transparent root lets the body ambient glows + grain show through.
     // Text color inherits here so all pages get gray-100 default without
     // each one respecifying it.
-    <div className="flex h-full text-gray-100">
+    //
+    // `overflow-x-hidden` clips the off-canvas mobile drawer's
+    // pre-translation footprint — without this, the sidebar at
+    // `-translate-x-full` still contributes to the page's scrollable
+    // width on some browsers, manifesting as a parasitic horizontal
+    // scroll on every page (no real overflowing content). Desktop is
+    // unaffected because the sidebar there is `static` and lives
+    // inside the flex row normally.
+    <div className="flex h-full text-gray-100 overflow-x-hidden">
       {/* Mobile-only backdrop. Visible when the off-canvas drawer is
           open, tapping it slides the drawer back out. Desktop sidebar
           is `static` and doesn't need a backdrop. */}
