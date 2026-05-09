@@ -268,7 +268,7 @@ app.add_middleware(
 )
 
 # ── Routers ───────────────────────────────────────────────────────────────────
-from app.api import nodes, routing, subscriptions, system, geodata, logs, dns, balancers, auth, nodecircle, devices, diagnostics, events, servers, scripts, server_tasks
+from app.api import nodes, routing, subscriptions, system, geodata, logs, dns, balancers, auth, nodecircle, devices, diagnostics, events, servers, scripts, server_tasks, server_clients
 from app.core.auth import get_current_user
 
 app.include_router(auth.router, prefix="/api")
@@ -294,6 +294,8 @@ app.include_router(scripts.router, prefix="/api", dependencies=_auth)
 # — same pattern as logs.router.
 app.include_router(server_tasks.router, prefix="/api", dependencies=_auth)
 app.include_router(server_tasks.ws_router, prefix="/api")
+# WireGuard server-side client management (since v1.3.0-beta.4) — auth-gated.
+app.include_router(server_clients.router, prefix="/api", dependencies=_auth)
 
 
 # ── Health ────────────────────────────────────────────────────────────────────
