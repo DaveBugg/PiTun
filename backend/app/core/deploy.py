@@ -241,8 +241,11 @@ def build_plan(protocol: str, config: dict) -> DeployPlan:
         # first client in one go. Subsequent add-client/remove/list/
         # get-conf invocations are issued via dedicated API endpoints
         # that build their own env (see api/server_clients.py).
+        # Frontend lets `client_name` stay blank — default to "client1"
+        # so install always has a peer to create (mirrors naive_user
+        # auto-default behaviour).
         env = build_wireguard_env(
-            client_name=config.get("client_name", ""),
+            client_name=(config.get("client_name") or "client1"),
             server_port=config.get("server_port"),
             wg_network_4=config.get("wg_network_4"),
             wg_network_6=config.get("wg_network_6"),

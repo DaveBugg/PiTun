@@ -8,7 +8,7 @@ import {
   HelpCircle, FileCode2, Terminal,
   Sparkles, Link2,
   FileDown, FileUp,
-  Rocket, ListChecks,
+  Rocket, ListChecks, Users,
 } from 'lucide-react'
 
 import { serversApi, scriptsApi } from '@/api/client'
@@ -16,6 +16,7 @@ import { ServerForm } from '@/components/ServerForm'
 import { ModalShell } from '@/components/ModalShell'
 import { useConfirm } from '@/components/ConfirmModal'
 import { DeployModal } from '@/components/DeployModal'
+import { ManageClientsModal } from '@/components/ManageClientsModal'
 import {
   useServers,
   useCreateServer,
@@ -26,6 +27,7 @@ import {
   useDeployments,
   useUpsertDeployment,
   useCreateNodeFromDeployment,
+  useDeploymentClients,
 } from '@/hooks/useServers'
 import { useT } from '@/hooks/useT'
 import type { Server, ServerCreate, ServerUpdate } from '@/types'
@@ -64,6 +66,9 @@ export function Servers() {
   // Auto-deploy modal — runs install over SSH and streams the log.
   // (since v1.3.0-beta.1 — companion to the manual-script flow.)
   const [deployTarget, setDeployTarget] = useState<Server | null>(null)
+  // Manage WireGuard clients (since v1.3.0-beta.4) — only available on
+  // servers that have a WG ServerDeployment row.
+  const [clientsTarget, setClientsTarget] = useState<Server | null>(null)
 
   const openAdd = () => {
     setEditing(null)
@@ -204,6 +209,7 @@ export function Servers() {
                   onDelete={() => handleDelete(s)}
                   onShowScript={() => setScriptModal({ kind: 'server', server: s })}
                   onDeploy={() => setDeployTarget(s)}
+                  onManageClients={() => setClientsTarget(s)}
                 />
               ))}
             </tbody>
@@ -230,6 +236,13 @@ export function Servers() {
         <DeployModal
           server={deployTarget}
           onClose={() => setDeployTarget(null)}
+        />
+      )}
+
+      {clientsTarget && (
+        <ManageClientsModal
+          server={clientsTarget}
+          onClose={() => setClientsTarget(null)}
         />
       )}
     </div>
@@ -326,9 +339,15 @@ interface RowProps {
   onDelete: () => void
   onShowScript: () => void
   onDeploy: () => void
+  onManageClients: () => void
 }
 
-function ServerRow({ server, testing, onTest, onEdit, onDelete, onShowScript, onDeploy }: RowProps) {
+// onManageClients is wired through ServerRow → WireGuardBadge so the
+// summary line on the row carries its own jump-to-modal affordance,
+// keeping the icon column tidy.
+function ServerRow({
+  server, testing, onTest, onEdit, onDelete, onShowScript, onDeploy, onManageClients,
+}: RowProps) {
   const t = useT()
   const lastCheck = server.last_check
     ? new Date(server.last_check).toLocaleString()
@@ -340,6 +359,7 @@ function ServerRow({ server, testing, onTest, onEdit, onDelete, onShowScript, on
   // payload is tiny (1 row per protocol per server).
   const { data: deployments = [] } = useDeployments(server.id)
   const naive = deployments.find((d) => d.protocol === 'naive')
+  const wireguard = deployments.find((d) => d.protocol === 'wireguard')
   const createNode = useCreateNodeFromDeployment()
 
   const handleCreateNode = () => {
@@ -357,6 +377,7 @@ function ServerRow({ server, testing, onTest, onEdit, onDelete, onShowScript, on
           <div className="text-xs text-gray-500 mt-0.5 line-clamp-1">{server.description}</div>
         )}
         {naive && <DeploymentBadge deployment={naive} onCreateNode={handleCreateNode} pending={createNode.isPending} />}
+        {wireguard && <WireGuardBadge serverId={server.id} onManageClients={onManageClients} />}
       </td>
       <td className="px-4 py-3">
         <div className="text-gray-300 font-mono text-xs">
@@ -405,6 +426,13 @@ function ServerRow({ server, testing, onTest, onEdit, onDelete, onShowScript, on
             icon={Rocket}
             disabled={server.status === 'offline'}
           />
+          {wireguard && (
+            <IconBtn
+              onClick={onManageClients}
+              title={t('Manage WireGuard clients', 'Управление клиентами WireGuard')}
+              icon={Users}
+            />
+          )}
           <IconBtn
             onClick={onShowScript}
             title={t('Get NaiveProxy install script', 'Получить скрипт установки NaiveProxy')}
@@ -515,6 +543,42 @@ function DeploymentBadge({
         )}
       >
         {pending ? t('Creating…', 'Создание…') : t('Create node →', 'Создать Node →')}
+      </button>
+    </div>
+  )
+}
+
+
+// WireGuard's parallel to DeploymentBadge. Multi-client by nature, so
+// instead of "Create node" it links to the Clients modal where the
+// admin can add / sync / export peers individually.
+function WireGuardBadge({
+  serverId, onManageClients,
+}: {
+  serverId: number
+  onManageClients: () => void
+}) {
+  const t = useT()
+  // Cheap query — same one ManageClientsModal uses, so it's cached.
+  const { data } = useDeploymentClients(serverId)
+  const total = data?.clients.length ?? 0
+  const orphans = data?.clients.filter((c) => c.status === 'orphan').length ?? 0
+  return (
+    <div className="mt-1 inline-flex items-center gap-2 text-[11px]">
+      <span className="text-gray-500">
+        <Sparkles className="inline h-3 w-3 mr-1 text-yellow-500" />
+        {t('WireGuard configured', 'WireGuard настроен')}
+        {data && <span className="text-gray-600"> · {t(`${total} client(s)`, `${total} клиент(ов)`)}</span>}
+        {orphans > 0 && (
+          <span className="text-yellow-400"> · {t(`${orphans} orphan`, `${orphans} осиротевш.`)}</span>
+        )}
+      </span>
+      <button
+        onClick={onManageClients}
+        className="rounded bg-brand-600/20 hover:bg-brand-600/30 text-brand-300 px-1.5 py-0.5 text-[11px] font-medium transition-colors"
+        title={t('Open Clients modal', 'Открыть модалку клиентов')}
+      >
+        {t('Clients →', 'Клиенты →')}
       </button>
     </div>
   )

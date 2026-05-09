@@ -4,6 +4,7 @@ import { serversApi } from '@/api/client'
 import type {
   ServerCreate, ServerUpdate,
   ServerDeploymentProtocol, ServerDeploymentUpsert,
+  DeploymentClientCreate, ExportClientToNodeRequest,
 } from '@/types'
 
 // Server list — invalidated by every mutation in this file. We don't
@@ -114,6 +115,72 @@ export function useCreateNodeFromDeployment() {
       // status flipped to "deployed" + got a last_node_id.
       qc.invalidateQueries({ queryKey: ['nodes'] })
       qc.invalidateQueries({ queryKey: ['servers', vars.serverId, 'deployments'] })
+    },
+  })
+}
+
+
+// ── WireGuard server-side clients (since v1.3.0-beta.4) ────────────────────
+//
+// One DeploymentClient row per peer. Mutations invalidate both the
+// clients query and the deployments query (status badge counts may
+// change), and on export-to-node also the nodes list.
+
+export function useDeploymentClients(serverId: number | null) {
+  return useQuery({
+    queryKey: ['servers', serverId, 'wg-clients'],
+    queryFn: () => serversApi.listClients(serverId as number),
+    enabled: !!serverId,
+  })
+}
+
+export function useAddClient() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ serverId, body }: { serverId: number; body: DeploymentClientCreate }) =>
+      serversApi.addClient(serverId, body),
+    onSuccess: (_data, vars) => {
+      qc.invalidateQueries({ queryKey: ['servers', vars.serverId, 'wg-clients'] })
+      qc.invalidateQueries({ queryKey: ['servers', vars.serverId, 'deployments'] })
+    },
+  })
+}
+
+export function useRemoveClient() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ serverId, name }: { serverId: number; name: string }) =>
+      serversApi.removeClient(serverId, name),
+    onSuccess: (_data, vars) => {
+      qc.invalidateQueries({ queryKey: ['servers', vars.serverId, 'wg-clients'] })
+      // Linked Nodes may have flipped to client_orphan — refresh nodes.
+      qc.invalidateQueries({ queryKey: ['nodes'] })
+    },
+  })
+}
+
+export function useSyncClients() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (serverId: number) => serversApi.syncClients(serverId),
+    onSuccess: (_data, serverId) => {
+      qc.invalidateQueries({ queryKey: ['servers', serverId, 'wg-clients'] })
+      // Sync may have orphaned Nodes that map to server-side-deleted peers.
+      qc.invalidateQueries({ queryKey: ['nodes'] })
+    },
+  })
+}
+
+export function useExportClientToNode() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({
+      serverId, name, body,
+    }: { serverId: number; name: string; body?: ExportClientToNodeRequest }) =>
+      serversApi.exportClientToNode(serverId, name, body ?? {}),
+    onSuccess: (_data, vars) => {
+      qc.invalidateQueries({ queryKey: ['servers', vars.serverId, 'wg-clients'] })
+      qc.invalidateQueries({ queryKey: ['nodes'] })
     },
   })
 }

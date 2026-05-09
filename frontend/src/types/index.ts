@@ -73,6 +73,14 @@ export interface Node {
   // Optional link to a Server (the VPS hosting this node's upstream).
   // Purely informational — does not affect routing/connection.
   server_id?: number
+  // Optional link to a DeploymentClient — set on Nodes that were
+  // exported from a multi-client server-side deployment (WireGuard).
+  // Drives the "from server X" source label and the orphan badge.
+  from_deployment_client_id?: number | null
+  // True when the source DeploymentClient has been removed server-side
+  // (sync detected the peer is gone) or via Remove client. The Node
+  // keeps working but warns the admin that the upstream peer is dead.
+  client_orphan?: boolean
 }
 
 export type NodeCreate = Omit<Node, 'id' | 'latency_ms' | 'last_check' | 'is_online'>

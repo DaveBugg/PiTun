@@ -1,7 +1,10 @@
-import { Server, Pencil, Trash2, Activity, Zap, ChevronRight } from 'lucide-react'
+import {
+  Server, Pencil, Trash2, Activity, Zap, ChevronRight, AlertCircle,
+} from 'lucide-react'
 import { clsx } from 'clsx'
 import type { Node } from '@/types'
 import { StatusBadge, ProtocolBadge } from './StatusBadge'
+import { useServers } from '@/hooks/useServers'
 
 interface Props {
   node: Node
@@ -26,6 +29,17 @@ export function NodeCard({
   checkLoading,
   speedLoading,
 }: Props) {
+  // Look up the source server for the "from <name>" label. Cached query —
+  // shared with the Servers page, no extra cost when both are mounted.
+  const { data: servers = [] } = useServers()
+  const sourceServer = node.server_id
+    ? servers.find((s) => s.id === node.server_id)
+    : undefined
+  // A Node is "from a managed server-side client" only when both the
+  // server link and the deployment-client link are present (WireGuard
+  // peers exported via PiTun). Imported nodes / hand-typed nodes don't
+  // get this label.
+  const isFromServerClient = !!(node.from_deployment_client_id && sourceServer)
   return (
     <div
       className={clsx(
@@ -71,8 +85,32 @@ export function NodeCard({
                 </span>
               )}
             </div>
-            <div className="mt-2">
+            <div className="mt-2 flex items-center gap-2 flex-wrap">
               <StatusBadge online={node.is_online} latency={node.latency_ms ?? undefined} />
+              {/* Source label — "from <server name>" — for nodes
+                  exported from a server-side multi-client deployment
+                  (WireGuard, since v1.3.0-beta.4). */}
+              {isFromServerClient && (
+                <span
+                  className="text-xs text-gray-500"
+                  title={`Exported from DeploymentClient #${node.from_deployment_client_id}`}
+                >
+                  from <span className="text-gray-300">{sourceServer!.name}</span>
+                </span>
+              )}
+              {/* Orphan badge — the upstream peer was removed
+                  server-side or via "Remove client". The node still
+                  works (PSK/keys cached) but the admin should know
+                  there's no live peer on the VPS anymore. */}
+              {node.client_orphan && (
+                <span
+                  className="inline-flex items-center gap-1 rounded bg-yellow-900/30 border border-yellow-700/40 px-1.5 py-0.5 text-[11px] text-yellow-300"
+                  title="The server-side WireGuard peer this Node was exported from no longer exists. Remove the Node, or re-add the peer on the server and re-sync."
+                >
+                  <AlertCircle className="h-3 w-3" />
+                  orphan
+                </span>
+              )}
             </div>
           </div>
         </div>

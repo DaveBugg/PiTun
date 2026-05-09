@@ -24,6 +24,7 @@
 - [Features](#features)
 - [Supported protocols](#supported-protocols)
 - [Quick start](#quick-start)
+- [Server-side proxy install](#server-side-proxy-install)
 - [Configuration](#configuration)
 - [Troubleshooting](#troubleshooting)
 - [Development](#development)
@@ -432,6 +433,69 @@ docker compose up -d
 
 For RPi-specific bootstrap (first boot, OS-level dependencies, network
 config) `scripts/` ships with helpers — see [scripts/README.md](scripts/README.md).
+
+## Server-side proxy install
+
+Once your PiTun box is up and you've added a VPS under **Servers**, the
+**Install** button (rocket icon) lets you provision the upstream proxy
+*on the VPS itself* over SSH, with the install log streamed live in the
+modal. Two protocols are supported:
+
+| Protocol | Topology | Where the credentials live |
+|---|---|---|
+| **NaiveProxy** | Single TLS tunnel per server | One `Node` row per deploy |
+| **WireGuard** | Multi-client (one server, N peers) | One `DeploymentClient` row per peer; export selected peers to `Node` rows on demand |
+
+### NaiveProxy
+
+Form: domain (with an A-record pointing at the VPS), Let's Encrypt email,
+optional Caddy basic-auth user/password. Behind the scenes:
+
+1. PiTun uploads `scripts/setup-naive-server.sh` to the VPS.
+2. The script installs Caddy + the `caddyserver/forwardproxy` plugin via
+   `xcaddy`, fetches a TLS cert, writes a Caddyfile, enables the
+   service.
+3. On success the script emits `URI=naive+https://…` on its last line;
+   PiTun parses that, creates a `Node` row, and the deploy is done.
+
+A second deploy on the same server overwrites the existing
+`ServerDeployment` row; the linked `Node` is left intact (you can
+recreate it from the deployment if it was deleted).
+
+### WireGuard
+
+Form: first-client name (defaults to `client1`), UDP port (default
+51820), DNS servers, AllowedIPs. The install script
+(`scripts/setup-wireguard-server.sh`) is sub-command driven:
+
+| Sub-command | Used by | What it does |
+|---|---|---|
+| `install` | Initial deploy | apt, sysctl, generate server keypair, write `wg0.conf`, enable `wg-quick@wg0`, add the first peer |
+| `add-client` | "Add" in the Clients modal | New keypair + `wg syncconf` reload (no tunnel restart) |
+| `remove-client` | "Remove" in the Clients modal | Strip peer + `wg syncconf` reload |
+| `list-clients` | "Sync" in the Clients modal | List current peer names + pubkeys |
+| `get-conf` | "Download .conf" | Re-print the cached INI for one client |
+
+**Clients are a separate layer.** The Servers page shows a `Users`
+icon next to any server with a WG deployment — that opens the
+**Clients** modal where you:
+
+- **Add** a peer (creates a new keypair on the VPS + caches the priv
+  key locally so we can render a `.conf` for download).
+- **Sync** to reconcile against the VPS — peers added manually on the
+  server show up; peers deleted on the server are flagged `orphan`
+  *but not auto-deleted from PiTun*, because the admin may have linked
+  them to Nodes.
+- **Download .conf** for QR-coding into a phone.
+- **Export to Node** to actually route traffic through this peer
+  (creates a `Node` row referencing the `DeploymentClient`; the Nodes
+  page renders "from `<server name>`" alongside the row).
+- **Remove** to strip the peer from the server AND delete the
+  `DeploymentClient` row. Any Nodes that were exported from it stay
+  but get an `orphan` badge so the admin sees the upstream is gone.
+
+One VPS can host clients used by multiple PiTun instances — each PiTun
+sees the peers it added itself + any it imported via Sync.
 
 ## Configuration
 

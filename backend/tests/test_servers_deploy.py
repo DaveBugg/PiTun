@@ -116,10 +116,12 @@ class TestDeployValidation:
     def test_unsupported_protocol_returns_422(
         self, client, admin_user, auth_headers, server, reset_job_manager
     ):
-        # `wireguard` rejected at the Pydantic validator level
+        # An unknown protocol is rejected at the Pydantic validator level.
+        # Since v1.3.0-beta.4 both `naive` and `wireguard` are accepted —
+        # this test guards against accidental new-protocol typos.
         resp = client.post(
             f"/api/servers/{server.id}/deploy",
-            json={"protocol": "wireguard", "config": {}},
+            json={"protocol": "shadowsocks", "config": {}},
             headers=auth_headers,
         )
         # Pydantic validator → 422 (FastAPI standard for body validation)

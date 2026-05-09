@@ -95,6 +95,31 @@ class TestExtractUri:
         # Our regex anchors with `^URI=`, so this should be skipped.
         assert extract_uri(stdout, "naive") is None
 
+    def test_wireguard_uri_extracted_with_scheme_match(self):
+        # WG install script ends with a wireguard:// URI carrying the
+        # client's private key + endpoint. We should pick it up cleanly.
+        stdout = (
+            "Adding peer phone-1...\n"
+            "URI=wireguard://kPRIV%3D@vps.example.com:51820"
+            "?publickey=kPUB%3D&presharedkey=kPSK%3D"
+            "&address=10.66.66.2/24,fd42:42:42::2/64&mtu=1420#phone-1\n"
+        )
+        result = extract_uri(stdout, "wireguard")
+        assert result is not None
+        assert result.startswith("wireguard://")
+        assert "phone-1" in result
+        assert "publickey=" in result
+
+    def test_wireguard_prefers_wireguard_scheme_over_naive(self):
+        # Mixed-scheme stdout (e.g. a buggy script): the requested
+        # protocol's scheme should win, not the most recent line.
+        stdout = (
+            "URI=wireguard://k@vps.example.com:51820?publickey=p#c\n"
+            "URI=naive+https://u:p@vps.example.com:443#stale\n"
+        )
+        assert extract_uri(stdout, "wireguard") == \
+            "wireguard://k@vps.example.com:51820?publickey=p#c"
+
 
 # ── load_script + build_plan + build_naive_env ───────────────────────────────
 
@@ -163,10 +188,35 @@ class TestBuildPlan:
         assert plan.env["DOMAIN"] == "x.example.com"
         assert plan.env["EMAIL"] == "me@example.com"
 
+    def test_wireguard_plan_loads_script_and_env(self):
+        plan = build_plan("wireguard", {
+            "client_name": "phone-1",
+            "server_port": 51821,
+            "dns_1": "8.8.8.8",
+        })
+        assert plan.protocol == "wireguard"
+        assert plan.script_content
+        # Sub-command dispatch — install is the bootstrap path.
+        assert plan.env["PITUN_WG_SUBCOMMAND"] == "install"
+        assert plan.env["CLIENT_NAME"] == "phone-1"
+        assert plan.env["SERVER_PORT"] == "51821"
+        assert plan.env["DNS_1"] == "8.8.8.8"
+        # Defaults left absent should NOT inject blanks (the script's
+        # bash defaults are authoritative).
+        assert "WG_NETWORK_4" not in plan.env
+        assert "DNS_2" not in plan.env
+
+    def test_wireguard_plan_defaults_client_name_when_blank(self):
+        # Empty client_name is allowed — backend defaults to "client1"
+        # so the install sub-command always has a peer to create.
+        plan = build_plan("wireguard", {})
+        assert plan.env["CLIENT_NAME"] == "client1"
+
     def test_unsupported_protocol_raises(self):
         import pytest
+        # `shadowsocks` is not in SUPPORTED_PROTOCOLS
         with pytest.raises(ValueError):
-            build_plan("wireguard", {})
+            build_plan("shadowsocks", {})
 
     def test_naive_missing_required_config_raises(self):
         import pytest
@@ -178,7 +228,8 @@ class TestBuildPlan:
 # ── Module-level invariants ──────────────────────────────────────────────────
 
 
-def test_supported_protocols_is_only_naive_in_beta_1():
-    # Hard-coded sanity check — when we add xray/hy2 in beta.2, this
-    # test is the explicit bump point. Keeps Phase 1 scoped tight.
-    assert SUPPORTED_PROTOCOLS == ("naive",)
+def test_supported_protocols_in_beta_4():
+    # Hard-coded sanity check — when we add xray/hy2/shadowsocks/etc.
+    # this test is the explicit bump point. As of beta.4 the supported
+    # set is `naive` (single-tunnel) + `wireguard` (multi-client).
+    assert SUPPORTED_PROTOCOLS == ("naive", "wireguard")

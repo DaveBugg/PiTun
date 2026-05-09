@@ -152,6 +152,12 @@ class NodeRead(NodeBase):
     latency_ms: Optional[int] = None
     last_check: Optional[datetime] = None
     is_online: bool = True
+    # Multi-client deployment provenance (since v1.3.0-beta.4). When this
+    # Node was exported from a DeploymentClient (e.g. WireGuard peer),
+    # keep the link so the UI can render "from <server name>" alongside
+    # the node + raise an `orphan` warning if the upstream peer is gone.
+    from_deployment_client_id: Optional[int] = None
+    client_orphan: bool = False
 
     class Config:
         from_attributes = True
