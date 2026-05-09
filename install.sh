@@ -60,13 +60,26 @@
 #                          IPv6 to GitHub silently hangs (Debian 13 RPi,
 #                          some VPS on broken BGP routes). If you have a
 #                          v6-only network, opt in with this flag.
+#   --fix-blockers         Pre-flush kill-switch leftovers (`inet pitun`
+#                          nftables + `ip rule fwmark 0x1 lookup 100`)
+#                          before downloads. Use ONLY when:
+#                            * a previous PiTun run died with kill_switch
+#                              active, AND
+#                            * curl from this host now hangs on first
+#                              download (kernel still TPROXYing into a
+#                              dead xray socket).
+#                          On a HEALTHY install with kill_switch + a
+#                          running backend, omit this flag — the install
+#                          will work over xray's normal bypass path.
+#                          The pre-flight detects + warns automatically;
+#                          re-run with this flag if it suggests so.
 #   --dry-run              Print every step without executing.
 #   --help                 Show this help.
 #
 # Environment variable equivalents (handy when piping from curl):
 #
 #   PITUN_VERSION, PITUN_DIR, PITUN_BUILD, PITUN_OFFLINE, PITUN_SKIP_HOST_PREP,
-#   PITUN_NON_INTERACTIVE, PITUN_FORCE_IPV6.
+#   PITUN_NON_INTERACTIVE, PITUN_FORCE_IPV6, PITUN_FIX_BLOCKERS.
 
 set -euo pipefail
 
@@ -78,6 +91,14 @@ USE_BUILD="${PITUN_BUILD:-0}"
 OFFLINE_DIR="${PITUN_OFFLINE:-}"
 SKIP_HOST_PREP="${PITUN_SKIP_HOST_PREP:-0}"
 NON_INTERACTIVE="${PITUN_NON_INTERACTIVE:-0}"
+# `--fix-blockers` (or PITUN_FIX_BLOCKERS=1) — pre-flush kill-switch
+# leftovers (nftables `inet pitun` + `ip rule fwmark 0x1 lookup 100`)
+# before any download. Default OFF: a healthy install with kill_switch
+# enabled and a running backend doesn't need this — traffic flows
+# through xray normally and `curl … | sudo bash` works. Only enable
+# when a previous run died with kill_switch active and left the
+# kernel mid-blocked (curl hangs on first download).
+FIX_BLOCKERS="${PITUN_FIX_BLOCKERS:-0}"
 DRY_RUN=0
 
 # Detect "piped from curl" — implies non-interactive (stdin is the script,
@@ -128,6 +149,7 @@ while [[ $# -gt 0 ]]; do
         --skip-host-prep)  SKIP_HOST_PREP=1; shift ;;
         --non-interactive) NON_INTERACTIVE=1; shift ;;
         --ipv6)            PITUN_FORCE_IPV6=1; shift ;;
+        --fix-blockers)    FIX_BLOCKERS=1; shift ;;
         --dry-run)         DRY_RUN=1; shift ;;
         --help|-h)         print_help ;;
         *) error "Unknown option: $1 (use --help)" ;;
@@ -150,44 +172,78 @@ DISTRO_ID="unknown"
 
 KERNEL_VER="$(uname -r)"
 
-# ── Kill-switch leftover cleanup (since v1.3.0-beta.3) ──────────────────────
+# ── Kill-switch leftover detection + optional cleanup (since v1.3.0-beta.3) ─
 #
-# When PiTun is running with kill_switch=true, it installs an `inet pitun`
-# nftables table that TPROXYs all non-bypass traffic to xray (and a
-# matching `ip rule fwmark 0x1 lookup 100` policy route to deliver
+# When PiTun is running with kill_switch=true, the backend installs an
+# `inet pitun` nftables table that TPROXYs non-bypass traffic to xray
+# (and a matching `ip rule fwmark 0x1 lookup 100` policy route to deliver
 # returned packets via lo). If the backend dies (crash, OOM, kernel
-# panic, manual `docker compose down`) those rules stay in place,
-# silently dropping every outbound packet to the internet because
-# nothing is listening on 127.0.0.1:7893 anymore.
+# panic, manual `docker compose down`) those rules stay in the kernel —
+# silently dropping every outbound packet because nothing's listening
+# on 127.0.0.1:7893 anymore. Even `curl -fsSL` to GitHub hangs.
 #
-# That breaks install.sh on a fresh boot: even `curl -fsSL` to
-# api.github.com hangs because the kernel marks every TCP packet and
-# routes it into a dead loop. We've hit this twice on 1.3 and 10.2.
+# Default behaviour: detect, warn, and *leave alone* if backend looks
+# healthy. A working PiTun gateway with kill-switch on routes its own
+# traffic through xray fine — no reason to drop the protection during
+# an upgrade and momentarily expose the LAN.
 #
-# Strategy: before doing ANY network work, sweep these leftover bits
-# out of the way. Backend will reinstall them at startup if it needs
-# kill_switch active.
+# Opt-in cleanup: pass `--fix-blockers` (or `PITUN_FIX_BLOCKERS=1` env)
+# to flush the leftovers up-front. Use this when the previous run died
+# mid-protect and `curl` hangs on the very first download.
 #
-# We only flush the `inet pitun` table (our own) — never touch the
-# `ip nat`/`ip filter` tables Docker manages.
+# Heuristic for "healthy enough to leave alone": is `pitun-backend`
+# container currently running? If yes → assume kill-switch is active by
+# design; downloads will work via xray's bypass path. If no (or no
+# Docker yet) → kill-switch artifacts are stale; warn the user.
+HAS_NFT_LEFTOVER=0
+HAS_IPRULE_LEFTOVER=0
 if command -v nft &>/dev/null && nft list table inet pitun &>/dev/null; then
-    warn "Detected leftover 'inet pitun' nftables table — flushing before install."
-    warn "  (kill-switch from a previous run was blocking outbound traffic)"
-    nft delete table inet pitun 2>/dev/null || true
+    HAS_NFT_LEFTOVER=1
+fi
+if ip rule show 2>/dev/null | grep -q 'fwmark 0x1 lookup 100'; then
+    HAS_IPRULE_LEFTOVER=1
 fi
 
-# Drop any `from all fwmark 0x1 lookup 100` policy-routing rules. These
-# survive `nft flush` because they live in the kernel's routing-policy
-# database, not nftables. Loop because there can be multiple in pathological
-# cases (re-applied without cleanup across upgrades).
-while ip rule show 2>/dev/null | grep -q 'fwmark 0x1 lookup 100'; do
-    ip rule del fwmark 0x1 lookup 100 2>/dev/null || break
-done
+BACKEND_RUNNING=0
+if command -v docker &>/dev/null \
+   && docker ps --filter 'name=^pitun-backend$' --format '{{.Status}}' 2>/dev/null \
+      | grep -q '^Up '; then
+    BACKEND_RUNNING=1
+fi
 
-# Flush table 100 too — it usually only contains `local default dev lo
-# scope host`, but the same applies as above.
-if ip route show table 100 2>/dev/null | grep -q .; then
-    ip route flush table 100 2>/dev/null || true
+if [[ "$FIX_BLOCKERS" == "1" ]]; then
+    if (( HAS_NFT_LEFTOVER )); then
+        warn "Flushing 'inet pitun' nftables (--fix-blockers requested)."
+        nft delete table inet pitun 2>/dev/null || true
+    fi
+    while ip rule show 2>/dev/null | grep -q 'fwmark 0x1 lookup 100'; do
+        ip rule del fwmark 0x1 lookup 100 2>/dev/null || break
+    done
+    if ip route show table 100 2>/dev/null | grep -q .; then
+        ip route flush table 100 2>/dev/null || true
+    fi
+elif (( HAS_NFT_LEFTOVER || HAS_IPRULE_LEFTOVER )) && (( ! BACKEND_RUNNING )); then
+    # Bad combo: kill-switch artefacts present BUT backend isn't up.
+    # Almost certainly stale and going to block the install. Warn loudly
+    # so the user can re-run with --fix-blockers if curl indeed hangs.
+    warn "════════════════════════════════════════════════════════════════════"
+    warn "  Detected stale kill-switch state on this host:"
+    (( HAS_NFT_LEFTOVER ))    && warn "    * 'inet pitun' nftables table is present but backend is down"
+    (( HAS_IPRULE_LEFTOVER )) && warn "    * 'ip rule fwmark 0x1 lookup 100' policy route is present"
+    warn ""
+    warn "  Without a running backend these will silently drop every"
+    warn "  outbound packet — including this installer's downloads."
+    warn ""
+    warn "  If the next download hangs > 60 s, abort (Ctrl+C) and re-run"
+    warn "  with the --fix-blockers flag, e.g.:"
+    warn ""
+    warn "      sudo bash /tmp/pitun-install.sh --version v1.3.0 --fix-blockers"
+    warn ""
+    warn "  (or set PITUN_FIX_BLOCKERS=1 in the env)"
+    warn "════════════════════════════════════════════════════════════════════"
+elif (( HAS_NFT_LEFTOVER || HAS_IPRULE_LEFTOVER )); then
+    # Backend is running — kill-switch is intentional. Don't touch.
+    info "Kill-switch is active and backend is healthy — leaving nftables alone."
 fi
 
 # IPv6 / IPv4 connectivity policy. Historically we tried to be clever

@@ -25,6 +25,7 @@
 - [Supported protocols](#supported-protocols)
 - [Quick start](#quick-start)
 - [Configuration](#configuration)
+- [Troubleshooting](#troubleshooting)
 - [Development](#development)
 - [Tech stack](#tech-stack)
 - [Acknowledgements](#acknowledgements)
@@ -296,6 +297,18 @@ Useful flags (work via any of the three forms above; examples use form B):
 
 # Just preview what it would do — no changes made
 ... | sudo bash -s -- --dry-run
+
+# Force IPv4 is the default. If you have a v6-only network, opt in:
+... | sudo bash -s -- --ipv6
+
+# Recover from a stale kill-switch lockup. ONLY when:
+#   - a previous PiTun run died with kill_switch=true active, AND
+#   - curl from this host now hangs on the very first download.
+# On a HEALTHY install with kill_switch + a running backend, omit
+# this flag — the install works over xray's normal bypass path.
+# The pre-flight detects + warns automatically; re-run with the flag
+# only if it suggests so. See "Troubleshooting" below for details.
+... | sudo bash -s -- --fix-blockers
 ```
 
 After the script finishes:
@@ -445,6 +458,78 @@ Full annotated example: [`.env.example`](.env.example).
 > auto-syncs the live IP into the database on the first `GET /settings`,
 > so the UI always shows the truth. `LAN_CIDR` has the same runtime
 > fallback as of 1.2.3.
+
+## Troubleshooting
+
+### `curl` hangs on every install / upgrade — stale kill-switch
+
+**Symptom.** You run `install.sh` and the very first download
+(`api.github.com/.../releases/...`) hangs forever (~75 s before
+TCP gives up). You can `ping 8.8.8.8` from the host but `curl
+https://api.github.com` doesn't return.
+
+**Cause.** PiTun's `kill_switch=true` mode installs an
+`inet pitun` nftables table + `ip rule fwmark 0x1 lookup 100`
+policy route that TPROXYs all non-bypass traffic to xray on
+`127.0.0.1:7893`. If the backend dies with that protection still
+active (crash, OOM, manual `docker compose down`), the rules stay
+in the kernel but xray isn't there to receive — every outbound
+packet drops silently. Even the installer.
+
+**Auto-detection.** Since v1.3.0-beta.3, `install.sh` checks for
+this state at startup and prints a clear warning if it finds stale
+rules without a running `pitun-backend` container. If you see:
+
+```
+[WARN]  ════════════════════════════════════════════════════════════════════
+[WARN]    Detected stale kill-switch state on this host:
+[WARN]      * 'inet pitun' nftables table is present but backend is down
+[WARN]      * 'ip rule fwmark 0x1 lookup 100' policy route is present
+…
+```
+
+…re-run with the `--fix-blockers` flag (or `PITUN_FIX_BLOCKERS=1`):
+
+```bash
+sudo bash /tmp/pitun-install.sh --version v1.3.0 --fix-blockers
+```
+
+It will flush the stale rules before any download, then proceed.
+The backend will reinstall them at startup if needed.
+
+> **When NOT to use `--fix-blockers`:** on a healthy install where
+> `pitun-backend` is currently `Up`, kill-switch is doing its job
+> and traffic flows fine through xray's bypass path. The installer
+> auto-detects this case and leaves nftables alone — no flag
+> needed. Adding the flag anyway just causes a brief LAN exposure
+> while you re-stack.
+
+### `curl` hangs but no kill-switch state
+
+If the install hangs on a fresh host (no PiTun previously installed)
+and `--fix-blockers` doesn't help, suspect IPv6. Some Debian 13 RPi
+images and a number of VPS providers have advertised but unroutable
+IPv6 paths to GitHub. Since v1.3.0-beta.3 the installer defaults to
+IPv4 (`-4`) — but if you've passed `--ipv6` or set
+`PITUN_FORCE_IPV6=1`, drop those.
+
+### Backend container crash-loops with `bad marshal data` or `Segmentation fault`
+
+If you upgraded to v1.3.0-beta.1 or .2 (via the original beta release
+artifacts) on an arm64 device — particularly **RPi 4 (Cortex-A72)** —
+the backend container will crash-loop with one of:
+
+```
+ValueError: bad marshal data (unknown type code)
+```
+or, worse, a silent `Segmentation fault (core dumped)` at
+`import uvicorn`. Root cause was a CI-side QEMU cross-build
+producing arm64 wheels with corrupted bytecode caches.
+**Fixed in v1.3.0-beta.3** via Dockerfile (`PYTHONDONTWRITEBYTECODE=1`
++ post-install `*.pyc` strip) and a switch to native arm64 runners
+in CI. Just re-run the installer with `--version v1.3.0-beta.3` (or
+later); the new image loads cleanly on every Cortex-A72 / A76 we've
+tested.
 
 ## Development
 
