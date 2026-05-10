@@ -59,6 +59,16 @@
 # Optional fail2ban (asked interactively if none set, default yes):
 #   INSTALL_FAIL2BAN=yes|no      — install fail2ban with sshd jail (5 fails → 1h ban)
 #
+# Optional PHP support for dynamic decoys (since v1.3.0-beta.6):
+#   INSTALL_PHP=yes|no           — install php-fpm with a hardened config
+#                                  so `*.php` files in /var/www/html are
+#                                  served via FastCGI. Used when the user
+#                                  picked a decoy template that needs
+#                                  server-side rendering (e.g. fake 2FA
+#                                  page that shows real Network-tab POST
+#                                  + 401 + Set-Cookie behaviour). Default
+#                                  no — keeps the install fully static.
+#
 # On success, prints the naive+https:// URI for import into PiTun.
 # ============================================================================
 
@@ -181,6 +191,15 @@ if [[ -z "${INSTALL_FAIL2BAN:-}" ]]; then
     [[ "${_f2b:-Y}" =~ ^[nN]$ ]] && INSTALL_FAIL2BAN=no || INSTALL_FAIL2BAN=yes
 fi
 
+# ── PHP support (optional; off by default) ────────────────────────────────
+# Off-by-default because (a) static decoys are sufficient for most threat
+# models and (b) PHP is a real attack surface. When PiTun's UI picks a
+# template that needs server-side rendering (fake-2fa etc.), it sets
+# INSTALL_PHP=yes and we install php-fpm with a heavily-hardened config —
+# disable_functions wide net, no DB drivers, no network from inside php
+# (allow_url_*=Off + fsockopen disabled), open_basedir jail.
+INSTALL_PHP="${INSTALL_PHP:-no}"
+
 # Validate domain (rudimentary)
 if [[ ! "$DOMAIN" =~ ^[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$ ]]; then
     err "Domain '$DOMAIN' doesn't look valid"
@@ -193,6 +212,27 @@ log "Installing base packages..."
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
 apt-get install -y -qq curl ca-certificates ufw debian-keyring debian-archive-keyring apt-transport-https gnupg lsb-release
+
+# ── 2b. PHP-FPM install + version detection (optional) ────────────────────
+# Split from the full PHP setup at step 9d because the Caddyfile (step 7)
+# needs to know PHP_FPM_SOCK when rendering the `php_fastcgi` directive.
+# Hardened config + service start happen after Caddyfile is in place.
+PHP_VER=""
+PHP_FPM_SOCK=""
+if [[ "${INSTALL_PHP:-no}" == "yes" ]]; then
+    log "Installing php-fpm (will be hardened in step 9d)..."
+    # No DB drivers (php-mysql / php-pgsql) — keeps SQL exfil
+    # vectors off the table for vulnerable user-uploaded PHP.
+    apt-get install -y -qq php-fpm php-cli
+    PHP_VER="$(php -r 'echo PHP_MAJOR_VERSION.".".PHP_MINOR_VERSION;' 2>/dev/null \
+              || dpkg-query -W -f='${Package}\n' 'php*-fpm' 2>/dev/null \
+                  | head -n1 | sed -E 's/php([0-9]+\.[0-9]+).*/\1/')"
+    if [[ -z "$PHP_VER" ]]; then
+        err "Could not detect installed PHP version after apt install"
+    fi
+    PHP_FPM_SOCK="/run/php/php${PHP_VER}-fpm.sock"
+    info "PHP detected: ${PHP_VER} (socket: ${PHP_FPM_SOCK})"
+fi
 
 # DNS check — now that curl is available. `getent hosts` is the fallback
 # path if we can't reach api.ipify.org (no internet egress for some
@@ -302,6 +342,22 @@ chown -R caddy:caddy /var/log/caddy /var/lib/caddy
 # escape any embedded double quotes.
 ESC_PASS="${NAIVE_PASS//\"/\\\"}"
 
+# When PHP is enabled, inject a `php_fastcgi` directive into the site
+# block so *.php paths get FastCGI'd to php-fpm. The hardened php-fpm
+# install above (step 9d) listens on the unix socket we computed
+# there; if INSTALL_PHP=no, the socket variable stays unset and the
+# Caddyfile keeps its pre-PHP layout.
+#
+# `php_fastcgi`'s try_files matcher uses the site-level `root`
+# directive, so we also emit `root * /var/www/html` when PHP is on
+# (file_server already had its own inline root, which still works).
+PHP_DIRECTIVE_LINE=""
+SITE_ROOT_LINE=""
+if [[ "${INSTALL_PHP:-no}" == "yes" ]]; then
+    PHP_DIRECTIVE_LINE="    php_fastcgi unix/${PHP_FPM_SOCK}"
+    SITE_ROOT_LINE="    root * /var/www/html"
+fi
+
 cat >/etc/caddy/Caddyfile <<EOF
 {
     email $EMAIL
@@ -332,6 +388,7 @@ cat >/etc/caddy/Caddyfile <<EOF
 # matcher reuses it.
 :443, $DOMAIN {
     tls $EMAIL
+$SITE_ROOT_LINE
 
     forward_proxy {
         basic_auth $NAIVE_USER "$ESC_PASS"
@@ -348,8 +405,11 @@ cat >/etc/caddy/Caddyfile <<EOF
         probe_resistance
     }
 
+$PHP_DIRECTIVE_LINE
     # Serve a plausible-looking site for anyone else visiting the domain.
     # This makes the endpoint indistinguishable from a static site.
+    # When PHP is enabled (line above), php_fastcgi takes precedence
+    # for *.php paths via Caddy's standard directive ordering.
     file_server {
         root /var/www/html
     }
@@ -708,6 +768,110 @@ EOF
         info "fail2ban: sshd jail active (port ${F2B_SSH_PORT}, 5 failures → 1h ban)"
     else
         warn "fail2ban did not start — check 'journalctl -u fail2ban'"
+    fi
+fi
+
+# ── 9d. PHP-FPM (optional, hardened) ───────────────────────────────────────
+# Installed only when the deploy explicitly requested PHP via
+# INSTALL_PHP=yes (PiTun UI sets this when the user picked a template
+# whose `requires_php` flag is set, e.g. fake-2fa). Heavily hardened so
+# a malicious / vulnerable user-uploaded PHP file can't escape the jail:
+#   * disable_functions: every shell-spawning + dynamic-eval + outbound-
+#     network primitive we don't need on a static-feel decoy
+#   * allow_url_fopen / allow_url_include: Off — blocks SSRF + RFI
+#   * open_basedir: jails reads/writes to /var/www/html + /tmp/pitun-php
+#   * No DB drivers (php-mysql / php-pgsql NOT installed) — no SQL exfil
+#   * php-fpm runs as the `caddy` user (no shell, no login) — no creds
+#     hop into a different user's home
+#
+# These together leave PHP useful for fake-auth-page state (sessions,
+# random sleeps, prog. error messages) but functionally inert for
+# attacker-style RCE / SSRF / data-exfil.
+if [[ "${INSTALL_PHP:-no}" == "yes" ]]; then
+    log "Hardening php-fpm config..."
+    # PHP_VER + PHP_FPM_SOCK were computed at step 2b (so the
+    # Caddyfile in step 7 could embed the socket path). Re-check
+    # that detection succeeded; abort with a clear message if
+    # something exotic happened (php-fpm package gone, etc.).
+    if [[ -z "$PHP_VER" ]]; then
+        err "PHP_VER unset — step 2b detection failed; cannot harden"
+    fi
+
+    # Hardened override that ships AFTER the distro defaults so it
+    # wins. `99-` prefix puts it last in the conf.d alphabetical
+    # sort that PHP-FPM loads.
+    HARDEN_INI="/etc/php/${PHP_VER}/fpm/conf.d/99-pitun-decoy.ini"
+    cat >"$HARDEN_INI" <<'PHPINI'
+; PiTun: hardened PHP for decoy-only use. See setup-naive-server.sh
+; for the rationale on each toggle. Don't bypass without thinking.
+
+; Block every commonly-abused function. The list looks long but each
+; entry has a known exploit path on a misconfigured app:
+;   exec/passthru/shell_exec/system/proc_open/popen   — RCE
+;   pcntl_exec                                        — RCE
+;   eval/assert/create_function/show_source            — code disclosure / dynamic eval
+;   curl_exec/curl_multi_exec/fsockopen/pfsockopen/
+;     stream_socket_client                            — SSRF / outbound exfil
+;   parse_ini_file/parse_ini_string                   — read /etc/passwd-style configs
+;   ini_set/error_reporting                           — disable defenses at runtime
+;   putenv/dl/phpinfo                                 — env leakage / module load / fingerprint
+disable_functions = exec,passthru,shell_exec,system,proc_open,popen,proc_get_status,proc_nice,proc_terminate,pcntl_exec,show_source,eval,create_function,assert,curl_exec,curl_multi_exec,fsockopen,pfsockopen,stream_socket_client,parse_ini_file,parse_ini_string,putenv,dl,phpinfo
+
+; Network egress from PHP — Off blocks both `include 'http://...';`
+; (RFI) and `file_get_contents('http://attacker/')` (SSRF).
+allow_url_fopen   = Off
+allow_url_include = Off
+
+; Filesystem jail — PHP can only read/write /var/www/html (the decoy
+; site) plus /tmp/pitun-php (session save dir). /etc/passwd, /root/*,
+; /var/log/* etc. are off-limits.
+open_basedir = /var/www/html:/tmp/pitun-php
+
+; Don't leak the exact PHP version in `Server:` / `X-Powered-By`.
+; A determined fingerprinter can still tell PHP-FPM is there from
+; behavioural cues, but no need to advertise the patch level.
+expose_php = Off
+
+; Sessions live in the jail too (default is /var/lib/php/sessions
+; which is outside open_basedir). gc_probability=1/100 keeps the
+; dir from filling up.
+session.save_path     = /tmp/pitun-php
+session.gc_probability = 1
+session.gc_divisor     = 100
+
+; Modest upload caps — decoy POST bodies are tiny.
+post_max_size       = 1M
+upload_max_filesize = 1M
+max_execution_time  = 5
+max_input_time      = 5
+memory_limit        = 32M
+PHPINI
+
+    # Session save dir, owned by the caddy user that php-fpm runs as.
+    mkdir -p /tmp/pitun-php
+    chown caddy:caddy /tmp/pitun-php
+    chmod 700 /tmp/pitun-php
+
+    # Run php-fpm under the same `caddy` user that owns the docroot,
+    # so file_get_contents on user content + session writes JustWork.
+    # The default `www-data` user lives in its own /var/www but that's
+    # not how this Caddy install lays out perms.
+    POOL_CONF="/etc/php/${PHP_VER}/fpm/pool.d/www.conf"
+    if [[ -f "$POOL_CONF" ]]; then
+        sed -i 's/^user *= *.*/user = caddy/'   "$POOL_CONF"
+        sed -i 's/^group *= *.*/group = caddy/' "$POOL_CONF"
+        sed -i 's|^listen.owner *= *.*|listen.owner = caddy|' "$POOL_CONF"
+        sed -i 's|^listen.group *= *.*|listen.group = caddy|' "$POOL_CONF"
+    else
+        warn "$POOL_CONF not found — php-fpm will run as default www-data"
+    fi
+
+    systemctl enable "php${PHP_VER}-fpm" >/dev/null
+    systemctl restart "php${PHP_VER}-fpm"
+    if systemctl is-active --quiet "php${PHP_VER}-fpm"; then
+        info "php-fpm: ${PHP_VER} active (hardened, jailed to /var/www/html + /tmp/pitun-php)"
+    else
+        err "php${PHP_VER}-fpm failed to start — check 'journalctl -u php${PHP_VER}-fpm'"
     fi
 fi
 
