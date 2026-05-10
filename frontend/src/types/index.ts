@@ -663,13 +663,19 @@ export interface NaiveDeploymentConfig {
 // DECOY_REPO) when generating the install script. See
 // `backend/app/core/templates.py` for the source of truth.
 
-export type DecoyTemplateKind = 'single_html' | 'git_repo'
+export type DecoyTemplateKind = 'single_html' | 'git_repo' | 'custom'
 
 export interface DecoyTemplate {
   id: string
   label: string
   description: string
   kind: DecoyTemplateKind
+  // Populated only when `kind === 'custom'` — used by the picker
+  // to render delete buttons and a tooltip with the original
+  // filename + upload date.
+  custom_byte_size?: number
+  custom_filename?: string | null
+  custom_created_at?: string | null
 }
 
 /** WireGuard server-level state, persisted in `ServerDeployment.config_json`.

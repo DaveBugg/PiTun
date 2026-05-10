@@ -305,6 +305,34 @@ async def deploy_to_server(
         # bug, not user input.
         raise HTTPException(status_code=500, detail=f"Install script missing: {exc}")
 
+    # If the user picked a custom-uploaded template, pull the archive
+    # bytes out of /app/data so the runner can SFTP them to the VPS
+    # alongside the script. We resolve this synchronously at deploy-
+    # plan time (not inside the async runner) so a deleted-since-pick
+    # template id surfaces as 400 immediately rather than failing
+    # the WS-streamed deploy 200ms in. Returns None for built-in
+    # ids → no extra_files needed.
+    extra_files: Optional[dict[str, bytes]] = None
+    template_id_for_deploy = body.config.get("template_id") if body.protocol == "naive" else None
+    if template_id_for_deploy:
+        from app.core.templates import get_template
+        from app.core.custom_templates import get_archive_bytes
+        tpl = get_template(template_id_for_deploy)
+        if tpl is not None and tpl.kind == "custom":
+            archive = get_archive_bytes(template_id_for_deploy)
+            if archive is None:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"Custom template {template_id_for_deploy!r} no "
+                        "longer exists on this PiTun (was it deleted?). "
+                        "Pick a different cover or re-upload."
+                    ),
+                )
+            # Path matches what `core.templates.resolve_to_env` emits
+            # in `TEMPLATE_LOCAL_ARCHIVE`. Keep them in lockstep.
+            extra_files = {"/tmp/pitun-template.zip": archive}
+
     # Closures over plan + creds. The runner is the sole place that
     # touches SSH from now on; JobManager doesn't know about ssh.py.
     async def runner(job_id: str, on_line):
@@ -322,6 +350,7 @@ async def deploy_to_server(
             script_content=plan.script_content,
             env=plan.env,
             on_line=on_line,
+            extra_files=extra_files,
         )
 
         parsed_uri: Optional[str] = None

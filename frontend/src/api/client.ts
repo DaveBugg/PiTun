@@ -254,11 +254,30 @@ export const systemApi = {
 // ── Decoy templates (since v1.3.0-beta.6) ───────────────────────────────────
 
 export const templatesApi = {
-  /** Curated gallery of decoy-site options the user can pick when
-   * deploying NaiveProxy. Read-only in Phase 1 — Phase 2 will add
-   * a POST /upload endpoint here for user-supplied .zip archives. */
+  /** Curated gallery of decoy-site options + user-uploaded custom
+   * .zip archives. The picker renders both kinds in one list. */
   list: () =>
     http.get<DecoyTemplate[]>('/templates').then(r => r.data),
+
+  /** Upload a custom .zip cover. Backend validates: ≤10 MB, no
+   * zip-slip, static-asset extension whitelist, must contain
+   * index.html. Returns the new template entry on success. */
+  upload: (label: string, description: string, archive: File) => {
+    const fd = new FormData()
+    fd.append('label', label)
+    fd.append('description', description)
+    fd.append('archive', archive)
+    return http
+      .post<DecoyTemplate>('/templates/upload', fd, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+      })
+      .then((r) => r.data)
+  },
+
+  /** Remove a custom template. Built-ins return 400 — the UI
+   * hides the delete button on those rows. */
+  remove: (templateId: string) =>
+    http.delete(`/templates/${encodeURIComponent(templateId)}`),
 }
 
 

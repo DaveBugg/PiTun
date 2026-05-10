@@ -18,6 +18,13 @@
 #        bash setup-naive-server.sh
 #
 # Optional decoy site override (anyone without proxy auth sees this):
+#   TEMPLATE_LOCAL_ARCHIVE=<path>
+#                          — extract a SFTP'd zip into /var/www/html/.
+#                            Used for user-uploaded custom templates
+#                            (PiTun UI ships /tmp/pitun-template.zip
+#                            via the deploy SSH session). Highest
+#                            priority — beats both TEMPLATE_HTML_URL
+#                            and DECOY_REPO.
 #   TEMPLATE_HTML_URL=<URL> — curl a single-file HTML to /var/www/html/
 #                             index.html (no apt/git overhead). Used by
 #                             the PiTun UI's built-in template gallery
@@ -372,12 +379,15 @@ chmod 640 /etc/caddy/Caddyfile
 # original "don't clobber custom content" check would skip the swap
 # because /var/www/html already contains the previous decoy.
 EXPLICIT_DECOY=0
-if [[ -n "${TEMPLATE_HTML_URL:-}" ]] || [[ -n "${DECOY_REPO:-}" ]]; then
+if [[ -n "${TEMPLATE_HTML_URL:-}" ]] \
+   || [[ -n "${DECOY_REPO:-}" ]] \
+   || [[ -n "${TEMPLATE_LOCAL_ARCHIVE:-}" ]]; then
     EXPLICIT_DECOY=1
 fi
 DECOY_REPO="${DECOY_REPO:-https://github.com/daleharvey/pacman}"
 DECOY_REPO_PINNED_COMMIT="${DECOY_REPO_PINNED_COMMIT:-}"
 TEMPLATE_HTML_URL="${TEMPLATE_HTML_URL:-}"
+TEMPLATE_LOCAL_ARCHIVE="${TEMPLATE_LOCAL_ARCHIVE:-}"
 FORCE_DECOY="${FORCE_DECOY:-no}"
 # Auto-force when the user picked ANY decoy explicitly through the
 # UI (single-file template OR a non-default git repo). Either way
@@ -403,14 +413,41 @@ if [[ "$FORCE_DECOY" == "yes" ]] || \
    ([[ "$DECOY_EXISTING" -eq 1 ]] && [[ -f /var/www/html/index.html ]] && \
     grep -q "This is the default page" /var/www/html/index.html 2>/dev/null); then
 
-    # Preferred path (since v1.3.0-beta.6): single-file template via
-    # `curl`. Faster, no apt install, deterministic. Used by the
-    # PiTun UI's built-in template gallery for the corporate / blog /
-    # docs / maintenance covers. Falls through to the git-clone path
-    # if curl fails so a transient network hiccup doesn't leave the
-    # server with a default Caddy "It works" page that screams "I am
-    # a fresh proxy".
-    if [[ -n "$TEMPLATE_HTML_URL" ]]; then
+    # Highest-priority path (since v1.3.0-beta.6): user-uploaded
+    # custom template, SFTP'd to /tmp/pitun-template.zip by the
+    # deploy SSH session. Beats both TEMPLATE_HTML_URL and
+    # DECOY_REPO — the user explicitly picked their own archive.
+    # Falls through to the cheaper alternatives if the archive is
+    # missing or unzip fails.
+    TEMPLATE_LOCAL_INSTALLED=0
+    if [[ -n "$TEMPLATE_LOCAL_ARCHIVE" ]] && [[ -f "$TEMPLATE_LOCAL_ARCHIVE" ]]; then
+        log "Extracting custom template from $TEMPLATE_LOCAL_ARCHIVE ..."
+        apt-get install -y -qq unzip
+        TMP_EXTRACT="$(mktemp -d)"
+        if unzip -q "$TEMPLATE_LOCAL_ARCHIVE" -d "$TMP_EXTRACT"; then
+            rm -rf /var/www/html/*
+            # If the archive's top level contains a single dir (the
+            # common "myproject/" wrapper from `git archive` etc.),
+            # promote its contents up; otherwise copy as-is.
+            top_count=$(find "$TMP_EXTRACT" -mindepth 1 -maxdepth 1 | wc -l)
+            top_dir=$(find "$TMP_EXTRACT" -mindepth 1 -maxdepth 1 -type d | head -n1)
+            if [[ "$top_count" -eq 1 ]] && [[ -n "$top_dir" ]] && [[ -f "$top_dir/index.html" ]]; then
+                cp -r "$top_dir/." /var/www/html/
+            else
+                cp -r "$TMP_EXTRACT/." /var/www/html/
+            fi
+            info "Custom decoy installed (zip: $(basename "$TEMPLATE_LOCAL_ARCHIVE"))"
+            TEMPLATE_LOCAL_INSTALLED=1
+            rm -f "$TEMPLATE_LOCAL_ARCHIVE"  # cleanup the SFTP'd zip
+        else
+            warn "Failed to unzip $TEMPLATE_LOCAL_ARCHIVE — falling back"
+        fi
+        rm -rf "$TMP_EXTRACT"
+    fi
+    # Cheaper path: single-file template via curl. No apt install,
+    # deterministic, ~10 KB. Used by the built-in gallery for
+    # corporate / blog / docs / maintenance covers.
+    if [[ "$TEMPLATE_LOCAL_INSTALLED" != "1" ]] && [[ -n "$TEMPLATE_HTML_URL" ]]; then
         log "Fetching single-file decoy template from $TEMPLATE_HTML_URL ..."
         TMP_HTML="$(mktemp)"
         if curl -fsSL --max-time 30 -o "$TMP_HTML" "$TEMPLATE_HTML_URL"; then
@@ -433,7 +470,7 @@ if [[ "$FORCE_DECOY" == "yes" ]] || \
         fi
     fi
 
-    if [[ "${TEMPLATE_HTML_INSTALLED:-0}" != "1" ]]; then
+    if [[ "$TEMPLATE_LOCAL_INSTALLED" != "1" ]] && [[ "${TEMPLATE_HTML_INSTALLED:-0}" != "1" ]]; then
       if [[ "$DECOY_REPO" == "none" ]]; then
         log "Writing minimal decoy stub (DECOY_REPO=none)..."
         cat >/var/www/html/index.html <<'HTML'

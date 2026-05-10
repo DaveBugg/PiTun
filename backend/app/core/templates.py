@@ -54,7 +54,7 @@ _REPO_RAW_BASE = (
     f"{_REPO_BRANCH}/docker/naive/templates"
 )
 
-TemplateKind = Literal["single_html", "git_repo"]
+TemplateKind = Literal["single_html", "git_repo", "custom"]
 
 
 @dataclass(frozen=True)
@@ -187,13 +187,33 @@ TEMPLATES: List[DecoyTemplate] = [
 
 
 def get_template(template_id: str) -> Optional[DecoyTemplate]:
-    """Look up by id. Returns None for unknown ids — callers
-    typically fall back to the script's built-in default rather
-    than raising."""
+    """Look up by id. Built-ins first, then custom uploads.
+    Returns None for unknown ids — callers typically fall back to
+    the script's built-in default rather than raising."""
     for t in TEMPLATES:
         if t.id == template_id:
             return t
-    return None
+    # Custom uploads (Phase 2). Probe the storage dir lazily so a
+    # broken filesystem mount only fails at runtime when a custom
+    # template is actually requested, not when the module imports.
+    try:
+        from app.core.custom_templates import get_custom as _get_custom
+    except ImportError:
+        return None
+    cm = _get_custom(template_id)
+    if cm is None:
+        return None
+    return DecoyTemplate(
+        id=cm.id,
+        label=cm.label,
+        description=cm.description,
+        kind="custom",
+        # `source` for custom is the on-disk archive path (relative
+        # to the data dir). The deploy runner reads bytes via
+        # `custom_templates.get_archive_bytes(id)` rather than this
+        # field, so the format here is purely informational.
+        source=f"data/templates/custom/{cm.id}/archive.zip",
+    )
 
 
 def resolve_to_env(template_id: Optional[str]) -> dict[str, str]:
@@ -229,4 +249,13 @@ def resolve_to_env(template_id: Optional[str]) -> dict[str, str]:
         return env
     if t.kind == "single_html":
         return {"TEMPLATE_HTML_URL": f"{_REPO_RAW_BASE}/{t.source}"}
+    if t.kind == "custom":
+        # Custom uploads are delivered via SFTP — the deploy runner
+        # SFTPs the archive to /tmp/pitun-template.zip on the VPS
+        # via `extra_files`, then exports this env so the script
+        # knows where to find it. Fixed path, not random — only one
+        # naive deploy per (server, protocol) slot can run at a
+        # time (JobManager lock), so no race with concurrent
+        # deploys overwriting each other's archives.
+        return {"TEMPLATE_LOCAL_ARCHIVE": "/tmp/pitun-template.zip"}
     return {}

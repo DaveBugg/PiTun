@@ -572,6 +572,7 @@ async def exec_remote_script_streaming(
     env: Optional[dict[str, str]] = None,
     timeout: float = _DEFAULT_DEPLOY_TIMEOUT_S,
     on_line: Callable[[str, str], "asyncio.Future[Any] | Any"],
+    extra_files: Optional[dict[str, bytes]] = None,
 ) -> DeployResult:
     """Same contract as `exec_remote_script` but invokes
     `on_line(kind, line)` on every full output line as it arrives.
@@ -704,11 +705,44 @@ async def exec_remote_script_streaming(
         async with asyncio.timeout(timeout + _CONNECT_TIMEOUT_S):
             async with asyncssh.connect(**connect_kwargs) as conn:
                 # Upload script via SFTP — same as sync variant.
+                # `extra_files` (since v1.3.0-beta.6) ships
+                # companion artifacts alongside the script. Keys
+                # are absolute remote paths (e.g.
+                # `/tmp/pitun-template.zip`); values are file
+                # bytes. Used by the custom-template path — the
+                # zip lands at the well-known location the script
+                # extracts from.
                 try:
                     async with conn.start_sftp_client() as sftp:
                         async with sftp.open(remote_script_path, "wb") as rf:
                             await rf.write(script_content.encode("utf-8"))
                         await sftp.chmod(remote_script_path, 0o755)
+                        if extra_files:
+                            for remote_path, data in extra_files.items():
+                                # Defensive: reject anything that
+                                # isn't an explicit /tmp/pitun-* path
+                                # so a misconfigured caller can't
+                                # ever overwrite an arbitrary file.
+                                if not remote_path.startswith("/tmp/pitun-"):
+                                    return DeployResult(
+                                        ok=False,
+                                        connect_latency_ms=tcp_rtt_ms,
+                                        error=(
+                                            f"unsafe extra_file path: {remote_path!r} "
+                                            "(must start with /tmp/pitun-)"
+                                        ),
+                                        duration_sec=round(time.monotonic() - started_at, 3),
+                                    )
+                                if ".." in remote_path:
+                                    return DeployResult(
+                                        ok=False,
+                                        connect_latency_ms=tcp_rtt_ms,
+                                        error=f"path traversal in: {remote_path!r}",
+                                        duration_sec=round(time.monotonic() - started_at, 3),
+                                    )
+                                async with sftp.open(remote_path, "wb") as ef:
+                                    await ef.write(data)
+                                await sftp.chmod(remote_path, 0o644)
                 except Exception as exc:  # noqa: BLE001
                     return DeployResult(
                         ok=False,
