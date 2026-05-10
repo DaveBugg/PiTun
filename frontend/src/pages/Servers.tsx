@@ -9,6 +9,7 @@ import {
   Sparkles, Link2,
   FileDown, FileUp,
   Rocket, ListChecks, Users, Trash,
+  Layers, ExternalLink,
 } from 'lucide-react'
 
 import { serversApi, scriptsApi } from '@/api/client'
@@ -335,8 +336,63 @@ function ManualScriptsSection({
           actionLabel={t('Configure & download', 'Настроить и скачать')}
           onAction={() => onRunScript('wireguard')}
         />
+        {/* x-ui doesn't have a "configure & download .sh" path on
+            purpose — the install flow (random fakesite, nginx, certbot,
+            etc.) is too involved to script-and-forget. PiTun's
+            SSH-driven Deploy on a registered Server handles it
+            end-to-end. For users who want to install manually, link
+            out to the upstream repos. */}
+        <XuiUpstreamCard />
       </div>
     </section>
+  )
+}
+
+
+function XuiUpstreamCard() {
+  const t = useT()
+  return (
+    <div className="rounded-2xl border border-gray-800 bg-gray-900/40 p-4 flex flex-col">
+      <div className="flex items-start gap-2 mb-2">
+        <div className="rounded-lg bg-purple-900/30 border border-purple-700/40 p-1.5 text-purple-300">
+          <Layers className="h-4 w-4" />
+        </div>
+        <div className="min-w-0 flex-1">
+          <div className="text-sm font-medium text-gray-100">x-ui-pro / 3x-ui</div>
+          <div className="text-[11px] text-gray-500">
+            {t('panel-managed Xray inbounds', 'панель для управления Xray-инбаундами')}
+          </div>
+        </div>
+      </div>
+      <p className="text-xs text-gray-400 mb-3 leading-snug flex-1">
+        {t(
+          'No "configure & download" here — the install touches nginx, Let\'s Encrypt and a 268 MB fakesite bundle. Use PiTun → Servers → Deploy → "x-ui" on a registered VPS for the supported flow. If you want to install manually, the upstream repos below also work; once running, import a client URI from the panel into PiTun → Nodes.',
+          'Тут нет "настроить и скачать" — установка трогает nginx, Let\'s Encrypt и архив фейк-сайтов на 268 МБ. Через PiTun → Servers → Deploy → "x-ui" на зарегистрированный VPS работает из коробки. Если хочется руками — установите через апстрим-репы ниже, потом импортируйте URI клиента из панели в PiTun → Nodes.',
+        )}
+      </p>
+      <div className="flex flex-col gap-1.5 text-xs">
+        <a
+          href="https://github.com/GFW4Fun/x-ui-pro"
+          target="_blank"
+          rel="noopener noreferrer"
+          className="inline-flex items-center gap-1.5 text-brand-400 hover:text-brand-300"
+        >
+          <ExternalLink className="h-3.5 w-3.5" />
+          GFW4Fun/x-ui-pro
+          <span className="text-gray-500">— {t('nginx + fakesite + WARP/Tor', 'nginx + фейк-сайт + WARP/Tor')}</span>
+        </a>
+        <a
+          href="https://github.com/MHSanaei/3x-ui"
+          target="_blank"
+          rel="noopener noreferrer"
+          className="inline-flex items-center gap-1.5 text-brand-400 hover:text-brand-300"
+        >
+          <ExternalLink className="h-3.5 w-3.5" />
+          MHSanaei/3x-ui
+          <span className="text-gray-500">— {t('bare panel, Reality-friendly', 'голая панель, удобна для Reality')}</span>
+        </a>
+      </div>
+    </div>
   )
 }
 
