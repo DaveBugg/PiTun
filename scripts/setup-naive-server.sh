@@ -335,7 +335,11 @@ if ! id caddy >/dev/null 2>&1; then
     useradd --system --gid caddy --create-home --home-dir /var/lib/caddy \
         --shell /usr/sbin/nologin --comment "Caddy web server" caddy
 fi
-mkdir -p /etc/caddy /var/log/caddy
+# `useradd --create-home` is unreliable on Debian 13 trixie for system
+# users with --shell /usr/sbin/nologin: the home dir doesn't always
+# materialise even though useradd exits 0. Create it explicitly so the
+# chown below doesn't blow up `set -e`.
+mkdir -p /etc/caddy /var/log/caddy /var/lib/caddy
 chown -R caddy:caddy /var/log/caddy /var/lib/caddy
 
 # ── 7. Write Caddyfile ──────────────────────────────────────────────────────
