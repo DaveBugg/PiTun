@@ -226,7 +226,14 @@ fi
 log "Installing base packages..."
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
-apt-get install -y -qq curl ca-certificates ufw debian-keyring debian-archive-keyring apt-transport-https gnupg lsb-release
+apt-get install -y -qq curl ca-certificates ufw debian-keyring debian-archive-keyring apt-transport-https gnupg lsb-release unzip
+# `unzip` covers two cases here:
+#  * Custom-template branch below (TEMPLATE_LOCAL_ARCHIVE) extracts a
+#    user-uploaded .zip into /var/www/html/. Without unzip the script
+#    used to lazy-install it inside the custom-template if-block, which
+#    is fragile under `set -e` if apt-update is stale.
+#  * Future fakesite-archive flows (e.g. random fakesite picker) will
+#    hit the same need — prepay the apt cost once.
 
 # ── 2b. PHP-FPM install + version detection (optional) ────────────────────
 # Split from the full PHP setup at step 9d because the Caddyfile (step 7)
@@ -503,7 +510,8 @@ if [[ "$FORCE_DECOY" == "yes" ]] || \
     TEMPLATE_LOCAL_INSTALLED=0
     if [[ -n "$TEMPLATE_LOCAL_ARCHIVE" ]] && [[ -f "$TEMPLATE_LOCAL_ARCHIVE" ]]; then
         log "Extracting custom template from $TEMPLATE_LOCAL_ARCHIVE ..."
-        apt-get install -y -qq unzip
+        # `unzip` was apt-installed in section 2 above (was lazy-installed
+        # here previously, but a stale apt cache could fail it under set -e).
         TMP_EXTRACT="$(mktemp -d)"
         if unzip -q "$TEMPLATE_LOCAL_ARCHIVE" -d "$TMP_EXTRACT"; then
             rm -rf /var/www/html/*
