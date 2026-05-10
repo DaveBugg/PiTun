@@ -48,22 +48,21 @@ export default function XuiPage() {
   const selectedServer = servers.find((s) => s.id === selectedId) ?? null
 
   return (
-    <div className="space-y-4">
-      <header className="flex items-start justify-between gap-3 flex-wrap">
-        <div>
-          <h1 className="text-xl font-semibold text-gray-100 flex items-center gap-2">
-            <Layers className="h-5 w-5 text-brand-400" />
-            {t('x-ui panels', 'Панели x-ui')}
-          </h1>
-          <p className="text-xs text-gray-500 mt-0.5">
-            {t(
-              'Manage VLESS / Trojan / SOCKS inbounds on x-ui-pro / 3x-ui panels deployed via PiTun.',
-              'Управление VLESS / Trojan / SOCKS инбаундами на панелях x-ui-pro / 3x-ui, развёрнутых через PiTun.',
-            )}
-          </p>
-        </div>
+    <div className="p-4 md:p-6">
+      <header className="mb-5 flex flex-wrap items-center gap-3">
+        <Layers className="h-6 w-6 text-brand-400" />
+        <h1 className="text-2xl font-semibold text-gray-100">
+          {t('X-ui panels', 'Панели X-ui')}
+        </h1>
+        <p className="text-sm text-gray-500 hidden md:block">
+          {t(
+            'Manage VLESS / Trojan / SOCKS inbounds on x-ui-pro / 3x-ui panels deployed via PiTun',
+            'Управляйте VLESS / Trojan / SOCKS инбаундами на панелях x-ui-pro / 3x-ui, развёрнутых через PiTun',
+          )}
+        </p>
       </header>
 
+      <div className="space-y-4">
       {srvLoading && (
         <div className="rounded-lg border border-gray-800 bg-gray-900/40 px-3 py-6 flex items-center justify-center gap-2 text-sm text-gray-500">
           <Loader2 className="h-4 w-4 animate-spin" />
@@ -113,6 +112,7 @@ export default function XuiPage() {
           )}
         </div>
       )}
+      </div>
     </div>
   )
 }
