@@ -638,7 +638,7 @@ export interface ServerTestAllResult {
 // Lets the modal pre-fill on re-open and powers "Create node from this
 // deployment".
 
-export type ServerDeploymentProtocol = 'naive' | 'wireguard'
+export type ServerDeploymentProtocol = 'naive' | 'wireguard' | 'xui'
 
 export type ServerDeploymentStatus = 'configured' | 'deployed' | 'failed'
 
@@ -712,7 +712,102 @@ export interface WireGuardDeploymentConfig {
   ssh_port?: number
 }
 
-export type DeploymentConfig = NaiveDeploymentConfig | WireGuardDeploymentConfig
+// ── x-ui-pro / 3x-ui panel deploy + management (since v1.3.0-beta.7) ────────
+
+export interface XuiDeploymentConfig {
+  /** Empty / unset → bare upstream 3x-ui at the pinned version (no
+   *  nginx, no Let's Encrypt, panel on self-signed cert; for Reality-
+   *  only setups). Set → full x-ui-pro stack with nginx fakesite +
+   *  Let's Encrypt cert at the apex domain. */
+  domain?: string
+  /** Let's Encrypt registration email (only meaningful when `domain`
+   *  is set). Defaults to `admin@<domain>` server-side. */
+  email?: string
+  /** Move SSH listener to this port. Same semantics as the naive/wg
+   *  fields. */
+  ssh_port?: number
+}
+
+/** Decoded `xui://...` URI from the install script — used both at
+ *  deploy-finalize and as the wire shape for `POST /api/xui/servers/
+ *  import` when manually re-attaching a panel. */
+export interface XuiServer {
+  id: number
+  server_id: number
+  server_name: string
+  server_host: string
+  panel_port: number
+  panel_basepath: string         // starts with `/`, no trailing `/`
+  panel_user: string             // panel_pass is write-only via API
+  domain?: string | null
+  mode: 'bare' | 'xui-pro'
+  last_check?: string | null
+  last_check_error?: string | null
+  created_at: string
+  updated_at: string
+}
+
+/** Live inbound shape as returned by `GET /api/xui/servers/{id}/
+ *  inbounds`. The panel's own structure — fields we DON'T touch from
+ *  PiTun are passed through as `any` so future protocol additions
+ *  don't break the frontend. */
+export interface XuiInbound {
+  id: number
+  remark: string
+  port: number
+  protocol: string               // vless | trojan | shadowsocks | socks
+  enable: boolean
+  expiryTime?: number
+  listen?: string
+  settings: string               // JSON-in-JSON — panel's quirk
+  streamSettings: string         // JSON-in-JSON
+  sniffing: string               // JSON-in-JSON
+  tag?: string
+  up?: number
+  down?: number
+  total?: number
+  // Parsed clientStats from /list (panel adds it for some endpoints).
+  clientStats?: Array<{ email: string; total?: number; up?: number; down?: number }>
+}
+
+/** PiTun-managed XuiClient row — returned by `POST .../clients` and
+ *  by the future `/sync` reconcile endpoint. */
+export interface XuiClient {
+  id: number
+  xui_server_id: number
+  inbound_remote_id: number
+  client_uuid: string
+  label: string                  // pi-XXXXXXXX format
+  inbound_protocol: string
+  inbound_port: number
+  inbound_remark: string
+  config: Record<string, unknown>  // full client object (uuid/flow/password/...)
+  exported_node_id?: number | null
+}
+
+/** One inbound preset surface as `GET /api/xui/presets` returns it. */
+export interface InboundPresetField {
+  name: string
+  label: string
+  type: 'string' | 'int' | 'domain' | 'sni' | 'select'
+  required: boolean
+  default?: string | null
+  help: string
+  choices?: string[] | null
+  placeholder: string
+}
+
+export interface InboundPreset {
+  id: string
+  label: string
+  description: string
+  needs_domain: boolean
+  supports_reality: boolean
+  protocol: 'vless' | 'trojan' | 'socks'
+  fields: InboundPresetField[]
+}
+
+export type DeploymentConfig = NaiveDeploymentConfig | WireGuardDeploymentConfig | XuiDeploymentConfig
 
 export interface ServerDeployment {
   id: number

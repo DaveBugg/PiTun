@@ -4,7 +4,7 @@ import { useQueryClient } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
 import {
   Sparkles, Rocket, Loader2, Terminal, AlertTriangle, CheckCircle2,
-  Ban, ExternalLink, Shield, Network,
+  Ban, ExternalLink, Shield, Network, Layers,
 } from 'lucide-react'
 
 import { serversApi } from '@/api/client'
@@ -62,11 +62,19 @@ export function DeployModal({
   const { data: deployments = [] } = useDeployments(server.id)
   const existingNaive = deployments.find((d) => d.protocol === 'naive')
   const existingWg = deployments.find((d) => d.protocol === 'wireguard')
+  const existingXui = deployments.find((d) => d.protocol === 'xui')
+
+  // 443-slot mutex (matches the backend guard in `POST /servers/{id}/
+  // deploy`): naive ⇔ xui can't coexist because both bind :443. Used
+  // below to grey out the conflicting button so users see WHY they
+  // can't pick the other one without a backend 409 round-trip.
+  const naiveBlocksXui = existingNaive?.status === 'deployed'
+  const xuiBlocksNaive = existingXui?.status === 'deployed'
 
   // Protocol selector — defaults to whichever is already deployed; if
   // neither, default to naive (the older / more common path).
   const [protocol, setProtocol] = useState<ServerDeploymentProtocol>(
-    existingNaive ? 'naive' : (existingWg ? 'wireguard' : 'naive'),
+    existingNaive ? 'naive' : (existingXui ? 'xui' : (existingWg ? 'wireguard' : 'naive')),
   )
 
   // Naive fields
@@ -111,6 +119,17 @@ export function DeployModal({
     wgCfg.allowed_ips ?? '0.0.0.0/0,::/0',
   )
 
+  // x-ui fields (since v1.3.0-beta.7). `domain` empty → bare-mode
+  // upstream 3x-ui (no nginx, panel on self-signed cert); set → full
+  // x-ui-pro stack (nginx + Let's Encrypt + fakesite). `email` is
+  // only meaningful when domain is set; defaults to `admin@<domain>`
+  // server-side when omitted.
+  const xuiCfg = (existingXui?.config ?? {}) as {
+    domain?: string; email?: string
+  }
+  const [xuiDomain, setXuiDomain] = useState(xuiCfg.domain ?? '')
+  const [xuiEmail, setXuiEmail] = useState(xuiCfg.email ?? '')
+
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState('')
   const [jobId, setJobId] = useState<string | null>(null)
@@ -132,6 +151,16 @@ export function DeployModal({
         naive_pass: naivePass.trim() || undefined,
         template_id: naiveTemplateId,
         install_php: naiveInstallPhp || undefined,
+        ssh_port: sshPort.trim() ? Number(sshPort.trim()) : undefined,
+      }
+    }
+    if (protocol === 'xui') {
+      // Domain optional → bare-mode install (Reality-only). When
+      // domain is set we DON'T require email — backend defaults to
+      // `admin@<domain>` for Let's Encrypt registration.
+      return {
+        domain: xuiDomain.trim() || undefined,
+        email: xuiEmail.trim() || undefined,
         ssh_port: sshPort.trim() ? Number(sshPort.trim()) : undefined,
       }
     }
@@ -206,6 +235,10 @@ export function DeployModal({
             naiveInstallPhp={naiveInstallPhp}
             sshPort={sshPort}
             serverPort={server.port}
+            xuiDomain={xuiDomain}
+            xuiEmail={xuiEmail}
+            naiveBlocksXui={naiveBlocksXui}
+            xuiBlocksNaive={xuiBlocksNaive}
             wgClientName={wgClientName}
             wgServerPort={wgServerPort}
             wgDns1={wgDns1}
@@ -220,6 +253,8 @@ export function DeployModal({
             setNaiveTemplateId={setNaiveTemplateId}
             setNaiveInstallPhp={setNaiveInstallPhp}
             setSshPort={setSshPort}
+            setXuiDomain={setXuiDomain}
+            setXuiEmail={setXuiEmail}
             setWgClientName={setWgClientName}
             setWgServerPort={setWgServerPort}
             setWgDns1={setWgDns1}
@@ -254,6 +289,10 @@ function DeployForm(props: {
   naiveInstallPhp: boolean
   sshPort: string
   serverPort: number
+  xuiDomain: string
+  xuiEmail: string
+  naiveBlocksXui: boolean
+  xuiBlocksNaive: boolean
   wgClientName: string; wgServerPort: string; wgDns1: string
   wgDns2: string; wgAllowedIps: string
   error: string; submitting: boolean
@@ -264,6 +303,8 @@ function DeployForm(props: {
   setNaiveTemplateId: (v: string | undefined) => void
   setNaiveInstallPhp: (v: boolean) => void
   setSshPort: (v: string) => void
+  setXuiDomain: (v: string) => void
+  setXuiEmail: (v: string) => void
   setWgClientName: (v: string) => void
   setWgServerPort: (v: string) => void
   setWgDns1: (v: string) => void
@@ -274,6 +315,8 @@ function DeployForm(props: {
 }) {
   const t = useT()
   const isNaive = props.protocol === 'naive'
+  const isXui = props.protocol === 'xui'
+  const isWg = props.protocol === 'wireguard'
   return (
     <form onSubmit={props.onSubmit}>
       {props.error && (
@@ -283,17 +326,36 @@ function DeployForm(props: {
         </div>
       )}
 
-      {/* Protocol toggle — naive (single-tunnel) vs wireguard (multi-client). */}
-      <div className="mb-4 grid grid-cols-2 gap-2">
+      {/* Protocol toggle — naive + x-ui (443-slot mutex) + wireguard
+          (UDP, orthogonal to the slot). Disabled buttons surface the
+          slot conflict before the user submits and hits a 409. */}
+      <div className="mb-4 grid grid-cols-3 gap-2">
         <ProtocolPick
           active={isNaive}
           icon={<Shield className="h-4 w-4" />}
           title={t('NaiveProxy', 'NaiveProxy')}
-          subtitle={t('HTTPS over TLS, single tunnel', 'HTTPS поверх TLS, один туннель')}
+          subtitle={t('HTTPS, single tunnel', 'HTTPS, один туннель')}
           onClick={() => props.setProtocol('naive')}
+          disabled={props.xuiBlocksNaive}
+          disabledHint={t(
+            'x-ui is already deployed on :443. Uninstall it first.',
+            'x-ui уже занимает :443. Сначала удалите его.',
+          )}
         />
         <ProtocolPick
-          active={!isNaive}
+          active={isXui}
+          icon={<Layers className="h-4 w-4" />}
+          title={t('x-ui', 'x-ui')}
+          subtitle={t('panel + Reality/TLS', 'панель + Reality/TLS')}
+          onClick={() => props.setProtocol('xui')}
+          disabled={props.naiveBlocksXui}
+          disabledHint={t(
+            'NaiveProxy is already deployed on :443. Uninstall it first.',
+            'NaiveProxy уже занимает :443. Сначала удалите его.',
+          )}
+        />
+        <ProtocolPick
+          active={isWg}
           icon={<Network className="h-4 w-4" />}
           title={t('WireGuard', 'WireGuard')}
           subtitle={t('UDP, multi-client', 'UDP, много клиентов')}
@@ -301,7 +363,7 @@ function DeployForm(props: {
         />
       </div>
 
-      {isNaive ? (
+      {isNaive && (
         <NaiveFields
           domain={props.domain}
           email={props.email}
@@ -316,7 +378,16 @@ function DeployForm(props: {
           setTemplateId={props.setNaiveTemplateId}
           setInstallPhp={props.setNaiveInstallPhp}
         />
-      ) : (
+      )}
+      {isXui && (
+        <XuiFields
+          domain={props.xuiDomain}
+          email={props.xuiEmail}
+          setDomain={props.setXuiDomain}
+          setEmail={props.setXuiEmail}
+        />
+      )}
+      {isWg && (
         <WireGuardFields
           clientName={props.wgClientName}
           serverPort={props.wgServerPort}
@@ -727,19 +798,31 @@ function ProtocolPick(props: {
   title: string
   subtitle: string
   onClick: () => void
+  /** Greyed out + non-clickable when the 443-slot is already taken
+   *  by the other protocol. */
+  disabled?: boolean
+  disabledHint?: string
 }) {
+  const cls = props.disabled
+    ? 'border-gray-800 bg-gray-900/20 text-gray-600 cursor-not-allowed opacity-50'
+    : (props.active
+      ? 'border-brand-500/60 bg-brand-600/10 text-brand-200'
+      : 'border-gray-800 bg-gray-900/40 text-gray-400 hover:border-gray-700 hover:text-gray-200')
   return (
     <button
       type="button"
-      onClick={props.onClick}
+      onClick={props.disabled ? undefined : props.onClick}
+      disabled={props.disabled}
+      title={props.disabled ? props.disabledHint : undefined}
       className={
-        'rounded-lg border px-3 py-2 text-left transition-colors flex items-start gap-2 ' +
-        (props.active
-          ? 'border-brand-500/60 bg-brand-600/10 text-brand-200'
-          : 'border-gray-800 bg-gray-900/40 text-gray-400 hover:border-gray-700 hover:text-gray-200')
+        'rounded-lg border px-3 py-2 text-left transition-colors flex items-start gap-2 ' + cls
       }
     >
-      <div className={props.active ? 'text-brand-400 mt-0.5' : 'text-gray-500 mt-0.5'}>
+      <div className={
+        props.disabled
+          ? 'text-gray-700 mt-0.5'
+          : (props.active ? 'text-brand-400 mt-0.5' : 'text-gray-500 mt-0.5')
+      }>
         {props.icon}
       </div>
       <div className="min-w-0">
@@ -747,6 +830,70 @@ function ProtocolPick(props: {
         <div className="text-[11px] text-gray-500 mt-0.5">{props.subtitle}</div>
       </div>
     </button>
+  )
+}
+
+
+// ── XuiFields ─────────────────────────────────────────────────────────────
+function XuiFields(props: {
+  domain: string
+  email: string
+  setDomain: (v: string) => void
+  setEmail: (v: string) => void
+}) {
+  const t = useT()
+  const hasDomain = !!props.domain.trim()
+  return (
+    <div className="space-y-3">
+      <div className="rounded-lg border border-blue-700/40 bg-blue-900/10 px-3 py-2 text-xs text-blue-200 flex items-start gap-2">
+        <Sparkles className="h-3.5 w-3.5 mt-0.5 flex-shrink-0 text-blue-400" />
+        <span>
+          {hasDomain
+            ? t(
+                'Domain set → full x-ui-pro install: nginx + Let\'s Encrypt + random fakesite on :443 + panel behind nginx. Reality inbounds will still work alongside the fakesite via SNI.',
+                'Домен задан → полный x-ui-pro: nginx + Let\'s Encrypt + рандом-фейксайт на :443 + панель за nginx. Reality-инбаунды работают параллельно через SNI.',
+              )
+            : t(
+                'Domain empty → bare upstream 3x-ui install: no nginx, no Let\'s Encrypt, panel on a random port with self-signed cert. Reality-only setups (no fakesite needed).',
+                'Без домена → голый 3x-ui: без nginx и Let\'s Encrypt, панель на случайном порту с self-signed сертификатом. Подходит для Reality-only без фейксайта.',
+              )}
+        </span>
+      </div>
+
+      <FieldL
+        label={t('Domain (optional)', 'Домен (необязательно)')}
+        hint={t(
+          'leave blank for Reality-only / bare-mode install',
+          'оставьте пустым для голой установки (только Reality)',
+        )}
+      >
+        <input
+          type="text"
+          value={props.domain}
+          onChange={(e) => props.setDomain(e.target.value)}
+          placeholder="panel.example.com"
+          className={inputCls}
+        />
+      </FieldL>
+
+      {hasDomain && (
+        <FieldL
+          label={t("Let's Encrypt email (optional)", 'Email для Let\'s Encrypt (необязательно)')}
+          hint={t(
+            'defaults to admin@<domain>',
+            'по умолчанию admin@<домен>',
+          )}
+        >
+          <input
+            type="email"
+            value={props.email}
+            onChange={(e) => props.setEmail(e.target.value)}
+            placeholder={`admin@${props.domain || 'example.com'}`}
+            className={inputCls}
+          />
+        </FieldL>
+      )}
+    </div>
   )
 }
 

@@ -673,6 +673,104 @@ export function createServerTaskSocket(jobId: string): WebSocket {
   )
 }
 
+// ── x-ui-pro / 3x-ui panel management (since v1.3.0-beta.7) ──────────────────
+
+import type {
+  InboundPreset,
+  XuiClient as XuiClientType,
+  XuiInbound,
+  XuiServer,
+} from '@/types'
+
+export const xuiApi = {
+  /** GET /api/xui/presets — the 6 wired-in inbound preset templates. */
+  listPresets: async (): Promise<InboundPreset[]> => {
+    const r = await http.get('/xui/presets')
+    return r.data
+  },
+
+  /** GET /api/xui/servers — registered XuiServer rows (one per panel). */
+  listServers: async (): Promise<XuiServer[]> => {
+    const r = await http.get('/xui/servers')
+    return r.data
+  },
+
+  getServer: async (id: number): Promise<XuiServer> => {
+    const r = await http.get(`/xui/servers/${id}`)
+    return r.data
+  },
+
+  /** POST /api/xui/servers/import — register a panel from its `xui://`
+   *  URI (or discrete fields). The endpoint probes the Bearer token
+   *  before persisting, so a 400 here means the panel itself rejected
+   *  the credentials. Surface the detail verbatim in the UI. */
+  importServer: async (params: {
+    server_id: number
+    uri?: string
+    api_token?: string
+    panel_port?: number
+    panel_basepath?: string
+    panel_user?: string
+    panel_pass?: string
+    domain?: string
+    mode?: 'bare' | 'xui-pro'
+  }): Promise<XuiServer> => {
+    const r = await http.post('/xui/servers/import', params)
+    return r.data
+  },
+
+  deleteServer: async (id: number): Promise<void> => {
+    await http.delete(`/xui/servers/${id}`)
+  },
+
+  /** POST /api/xui/servers/{id}/probe — re-test the Bearer token.
+   *  Persisted `last_check` / `last_check_error` come back on the
+   *  response so the UI can update the badge in one round-trip. */
+  probeServer: async (id: number): Promise<XuiServer> => {
+    const r = await http.post(`/xui/servers/${id}/probe`)
+    return r.data
+  },
+
+  // ── Inbounds ────────────────────────────────────────────────────────────
+  listInbounds: async (serverId: number): Promise<XuiInbound[]> => {
+    const r = await http.get(`/xui/servers/${serverId}/inbounds`)
+    return r.data
+  },
+
+  createInbound: async (
+    serverId: number,
+    body: { preset_id: string; values: Record<string, unknown>; remark?: string },
+  ): Promise<XuiInbound> => {
+    const r = await http.post(`/xui/servers/${serverId}/inbounds`, body)
+    return r.data
+  },
+
+  deleteInbound: async (serverId: number, inboundId: number): Promise<void> => {
+    await http.delete(`/xui/servers/${serverId}/inbounds/${inboundId}`)
+  },
+
+  // ── Clients ─────────────────────────────────────────────────────────────
+  addClient: async (
+    serverId: number,
+    inboundId: number,
+    body: { label?: string; extras?: Record<string, unknown> } = {},
+  ): Promise<XuiClientType> => {
+    const r = await http.post(
+      `/xui/servers/${serverId}/inbounds/${inboundId}/clients`,
+      body,
+    )
+    return r.data
+  },
+
+  deleteClient: async (
+    serverId: number, inboundId: number, clientUuid: string,
+  ): Promise<void> => {
+    await http.delete(
+      `/xui/servers/${serverId}/inbounds/${inboundId}/clients/${encodeURIComponent(clientUuid)}`,
+    )
+  },
+}
+
 // ── WebSocket log stream ──────────────────────────────────────────────────────
 
 export function createLogSocket(onLine: (line: string) => void): WebSocket {
