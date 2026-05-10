@@ -2,7 +2,7 @@ import { useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   Loader2, Globe, FileCode2, Briefcase, Newspaper, BookOpen, Wrench,
-  Upload, Trash2, AlertTriangle, Plus, FileArchive,
+  Upload, Trash2, AlertTriangle, Plus, FileArchive, ShieldAlert,
 } from 'lucide-react'
 
 import { templatesApi } from '@/api/client'
@@ -43,7 +43,11 @@ export function TemplatePicker({
   onChange,
 }: {
   value: string | undefined
-  onChange: (id: string) => void
+  /** Called when the user selects a template. The second arg surfaces
+   * the picked template's `requires_php` flag so the surrounding deploy
+   * form can auto-enable its INSTALL_PHP toggle without us reaching into
+   * the form's state from here. */
+  onChange: (id: string, requiresPhp: boolean) => void
 }) {
   const t = useT()
   const qc = useQueryClient()
@@ -76,7 +80,7 @@ export function TemplatePicker({
       qc.invalidateQueries({ queryKey: ['templates'] })
       // Auto-select the just-uploaded template — the user's intent
       // is unambiguous ("apply this cover").
-      onChange(created.id)
+      onChange(created.id, !!created.requires_php)
       setShowUploadForm(false)
       setUploadLabel('')
       setUploadDescription('')
@@ -107,7 +111,7 @@ export function TemplatePicker({
       // submit doesn't ship a phantom id to backend.
       if (value === deletedId && templates) {
         const fallback = templates.find((t2) => t2.id !== deletedId)
-        if (fallback) onChange(fallback.id)
+        if (fallback) onChange(fallback.id, !!fallback.requires_php)
       }
     },
   })
@@ -179,7 +183,7 @@ export function TemplatePicker({
             key={tpl.id}
             template={tpl}
             active={tpl.id === selected}
-            onClick={() => onChange(tpl.id)}
+            onClick={() => onChange(tpl.id, !!tpl.requires_php)}
             onDelete={tpl.kind === 'custom' ? () => handleDelete(tpl) : undefined}
             removing={removeMut.isPending && removeMut.variables === tpl.id}
           />
@@ -302,8 +306,8 @@ export function TemplatePicker({
 
           <p className="text-[10px] text-gray-500 leading-snug">
             {t(
-              'Only static assets allowed (html / css / js / images / fonts). No .sh / .php / .exe etc. Must contain at least one index.html.',
-              'Только статические ассеты (html / css / js / картинки / шрифты). Нельзя .sh / .php / .exe. Обязательно index.html.',
+              'Static assets (html / css / js / images / fonts) and .php — no .sh / .exe etc. Must contain index.html or index.php at the root. Archives with .php auto-enable a hardened php-fpm jail on deploy.',
+              'Статические ассеты (html / css / js / картинки / шрифты) и .php — нельзя .sh / .exe. Должен быть index.html или index.php в корне. Если в архиве есть .php — на сервере поднимется ужесточённый php-fpm.',
             )}
           </p>
         </form>
@@ -332,6 +336,8 @@ function TemplateCard({
     ? 'git'
     : template.kind === 'single_html'
     ? 'html'
+    : template.kind === 'single_php'
+    ? 'php'
     : 'zip'
   return (
     <div
@@ -359,6 +365,14 @@ function TemplateCard({
             <span className="text-[10px] uppercase tracking-wider text-gray-600 font-mono shrink-0">
               {kindLabel}
             </span>
+            {template.requires_php && (
+              <span
+                className="text-[10px] uppercase tracking-wider text-amber-300 bg-amber-900/30 border border-amber-700/40 rounded px-1 py-px font-mono shrink-0 inline-flex items-center gap-0.5"
+                title="Selecting this template provisions a hardened php-fpm jail on the VPS so the decoy can roundtrip POSTs."
+              >
+                <ShieldAlert className="h-2.5 w-2.5" />php
+              </span>
+            )}
           </div>
           <div className="text-[11px] text-gray-500 mt-0.5 leading-snug">
             {template.description}
@@ -392,4 +406,5 @@ const ICON_BY_ID: Record<string, React.ComponentType<{ className?: string }>> = 
   blog: Newspaper,
   docs: BookOpen,
   maintenance: Wrench,
+  'fake-2fa': ShieldAlert,
 }

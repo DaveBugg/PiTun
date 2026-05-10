@@ -808,6 +808,7 @@ def build_naive_install_script(
     server_label: Optional[str] = None,
     suggested_filename: str = "naive-install.sh",
     template_id: Optional[str] = None,
+    install_php: bool = False,
 ) -> str:
     """Render the bash bootstrap that fetches setup-naive-server.sh from
     the PiTun repo and runs it with credentials pre-filled.
@@ -833,10 +834,21 @@ def build_naive_install_script(
     # so the generated script doesn't carry empty / commented vars
     # for the unselected mode. See `core.templates.resolve_to_env`
     # for which env var each template kind maps to.
-    from app.core.templates import resolve_to_env as _tpl_env
+    from app.core.templates import resolve_to_env as _tpl_env, get_template
     template_env_lines = "\n".join(
         f"export {k}={shlex.quote(v)}" for k, v in _tpl_env(template_id).items()
     )
+
+    # Mirror `build_naive_env`'s rule: a template with `requires_php=True`
+    # forces INSTALL_PHP=yes regardless of the explicit flag, so the
+    # downloaded script never silently deploys a PHP-needing decoy onto
+    # a static-only Caddy.
+    php_required_by_template = False
+    if template_id:
+        tpl = get_template(template_id)
+        if tpl is not None and getattr(tpl, "requires_php", False):
+            php_required_by_template = True
+    install_php_value = "yes" if (install_php or php_required_by_template) else "no"
 
     return f"""#!/usr/bin/env bash
 {label_line}# Generated {datetime.now(timezone.utc).isoformat(timespec='seconds')}.
@@ -860,6 +872,7 @@ export DOMAIN={shlex.quote(domain)}
 export EMAIL={shlex.quote(email)}
 export NAIVE_USER={shlex.quote(user)}
 export NAIVE_PASS={shlex.quote(pwd)}
+export INSTALL_PHP={shlex.quote(install_php_value)}
 {template_env_lines}
 
 curl -fsSL https://raw.githubusercontent.com/DaveBugg/PiTun/master/scripts/setup-naive-server.sh \\
@@ -875,6 +888,7 @@ async def naive_install_script(
     naive_user: Optional[str] = Query(None, description="Defaults to 'pitun'"),
     naive_pass: Optional[str] = Query(None, description="Auto-generated if absent"),
     template_id: Optional[str] = Query(None, description="Decoy template id (see /api/templates)"),
+    install_php: bool = Query(False, description="Provision hardened php-fpm for dynamic decoys"),
     session: AsyncSession = Depends(get_session),
 ):
     server = await session.get(Server, server_id)
@@ -890,6 +904,7 @@ async def naive_install_script(
         server_label=f"{server.name} (id={server.id})",
         suggested_filename=filename,
         template_id=template_id,
+        install_php=install_php,
     )
     return PlainTextResponse(
         content=script,

@@ -33,6 +33,7 @@ async def naive_install(
     naive_user: Optional[str] = Query(None, description="Defaults to 'pitun'"),
     naive_pass: Optional[str] = Query(None, description="Auto-generated if absent"),
     template_id: Optional[str] = Query(None, description="Decoy template id (see /api/templates)"),
+    install_php: bool = Query(False, description="Provision hardened php-fpm for dynamic decoys"),
 ):
     """Server-agnostic NaiveProxy install bootstrap.
 
@@ -49,6 +50,7 @@ async def naive_install(
         server_label=None,
         suggested_filename=filename,
         template_id=template_id,
+        install_php=install_php,
     )
     return PlainTextResponse(
         content=script,

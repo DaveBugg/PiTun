@@ -54,7 +54,7 @@ _REPO_RAW_BASE = (
     f"{_REPO_BRANCH}/docker/naive/templates"
 )
 
-TemplateKind = Literal["single_html", "git_repo", "custom"]
+TemplateKind = Literal["single_html", "single_php", "git_repo", "custom"]
 
 
 @dataclass(frozen=True)
@@ -191,6 +191,27 @@ TEMPLATES: List[DecoyTemplate] = [
         kind="single_html",
         source="maintenance.html",
     ),
+    # Single-file PHP decoy. Picking this template forces
+    # `INSTALL_PHP=yes` in the deploy env so the VPS gets the
+    # hardened php-fpm jail provisioned (see `setup-naive-server.sh`
+    # section 9d). The site survives view-source / DevTools-Network
+    # inspection because POSTs really do roundtrip server-side and
+    # render real session state — see fake-2fa.php for the exact
+    # behaviour and threat-model notes.
+    DecoyTemplate(
+        id="fake-2fa",
+        label="Fake 2FA login",
+        description=(
+            "Convincing 2FA verification page that round-trips "
+            "POST submissions through PHP — real CSRF, real "
+            "session-tracked attempt counter, plausible "
+            "progressive error UX. Survives DevTools / "
+            "view-source inspection. Auto-enables PHP on deploy."
+        ),
+        kind="single_php",
+        source="fake-2fa.php",
+        requires_php=True,
+    ),
 ]
 
 
@@ -261,6 +282,13 @@ def resolve_to_env(template_id: Optional[str]) -> dict[str, str]:
         return env
     if t.kind == "single_html":
         return {"TEMPLATE_HTML_URL": f"{_REPO_RAW_BASE}/{t.source}"}
+    if t.kind == "single_php":
+        # Same shape as single_html, but the script lands the file as
+        # /var/www/html/index.php and validates it starts with `<?php`
+        # rather than the html doctype. Always pairs with a template
+        # whose `requires_php=True`, so deploy.build_naive_env will
+        # already have forced INSTALL_PHP=yes.
+        return {"TEMPLATE_PHP_URL": f"{_REPO_RAW_BASE}/{t.source}"}
     if t.kind == "custom":
         # Custom uploads are delivered via SFTP — the deploy runner
         # SFTPs the archive to /tmp/pitun-template.zip on the VPS

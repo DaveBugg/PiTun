@@ -438,7 +438,7 @@ export const serversApi = {
   // and pays a tiny memory cost (script is ~1 KB).
   downloadNaiveInstallScript: async (
     id: number,
-    params: { domain: string; email: string; naive_user?: string; naive_pass?: string; template_id?: string },
+    params: { domain: string; email: string; naive_user?: string; naive_pass?: string; template_id?: string; install_php?: boolean },
   ): Promise<void> => {
     const r = await http.get(`/servers/${id}/naive-install-script`, {
       params,
@@ -589,7 +589,7 @@ export const serversApi = {
 
 export const scriptsApi = {
   downloadNaiveInstall: async (
-    params: { domain: string; email: string; naive_user?: string; naive_pass?: string; template_id?: string },
+    params: { domain: string; email: string; naive_user?: string; naive_pass?: string; template_id?: string; install_php?: boolean },
   ): Promise<void> => {
     const r = await http.get('/scripts/naive-install', {
       params,

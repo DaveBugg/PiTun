@@ -738,13 +738,14 @@ function ManualScriptModal({ mode, onClose }: { mode: ScriptModalMode; onClose: 
   // Naive-specific config view — narrow the union'd DeploymentConfig.
   const naiveCfg = (existingNaive?.config ?? {}) as {
     domain?: string; email?: string; naive_user?: string; naive_pass?: string
-    template_id?: string
+    template_id?: string; install_php?: boolean
   }
   const [domain, setDomain] = useState(naiveCfg.domain ?? '')
   const [email, setEmail] = useState(naiveCfg.email ?? '')
   const [naiveUser, setNaiveUser] = useState(naiveCfg.naive_user ?? 'pitun')
   const [naivePass, setNaivePass] = useState(naiveCfg.naive_pass ?? '')
   const [naiveTemplateId, setNaiveTemplateId] = useState<string | undefined>(naiveCfg.template_id)
+  const [naiveInstallPhp, setNaiveInstallPhp] = useState<boolean>(!!naiveCfg.install_php)
 
   // WireGuard-specific. `client_name` is per-deploy and not stored on
   // ServerDeployment.config (the script picks it up from env), so it
@@ -763,7 +764,7 @@ function ManualScriptModal({ mode, onClose }: { mode: ScriptModalMode; onClose: 
 
   type NaiveParams = {
     domain: string; email: string; naive_user?: string; naive_pass: string
-    template_id?: string
+    template_id?: string; install_php?: boolean
   }
   type WgParams = {
     client_name?: string
@@ -788,6 +789,7 @@ function ManualScriptModal({ mode, onClose }: { mode: ScriptModalMode; onClose: 
       naive_user: naiveUser.trim() || undefined,
       naive_pass: finalPass,
       template_id: naiveTemplateId,
+      install_php: naiveInstallPhp || undefined,
     }
   }
 
@@ -820,6 +822,7 @@ function ManualScriptModal({ mode, onClose }: { mode: ScriptModalMode; onClose: 
           naive_user: params.naive_user,
           naive_pass: params.naive_pass,
           template_id: params.template_id,
+          install_php: params.install_php,
         },
       },
     })
@@ -1044,9 +1047,35 @@ function ManualScriptModal({ mode, onClose }: { mode: ScriptModalMode; onClose: 
             >
               <TemplatePicker
                 value={naiveTemplateId}
-                onChange={(id) => setNaiveTemplateId(id)}
+                onChange={(id, requiresPhp) => {
+                  setNaiveTemplateId(id)
+                  // Picking a php-needing template auto-enables the
+                  // toggle so the user sees the consequence; the
+                  // backend forces it on regardless, but reflecting
+                  // that state in the UI keeps the form honest.
+                  if (requiresPhp) setNaiveInstallPhp(true)
+                }}
               />
             </FieldL>
+            <label className="flex items-start gap-2 cursor-pointer rounded-lg border border-gray-800 bg-gray-900/40 px-3 py-2 hover:border-gray-700">
+              <input
+                type="checkbox"
+                checked={naiveInstallPhp}
+                onChange={(e) => setNaiveInstallPhp(e.target.checked)}
+                className="mt-0.5 h-3.5 w-3.5 rounded border-gray-600 bg-gray-800 text-brand-500 focus:ring-brand-500"
+              />
+              <div className="min-w-0 flex-1">
+                <div className="text-xs font-medium text-gray-200">
+                  {t('Install hardened PHP-FPM', 'Установить ужесточённый PHP-FPM')}
+                </div>
+                <div className="text-[11px] text-gray-500 mt-0.5 leading-snug">
+                  {t(
+                    'Required for dynamic decoys (e.g. fake-2FA) that need real server-side roundtrips. Jail blocks exec/network/FS escapes. Skip if your decoy is pure HTML.',
+                    'Нужно для динамических обложек (напр. фейковая 2FA), которым требуется реальный серверный обработчик. Jail блокирует exec/сеть/FS. Пропустите, если обложка — обычный HTML.',
+                  )}
+                </div>
+              </div>
+            </label>
           </div>
         ) : (
           <div className="space-y-3">

@@ -653,6 +653,12 @@ export interface NaiveDeploymentConfig {
    * depending on the template's `kind`. Unset = script default
    * (currently `pacman` git repo). Since v1.3.0-beta.6. */
   template_id?: string
+  /** Provision a hardened php-fpm jail on the VPS so dynamic
+   * decoys (fake-2FA, fake login, etc.) can roundtrip POSTs and
+   * survive view-source / DevTools inspection. Picking a template
+   * with `requires_php=true` auto-enables this regardless of the
+   * checkbox. Since v1.3.0-beta.6. */
+  install_php?: boolean
 }
 
 
@@ -663,13 +669,18 @@ export interface NaiveDeploymentConfig {
 // DECOY_REPO) when generating the install script. See
 // `backend/app/core/templates.py` for the source of truth.
 
-export type DecoyTemplateKind = 'single_html' | 'git_repo' | 'custom'
+export type DecoyTemplateKind = 'single_html' | 'single_php' | 'git_repo' | 'custom'
 
 export interface DecoyTemplate {
   id: string
   label: string
   description: string
   kind: DecoyTemplateKind
+  // True when the template ships server-side PHP. The picker shows a
+  // "needs PHP" badge and the deploy form auto-enables INSTALL_PHP on
+  // selection. Backend forces it on at deploy time regardless, so the
+  // checkbox is purely informational.
+  requires_php: boolean
   // Populated only when `kind === 'custom'` — used by the picker
   // to render delete buttons and a tooltip with the original
   // filename + upload date.

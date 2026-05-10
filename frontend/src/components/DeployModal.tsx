@@ -71,7 +71,7 @@ export function DeployModal({
   // Naive fields
   const naiveCfg = (existingNaive?.config ?? {}) as {
     domain?: string; email?: string; naive_user?: string; naive_pass?: string
-    template_id?: string
+    template_id?: string; install_php?: boolean
   }
   const [domain, setDomain] = useState(naiveCfg.domain ?? '')
   const [email, setEmail] = useState(naiveCfg.email ?? '')
@@ -82,6 +82,13 @@ export function DeployModal({
   // first-card-selected so the user sees what's going to be used.
   const [naiveTemplateId, setNaiveTemplateId] = useState<string | undefined>(
     naiveCfg.template_id,
+  )
+  // INSTALL_PHP toggle (since v1.3.0-beta.6). Picking a template with
+  // `requires_php=true` auto-flips this on; the backend forces it on
+  // regardless when needed, but reflecting in the UI keeps the form
+  // honest about what's about to happen on the VPS.
+  const [naiveInstallPhp, setNaiveInstallPhp] = useState<boolean>(
+    !!naiveCfg.install_php,
   )
 
   // WireGuard fields. Server-side ServerDeployment.config_json mirrors
@@ -119,6 +126,7 @@ export function DeployModal({
         // Empty pass → backend will auto-generate `secrets.token_urlsafe(24)`
         naive_pass: naivePass.trim() || undefined,
         template_id: naiveTemplateId,
+        install_php: naiveInstallPhp || undefined,
       }
     }
     // wireguard
@@ -188,6 +196,7 @@ export function DeployModal({
             naiveUser={naiveUser}
             naivePass={naivePass}
             naiveTemplateId={naiveTemplateId}
+            naiveInstallPhp={naiveInstallPhp}
             wgClientName={wgClientName}
             wgServerPort={wgServerPort}
             wgDns1={wgDns1}
@@ -200,6 +209,7 @@ export function DeployModal({
             setNaiveUser={setNaiveUser}
             setNaivePass={setNaivePass}
             setNaiveTemplateId={setNaiveTemplateId}
+            setNaiveInstallPhp={setNaiveInstallPhp}
             setWgClientName={setWgClientName}
             setWgServerPort={setWgServerPort}
             setWgDns1={setWgDns1}
@@ -231,6 +241,7 @@ function DeployForm(props: {
   setProtocol: (p: ServerDeploymentProtocol) => void
   domain: string; email: string; naiveUser: string; naivePass: string
   naiveTemplateId: string | undefined
+  naiveInstallPhp: boolean
   wgClientName: string; wgServerPort: string; wgDns1: string
   wgDns2: string; wgAllowedIps: string
   error: string; submitting: boolean
@@ -239,6 +250,7 @@ function DeployForm(props: {
   setNaiveUser: (v: string) => void
   setNaivePass: (v: string) => void
   setNaiveTemplateId: (v: string | undefined) => void
+  setNaiveInstallPhp: (v: boolean) => void
   setWgClientName: (v: string) => void
   setWgServerPort: (v: string) => void
   setWgDns1: (v: string) => void
@@ -283,11 +295,13 @@ function DeployForm(props: {
           naiveUser={props.naiveUser}
           naivePass={props.naivePass}
           templateId={props.naiveTemplateId}
+          installPhp={props.naiveInstallPhp}
           setDomain={props.setDomain}
           setEmail={props.setEmail}
           setNaiveUser={props.setNaiveUser}
           setNaivePass={props.setNaivePass}
           setTemplateId={props.setNaiveTemplateId}
+          setInstallPhp={props.setNaiveInstallPhp}
         />
       ) : (
         <WireGuardFields
@@ -488,11 +502,13 @@ function DeployRunning({
 function NaiveFields(props: {
   domain: string; email: string; naiveUser: string; naivePass: string
   templateId: string | undefined
+  installPhp: boolean
   setDomain: (v: string) => void
   setEmail: (v: string) => void
   setNaiveUser: (v: string) => void
   setNaivePass: (v: string) => void
   setTemplateId: (v: string | undefined) => void
+  setInstallPhp: (v: boolean) => void
 }) {
   const t = useT()
   return (
@@ -549,9 +565,34 @@ function NaiveFields(props: {
       >
         <TemplatePicker
           value={props.templateId}
-          onChange={(id) => props.setTemplateId(id)}
+          onChange={(id, requiresPhp) => {
+            props.setTemplateId(id)
+            // Auto-enable PHP toggle when the picked template ships PHP.
+            // Backend forces it on regardless, but reflecting it here
+            // keeps the UI honest about what's about to land on the VPS.
+            if (requiresPhp) props.setInstallPhp(true)
+          }}
         />
       </FieldL>
+      <label className="flex items-start gap-2 cursor-pointer rounded-lg border border-gray-800 bg-gray-900/40 px-3 py-2 hover:border-gray-700">
+        <input
+          type="checkbox"
+          checked={props.installPhp}
+          onChange={(e) => props.setInstallPhp(e.target.checked)}
+          className="mt-0.5 h-3.5 w-3.5 rounded border-gray-600 bg-gray-800 text-brand-500 focus:ring-brand-500"
+        />
+        <div className="min-w-0 flex-1">
+          <div className="text-xs font-medium text-gray-200">
+            {t('Install hardened PHP-FPM', 'Установить ужесточённый PHP-FPM')}
+          </div>
+          <div className="text-[11px] text-gray-500 mt-0.5 leading-snug">
+            {t(
+              'Required for dynamic decoys (e.g. fake-2FA) that need real server-side roundtrips. Jail blocks exec/network/FS escapes. Skip if your decoy is pure HTML.',
+              'Нужно для динамических обложек (напр. фейковая 2FA), которым требуется реальный серверный обработчик. Jail блокирует exec/сеть/FS. Пропустите, если обложка — обычный HTML.',
+            )}
+          </div>
+        </div>
+      </label>
     </div>
   )
 }

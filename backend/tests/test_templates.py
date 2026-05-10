@@ -51,9 +51,39 @@ class TestTemplatesRegistry:
         seen_ids: set[str] = set()
         for t in TEMPLATES:
             assert t.id and t.label and t.description, t
-            assert t.kind in ("single_html", "git_repo"), t
+            assert t.kind in ("single_html", "single_php", "git_repo"), t
             assert t.id not in seen_ids, f"duplicate template id {t.id!r}"
             seen_ids.add(t.id)
+            # `requires_php` must be True iff kind=single_php so the
+            # deploy runner's auto-force logic can rely on it.
+            if t.kind == "single_php":
+                assert t.requires_php is True, t
+
+    def test_resolve_single_php_template(self):
+        # fake-2fa is the canonical single_php built-in. Picking it
+        # must emit `TEMPLATE_PHP_URL` (not `TEMPLATE_HTML_URL`) so
+        # the script lands the file as index.php with the right
+        # `<?php` sanity-check.
+        from app.core.templates import resolve_to_env
+
+        env = resolve_to_env("fake-2fa")
+        assert "TEMPLATE_PHP_URL" in env
+        assert env["TEMPLATE_PHP_URL"].endswith("/fake-2fa.php")
+        assert "TEMPLATE_HTML_URL" not in env
+        assert "DECOY_REPO" not in env
+
+    def test_php_template_forces_install_php_in_deploy_env(self):
+        from app.core.deploy import build_naive_env
+
+        env = build_naive_env(
+            domain="x.example.com", email="me@example.com",
+            template_id="fake-2fa", install_php=False,
+        )
+        # Even with the toggle off, a php-needing template must
+        # force INSTALL_PHP=yes — otherwise we'd ship a PHP file to
+        # a Caddy without `php_fastcgi`, and visitors would see
+        # the source bytes.
+        assert env["INSTALL_PHP"] == "yes"
 
 
 class TestTemplatesEndpoint:

@@ -30,6 +30,12 @@
 #                             the PiTun UI's built-in template gallery
 #                             (since v1.3.0-beta.6); takes precedence
 #                             over DECOY_REPO when both are set.
+#   TEMPLATE_PHP_URL=<URL>  — curl a single-file PHP to /var/www/html/
+#                             index.php. Used by built-in dynamic
+#                             decoys (e.g. fake-2fa) that need a real
+#                             server-side roundtrip to survive
+#                             view-source / DevTools inspection.
+#                             Always paired with INSTALL_PHP=yes.
 #   DECOY_REPO=<git URL>   — clone any static site repo into /var/www/html
 #                            default: https://github.com/daleharvey/pacman
 #   DECOY_REPO=none        — keep a minimal "It works" stub
@@ -440,6 +446,7 @@ chmod 640 /etc/caddy/Caddyfile
 # because /var/www/html already contains the previous decoy.
 EXPLICIT_DECOY=0
 if [[ -n "${TEMPLATE_HTML_URL:-}" ]] \
+   || [[ -n "${TEMPLATE_PHP_URL:-}" ]] \
    || [[ -n "${DECOY_REPO:-}" ]] \
    || [[ -n "${TEMPLATE_LOCAL_ARCHIVE:-}" ]]; then
     EXPLICIT_DECOY=1
@@ -447,6 +454,7 @@ fi
 DECOY_REPO="${DECOY_REPO:-https://github.com/daleharvey/pacman}"
 DECOY_REPO_PINNED_COMMIT="${DECOY_REPO_PINNED_COMMIT:-}"
 TEMPLATE_HTML_URL="${TEMPLATE_HTML_URL:-}"
+TEMPLATE_PHP_URL="${TEMPLATE_PHP_URL:-}"
 TEMPLATE_LOCAL_ARCHIVE="${TEMPLATE_LOCAL_ARCHIVE:-}"
 FORCE_DECOY="${FORCE_DECOY:-no}"
 # Auto-force when the user picked ANY decoy explicitly through the
@@ -527,6 +535,40 @@ if [[ "$FORCE_DECOY" == "yes" ]] || \
         else
             warn "Failed to fetch $TEMPLATE_HTML_URL — falling back to DECOY_REPO"
             rm -f "$TMP_HTML"
+        fi
+    fi
+    # Single-file PHP decoy (since v1.3.0-beta.6). Same shape as the
+    # HTML path but lands as index.php and validates the leading
+    # `<?php` tag instead of an HTML doctype. Pairs with INSTALL_PHP=yes
+    # — the deploy runner forces that env on for templates whose
+    # registry entry has `requires_php=True`, so by the time we get
+    # here php-fpm is already installed and Caddy is rendering with
+    # `php_fastcgi`. No extra apt overhead at this stage.
+    if [[ "$TEMPLATE_LOCAL_INSTALLED" != "1" ]] && [[ "${TEMPLATE_HTML_INSTALLED:-0}" != "1" ]] \
+       && [[ -n "$TEMPLATE_PHP_URL" ]]; then
+        log "Fetching single-file PHP decoy from $TEMPLATE_PHP_URL ..."
+        TMP_PHP="$(mktemp --suffix=.php)"
+        if curl -fsSL --max-time 30 -o "$TMP_PHP" "$TEMPLATE_PHP_URL"; then
+            # Sanity-check: must start with `<?php` so we don't land
+            # an unrelated 404 page or empty CDN body in index.php
+            # (which would render as plain text via php_fastcgi and
+            # tip the decoy off immediately).
+            if [[ -s "$TMP_PHP" ]] && head -c 64 "$TMP_PHP" | grep -q '<?php'; then
+                rm -rf /var/www/html/*
+                install -m 0644 "$TMP_PHP" /var/www/html/index.php
+                # Make it readable by the caddy user that runs
+                # php-fpm — the dir defaults to root:root after rm.
+                chown -R caddy:caddy /var/www/html 2>/dev/null || true
+                info "PHP decoy installed from $TEMPLATE_PHP_URL"
+                rm -f "$TMP_PHP"
+                TEMPLATE_HTML_INSTALLED=1
+            else
+                warn "Downloaded file doesn't start with <?php — falling back to DECOY_REPO"
+                rm -f "$TMP_PHP"
+            fi
+        else
+            warn "Failed to fetch $TEMPLATE_PHP_URL — falling back to DECOY_REPO"
+            rm -f "$TMP_PHP"
         fi
     fi
 
