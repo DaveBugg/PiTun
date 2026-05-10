@@ -10,6 +10,7 @@ import {
 import { serversApi } from '@/api/client'
 import { ModalShell } from '@/components/ModalShell'
 import { TemplatePicker } from '@/components/TemplatePicker'
+import { SshPortField } from '@/components/SshPortField'
 import { useT } from '@/hooks/useT'
 import { useDeployments } from '@/hooks/useServers'
 import {
@@ -90,6 +91,10 @@ export function DeployModal({
   const [naiveInstallPhp, setNaiveInstallPhp] = useState<boolean>(
     !!naiveCfg.install_php,
   )
+  // SSH port move (since v1.3.0-beta.7). Empty = no change. Same value
+  // is reused for the WG section below — there's only one sshd per VPS,
+  // surfacing two independent fields would invite contradiction.
+  const [sshPort, setSshPort] = useState<string>('')
 
   // WireGuard fields. Server-side ServerDeployment.config_json mirrors
   // the WireGuardDeploymentConfig shape; we pre-fill from it so re-deploys
@@ -127,6 +132,7 @@ export function DeployModal({
         naive_pass: naivePass.trim() || undefined,
         template_id: naiveTemplateId,
         install_php: naiveInstallPhp || undefined,
+        ssh_port: sshPort.trim() ? Number(sshPort.trim()) : undefined,
       }
     }
     // wireguard
@@ -141,6 +147,7 @@ export function DeployModal({
       dns_2: wgDns2.trim() || undefined,
       allowed_ips: wgAllowedIps.trim() || undefined,
       client_name: wgClientName.trim() || undefined,
+      ssh_port: sshPort.trim() ? Number(sshPort.trim()) : undefined,
     }
   }
 
@@ -197,6 +204,8 @@ export function DeployModal({
             naivePass={naivePass}
             naiveTemplateId={naiveTemplateId}
             naiveInstallPhp={naiveInstallPhp}
+            sshPort={sshPort}
+            serverPort={server.port}
             wgClientName={wgClientName}
             wgServerPort={wgServerPort}
             wgDns1={wgDns1}
@@ -210,6 +219,7 @@ export function DeployModal({
             setNaivePass={setNaivePass}
             setNaiveTemplateId={setNaiveTemplateId}
             setNaiveInstallPhp={setNaiveInstallPhp}
+            setSshPort={setSshPort}
             setWgClientName={setWgClientName}
             setWgServerPort={setWgServerPort}
             setWgDns1={setWgDns1}
@@ -242,6 +252,8 @@ function DeployForm(props: {
   domain: string; email: string; naiveUser: string; naivePass: string
   naiveTemplateId: string | undefined
   naiveInstallPhp: boolean
+  sshPort: string
+  serverPort: number
   wgClientName: string; wgServerPort: string; wgDns1: string
   wgDns2: string; wgAllowedIps: string
   error: string; submitting: boolean
@@ -251,6 +263,7 @@ function DeployForm(props: {
   setNaivePass: (v: string) => void
   setNaiveTemplateId: (v: string | undefined) => void
   setNaiveInstallPhp: (v: boolean) => void
+  setSshPort: (v: string) => void
   setWgClientName: (v: string) => void
   setWgServerPort: (v: string) => void
   setWgDns1: (v: string) => void
@@ -317,6 +330,26 @@ function DeployForm(props: {
           setAllowedIps={props.setWgAllowedIps}
         />
       )}
+
+      {/* SSH port move — protocol-agnostic (there's one sshd per VPS).
+          Empty = no change; otherwise the install script writes a
+          sshd_config drop-in and restarts ssh. Backend persists the
+          new port to Server.port on successful deploy. */}
+      <div className="mt-4">
+        <FieldL
+          label={t('SSH port (optional)', 'SSH-порт (опционально)')}
+          hint={t(
+            'leave blank to keep current — applied at install time, persisted in PiTun',
+            'оставьте пустым — текущий не трогаем; применяется на установке, PiTun запомнит',
+          )}
+        >
+          <SshPortField
+            value={props.sshPort}
+            onChange={props.setSshPort}
+            serverPort={props.serverPort}
+          />
+        </FieldL>
+      </div>
 
       <div className="rounded-lg border border-yellow-700/40 bg-yellow-900/10 px-3 py-2 mt-4 text-xs text-yellow-200 flex items-start gap-2">
         <Sparkles className="h-3.5 w-3.5 mt-0.5 flex-shrink-0 text-yellow-400" />

@@ -144,6 +144,7 @@ def build_naive_env(
     naive_pass: Optional[str] = None,
     template_id: Optional[str] = None,
     install_php: bool = False,
+    ssh_port: Optional[int] = None,
 ) -> dict[str, str]:
     """Build the env-var dict for `setup-naive-server.sh`.
 
@@ -179,12 +180,28 @@ def build_naive_env(
 
     env_install_php = "yes" if (install_php or php_required_by_template) else "no"
 
+    # SSH port — explicit opt-in via UI. Empty / 22 / out-of-range is
+    # treated as no-op by the script (validated server-side too).
+    env_ssh_port = ""
+    if ssh_port is not None:
+        try:
+            n = int(ssh_port)
+            if 1 <= n <= 65535:
+                env_ssh_port = str(n)
+        except (TypeError, ValueError):
+            pass
+
     return {
         "DOMAIN": domain,
         "EMAIL": email,
         "NAIVE_USER": naive_user or "pitun",
         "NAIVE_PASS": naive_pass or secrets.token_urlsafe(24),
         "INSTALL_PHP": env_install_php,
+        # `SSH_PORT` empty string in the env-dict still becomes an
+        # `export SSH_PORT=` in the remote bash prelude (shlex-quoted
+        # empty), and setup-naive-server.sh's section 9b treats empty
+        # as no-op. Same handling for the wireguard script.
+        "SSH_PORT": env_ssh_port,
         # Template overrides (mutually exclusive at the script level —
         # `TEMPLATE_HTML_URL` wins when both are set).
         **template_env,
@@ -226,6 +243,7 @@ def build_wireguard_env(
     dns_2: Optional[str] = None,
     allowed_ips: Optional[str] = None,
     server_pub_ip: Optional[str] = None,
+    ssh_port: Optional[int] = None,
     sub_command: Literal["install", "add-client", "remove-client", "list-clients", "get-conf"] = "install",
 ) -> dict[str, str]:
     """Build the env-var dict for `setup-wireguard-server.sh`.
@@ -272,6 +290,16 @@ def build_wireguard_env(
         env["ALLOWED_IPS"] = allowed_ips
     if server_pub_ip:
         env["SERVER_PUB_IP"] = server_pub_ip
+    # SSH port — only meaningful on `install` (subsequent add-client etc.
+    # never touch sshd). Validated to 1-65535 to keep the script's bash
+    # parser from blowing up; out-of-range becomes "" → script no-op.
+    if ssh_port is not None and sub_command == "install":
+        try:
+            n = int(ssh_port)
+            if 1 <= n <= 65535:
+                env["SSH_PORT"] = str(n)
+        except (TypeError, ValueError):
+            pass
     return env
 
 
@@ -289,6 +317,7 @@ def build_plan(protocol: str, config: dict) -> DeployPlan:
             naive_pass=config.get("naive_pass"),
             template_id=config.get("template_id"),
             install_php=bool(config.get("install_php", False)),
+            ssh_port=config.get("ssh_port"),
         )
     elif protocol == "wireguard":
         # WG `install` sub-command bootstraps the server AND adds the
@@ -307,6 +336,7 @@ def build_plan(protocol: str, config: dict) -> DeployPlan:
             dns_2=config.get("dns_2"),
             allowed_ips=config.get("allowed_ips"),
             server_pub_ip=config.get("server_pub_ip"),
+            ssh_port=config.get("ssh_port"),
             sub_command="install",
         )
     else:

@@ -659,6 +659,12 @@ export interface NaiveDeploymentConfig {
    * with `requires_php=true` auto-enables this regardless of the
    * checkbox. Since v1.3.0-beta.6. */
   install_php?: boolean
+  /** Move SSH listener to this port at install time. Empty / 22 =
+   * leave sshd alone (script no-op). On successful deploy the
+   * backend persists the value to `Server.port` so subsequent
+   * SSH calls (uninstall, future redeploys) use the new port.
+   * Since v1.3.0-beta.7. */
+  ssh_port?: number
 }
 
 
@@ -701,6 +707,9 @@ export interface WireGuardDeploymentConfig {
   // For the deploy request only (not stored on the server-level row):
   client_name?: string          // first client to create on install
   server_pub_ip?: string        // autodetected on the VPS if absent
+  /** Move SSH listener to this port at install time. Same semantics as
+   * `NaiveDeploymentConfig.ssh_port`. Since v1.3.0-beta.7. */
+  ssh_port?: number
 }
 
 export type DeploymentConfig = NaiveDeploymentConfig | WireGuardDeploymentConfig

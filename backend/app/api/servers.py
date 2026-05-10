@@ -526,6 +526,31 @@ async def deploy_to_server(
                     s.add(existing_dep)
                     await s.commit()
 
+        # SSH port follow-up: if the install script moved sshd onto a
+        # different port AND the deploy ran clean, update Server.port so
+        # subsequent SSH connections from PiTun (uninstall, WG add-client,
+        # etc.) go to the new port. We only persist on `result.ok` —
+        # if the script crashed mid-run the port change may or may not
+        # have applied, and the human is safer with the old port still
+        # remembered (they can re-test, port-tweak in the UI, etc.).
+        applied_ssh_port = plan.env.get("SSH_PORT", "")
+        if applied_ssh_port and result.ok:
+            try:
+                new_port = int(applied_ssh_port)
+            except ValueError:
+                new_port = 0
+            if 1 <= new_port <= 65535:
+                async with AsyncSession(get_async_engine()) as s:
+                    srv_row = await s.get(Server, srv_id)
+                    if srv_row is not None and srv_row.port != new_port:
+                        srv_row.port = new_port
+                        s.add(srv_row)
+                        await s.commit()
+                        logger.info(
+                            "Server id=%s SSH port updated to %s after deploy",
+                            srv_id, new_port,
+                        )
+
         if not result.ok:
             # Surface the runner-level failure so the operator can grep
             # logs by server_id without parsing job rows. CWE-209/532
@@ -809,6 +834,7 @@ def build_naive_install_script(
     suggested_filename: str = "naive-install.sh",
     template_id: Optional[str] = None,
     install_php: bool = False,
+    ssh_port: Optional[int] = None,
 ) -> str:
     """Render the bash bootstrap that fetches setup-naive-server.sh from
     the PiTun repo and runs it with credentials pre-filled.
@@ -850,6 +876,17 @@ def build_naive_install_script(
             php_required_by_template = True
     install_php_value = "yes" if (install_php or php_required_by_template) else "no"
 
+    # SSH port — empty string when unset / invalid; setup-naive-server.sh
+    # treats empty as no-op so this is safe to always export.
+    ssh_port_value = ""
+    if ssh_port is not None:
+        try:
+            n = int(ssh_port)
+            if 1 <= n <= 65535 and n != 22:
+                ssh_port_value = str(n)
+        except (TypeError, ValueError):
+            pass
+
     return f"""#!/usr/bin/env bash
 {label_line}# Generated {datetime.now(timezone.utc).isoformat(timespec='seconds')}.
 #
@@ -873,6 +910,7 @@ export EMAIL={shlex.quote(email)}
 export NAIVE_USER={shlex.quote(user)}
 export NAIVE_PASS={shlex.quote(pwd)}
 export INSTALL_PHP={shlex.quote(install_php_value)}
+export SSH_PORT={shlex.quote(ssh_port_value)}
 {template_env_lines}
 
 curl -fsSL https://raw.githubusercontent.com/DaveBugg/PiTun/master/scripts/setup-naive-server.sh \\
@@ -889,6 +927,7 @@ async def naive_install_script(
     naive_pass: Optional[str] = Query(None, description="Auto-generated if absent"),
     template_id: Optional[str] = Query(None, description="Decoy template id (see /api/templates)"),
     install_php: bool = Query(False, description="Provision hardened php-fpm for dynamic decoys"),
+    ssh_port: Optional[int] = Query(None, description="Move SSH listener to this port (1-65535, 22=no-op)"),
     session: AsyncSession = Depends(get_session),
 ):
     server = await session.get(Server, server_id)
@@ -905,6 +944,7 @@ async def naive_install_script(
         suggested_filename=filename,
         template_id=template_id,
         install_php=install_php,
+        ssh_port=ssh_port,
     )
     return PlainTextResponse(
         content=script,
@@ -936,6 +976,7 @@ def build_wireguard_install_script(
     allowed_ips: Optional[str] = None,
     server_label: Optional[str] = None,
     suggested_filename: str = "wireguard-install.sh",
+    ssh_port: Optional[int] = None,
 ) -> str:
     """Render the bash bootstrap that fetches setup-wireguard-server.sh
     from the PiTun repo and runs it with credentials pre-filled.
@@ -968,6 +1009,13 @@ def build_wireguard_install_script(
         exports.append(f"export DNS_2={shlex.quote(dns_2)}")
     if allowed_ips:
         exports.append(f"export ALLOWED_IPS={shlex.quote(allowed_ips)}")
+    if ssh_port is not None:
+        try:
+            n = int(ssh_port)
+            if 1 <= n <= 65535 and n != 22:
+                exports.append(f"export SSH_PORT={n}")
+        except (TypeError, ValueError):
+            pass
     # Sub-command dispatch — install bootstraps + adds first peer.
     exports.append('export PITUN_WG_SUBCOMMAND="install"')
 
@@ -1015,6 +1063,7 @@ async def wireguard_install_script(
     dns_1: Optional[str] = Query(None, description="Primary DNS for clients (default 1.1.1.1)"),
     dns_2: Optional[str] = Query(None, description="Secondary DNS for clients (default 1.0.0.1)"),
     allowed_ips: Optional[str] = Query(None, description="Default 0.0.0.0/0,::/0"),
+    ssh_port: Optional[int] = Query(None, description="Move SSH listener to this port (1-65535, 22=no-op)"),
     session: AsyncSession = Depends(get_session),
 ):
     server = await session.get(Server, server_id)
@@ -1030,6 +1079,7 @@ async def wireguard_install_script(
         allowed_ips=allowed_ips,
         server_label=f"{server.name} (id={server.id})",
         suggested_filename=filename,
+        ssh_port=ssh_port,
     )
     return PlainTextResponse(
         content=script,

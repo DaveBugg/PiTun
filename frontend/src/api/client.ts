@@ -438,7 +438,7 @@ export const serversApi = {
   // and pays a tiny memory cost (script is ~1 KB).
   downloadNaiveInstallScript: async (
     id: number,
-    params: { domain: string; email: string; naive_user?: string; naive_pass?: string; template_id?: string; install_php?: boolean },
+    params: { domain: string; email: string; naive_user?: string; naive_pass?: string; template_id?: string; install_php?: boolean; ssh_port?: number },
   ): Promise<void> => {
     const r = await http.get(`/servers/${id}/naive-install-script`, {
       params,
@@ -467,6 +467,7 @@ export const serversApi = {
       dns_1?: string
       dns_2?: string
       allowed_ips?: string
+      ssh_port?: number
     },
   ): Promise<void> => {
     const r = await http.get(`/servers/${id}/wireguard-install-script`, {
@@ -589,7 +590,7 @@ export const serversApi = {
 
 export const scriptsApi = {
   downloadNaiveInstall: async (
-    params: { domain: string; email: string; naive_user?: string; naive_pass?: string; template_id?: string; install_php?: boolean },
+    params: { domain: string; email: string; naive_user?: string; naive_pass?: string; template_id?: string; install_php?: boolean; ssh_port?: number },
   ): Promise<void> => {
     const r = await http.get('/scripts/naive-install', {
       params,
@@ -616,6 +617,7 @@ export const scriptsApi = {
       dns_1?: string
       dns_2?: string
       allowed_ips?: string
+      ssh_port?: number
     },
   ): Promise<void> => {
     const r = await http.get('/scripts/wireguard-install', {

@@ -18,6 +18,7 @@ import { useConfirm } from '@/components/ConfirmModal'
 import { DeployModal } from '@/components/DeployModal'
 import { ManageClientsModal } from '@/components/ManageClientsModal'
 import { TemplatePicker } from '@/components/TemplatePicker'
+import { SshPortField } from '@/components/SshPortField'
 import { UninstallModal } from '@/components/UninstallModal'
 import {
   useServers,
@@ -746,6 +747,9 @@ function ManualScriptModal({ mode, onClose }: { mode: ScriptModalMode; onClose: 
   const [naivePass, setNaivePass] = useState(naiveCfg.naive_pass ?? '')
   const [naiveTemplateId, setNaiveTemplateId] = useState<string | undefined>(naiveCfg.template_id)
   const [naiveInstallPhp, setNaiveInstallPhp] = useState<boolean>(!!naiveCfg.install_php)
+  // SSH port move (since v1.3.0-beta.7) — surfaced uniformly across
+  // naive + wg sections of this modal; one sshd per VPS so one input.
+  const [sshPort, setSshPort] = useState<string>('')
 
   // WireGuard-specific. `client_name` is per-deploy and not stored on
   // ServerDeployment.config (the script picks it up from env), so it
@@ -764,7 +768,7 @@ function ManualScriptModal({ mode, onClose }: { mode: ScriptModalMode; onClose: 
 
   type NaiveParams = {
     domain: string; email: string; naive_user?: string; naive_pass: string
-    template_id?: string; install_php?: boolean
+    template_id?: string; install_php?: boolean; ssh_port?: number
   }
   type WgParams = {
     client_name?: string
@@ -772,6 +776,7 @@ function ManualScriptModal({ mode, onClose }: { mode: ScriptModalMode; onClose: 
     dns_1?: string
     dns_2?: string
     allowed_ips?: string
+    ssh_port?: number
   }
 
   /** Validate + assemble params for the active protocol. */
@@ -790,6 +795,7 @@ function ManualScriptModal({ mode, onClose }: { mode: ScriptModalMode; onClose: 
       naive_pass: finalPass,
       template_id: naiveTemplateId,
       install_php: naiveInstallPhp || undefined,
+      ssh_port: sshPort.trim() ? Number(sshPort.trim()) : undefined,
     }
   }
 
@@ -805,6 +811,7 @@ function ManualScriptModal({ mode, onClose }: { mode: ScriptModalMode; onClose: 
       dns_1: wgDns1.trim() || undefined,
       dns_2: wgDns2.trim() || undefined,
       allowed_ips: wgAllowedIps.trim() || undefined,
+      ssh_port: sshPort.trim() ? Number(sshPort.trim()) : undefined,
     }
   }
 
@@ -1145,6 +1152,23 @@ function ManualScriptModal({ mode, onClose }: { mode: ScriptModalMode; onClose: 
             </FieldL>
           </div>
         )}
+
+        {/* SSH port move — common to both protocols, one sshd per VPS. */}
+        <div className="mt-3">
+          <FieldL
+            label={t('SSH port (optional)', 'SSH-порт (опционально)')}
+            hint={t(
+              'leave blank to keep current — applied at install, PiTun remembers it',
+              'оставьте пустым — текущий не трогаем; PiTun запомнит после установки',
+            )}
+          >
+            <SshPortField
+              value={sshPort}
+              onChange={setSshPort}
+              serverPort={mode.kind === 'server' ? mode.server.port : undefined}
+            />
+          </FieldL>
+        </div>
 
         {/* Footer button row.
             Server mode: 3 buttons — Cancel, Save, Save & download.

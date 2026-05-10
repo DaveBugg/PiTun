@@ -46,6 +46,14 @@
 #                  `CLIENTS=<json>` where the JSON is an array of
 #                  {name, public_key, address}.
 #
+# Optional SSH port change (install sub-command only, since v1.3.0-beta.7):
+#   SSH_PORT=<num>   — move SSH listener to this port. Empty or 22 means
+#                      leave SSH config untouched. Validated 1-65535. The
+#                      port move is applied AFTER WireGuard is up so a
+#                      broken sshd is still recoverable via the tunnel.
+#   SSH_KEEP_22=yes  — also keep listening on :22 during the cutover so
+#                      live admin sessions don't drop. Default no.
+#
 # Convention: each peer block in wg0.conf is preceded by a marker
 # comment `# PITUN-CLIENT name=<name>` so we can identify our peers
 # unambiguously. Peers added externally (by hand-editing wg0.conf,
@@ -156,6 +164,70 @@ emit_uri() {
     enc_addr=$(python3 -c "import urllib.parse,sys;print(urllib.parse.quote(sys.argv[1],safe=''))" "$address")
     enc_name=$(python3 -c "import urllib.parse,sys;print(urllib.parse.quote(sys.argv[1],safe=''))" "$name")
     echo "URI=wireguard://${enc_priv}@${host}:${port}?publickey=${enc_pub}&presharedkey=${enc_psk}&address=${enc_addr}&mtu=${mtu}#${enc_name}"
+}
+
+# ── Helper: move SSH listener to a new port ────────────────────────────────
+# Idempotent: empty / 22 / invalid SSH_PORT is a no-op. Mirrors the
+# port-move half of setup-naive-server.sh's section 9b (no password-auth
+# logic here — that's naive-specific). Runs at the END of cmd_install so
+# WireGuard is already up if sshd ends up wedged.
+apply_ssh_port() {
+    local SSH_PORT="${SSH_PORT:-}"
+    if [[ -z "$SSH_PORT" ]] || [[ "$SSH_PORT" == "22" ]]; then
+        return 0
+    fi
+    if ! [[ "$SSH_PORT" =~ ^[0-9]+$ ]] || (( SSH_PORT < 1 || SSH_PORT > 65535 )); then
+        warn "SSH_PORT='$SSH_PORT' is not a valid 1-65535 number — ignoring"
+        return 0
+    fi
+
+    log "Moving SSH to port $SSH_PORT..."
+    local DROPIN=/etc/ssh/sshd_config.d/99-pitun-wireguard.conf
+    mkdir -p /etc/ssh/sshd_config.d
+    {
+        echo "# Written by setup-wireguard-server.sh — $(date -Iseconds)"
+        echo "Port $SSH_PORT"
+        if [[ "${SSH_KEEP_22:-no}" == "yes" ]]; then
+            echo "Port 22"
+        fi
+    } > "$DROPIN"
+    chmod 644 "$DROPIN"
+
+    # Validate before any restart; rollback the drop-in on failure so
+    # we don't strand sshd in a broken config.
+    if ! sshd -t 2>/dev/null; then
+        warn "sshd config validation failed — reverting SSH port change"
+        rm -f "$DROPIN"
+        return 0
+    fi
+
+    # Socket-activated vs standalone — same logic as setup-naive-server.sh.
+    # `restart` not `reload` because the listening socket needs to re-bind.
+    if systemctl is-active --quiet ssh.socket; then
+        info "sshd is socket-activated — patching ssh.socket.d/override.conf"
+        mkdir -p /etc/systemd/system/ssh.socket.d
+        {
+            echo "# Written by setup-wireguard-server.sh — $(date -Iseconds)"
+            echo "[Socket]"
+            echo "ListenStream="                # reset default :22
+            if [[ "${SSH_KEEP_22:-no}" == "yes" ]]; then
+                echo "ListenStream=22"
+            fi
+            echo "ListenStream=$SSH_PORT"
+        } > /etc/systemd/system/ssh.socket.d/override.conf
+        systemctl daemon-reload
+        systemctl restart ssh.socket || warn "ssh.socket restart failed"
+    else
+        info "sshd is standalone — restarting ssh.service"
+        rm -f /etc/systemd/system/ssh.socket.d/override.conf
+        systemctl daemon-reload
+        systemctl restart ssh.service 2>/dev/null \
+            || systemctl restart sshd.service 2>/dev/null \
+            || warn "Could not restart sshd — check manually"
+    fi
+    info "SSH now listening on port $SSH_PORT"
+    warn "BEFORE you close this session: verify ssh -p $SSH_PORT works from a NEW terminal."
+    warn "Port 22 stays open in iptables — close it manually once new port is confirmed."
 }
 
 # ── cmd_install ────────────────────────────────────────────────────────────
@@ -269,6 +341,9 @@ EOF
     # ── Add the first client
     log "Adding first peer '${CLIENT_NAME}'..."
     cmd_add_client
+
+    # ── SSH port change (last, so WG is already up if sshd breaks)
+    apply_ssh_port
 }
 
 # ── cmd_add_client ─────────────────────────────────────────────────────────

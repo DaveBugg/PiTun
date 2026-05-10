@@ -34,6 +34,7 @@ async def naive_install(
     naive_pass: Optional[str] = Query(None, description="Auto-generated if absent"),
     template_id: Optional[str] = Query(None, description="Decoy template id (see /api/templates)"),
     install_php: bool = Query(False, description="Provision hardened php-fpm for dynamic decoys"),
+    ssh_port: Optional[int] = Query(None, description="Move SSH listener to this port (1-65535, 22=no-op)"),
 ):
     """Server-agnostic NaiveProxy install bootstrap.
 
@@ -51,6 +52,7 @@ async def naive_install(
         suggested_filename=filename,
         template_id=template_id,
         install_php=install_php,
+        ssh_port=ssh_port,
     )
     return PlainTextResponse(
         content=script,
@@ -66,6 +68,7 @@ async def wireguard_install(
     dns_1: Optional[str] = Query(None, description="Primary DNS for clients (default 1.1.1.1)"),
     dns_2: Optional[str] = Query(None, description="Secondary DNS for clients (default 1.0.0.1)"),
     allowed_ips: Optional[str] = Query(None, description="Default 0.0.0.0/0,::/0"),
+    ssh_port: Optional[int] = Query(None, description="Move SSH listener to this port (1-65535, 22=no-op)"),
 ):
     """Server-agnostic WireGuard install bootstrap. Bootstraps the
     server (apt, sysctl, keypair, wg-quick@wg0) AND adds the first
@@ -80,6 +83,7 @@ async def wireguard_install(
         allowed_ips=allowed_ips,
         server_label=None,
         suggested_filename=filename,
+        ssh_port=ssh_port,
     )
     return PlainTextResponse(
         content=script,

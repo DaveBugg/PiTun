@@ -55,12 +55,21 @@
 #                            applied), so re-running the installer with a
 #                            different template actually swaps the cover.
 #
+# Optional SSH port change (since v1.3.0-beta.7 — decoupled from hardening):
+#   SSH_PORT=<num>               — move SSH listener to this port. Empty or 22
+#                                  means: leave SSH config untouched. Setting
+#                                  this alone triggers ONLY a port move, no
+#                                  password-auth changes. Validated 1-65535.
+#   SSH_KEEP_22=yes              — also keep listening on :22 as a safety net
+#                                  during the cutover (useful for live admin
+#                                  sessions). Default no.
+#
 # Optional SSH hardening (asked interactively if none set):
-#   HARDEN_SSH=yes|no            — enable/skip
-#   SSH_PORT=<num>               — new SSH port (default 2222)
+#   HARDEN_SSH=yes|no            — enable extra hardening (password-auth /
+#                                  root-pw rules below). Independent of
+#                                  SSH_PORT; can be combined.
 #   SSH_DISABLE_PASSWORD=yes|no  — disable password auth (default no — keep password login)
 #   SSH_DISABLE_ROOT_PW=yes|no   — PermitRootLogin prohibit-password (default no)
-#   SSH_KEEP_22=yes              — also keep listening on :22 as a safety net
 #
 # Optional fail2ban (asked interactively if none set, default yes):
 #   INSTALL_FAIL2BAN=yes|no      — install fail2ban with sshd jail (5 fails → 1h ban)
@@ -697,38 +706,66 @@ if command -v ufw >/dev/null; then
     ufw allow 80/tcp   >/dev/null || true
     ufw allow 443/tcp  >/dev/null || true
     # Pre-open the new SSH port BEFORE we restart sshd so we can't lock
-    # ourselves out.
-    if [[ "${HARDEN_SSH:-no}" == "yes" ]] && [[ "$SSH_PORT" != "22" ]]; then
+    # ourselves out. Fires for either SSH_PORT alone or HARDEN_SSH=yes.
+    if [[ -n "${SSH_PORT:-}" ]] && [[ "$SSH_PORT" != "22" ]]; then
         ufw allow "${SSH_PORT}/tcp" >/dev/null || true
     fi
     ufw --force enable >/dev/null || true
 fi
 
-# ── 9b. SSH hardening (optional) ───────────────────────────────────────────
+# ── 9b. SSH port + hardening (optional, decoupled) ──────────────────────────
 # Apply AFTER ufw is up (so the new port is reachable) and BEFORE Caddy is
-# started — if hardening breaks sshd, we haven't yet mutated production state.
-if [[ "${HARDEN_SSH:-no}" == "yes" ]]; then
-    log "Hardening SSH (port $SSH_PORT, password=$SSH_DISABLE_PASSWORD)..."
+# started — if any change breaks sshd, we haven't yet mutated production state.
+#
+# Two independent triggers (since v1.3.0-beta.7):
+#   * SSH_PORT set + != 22  → write `Port <N>` to the drop-in and restart sshd
+#   * HARDEN_SSH=yes        → write the password-auth / root-pw directives
+# Either, both, or neither can apply. Earlier versions of this script
+# required HARDEN_SSH=yes to do anything, which blocked the common
+# "just change my SSH port" case from PiTun's UI.
+SSH_PORT_CHANGE=no
+if [[ -n "${SSH_PORT:-}" ]]; then
+    if ! [[ "$SSH_PORT" =~ ^[0-9]+$ ]] || (( SSH_PORT < 1 || SSH_PORT > 65535 )); then
+        warn "SSH_PORT='$SSH_PORT' is not a valid 1-65535 number — ignoring"
+        SSH_PORT=22
+    fi
+    if [[ "$SSH_PORT" != "22" ]]; then
+        SSH_PORT_CHANGE=yes
+    fi
+fi
+
+if [[ "${HARDEN_SSH:-no}" == "yes" ]] || [[ "$SSH_PORT_CHANGE" == "yes" ]]; then
+    if [[ "$SSH_PORT_CHANGE" == "yes" ]] && [[ "${HARDEN_SSH:-no}" == "yes" ]]; then
+        log "Configuring SSH (port $SSH_PORT, hardening on)..."
+    elif [[ "$SSH_PORT_CHANGE" == "yes" ]]; then
+        log "Moving SSH to port $SSH_PORT (hardening disabled)..."
+    else
+        log "Hardening SSH (port unchanged, hardening on)..."
+    fi
     SSHD_DROPIN=/etc/ssh/sshd_config.d/99-pitun-naive.conf
     mkdir -p /etc/ssh/sshd_config.d
     {
         echo "# Written by setup-naive-server.sh — $(date -Iseconds)"
-        echo "Port $SSH_PORT"
-        # Keep :22 listening as a fallback during the switch if user asked to
-        # keep the old port open. They can remove it manually after confirming
-        # the new port works.
-        if [[ "${SSH_KEEP_22:-no}" == "yes" ]]; then
-            echo "Port 22"
+        if [[ "$SSH_PORT_CHANGE" == "yes" ]]; then
+            echo "Port $SSH_PORT"
+            # Keep :22 listening as a fallback during the switch if user asked
+            # to keep the old port open. They can remove it manually after
+            # confirming the new port works.
+            if [[ "${SSH_KEEP_22:-no}" == "yes" ]]; then
+                echo "Port 22"
+            fi
         fi
-        if [[ "$SSH_DISABLE_PASSWORD" == "yes" ]]; then
-            echo "PasswordAuthentication no"
-            echo "KbdInteractiveAuthentication no"
-            echo "ChallengeResponseAuthentication no"
-            echo "UsePAM yes"
-            echo "PubkeyAuthentication yes"
-        fi
-        if [[ "$SSH_DISABLE_ROOT_PW" == "yes" ]]; then
-            echo "PermitRootLogin prohibit-password"
+        if [[ "${HARDEN_SSH:-no}" == "yes" ]]; then
+            if [[ "${SSH_DISABLE_PASSWORD:-no}" == "yes" ]]; then
+                echo "PasswordAuthentication no"
+                echo "KbdInteractiveAuthentication no"
+                echo "ChallengeResponseAuthentication no"
+                echo "UsePAM yes"
+                echo "PubkeyAuthentication yes"
+            fi
+            if [[ "${SSH_DISABLE_ROOT_PW:-no}" == "yes" ]]; then
+                echo "PermitRootLogin prohibit-password"
+            fi
         fi
     } > "$SSHD_DROPIN"
     chmod 644 "$SSHD_DROPIN"
@@ -748,7 +785,13 @@ if [[ "${HARDEN_SSH:-no}" == "yes" ]]; then
         # Pick the right mechanism based on which unit is currently active.
         # Also: `systemctl reload ssh` does NOT re-bind the listening socket
         # (SIGHUP only re-reads config) — we need `restart` for port to change.
-        if systemctl is-active --quiet ssh.socket; then
+        # Socket/standalone restart only needed when the *port* actually
+        # moved — pure password-auth changes are picked up by SIGHUP'd
+        # sshd via `reload` instead (cheaper, doesn't drop existing
+        # sessions). We hit `restart` here regardless because the cost
+        # of doing it is one momentary close + re-listen, and skipping it
+        # for harden-only changes would require duplicating this branch.
+        if [[ "$SSH_PORT_CHANGE" == "yes" ]] && systemctl is-active --quiet ssh.socket; then
             info "sshd is socket-activated — patching ssh.socket.d/override.conf"
             mkdir -p /etc/systemd/system/ssh.socket.d
             {
@@ -762,6 +805,11 @@ if [[ "${HARDEN_SSH:-no}" == "yes" ]]; then
             } > /etc/systemd/system/ssh.socket.d/override.conf
             systemctl daemon-reload
             systemctl restart ssh.socket || warn "ssh.socket restart failed"
+        elif systemctl is-active --quiet ssh.socket; then
+            # Harden-only on a socket-activated host — just reload the
+            # active service; no socket-unit change needed.
+            info "sshd is socket-activated, port unchanged — reloading ssh@.service"
+            systemctl reload-or-restart ssh.socket 2>/dev/null || true
         else
             # Standalone ssh.service — `restart`, not `reload`, so the
             # listening socket actually picks up the new Port directive
@@ -776,11 +824,15 @@ if [[ "${HARDEN_SSH:-no}" == "yes" ]]; then
                 || systemctl restart sshd.service 2>/dev/null \
                 || warn "Could not restart sshd — check manually: systemctl status ssh"
         fi
-        info "SSH now listening on port $SSH_PORT"
-        warn "BEFORE you close this session: open a NEW terminal and verify:"
-        warn "    ssh -p $SSH_PORT root@<ip>"
-        warn "If that works, this session is safe to close. Port 22 will remain"
-        warn "open in ufw until you run: ufw delete allow 22/tcp"
+        if [[ "$SSH_PORT_CHANGE" == "yes" ]]; then
+            info "SSH now listening on port $SSH_PORT"
+            warn "BEFORE you close this session: open a NEW terminal and verify:"
+            warn "    ssh -p $SSH_PORT root@<ip>"
+            warn "If that works, this session is safe to close. Port 22 will remain"
+            warn "open in ufw until you run: ufw delete allow 22/tcp"
+        else
+            info "SSH config reloaded (port unchanged)"
+        fi
     fi
 fi
 
