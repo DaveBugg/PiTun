@@ -372,7 +372,7 @@ cat >/etc/caddy/Caddyfile <<EOF
 {
     email $EMAIL
     # Silence the admin endpoint (not needed for this deployment).
-    # NB: `admin off` disables caddy-reload via API, so systemctl reload
+    # NB: \`admin off\` disables caddy-reload via API, so systemctl reload
     # will fail; the unit (step 10) uses ExecReload that falls back to
     # restart. Use \`systemctl restart caddy\` when you edit this file.
     admin off

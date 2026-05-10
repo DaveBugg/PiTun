@@ -408,7 +408,16 @@ function DeployRunning({
     return r as DeployJobResult
   }, [jobRow])
 
-  const finalStatus = jobRow?.status ?? (done === null ? 'running' : done)
+  // The WS `done` frame is authoritative — polling stops the moment
+  // it arrives, so the last `jobRow.status` we polled is often still
+  // `running` even though the job already finalized. Prefer the WS
+  // signal when it's a real terminal state, fall back to jobRow only
+  // when WS hasn't reported yet (or reported `unknown` due to a
+  // dropped connection).
+  const finalStatus =
+    done && done !== 'unknown'
+      ? done
+      : (jobRow?.status ?? (done === null ? 'running' : done))
 
   return (
     <div>
