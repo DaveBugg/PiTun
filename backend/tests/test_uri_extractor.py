@@ -228,8 +228,8 @@ class TestBuildPlan:
 # ── Module-level invariants ──────────────────────────────────────────────────
 
 
-def test_supported_protocols_in_beta_4():
+def test_supported_protocols_in_beta_7():
     # Hard-coded sanity check — when we add xray/hy2/shadowsocks/etc.
-    # this test is the explicit bump point. As of beta.4 the supported
-    # set is `naive` (single-tunnel) + `wireguard` (multi-client).
-    assert SUPPORTED_PROTOCOLS == ("naive", "wireguard")
+    # this test is the explicit bump point. As of beta.7 the supported
+    # set is `naive` + `wireguard` + `xui` (panel-as-deployment).
+    assert SUPPORTED_PROTOCOLS == ("naive", "wireguard", "xui")

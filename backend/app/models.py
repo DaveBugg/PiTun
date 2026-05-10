@@ -453,3 +453,117 @@ class Job(SQLModel, table=True):
     error: Optional[str] = Field(default=None, max_length=500)
     result_json: Optional[str] = None
     log_tail: Optional[str] = None                  # ~4 KB combined, NULL while running
+
+
+class XuiServer(SQLModel, table=True):
+    """Bookkeeping for an x-ui-pro / 3x-ui panel deployed on a Server
+    (since v1.3.0-beta.7).
+
+    One row per Server (`UniqueConstraint` on server_id) — re-deploys
+    UPDATE in place rather than create a parallel row, so chain
+    references and exported clients survive a re-install.
+
+    The parent `Server` row holds VPS-level fields (host, ssh_port,
+    ssh_user, password/key). This row holds *panel-level* fields:
+      * api_token       — Bearer token for /panel/api/* calls
+      * panel_user/pass — for the human admin to log into the panel
+      * panel_port      — random high port the panel listens on
+                          (separate from SSH; ufw-opened at install)
+      * panel_basepath  — `/<random>` URL prefix
+      * domain / mode   — `xui-pro` w/ Let's Encrypt cert OR `bare`
+                          self-signed; gates fakesite features in UI
+
+    Threat model: identical to Server.password — plain-text in the
+    SQLite DB (file is root-only on the host). Compromise of the DB
+    file gives the attacker the api_token, which is full panel
+    access. Acceptable for PiTun's LAN-only scope.
+    """
+
+    __table_args__ = (
+        UniqueConstraint("server_id", name="uq_xuiserver_server"),
+    )
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    server_id: int = Field(foreign_key="server.id", index=True)
+
+    api_token: str
+    panel_user: str
+    panel_pass: str
+
+    panel_port: int
+    panel_basepath: str         # always starts with "/", no trailing "/"
+
+    domain: Optional[str] = None
+    mode: str = "bare"          # bare | xui-pro
+
+    # Health (filled on probe + on each /sync UI action)
+    last_check: Optional[datetime] = None
+    last_check_error: Optional[str] = None
+
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+    )
+    updated_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+    )
+
+
+class XuiClient(SQLModel, table=True):
+    """A panel-side client config that PiTun manages (since v1.3.0-beta.7).
+
+    Mirrors the DeploymentClient pattern from WireGuard: PiTun keeps a
+    cached copy of every client it created on the panel + the bits
+    needed to reconstruct a routable Node URL without re-asking the
+    panel each time. Hand-added clients (created via the panel UI by
+    the human) are NOT mirrored here — we only insert on our own
+    `addClient` API calls and identify those by the `pi-XXXXXXXX`
+    label format.
+
+    Mapping back to a Node:
+      * `exported_node_id` is set when the user clicks "Export to Node".
+        Until then, the client is "browseable but not routed". After
+        export, the Node carries the full xray-outbound config and
+        PiTun's routing layer treats it like any other VLESS / Trojan
+        / SOCKS5 outbound.
+      * Multiple Nodes may be exported from the same XuiClient (rare
+        but allowed — e.g. re-importing into a fresh PiTun instance).
+        FK is ON DELETE SET NULL, so deleting a Node doesn't cascade
+        the client row away.
+    """
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    xui_server_id: int = Field(foreign_key="xuiserver.id", index=True)
+
+    # Panel-side identifiers — sent to the API for delete/update.
+    inbound_remote_id: int = Field(index=True)
+    # Per-client UUID (vless / trojan; for socks5 inbounds this is the
+    # username instead — `socks5` clients are stored as user/pass pairs
+    # not UUIDs by the panel).
+    client_uuid: str = ""
+
+    # Display label written into the panel's `email` field at creation.
+    # Format: `pi-XXXXXXXX` (8 hex). Reading this back from the panel
+    # is how we identify PiTun-managed vs hand-added clients.
+    label: str = Field(index=True)
+
+    # Cached metadata — refreshed by /sync. Lets the UI render the
+    # client list without round-tripping through the panel for every
+    # row.
+    inbound_protocol: str = ""    # vless | trojan | shadowsocks | socks
+    inbound_port: int = 0
+    inbound_remark: str = ""
+
+    # Free-form blob with the full client config (uuid/flow/sni/pbk/
+    # sid for vless+reality, password/method for trojan, ...). Used
+    # by "show config" + "export to Node" without an extra panel
+    # call.
+    config_json: str = "{}"
+
+    # Set on "Export to Node" click. ON DELETE SET NULL — deleting
+    # the Node leaves this row pointing at None, NOT cascading away.
+    exported_node_id: Optional[int] = Field(default=None, foreign_key="node.id")
+
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+    )
+    last_synced_at: Optional[datetime] = None

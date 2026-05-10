@@ -382,11 +382,62 @@ async def deploy_to_server(
         parsed_uri: Optional[str] = None
         new_node_id: Optional[int] = None
         new_client_id: Optional[int] = None
+        new_xui_server_id: Optional[int] = None
         final_status = "failed"
 
         is_multi_client = body.protocol in MULTI_CLIENT_PROTOCOLS
+        is_panel = body.protocol == "xui"
 
-        if result.ok:
+        if result.ok and is_panel:
+            # ── Panel path (xui) — URI carries panel creds, not a Node.
+            # Parse via xui_uri.parse_xui_uri (separate registry from
+            # uri_parser.py which is per-Node) and upsert a XuiServer
+            # row. Inbound + client lifecycle from here on goes through
+            # the Bearer API in app/api/xui.py.
+            from app.core.xui_uri import parse_xui_uri
+            from app.models import XuiServer
+            parsed_uri = extract_uri(result.stdout, body.protocol)
+            xui_cfg = parse_xui_uri(parsed_uri) if parsed_uri else None
+            if xui_cfg is not None:
+                now = datetime.now(timezone.utc)
+                async with AsyncSession(get_async_engine()) as s:
+                    existing_xs = (await s.exec(
+                        select(XuiServer).where(XuiServer.server_id == srv_id),
+                    )).scalars().first()
+                    if existing_xs is not None:
+                        existing_xs.api_token = xui_cfg.api_token
+                        existing_xs.panel_user = xui_cfg.panel_user
+                        existing_xs.panel_pass = xui_cfg.panel_pass
+                        existing_xs.panel_port = xui_cfg.port
+                        existing_xs.panel_basepath = xui_cfg.basepath
+                        existing_xs.domain = xui_cfg.domain
+                        existing_xs.mode = xui_cfg.mode
+                        existing_xs.last_check = now
+                        existing_xs.last_check_error = None
+                        existing_xs.updated_at = now
+                        s.add(existing_xs)
+                        await s.flush()
+                        new_xui_server_id = existing_xs.id
+                    else:
+                        xs = XuiServer(
+                            server_id=srv_id,
+                            api_token=xui_cfg.api_token,
+                            panel_user=xui_cfg.panel_user,
+                            panel_pass=xui_cfg.panel_pass,
+                            panel_port=xui_cfg.port,
+                            panel_basepath=xui_cfg.basepath,
+                            domain=xui_cfg.domain,
+                            mode=xui_cfg.mode,
+                            last_check=now,
+                        )
+                        s.add(xs)
+                        await s.flush()
+                        new_xui_server_id = xs.id
+                    await s.commit()
+                final_status = "deployed"
+            else:
+                final_status = "deployed_no_uri"
+        elif result.ok:
             parsed_uri = extract_uri(result.stdout, body.protocol)
             if parsed_uri:
                 node_dict = parse_uri(parsed_uri)
@@ -481,17 +532,27 @@ async def deploy_to_server(
             else:
                 final_status = "deployed_no_uri"
 
-        # Upsert ServerDeployment in a fresh session — for naive only;
+        # Upsert ServerDeployment in a fresh session — for naive / xui;
         # WG already created/looked-up the row above.
         now = datetime.now(timezone.utc)
         if not is_multi_client:
-            deployment_config = {
-                "domain": plan.env.get("DOMAIN"),
-                "email": plan.env.get("EMAIL"),
-                "naive_user": plan.env.get("NAIVE_USER"),
-                # naive_pass intentionally omitted (CWE-312 — it's already
-                # on the Node URI; no need to duplicate plain-text)
-            }
+            if body.protocol == "xui":
+                # Panel deploy: track domain + mode here for the UI
+                # badge. The Bearer token + creds live on the
+                # XuiServer row, not duplicated in this config.
+                deployment_config = {
+                    "domain": plan.env.get("DOMAIN") or None,
+                    "mode": "xui-pro" if plan.env.get("DOMAIN") else "bare",
+                    "xui_server_id": new_xui_server_id,
+                }
+            else:
+                deployment_config = {
+                    "domain": plan.env.get("DOMAIN"),
+                    "email": plan.env.get("EMAIL"),
+                    "naive_user": plan.env.get("NAIVE_USER"),
+                    # naive_pass intentionally omitted (CWE-312 — it's already
+                    # on the Node URI; no need to duplicate plain-text)
+                }
             deployment_config_json = json.dumps(deployment_config)
 
             async with AsyncSession(get_async_engine()) as s:

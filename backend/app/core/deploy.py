@@ -33,11 +33,12 @@ logger = logging.getLogger(__name__)
 #   2. Add the literal here + a config-validator + URI regex below.
 #   3. Add a script-name mapping in `_SCRIPT_PATH_BY_PROTOCOL`.
 SupportedProtocol = Literal["naive", "wireguard"]
-SUPPORTED_PROTOCOLS: tuple[str, ...] = ("naive", "wireguard")
+SUPPORTED_PROTOCOLS: tuple[str, ...] = ("naive", "wireguard", "xui")
 
 _SCRIPT_PATH_BY_PROTOCOL: dict[str, str] = {
     "naive": "scripts/setup-naive-server.sh",
     "wireguard": "scripts/setup-wireguard-server.sh",
+    "xui": "scripts/setup-xui-server.sh",
 }
 
 # Symmetric uninstall scripts — wipe the server-side state the
@@ -48,6 +49,7 @@ _SCRIPT_PATH_BY_PROTOCOL: dict[str, str] = {
 _UNINSTALL_SCRIPT_PATH_BY_PROTOCOL: dict[str, str] = {
     "naive": "scripts/uninstall-naive-server.sh",
     "wireguard": "scripts/uninstall-wireguard-server.sh",
+    "xui": "scripts/uninstall-xui-server.sh",
 }
 
 # URI scheme prefix per protocol — used both for the regex anchor below
@@ -55,6 +57,11 @@ _UNINSTALL_SCRIPT_PATH_BY_PROTOCOL: dict[str, str] = {
 _URI_SCHEME_BY_PROTOCOL: dict[str, str] = {
     "naive": "naive+https://",
     "wireguard": "wireguard://",
+    # x-ui's URI carries panel credentials (api_token + user/pass +
+    # basepath + mode). Parsed by `app.core.xui_uri.parse_xui_uri`,
+    # consumed at deploy-finalize time to upsert a XuiServer row —
+    # see `app/api/servers.py::_finalize_deploy`'s xui branch.
+    "xui": "xui://",
 }
 
 # Protocols where each deploy invocation produces ONE peer config that
@@ -233,6 +240,54 @@ def build_naive_env(
     }
 
 
+def build_xui_env(
+    *,
+    domain: str = "",
+    email: str = "",
+    ssh_port: Optional[int] = None,
+) -> dict[str, str]:
+    """Build the env-var dict for `setup-xui-server.sh`.
+
+    Two modes determined by `domain`:
+      * empty → bare upstream 3x-ui at the pinned version. Panel on a
+                random high port with self-signed cert. Use for
+                Reality-only setups.
+      * set   → full x-ui-pro stack (nginx + Let's Encrypt + fakesite).
+
+    `email` defaults to admin@<domain> when DOMAIN is set; harmless
+    to leave empty in bare mode (the script ignores it).
+
+    The script generates panel creds + token itself and emits them on
+    the final stdout `URI=xui://...` line; we don't pre-set
+    PANEL_USER / PANEL_PASS here so re-runs always rotate to fresh
+    values (matching the install-on-a-clean-VPS expectation).
+    """
+    env: dict[str, str] = {
+        "DOMAIN": domain or "",
+        # If the user picked a domain but didn't supply email,
+        # default to admin@<domain> so Let's Encrypt has a valid
+        # registration address. Empty when bare-mode.
+        "EMAIL": email or (f"admin@{domain}" if domain else ""),
+        # Skip soft-warning interactive prompts (DNS check, etc.)
+        # the same way the naive script does.
+        "PITUN_AUTO_CONTINUE": "yes",
+    }
+
+    # SSH port reuse — same env-var contract as naive/wg. Empty / 22 /
+    # out-of-range = no-op handled inside the script.
+    env_ssh_port = ""
+    if ssh_port is not None:
+        try:
+            n = int(ssh_port)
+            if 1 <= n <= 65535:
+                env_ssh_port = str(n)
+        except (TypeError, ValueError):
+            pass
+    env["SSH_PORT"] = env_ssh_port
+
+    return env
+
+
 def build_wireguard_env(
     *,
     client_name: str,
@@ -317,6 +372,15 @@ def build_plan(protocol: str, config: dict) -> DeployPlan:
             naive_pass=config.get("naive_pass"),
             template_id=config.get("template_id"),
             install_php=bool(config.get("install_php", False)),
+            ssh_port=config.get("ssh_port"),
+        )
+    elif protocol == "xui":
+        # x-ui-pro / 3x-ui install. `domain` empty → bare-mode (no
+        # nginx, no Let's Encrypt — Reality-only setups). `domain`
+        # set → x-ui-pro full stack with nginx fakesite.
+        env = build_xui_env(
+            domain=config.get("domain") or "",
+            email=config.get("email") or "",
             ssh_port=config.get("ssh_port"),
         )
     elif protocol == "wireguard":
