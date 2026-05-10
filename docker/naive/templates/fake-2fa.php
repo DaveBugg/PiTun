@@ -70,7 +70,38 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $error === null) {
     }
 }
 
-$user_email = htmlspecialchars($_SESSION['user_email'] ?? 'a***@company.com', ENT_QUOTES, 'UTF-8');
+// Derive the @-domain from the actual hostname so the masked email
+// matches the brand the visitor expects (packman.daveprod.space →
+// `a***@daveprod.space`). Strip the leftmost label when the host has
+// 3+ parts; 2-label hosts (apex domain) are used as-is. Falls back to
+// "company.com" only if HTTP_HOST is missing entirely (shouldn't
+// happen behind Caddy, but keeps the page renderable).
+$raw_host = $_SERVER['HTTP_HOST'] ?? '';
+$raw_host = preg_replace('/:\d+$/', '', $raw_host);   // strip :port
+$raw_host = strtolower((string)$raw_host);
+if ($raw_host !== '' && preg_match('/^[a-z0-9.\-]+$/', $raw_host)) {
+    $parts = explode('.', $raw_host);
+    $email_domain = count($parts) > 2
+        ? implode('.', array_slice($parts, 1))
+        : $raw_host;
+} else {
+    $email_domain = 'company.com';
+}
+$user_email = htmlspecialchars(
+    $_SESSION['user_email'] ?? ('a***@' . $email_domain),
+    ENT_QUOTES, 'UTF-8',
+);
+// Brand the page off the same domain so "Aether Workspace" doesn't
+// jar against an a***@daveprod.space email. SLD = first label of
+// the @-domain ("daveprod" from "daveprod.space"); fall back to
+// "Aether" when we couldn't derive anything sensible.
+$brand_sld = explode('.', $email_domain)[0] ?? '';
+$brand_root = $brand_sld !== '' ? ucfirst($brand_sld) : 'Aether';
+$brand_name = htmlspecialchars($brand_root . ' Workspace', ENT_QUOTES, 'UTF-8');
+$brand_mark = htmlspecialchars(
+    strtoupper(substr($brand_root, 0, 1) ?: 'A'),
+    ENT_QUOTES, 'UTF-8',
+);
 $attempts_left = max(0, 5 - (int)$_SESSION['attempts']);
 ?><!DOCTYPE html>
 <html lang="en">
@@ -78,7 +109,7 @@ $attempts_left = max(0, 5 - (int)$_SESSION['attempts']);
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="robots" content="noindex,nofollow">
-<title>Two-Factor Authentication</title>
+<title>Two-Factor Authentication &middot; <?= $brand_name ?></title>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 html,body{height:100%;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;color:#1a202c;background:#f1f5f9}
@@ -110,8 +141,8 @@ label{font-size:.85rem;font-weight:500;color:#334155}
 <body>
 <main class="card" role="main">
   <div class="brand">
-    <div class="brand-mark" aria-hidden="true">A</div>
-    <div class="brand-name">Aether Workspace</div>
+    <div class="brand-mark" aria-hidden="true"><?= $brand_mark ?></div>
+    <div class="brand-name"><?= $brand_name ?></div>
   </div>
   <h1>Verify your identity</h1>
   <p class="lede">Enter the 6-digit code from your authenticator app to continue signing in as <strong><?= $user_email ?></strong>.</p>

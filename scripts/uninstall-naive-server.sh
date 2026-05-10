@@ -9,10 +9,18 @@
 #
 # What this removes:
 #   * Caddy package (purge — drops /etc/caddy along with state files)
+#   * /usr/local/bin/caddy (the xcaddy-built binary the installer drops
+#     when forwardproxy@naive isn't in the apt build — `apt purge caddy`
+#     misses this on Debian since cloudsmith's package doesn't include
+#     forward_proxy and the installer always re-builds)
 #   * /etc/caddy/Caddyfile (in case the purge missed the override)
 #   * /var/log/caddy/* (access + error logs)
 #   * /var/www/html/* (decoy site — confirmed first; users with hand-
 #     customised sites get an opt-out)
+#   * php-fpm + php-cli + /etc/php/*/fpm/conf.d/99-pitun-decoy.ini
+#     ONLY if our hardening drop-in is present, which means *we*
+#     installed php-fpm via INSTALL_PHP=yes. If the drop-in is missing,
+#     PHP predates us and we leave it alone.
 #   * fail2ban package (only if --remove-fail2ban / FAIL2BAN=remove
 #     is set — by default we leave it installed since it's a generic
 #     SSH-protection package, not naive-specific)
@@ -77,14 +85,26 @@ while [[ $# -gt 0 ]]; do
     shift
 done
 
+# Detect whether *we* installed PHP. The setup script's hardening
+# drop-in is unique to PiTun, so its presence means we own the
+# php-fpm install and can safely purge it. Absence means PHP either
+# predates us or was wired up by another tool — leave it alone.
+PITUN_PHP_INI="$(ls /etc/php/*/fpm/conf.d/99-pitun-decoy.ini 2>/dev/null | head -n1 || true)"
+PHP_REMOVAL="kept (was not installed by PiTun)"
+if [[ -n "$PITUN_PHP_INI" ]]; then
+    PHP_REMOVAL="purged (php-fpm + php-cli + hardening drop-in)"
+fi
+
 cat <<BANNER
 ================================================================
  PiTun — NaiveProxy uninstaller
 ================================================================
 This will remove:
   • Caddy (purged) + /etc/caddy/ + /var/log/caddy/
+  • /usr/local/bin/caddy (xcaddy build, if present)
   • Decoy site under /var/www/html/
   • Custom systemd override at /etc/systemd/system/caddy.service
+  • PHP: $PHP_REMOVAL
   • $([[ "$FAIL2BAN" == "remove" ]] && echo 'fail2ban (purged)' || echo 'fail2ban (kept — pass --remove-fail2ban to also remove)')
 
 NOT removed (manual revert needed if applied):
@@ -131,6 +151,17 @@ else
     info "caddy package not installed — skipping purge"
 fi
 
+# ── 2b. xcaddy-built binary at /usr/local/bin/caddy ────────────────────────
+# The setup script always rebuilds Caddy from source via xcaddy because
+# the cloudsmith packages don't ship klzgrad/forwardproxy@naive. The
+# resulting binary lands in /usr/local/bin and is NOT covered by
+# `apt purge caddy` above. Without this step, `command -v caddy` keeps
+# resolving and the final summary reads "STILL PRESENT (?)".
+if [[ -f /usr/local/bin/caddy ]]; then
+    log "Removing /usr/local/bin/caddy (xcaddy build)…"
+    rm -f /usr/local/bin/caddy
+fi
+
 # ── 3. Drop config + log directories ───────────────────────────────────────
 # Purge above usually clears /etc/caddy on Debian/Ubuntu, but some
 # layouts keep the dir around for "rc-state" reasons. Belt-and-braces:
@@ -147,6 +178,34 @@ if [[ -d /var/www/html ]] && [[ -n "$(ls -A /var/www/html 2>/dev/null)" ]]; then
     rm -rf /var/www/html/*  /var/www/html/.[!.]* /var/www/html/..?* 2>/dev/null || true
     # Don't rmdir /var/www/html itself — other webserver setups may
     # rely on the directory existing (apache2 default vhost, etc.).
+fi
+
+# ── 4b. PHP (only if we installed it) ──────────────────────────────────────
+# `$PITUN_PHP_INI` was probed in the banner section. If it's set, we
+# know PiTun was the one to install php-fpm via INSTALL_PHP=yes — purge
+# the packages and the hardening drop-in. If unset, PHP predates us
+# (or is wired up by another tool) and we leave the system alone.
+if [[ -n "$PITUN_PHP_INI" ]]; then
+    log "Removing PiTun's php-fpm hardening drop-in: $PITUN_PHP_INI"
+    rm -f "$PITUN_PHP_INI"
+
+    # Purge the php-fpm + php-cli packages we installed. The wildcard
+    # form `php*-fpm` covers whatever PHP_VER apt picked (8.2 / 8.3 /
+    # 8.4 etc.) without us having to re-detect here. Idempotent: apt
+    # treats absent packages as success in this mode.
+    log "Purging php-fpm + php-cli packages…"
+    DEBIAN_FRONTEND=noninteractive apt-get purge -y -qq \
+        'php*-fpm' 'php*-cli' php-fpm php-cli || \
+        warn "apt purge php-fpm returned non-zero; continuing."
+
+    # The php-fpm pool conf and our /tmp/pitun-php scratch dir aren't
+    # needed once the package is gone.
+    rm -rf /tmp/pitun-php
+
+    # Remove now-empty /etc/php tree if package purge left it behind.
+    [[ -d /etc/php ]] && rmdir --ignore-fail-on-non-empty -p /etc/php 2>/dev/null || true
+else
+    info "php-fpm not installed by PiTun — leaving alone"
 fi
 
 # ── 5. fail2ban (optional) ─────────────────────────────────────────────────
@@ -190,6 +249,7 @@ cat <<DONE
   Caddy unit:   $(systemctl list-unit-files 2>/dev/null | grep -q '^caddy\.service' && echo 'present' || echo 'removed')
   /etc/caddy:   $([[ -d /etc/caddy ]] && echo 'present' || echo 'removed')
   /var/www/html contents: $(find /var/www/html -mindepth 1 -maxdepth 1 2>/dev/null | wc -l) file(s)
+  php-fpm:      $(command -v php-fpm8.4 >/dev/null 2>&1 || command -v php-fpm8.3 >/dev/null 2>&1 || command -v php-fpm8.2 >/dev/null 2>&1 || command -v php-fpm >/dev/null 2>&1 && echo 'still installed' || echo 'not installed')
   fail2ban:     $(dpkg -l fail2ban 2>/dev/null | grep -q '^ii' && echo 'installed' || echo 'not installed')
 
 You can now re-run setup-naive-server.sh from a clean slate.
