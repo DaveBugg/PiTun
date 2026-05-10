@@ -143,6 +143,7 @@ def build_naive_env(
     naive_user: Optional[str] = None,
     naive_pass: Optional[str] = None,
     template_id: Optional[str] = None,
+    install_php: bool = False,
 ) -> dict[str, str]:
     """Build the env-var dict for `setup-naive-server.sh`.
 
@@ -163,14 +164,27 @@ def build_naive_env(
     # representation. Unknown / unset ids fall back to the script's
     # built-in default (DECOY_REPO=daleharvey/pacman). See
     # `app.core.templates.resolve_to_env` for the full mapping.
-    from app.core.templates import resolve_to_env as _tpl_env
+    from app.core.templates import resolve_to_env as _tpl_env, get_template
     template_env = _tpl_env(template_id)
+
+    # If the picked template requires PHP (e.g. fake-2fa), force the
+    # PHP install on. The user can also enable it manually via the
+    # checkbox; this guard ensures a php-needing template never gets
+    # deployed against a static-only Caddy by accident.
+    php_required_by_template = False
+    if template_id:
+        tpl = get_template(template_id)
+        if tpl is not None and getattr(tpl, "requires_php", False):
+            php_required_by_template = True
+
+    env_install_php = "yes" if (install_php or php_required_by_template) else "no"
 
     return {
         "DOMAIN": domain,
         "EMAIL": email,
         "NAIVE_USER": naive_user or "pitun",
         "NAIVE_PASS": naive_pass or secrets.token_urlsafe(24),
+        "INSTALL_PHP": env_install_php,
         # Template overrides (mutually exclusive at the script level —
         # `TEMPLATE_HTML_URL` wins when both are set).
         **template_env,
@@ -274,6 +288,7 @@ def build_plan(protocol: str, config: dict) -> DeployPlan:
             naive_user=config.get("naive_user"),
             naive_pass=config.get("naive_pass"),
             template_id=config.get("template_id"),
+            install_php=bool(config.get("install_php", False)),
         )
     elif protocol == "wireguard":
         # WG `install` sub-command bootstraps the server AND adds the

@@ -84,7 +84,21 @@ ALLOWED_EXTENSIONS = frozenset({
     ".json", ".txt", ".xml", ".md",
     ".mp3", ".mp4", ".webm", ".ogg",  # decoys with media (e.g. pacman)
     ".pdf",
+    # PHP allowed since v1.3.0-beta.6 — when an upload contains .php,
+    # the meta gets `requires_php=True` and the deploy runner forces
+    # `INSTALL_PHP=yes` so the VPS gets the hardened php-fpm install.
+    # The Caddy `disable_functions` jail in setup-naive-server.sh
+    # neutralises typical RCE / SSRF / data-exfil paths even for
+    # vulnerable user-uploaded code; .phtml / .php3 / .php7 etc. are
+    # NOT whitelisted because Caddy's `php_fastcgi` only matches *.php
+    # by default — listing the variants here would be misleading.
+    ".php",
 })
+
+# Subset that triggers the `requires_php` flag on the upload. Anything
+# beyond .php (e.g. legacy .phtml) would need both an extension here
+# and a Caddyfile pattern bump in setup-naive-server.sh.
+PHP_EXTENSIONS = frozenset({".php"})
 
 # Slug allowed chars for the user-supplied label → id derivation.
 _SLUG_RE = re.compile(r"[^a-z0-9]+")
@@ -130,6 +144,14 @@ class CustomTemplateMeta:
     sha256: str
     byte_size: int
     created_at: str
+    # Set at upload time when the archive contains any `.php` file.
+    # The deploy runner uses this to force `INSTALL_PHP=yes` so the
+    # VPS gets php-fpm provisioned — without this, a php-needing
+    # template would deploy onto a static-only Caddy and silently
+    # serve the .php source as plain text. Default False keeps
+    # backward-compat for meta.json files written before this field
+    # existed.
+    requires_php: bool = False
 
     def to_dict(self) -> dict:
         return {
@@ -140,6 +162,7 @@ class CustomTemplateMeta:
             "sha256": self.sha256,
             "byte_size": self.byte_size,
             "created_at": self.created_at,
+            "requires_php": self.requires_php,
         }
 
     @classmethod
@@ -152,6 +175,7 @@ class CustomTemplateMeta:
             sha256=d.get("sha256", ""),
             byte_size=int(d.get("byte_size", 0)),
             created_at=d.get("created_at", ""),
+            requires_php=bool(d.get("requires_php", False)),
         )
 
 
@@ -167,9 +191,14 @@ def _slugify(label: str) -> str:
     return f"{base}-{suffix}"
 
 
-def _validate_zip(data: bytes) -> None:
+def _validate_zip(data: bytes) -> bool:
     """Raise `TemplateValidationError` on any safety violation.
-    Doesn't extract — just walks the zip's central directory."""
+    Doesn't extract — just walks the zip's central directory.
+
+    Returns True if the archive contains at least one `.php` file (so
+    the caller can persist `requires_php=True` on the meta), False
+    otherwise.
+    """
     if len(data) > MAX_ARCHIVE_BYTES:
         raise TemplateValidationError(
             f"Archive is {len(data)} bytes, exceeds {MAX_ARCHIVE_BYTES} limit"
@@ -186,7 +215,8 @@ def _validate_zip(data: bytes) -> None:
             f"Archive has {len(names)} entries, exceeds {MAX_ENTRIES} limit"
         )
 
-    has_index_html = False
+    has_entry_point = False  # index.html OR index.php at root or 1-deep
+    has_php = False
     extracted_total = 0
     for info in zf.infolist():
         name = info.filename
@@ -205,6 +235,8 @@ def _validate_zip(data: bytes) -> None:
                 f"Disallowed file type: {name!r} ({ext!r}). "
                 f"Static assets only — see ALLOWED_EXTENSIONS."
             )
+        if ext in PHP_EXTENSIONS:
+            has_php = True
         # Track total uncompressed size (zip-bomb guard).
         extracted_total += info.file_size
         if extracted_total > MAX_EXTRACTED_BYTES:
@@ -217,17 +249,23 @@ def _validate_zip(data: bytes) -> None:
             raise TemplateValidationError(
                 f"Path nested too deep: {name!r}"
             )
-        # Must contain at least one index.html (root or first level).
-        if Path(name).name.lower() == "index.html":
-            depth = name.count("/")
-            if depth <= 1:
-                has_index_html = True
+        # Must contain at least one index.{html,php} (root or first level).
+        # `index.php` only counts when the archive uses PHP — otherwise
+        # the file would be served as plain text by Caddy without
+        # php_fastcgi (= obvious decoy, defeats the point).
+        base = Path(name).name.lower()
+        depth = name.count("/")
+        if depth <= 1 and base in ("index.html", "index.htm"):
+            has_entry_point = True
+        if depth <= 1 and base == "index.php":
+            has_entry_point = True
 
-    if not has_index_html:
+    if not has_entry_point:
         raise TemplateValidationError(
-            "Archive must contain an index.html at its root or one level deep "
-            "(this is what Caddy will serve at /)."
+            "Archive must contain an index.html or index.php at its root "
+            "or one level deep (this is what Caddy will serve at /)."
         )
+    return has_php
 
 
 # ── CRUD ──────────────────────────────────────────────────────────────────────
@@ -297,7 +335,7 @@ def create_custom(
     if len(description) > 500:
         raise TemplateValidationError("Description too long (max 500 chars)")
 
-    _validate_zip(archive_bytes)
+    has_php = _validate_zip(archive_bytes)
 
     template_id = _slugify(label)
     digest = hashlib.sha256(archive_bytes).hexdigest()
@@ -313,6 +351,7 @@ def create_custom(
             sha256=digest,
             byte_size=len(archive_bytes),
             created_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            requires_php=has_php,
         )
         (target_dir / "meta.json").write_text(
             json.dumps(meta.to_dict(), indent=2), encoding="utf-8",

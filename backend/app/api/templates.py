@@ -28,6 +28,11 @@ class TemplateRead(BaseModel):
     label: str
     description: str
     kind: str  # "single_html" | "git_repo" | "custom"
+    # True when the template ships server-side PHP and the deploy
+    # runner needs to force `INSTALL_PHP=yes`. Surfaces in the UI as
+    # a "needs PHP" badge so users understand why selecting this
+    # template auto-enables the PHP toggle.
+    requires_php: bool = False
     # Only populated for custom uploads; the UI uses these to render
     # a "Delete" button and a tooltip with the original filename.
     custom_byte_size: Optional[int] = None
@@ -45,7 +50,13 @@ async def list_templates():
     a misconfigured frontend can't disclose where the decoy comes
     from (negligible secrecy benefit, but good hygiene)."""
     out: list[TemplateRead] = [
-        TemplateRead(id=t.id, label=t.label, description=t.description, kind=t.kind)
+        TemplateRead(
+            id=t.id,
+            label=t.label,
+            description=t.description,
+            kind=t.kind,
+            requires_php=t.requires_php,
+        )
         for t in TEMPLATES
     ]
     # Custom uploads always render after built-ins so the curated
@@ -57,6 +68,7 @@ async def list_templates():
             label=cm.label,
             description=cm.description,
             kind="custom",
+            requires_php=cm.requires_php,
             custom_byte_size=cm.byte_size,
             custom_filename=cm.original_filename or None,
             custom_created_at=cm.created_at or None,
@@ -73,10 +85,14 @@ async def upload_template(
     """Accept a user-supplied .zip. Validates against:
       * 10 MB compressed limit, 50 MB extracted (zip-bomb guard)
       * 2000-entry cap, max 16-deep nesting
-      * extension whitelist (html/css/js/img/font/media — no
-        executables, no .php/.sh/etc.)
+      * extension whitelist (html/css/js/img/font/media + .php —
+        no shell scripts, no binaries; .php is allowed because the
+        VPS runs a hardened php-fpm jail when the archive contains
+        any .php file, so dynamic decoys like fake-2FA pages can
+        survive view-source inspection)
       * zip-slip safety (no '..' or absolute paths)
-      * must contain at least one index.html (root or one level deep)
+      * must contain at least one index.html or index.php (root
+        or one level deep)
 
     On success, persists the archive to `/app/data/templates/custom/
     <id>/archive.zip` so it survives container restarts and gets
@@ -103,6 +119,7 @@ async def upload_template(
         label=meta.label,
         description=meta.description,
         kind="custom",
+        requires_php=meta.requires_php,
         custom_byte_size=meta.byte_size,
         custom_filename=meta.original_filename or None,
         custom_created_at=meta.created_at or None,

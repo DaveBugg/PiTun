@@ -66,11 +66,12 @@ class TestTemplatesEndpoint:
         # Each row carries the user-facing fields; the source URL is
         # NOT exposed (kept server-side to keep the surface small).
         # Custom-only fields are optional — built-ins null them.
-        required = {"id", "label", "description", "kind"}
+        required = {"id", "label", "description", "kind", "requires_php"}
         allowed_extra = {"custom_byte_size", "custom_filename", "custom_created_at"}
         for row in body:
             assert required.issubset(row.keys())
             assert set(row.keys()) <= required | allowed_extra
+            assert isinstance(row["requires_php"], bool)
 
     def test_requires_auth(self, client):
         resp = client.get("/api/templates")
@@ -206,6 +207,65 @@ class TestCustomTemplateUpload:
         assert resp.status_code == 400
         assert "built-in" in resp.json()["detail"].lower()
 
+    def test_upload_php_archive_sets_requires_php(
+        self, client, admin_user, auth_headers, monkeypatch, tmp_path,
+    ):
+        """A .zip with index.php must be accepted, the response
+        flags `requires_php=true`, and the persisted meta records
+        it so subsequent deploys force INSTALL_PHP=yes."""
+        self._isolate_data_dir(monkeypatch, tmp_path)
+        zip_bytes = self._zip_bytes({
+            "index.php": b"<?php echo 'hi'; ?>",
+            "style.css": b"body{}",
+        })
+        resp = client.post(
+            "/api/templates/upload",
+            data={"label": "PHP cover"},
+            files={"archive": ("php.zip", zip_bytes, "application/zip")},
+            headers=auth_headers,
+        )
+        assert resp.status_code == 201, resp.text
+        body = resp.json()
+        assert body["requires_php"] is True
+        # meta.json on disk persists the flag.
+        import json as _json
+        meta_path = tmp_path / "templates" / "custom" / body["id"] / "meta.json"
+        assert _json.loads(meta_path.read_text())["requires_php"] is True
+        # And listing surfaces it back on the next request.
+        listing = client.get("/api/templates", headers=auth_headers).json()
+        row = next(t for t in listing if t["id"] == body["id"])
+        assert row["requires_php"] is True
+
+    def test_upload_static_archive_has_no_php_flag(
+        self, client, admin_user, auth_headers, monkeypatch, tmp_path,
+    ):
+        self._isolate_data_dir(monkeypatch, tmp_path)
+        zip_bytes = self._zip_bytes({"index.html": b"<html></html>"})
+        resp = client.post(
+            "/api/templates/upload",
+            data={"label": "Static"},
+            files={"archive": ("s.zip", zip_bytes, "application/zip")},
+            headers=auth_headers,
+        )
+        assert resp.status_code == 201
+        assert resp.json()["requires_php"] is False
+
+    def test_php_only_archive_is_valid_entry_point(
+        self, client, admin_user, auth_headers, monkeypatch, tmp_path,
+    ):
+        """Without index.html but with index.php, the upload must
+        still pass — Caddy serves the PHP file via php_fastcgi."""
+        self._isolate_data_dir(monkeypatch, tmp_path)
+        zip_bytes = self._zip_bytes({"index.php": b"<?php ?>"})
+        resp = client.post(
+            "/api/templates/upload",
+            data={"label": "Php only"},
+            files={"archive": ("p.zip", zip_bytes, "application/zip")},
+            headers=auth_headers,
+        )
+        assert resp.status_code == 201, resp.text
+        assert resp.json()["requires_php"] is True
+
     def test_resolve_custom_to_local_archive_env(self, monkeypatch, tmp_path):
         """`resolve_to_env` for a custom id emits the SFTP path
         env so the script knows where the deploy runner SFTP'd
@@ -257,3 +317,42 @@ class TestNaiveEnvWithTemplate:
         env = build_naive_env(domain="x.example.com", email="me@example.com")
         assert "TEMPLATE_HTML_URL" not in env
         assert "DECOY_REPO" not in env
+
+    def test_install_php_default_no(self):
+        from app.core.deploy import build_naive_env
+
+        env = build_naive_env(domain="x.example.com", email="me@example.com")
+        assert env.get("INSTALL_PHP") == "no"
+
+    def test_install_php_explicit_opt_in(self):
+        from app.core.deploy import build_naive_env
+
+        env = build_naive_env(
+            domain="x.example.com", email="me@example.com",
+            install_php=True,
+        )
+        assert env["INSTALL_PHP"] == "yes"
+
+    def test_install_php_forced_by_custom_template(self, monkeypatch, tmp_path):
+        """Picking a custom template that ships .php must force
+        INSTALL_PHP=yes even if the user left the toggle off."""
+        from app.core import custom_templates
+        from app.core.deploy import build_naive_env
+
+        monkeypatch.setattr(custom_templates, "_data_dir", lambda: tmp_path)
+        import io
+        import zipfile
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as zf:
+            zf.writestr("index.php", "<?php ?>")
+        meta = custom_templates.create_custom(
+            label="Php tpl",
+            description="",
+            archive_bytes=buf.getvalue(),
+            original_filename="p.zip",
+        )
+        env = build_naive_env(
+            domain="x.example.com", email="me@example.com",
+            template_id=meta.id, install_php=False,
+        )
+        assert env["INSTALL_PHP"] == "yes"

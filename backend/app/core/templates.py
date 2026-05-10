@@ -73,6 +73,14 @@ class DecoyTemplate:
     # for single_html (the raw URL doesn't accept a SHA at the
     # filename level — to pin those we'd swap _REPO_BRANCH).
     pinned_commit: Optional[str] = None
+    # Server-side PHP-FPM required (since v1.3.0-beta.6). Set on
+    # templates that ship `index.php` and rely on real backend-rendered
+    # responses to pass IT-spec inspection (fake 2FA pages, login
+    # mocks). When True, the deploy runner forces `INSTALL_PHP=yes`
+    # so the script provisions php-fpm regardless of the user's
+    # checkbox. Custom uploads infer this from their archive
+    # contents at validation time.
+    requires_php: bool = False
 
 
 # Gallery — order is the order the UI renders cards in. `pacman`
@@ -213,6 +221,10 @@ def get_template(template_id: str) -> Optional[DecoyTemplate]:
         # `custom_templates.get_archive_bytes(id)` rather than this
         # field, so the format here is purely informational.
         source=f"data/templates/custom/{cm.id}/archive.zip",
+        # `requires_php` is detected at upload time and persisted in
+        # meta.json — see custom_templates.create_custom for the
+        # extension scan that sets it.
+        requires_php=getattr(cm, "requires_php", False),
     )
 
 
