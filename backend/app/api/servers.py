@@ -293,6 +293,32 @@ async def deploy_to_server(
             ),
         )
 
+    # 443-slot mutual exclusion (since v1.3.0-beta.7).
+    # NaiveProxy's Caddy and x-ui-pro's nginx both bind :443/tcp on the
+    # VPS — they can't coexist on the same machine. WireGuard is UDP-
+    # only and slot-orthogonal. Without this guard, deploying x-ui on
+    # top of an already-naive server runs apt-installs to completion
+    # and only fails when nginx tries to bind :443, leaving the box
+    # half-installed. Refuse synchronously instead.
+    WEB_443_SLOT = {"naive", "xui"}
+    if body.protocol in WEB_443_SLOT:
+        existing_443 = (await session.exec(
+            select(ServerDeployment)
+            .where(ServerDeployment.server_id == server_id)
+            .where(ServerDeployment.protocol.in_(WEB_443_SLOT))
+            .where(ServerDeployment.protocol != body.protocol)
+        )).first()
+        if existing_443 is not None and existing_443.status == "deployed":
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"Server already has {existing_443.protocol!r} deployed "
+                    f"which binds :443. Uninstall it before deploying "
+                    f"{body.protocol!r} — naive (Caddy) and x-ui-pro "
+                    f"(nginx) can't coexist on the same VPS."
+                ),
+            )
+
     # Pre-flight: build the plan now so a malformed config (missing
     # domain/email, etc.) returns 400 synchronously instead of dying
     # inside an async job 200ms later.
