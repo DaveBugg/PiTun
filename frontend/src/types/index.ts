@@ -807,6 +807,75 @@ export interface InboundPreset {
   fields: InboundPresetField[]
 }
 
+// ── Chains (since v1.3.0-beta.7) ────────────────────────────────────────────
+
+export type ChainStatus = 'pending' | 'deployed' | 'degraded' | 'failed'
+
+export interface ChainChannelRead {
+  id: number
+  chain_id: number
+  name: string
+  order: number
+  exit_inbound_remote_id: number
+  relay_inbound_remote_id: number
+  exit_port: number
+  relay_port: number
+  exit_xhttp_path: string
+  client_sni: string
+  relay_inbound_remark: string
+  exit_inbound_remark: string
+  // Reality public material — for rendering VLESS URLs in the UI.
+  exit_pbk: string
+  exit_sid: string
+  relay_pbk: string
+  relay_sid: string
+}
+
+export interface ChainRead {
+  id: number
+  name: string
+  exit_xui_server_id: number
+  relay_xui_server_id: number
+  exit_sni: string
+  status: ChainStatus
+  last_error?: string | null
+  last_synced_at?: string | null
+  created_at: string
+  updated_at: string
+  channels: ChainChannelRead[]
+  relay_host: string
+  exit_host: string
+}
+
+export interface ChainClientChannelRead {
+  id: number
+  channel_id: number
+  channel_name: string
+  client_uuid: string
+  exported_node_id?: number | null
+  /** Ready-to-paste VLESS URL the user pastes into their client. */
+  vless_uri: string
+}
+
+export interface ChainClientRead {
+  id: number
+  chain_id: number
+  label: string
+  created_at: string
+  channels: ChainClientChannelRead[]
+}
+
+/** Wire shape for POST /api/xui/chains. */
+export interface ChainCreateChannelInput {
+  name: string                  // alnum + `-` + `_`, max 64
+  client_sni: string            // operator-chosen masquerade target
+  exit_port?: number            // 0/undef = auto-pick
+  relay_port?: number           // 0/undef = auto-pick
+  exit_xhttp_path?: string      // empty = `/api/v1/<name>`
+  relay_remark?: string         // empty = `<name.upper()>` (server-side suggests `VPN-<name>`-style; UI may override)
+  exit_remark?: string          // empty = `<name.upper()>-Exit`
+}
+
 export type DeploymentConfig = NaiveDeploymentConfig | WireGuardDeploymentConfig | XuiDeploymentConfig
 
 export interface ServerDeployment {

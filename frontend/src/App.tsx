@@ -17,6 +17,7 @@ import { Settings } from '@/pages/Settings'
 import { Servers } from '@/pages/Servers'
 import { ServerTasks } from '@/pages/ServerTasks'
 import XuiPage from '@/pages/Xui'
+import ChainsPage from '@/pages/Chains'
 
 function isTokenValid(token: string): boolean {
   try {
@@ -51,6 +52,7 @@ export default function App() {
         <Route path="/nodes"         element={<Nodes />} />
         <Route path="/servers"       element={<Servers />} />
         <Route path="/xui"           element={<XuiPage />} />
+        <Route path="/chains"        element={<ChainsPage />} />
         {/* Server-tasks (async deploy jobs) — accessible only via the
             "Tasks" link on the Servers page header, not in the main
             sidebar (per the v1.3.0 design). */}

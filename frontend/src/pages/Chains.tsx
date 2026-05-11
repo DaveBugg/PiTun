@@ -1,0 +1,916 @@
+import { useEffect, useState } from 'react'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import {
+  GitBranch, Loader2, AlertTriangle, RefreshCw, Plus, Trash2, X, Copy, Check,
+  Users, Download, ChevronRight,
+} from 'lucide-react'
+
+import { xuiApi } from '@/api/client'
+import { useT } from '@/hooks/useT'
+import { useConfirm } from '@/components/ConfirmModal'
+import { ModalShell } from '@/components/ModalShell'
+import type {
+  ChainClientRead,
+  ChainCreateChannelInput,
+  ChainRead,
+  XuiServer,
+} from '@/types'
+
+/**
+ * Two-hop proxy chain management page (since v1.3.0-beta.7).
+ *
+ * Wires together two registered XuiServer panels — an EU "exit" and
+ * a RU "relay" — into a single chain with N user-defined channels.
+ * Each channel is a fully-isolated VLESS+Reality pipe; one chain
+ * client → N panel-side clients (one per channel) → N exportable
+ * Node rows.
+ *
+ * OPSEC: no hardcoded SNI / channel-name suggestions. Operator
+ * picks their own masquerade targets per their threat model.
+ */
+export default function ChainsPage() {
+  const t = useT()
+  const qc = useQueryClient()
+
+  const { data: chains = [], isLoading: chainsLoading, error: chainsError } =
+    useQuery<ChainRead[]>({
+      queryKey: ['xui', 'chains'],
+      queryFn: () => xuiApi.listChains(),
+      refetchOnWindowFocus: false,
+    })
+
+  const { data: servers = [], isLoading: serversLoading } = useQuery<XuiServer[]>({
+    queryKey: ['xui', 'servers'],
+    queryFn: () => xuiApi.listServers(),
+    staleTime: 30_000,
+  })
+
+  const [selectedId, setSelectedId] = useState<number | null>(null)
+  const [showCreate, setShowCreate] = useState(false)
+
+  useEffect(() => {
+    if (selectedId == null && chains.length > 0) {
+      setSelectedId(chains[0].id)
+    }
+  }, [chains, selectedId])
+
+  const selected = chains.find((c) => c.id === selectedId) ?? null
+
+  // Need ≥2 x-ui servers to build a chain — guard the "Create" button.
+  const canCreate = servers.length >= 2
+
+  return (
+    <div className="p-4 md:p-6">
+      <header className="mb-5 flex flex-wrap items-center gap-3">
+        <GitBranch className="h-6 w-6 text-brand-400" />
+        <h1 className="text-2xl font-semibold text-gray-100">
+          {t('Chains', 'Цепочки')}
+        </h1>
+        <p className="text-sm text-gray-500 hidden md:block">
+          {t(
+            'Two-hop proxy chains across two x-ui panels — exit + relay',
+            'Двухзвенные прокси-цепочки на двух x-ui панелях — exit + relay',
+          )}
+        </p>
+        <div className="ml-auto flex gap-2 flex-wrap">
+          <button
+            type="button"
+            onClick={() => qc.invalidateQueries({ queryKey: ['xui', 'chains'] })}
+            className="rounded-lg border border-gray-700 px-3 py-1.5 text-sm text-gray-300 hover:bg-gray-800 transition-colors flex items-center gap-1.5"
+          >
+            <RefreshCw className="h-4 w-4" />
+            {t('Refresh', 'Обновить')}
+          </button>
+          <button
+            type="button"
+            onClick={() => setShowCreate(true)}
+            disabled={!canCreate}
+            title={canCreate ? '' : t(
+              'Need at least 2 x-ui panels — go to Servers and deploy one more.',
+              'Нужно минимум 2 панели x-ui — деплойни ещё одну на Servers.',
+            )}
+            className="rounded-lg bg-brand-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-brand-500 disabled:opacity-50 disabled:cursor-not-allowed transition-colors flex items-center gap-1.5"
+          >
+            <Plus className="h-4 w-4" />
+            {t('Create chain', 'Создать цепочку')}
+          </button>
+        </div>
+      </header>
+
+      <div className="space-y-4">
+        {(chainsLoading || serversLoading) && (
+          <div className="rounded-lg border border-gray-800 bg-gray-900/40 px-3 py-6 flex items-center justify-center gap-2 text-sm text-gray-500">
+            <Loader2 className="h-4 w-4 animate-spin" />
+            {t('Loading…', 'Загрузка…')}
+          </div>
+        )}
+
+        {chainsError && (
+          <div className="rounded-lg border border-red-700/40 bg-red-900/20 px-3 py-3 text-sm text-red-300 flex items-start gap-2">
+            <AlertTriangle className="h-4 w-4 mt-0.5 shrink-0" />
+            <span>{t('Failed to load chains', 'Не удалось загрузить цепочки')}</span>
+          </div>
+        )}
+
+        {!chainsLoading && !chainsError && chains.length === 0 && (
+          <EmptyState canCreate={canCreate} onCreate={() => setShowCreate(true)} />
+        )}
+
+        {chains.length > 0 && (
+          <div className="grid grid-cols-1 lg:grid-cols-[280px_1fr] gap-4">
+            <ChainList
+              chains={chains}
+              selectedId={selectedId}
+              onSelect={setSelectedId}
+            />
+            {selected && (
+              <ChainDetail key={selected.id} chain={selected} />
+            )}
+          </div>
+        )}
+      </div>
+
+      {showCreate && (
+        <CreateChainModal
+          servers={servers}
+          onClose={() => setShowCreate(false)}
+          onCreated={(c) => {
+            setShowCreate(false)
+            setSelectedId(c.id)
+            qc.invalidateQueries({ queryKey: ['xui', 'chains'] })
+          }}
+        />
+      )}
+    </div>
+  )
+}
+
+
+// ── Empty state ─────────────────────────────────────────────────────────────
+
+function EmptyState({ canCreate, onCreate }: { canCreate: boolean; onCreate: () => void }) {
+  const t = useT()
+  return (
+    <div className="rounded-lg border border-gray-800 bg-gray-900/40 px-4 py-6">
+      <div className="flex items-start gap-3">
+        <GitBranch className="h-5 w-5 text-gray-500 mt-0.5" />
+        <div className="flex-1">
+          <div className="font-medium text-gray-200">
+            {t('No chains yet', 'Цепочек пока нет')}
+          </div>
+          <p className="text-xs text-gray-500 mt-1 leading-snug">
+            {canCreate
+              ? t(
+                  'Create a chain to wire two x-ui panels together. The exit panel takes the masked traffic out to the internet; the relay panel is what your clients dial.',
+                  'Создайте цепочку — она свяжет две панели x-ui. Exit-панель выпускает замаскированный трафик в интернет, к relay-панели подключаются клиенты.',
+                )
+              : t(
+                  'Chains need 2+ x-ui panels. Go to Servers → Deploy → "x-ui" on two VPS instances first.',
+                  'Цепочкам нужно ≥2 панели x-ui. Сначала задеплой через Servers → Deploy → "x-ui" на два VPS.',
+                )}
+          </p>
+          {canCreate && (
+            <button
+              type="button"
+              onClick={onCreate}
+              className="mt-3 rounded-lg bg-brand-600 hover:bg-brand-500 px-3 py-1.5 text-xs text-white font-medium inline-flex items-center gap-1.5"
+            >
+              <Plus className="h-3.5 w-3.5" />
+              {t('Create chain', 'Создать цепочку')}
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+
+// ── Chain list (left pane) ──────────────────────────────────────────────────
+
+function ChainList({
+  chains, selectedId, onSelect,
+}: {
+  chains: ChainRead[]
+  selectedId: number | null
+  onSelect: (id: number) => void
+}) {
+  const t = useT()
+  return (
+    <aside className="rounded-xl border border-gray-800 bg-gray-950/60 overflow-hidden">
+      <header className="px-3 py-2 border-b border-gray-800 text-[11px] text-gray-500 uppercase tracking-wider">
+        {t('Chains', 'Цепочки')}
+      </header>
+      <ul>
+        {chains.map((c) => (
+          <li key={c.id}>
+            <button
+              type="button"
+              onClick={() => onSelect(c.id)}
+              className={
+                'w-full text-left px-3 py-2.5 flex items-start gap-2 transition-colors border-b border-gray-900 ' +
+                (c.id === selectedId
+                  ? 'bg-brand-600/10 text-brand-200'
+                  : 'text-gray-300 hover:bg-gray-900/40')
+              }
+            >
+              <GitBranch className={
+                'h-4 w-4 mt-0.5 shrink-0 ' +
+                (c.id === selectedId ? 'text-brand-400' : 'text-gray-500')
+              } />
+              <div className="min-w-0 flex-1">
+                <div className="font-medium truncate">{c.name}</div>
+                <div className="text-[11px] text-gray-500 truncate">
+                  {c.channels.length} {t('channels', 'каналов')}
+                </div>
+                <div className="flex items-center gap-1.5 mt-0.5">
+                  <ChainStatusBadge status={c.status} />
+                </div>
+              </div>
+            </button>
+          </li>
+        ))}
+      </ul>
+    </aside>
+  )
+}
+
+function ChainStatusBadge({ status }: { status: ChainRead['status'] }) {
+  const cls = {
+    deployed: 'bg-emerald-900/30 text-emerald-300 border-emerald-700/40',
+    pending: 'bg-yellow-900/30 text-yellow-300 border-yellow-700/40',
+    degraded: 'bg-amber-900/30 text-amber-300 border-amber-700/40',
+    failed: 'bg-red-900/30 text-red-300 border-red-700/40',
+  }[status] ?? 'bg-gray-900 text-gray-400 border-gray-700'
+  return (
+    <span className={`text-[10px] px-1.5 py-0.5 rounded font-mono border ${cls}`}>
+      {status}
+    </span>
+  )
+}
+
+
+// ── Chain detail (right pane) ───────────────────────────────────────────────
+
+function ChainDetail({ chain }: { chain: ChainRead }) {
+  const t = useT()
+  const qc = useQueryClient()
+  const confirm = useConfirm()
+
+  const { data: clients = [], isLoading: clientsLoading } = useQuery<ChainClientRead[]>({
+    queryKey: ['xui', 'chains', chain.id, 'clients'],
+    queryFn: () => xuiApi.listChainClients(chain.id),
+    refetchOnWindowFocus: false,
+  })
+
+  const addClientMut = useMutation({
+    mutationFn: () => xuiApi.addChainClient(chain.id),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['xui', 'chains', chain.id, 'clients'] })
+    },
+  })
+
+  const delChainMut = useMutation({
+    mutationFn: () => xuiApi.deleteChain(chain.id),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['xui', 'chains'] })
+    },
+  })
+
+  return (
+    <section className="rounded-xl border border-gray-800 bg-gray-950/60 p-4 space-y-3">
+      <header className="flex items-start justify-between gap-3 flex-wrap">
+        <div className="min-w-0">
+          <div className="flex items-center gap-2 flex-wrap">
+            <h2 className="text-lg font-medium text-gray-100">{chain.name}</h2>
+            <ChainStatusBadge status={chain.status} />
+          </div>
+          <div className="text-xs text-gray-500 mt-0.5 flex flex-wrap items-center gap-1.5">
+            <span className="font-mono">{chain.relay_host || '?'}</span>
+            <ChevronRight className="h-3 w-3 text-gray-600" />
+            <span className="font-mono">{chain.exit_host || '?'}</span>
+            <span className="text-gray-700 ml-1">·</span>
+            <span>SNI cover: <span className="font-mono">{chain.exit_sni}</span></span>
+          </div>
+          {chain.last_error && (
+            <div className="mt-2 rounded-md bg-red-900/20 border border-red-700/40 px-2 py-1 text-[11px] text-red-300 flex items-start gap-1.5">
+              <AlertTriangle className="h-3 w-3 mt-0.5 shrink-0" />
+              <span>{chain.last_error}</span>
+            </div>
+          )}
+        </div>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={async () => {
+              const ok = await confirm({
+                title: t('Delete chain?', 'Удалить цепочку?'),
+                body: t(
+                  `Chain "${chain.name}" will be torn down on both panels (${chain.channels.length} inbounds on each). Existing clients stop working immediately.`,
+                  `Цепочка "${chain.name}" будет снесена на обеих панелях (${chain.channels.length} инбаундов на каждой). Клиенты немедленно перестанут работать.`,
+                ),
+                confirmLabel: t('Delete', 'Удалить'),
+                danger: true,
+              })
+              if (ok) delChainMut.mutate()
+            }}
+            disabled={delChainMut.isPending}
+            className="rounded-lg border border-gray-700 hover:bg-red-900/30 hover:border-red-700/40 hover:text-red-300 px-2.5 py-1.5 text-xs text-gray-300 inline-flex items-center gap-1.5"
+          >
+            {delChainMut.isPending
+              ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              : <Trash2 className="h-3.5 w-3.5" />}
+            {t('Delete chain', 'Удалить цепочку')}
+          </button>
+        </div>
+      </header>
+
+      {/* Channels */}
+      <div className="space-y-2">
+        <div className="text-[11px] uppercase tracking-wider text-gray-500">
+          {t('Channels', 'Каналы')}
+        </div>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+          {chain.channels.map((ch) => (
+            <div key={ch.id} className="rounded-lg border border-gray-800 bg-gray-900/40 p-3">
+              <div className="flex items-center gap-1.5 flex-wrap">
+                <span className="font-medium text-gray-100">{ch.name}</span>
+                <span className="text-[10px] px-1.5 py-0.5 rounded font-mono bg-gray-800 text-gray-400">
+                  :{ch.relay_port} → :{ch.exit_port}
+                </span>
+              </div>
+              <div className="text-[11px] text-gray-500 mt-0.5 font-mono">
+                SNI: {ch.client_sni}
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Clients */}
+      <div className="space-y-2 pt-3 border-t border-gray-800">
+        <div className="flex items-center justify-between gap-2 flex-wrap">
+          <div className="text-[11px] uppercase tracking-wider text-gray-500 flex items-center gap-1.5">
+            <Users className="h-3 w-3" />
+            {t('Clients', 'Клиенты')}
+            <span className="text-gray-600 ml-1">({clients.length})</span>
+          </div>
+          <button
+            type="button"
+            onClick={() => addClientMut.mutate()}
+            disabled={addClientMut.isPending || chain.status !== 'deployed'}
+            title={chain.status !== 'deployed'
+              ? t(`Chain is ${chain.status} — wait until it's 'deployed'`, `Цепочка в статусе ${chain.status} — дождитесь 'deployed'`)
+              : ''}
+            className="rounded-lg bg-brand-600 hover:bg-brand-500 disabled:opacity-50 disabled:cursor-not-allowed px-3 py-1.5 text-xs text-white font-medium inline-flex items-center gap-1.5"
+          >
+            {addClientMut.isPending
+              ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              : <Plus className="h-3.5 w-3.5" />}
+            {t('Add client', 'Добавить клиента')}
+          </button>
+        </div>
+
+        {clientsLoading && (
+          <div className="text-xs text-gray-500 flex items-center gap-1.5 py-2">
+            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            {t('Loading clients…', 'Загрузка клиентов…')}
+          </div>
+        )}
+
+        {!clientsLoading && clients.length === 0 && (
+          <div className="rounded-lg border border-dashed border-gray-700 px-4 py-6 text-center text-sm text-gray-500">
+            {t('No clients yet — click "Add client".', 'Клиентов нет — нажмите "Добавить клиента".')}
+          </div>
+        )}
+
+        {clients.map((cc) => (
+          <ChainClientCard
+            key={cc.id}
+            chainId={chain.id}
+            client={cc}
+            onChanged={() => qc.invalidateQueries({
+              queryKey: ['xui', 'chains', chain.id, 'clients'],
+            })}
+          />
+        ))}
+      </div>
+    </section>
+  )
+}
+
+
+// ── Chain client card ──────────────────────────────────────────────────────
+
+function ChainClientCard({
+  chainId, client, onChanged,
+}: {
+  chainId: number
+  client: ChainClientRead
+  onChanged: () => void
+}) {
+  const t = useT()
+  const confirm = useConfirm()
+  const [expanded, setExpanded] = useState(false)
+  const [copiedFor, setCopiedFor] = useState<number | null>(null)
+
+  const delMut = useMutation({
+    mutationFn: () => xuiApi.deleteChainClient(chainId, client.id),
+    onSuccess: onChanged,
+  })
+  const exportMut = useMutation({
+    mutationFn: (channelIds: number[]) =>
+      xuiApi.exportChainClientNodes(chainId, client.id, {
+        channel_ids: channelIds,
+      }),
+    onSuccess: onChanged,
+  })
+
+  const exportedCount = client.channels.filter((c) => c.exported_node_id != null).length
+
+  const copy = (uri: string, channelId: number) => {
+    navigator.clipboard.writeText(uri).then(() => {
+      setCopiedFor(channelId)
+      setTimeout(() => setCopiedFor(null), 1500)
+    })
+  }
+
+  return (
+    <div className="rounded-lg border border-gray-800 bg-gray-900/40 overflow-hidden">
+      <button
+        type="button"
+        onClick={() => setExpanded((v) => !v)}
+        className="w-full text-left px-3 py-2.5 flex items-center gap-2 hover:bg-gray-900/60 transition-colors"
+      >
+        <Users className="h-4 w-4 text-gray-500 shrink-0" />
+        <div className="min-w-0 flex-1">
+          <div className="font-mono text-sm text-gray-100 truncate">{client.label}</div>
+          <div className="text-[11px] text-gray-500 mt-0.5">
+            {client.channels.length} {t('configs', 'конфигов')}
+            {exportedCount > 0 && (
+              <span className="ml-2">
+                · {exportedCount} {t('exported to Nodes', 'экспортировано в Nodes')}
+              </span>
+            )}
+          </div>
+        </div>
+        <ChevronRight className={
+          'h-4 w-4 text-gray-500 shrink-0 transition-transform ' +
+          (expanded ? 'rotate-90' : '')
+        } />
+      </button>
+
+      {expanded && (
+        <div className="border-t border-gray-800 p-3 space-y-2">
+          {client.channels.map((cch) => (
+            <div key={cch.id} className="space-y-1">
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="text-xs font-medium text-gray-200">{cch.channel_name}</span>
+                {cch.exported_node_id != null && (
+                  <span className="text-[10px] px-1.5 py-0.5 rounded font-mono bg-emerald-900/30 text-emerald-300 border border-emerald-700/40">
+                    Node #{cch.exported_node_id}
+                  </span>
+                )}
+              </div>
+              <div className="flex items-center gap-1.5">
+                <code className="flex-1 rounded bg-gray-950 border border-gray-800 px-2 py-1 text-[11px] font-mono text-gray-300 break-all">
+                  {cch.vless_uri}
+                </code>
+                <button
+                  type="button"
+                  onClick={() => copy(cch.vless_uri, cch.id)}
+                  className="rounded-md border border-gray-700 hover:bg-gray-800 p-1.5 text-gray-400 hover:text-gray-200 shrink-0"
+                  title={t('Copy VLESS URI', 'Копировать VLESS URI')}
+                >
+                  {copiedFor === cch.id
+                    ? <Check className="h-3.5 w-3.5 text-emerald-400" />
+                    : <Copy className="h-3.5 w-3.5" />}
+                </button>
+              </div>
+            </div>
+          ))}
+          <div className="flex items-center gap-2 pt-2 border-t border-gray-800">
+            <button
+              type="button"
+              onClick={async () => {
+                const ok = await confirm({
+                  title: t('Delete chain client?', 'Удалить клиента цепочки?'),
+                  body: t(
+                    `All ${client.channels.length} per-channel configs for "${client.label}" will be removed from the relay panel.`,
+                    `Все ${client.channels.length} конфигов для "${client.label}" будут удалены с relay-панели.`,
+                  ),
+                  confirmLabel: t('Delete', 'Удалить'),
+                  danger: true,
+                })
+                if (ok) delMut.mutate()
+              }}
+              disabled={delMut.isPending}
+              className="rounded-md border border-gray-700 hover:bg-red-900/30 hover:border-red-700/40 hover:text-red-300 px-2 py-1 text-[11px] text-gray-400 inline-flex items-center gap-1"
+            >
+              {delMut.isPending
+                ? <Loader2 className="h-3 w-3 animate-spin" />
+                : <Trash2 className="h-3 w-3" />}
+              {t('Delete', 'Удалить')}
+            </button>
+            <div className="flex-1" />
+            <button
+              type="button"
+              onClick={() => exportMut.mutate(client.channels.map((c) => c.channel_id))}
+              disabled={exportMut.isPending || exportedCount === client.channels.length}
+              title={exportedCount === client.channels.length
+                ? t('All channels already exported', 'Все каналы уже экспортированы')
+                : ''}
+              className="rounded-md bg-brand-600 hover:bg-brand-500 disabled:opacity-50 disabled:cursor-not-allowed px-2.5 py-1 text-[11px] text-white font-medium inline-flex items-center gap-1"
+            >
+              {exportMut.isPending
+                ? <Loader2 className="h-3 w-3 animate-spin" />
+                : <Download className="h-3 w-3" />}
+              {t('Export all to Nodes', 'Экспортировать все в Nodes')}
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+
+// ── Create chain modal ──────────────────────────────────────────────────────
+
+interface ChannelDraftRow extends ChainCreateChannelInput {
+  /** Local stable id for React keys — not sent to backend. */
+  _key: string
+}
+
+function makeEmptyChannel(): ChannelDraftRow {
+  return {
+    _key: Math.random().toString(36).slice(2),
+    name: '',
+    client_sni: '',
+    exit_port: 0,
+    relay_port: 0,
+    exit_xhttp_path: '',
+    relay_remark: '',
+    exit_remark: '',
+  }
+}
+
+function CreateChainModal({
+  servers, onClose, onCreated,
+}: {
+  servers: XuiServer[]
+  onClose: () => void
+  onCreated: (chain: ChainRead) => void
+}) {
+  const t = useT()
+  const [name, setName] = useState('')
+  const [exitId, setExitId] = useState<number | null>(null)
+  const [relayId, setRelayId] = useState<number | null>(null)
+  const [exitSni, setExitSni] = useState('www.google.com')
+  const [channels, setChannels] = useState<ChannelDraftRow[]>([makeEmptyChannel()])
+  const [error, setError] = useState('')
+
+  // Pick first two distinct panels as defaults so the form has a
+  // valid starting state — user can override either dropdown.
+  useEffect(() => {
+    if (servers.length >= 2 && exitId == null && relayId == null) {
+      setExitId(servers[0].id)
+      setRelayId(servers[1].id)
+    }
+  }, [servers, exitId, relayId])
+
+  const createMut = useMutation({
+    mutationFn: () => xuiApi.createChain({
+      name: name.trim(),
+      exit_xui_server_id: exitId!,
+      relay_xui_server_id: relayId!,
+      exit_sni: exitSni.trim(),
+      channels: channels.map((c) => ({
+        name: c.name.trim(),
+        client_sni: c.client_sni.trim(),
+        exit_port: c.exit_port || 0,
+        relay_port: c.relay_port || 0,
+        exit_xhttp_path: c.exit_xhttp_path?.trim() || '',
+        relay_remark: c.relay_remark?.trim() || '',
+        exit_remark: c.exit_remark?.trim() || '',
+      })),
+    }),
+    onSuccess: onCreated,
+    onError: (err: unknown) => {
+      let msg = 'Create failed'
+      if (typeof err === 'object' && err !== null) {
+        const e = err as { response?: { data?: { detail?: unknown } }, message?: string }
+        const detail = e.response?.data?.detail
+        if (typeof detail === 'string') msg = detail
+        else if (e.message) msg = e.message
+      }
+      setError(msg)
+    },
+  })
+
+  const validate = (): string | null => {
+    if (!name.trim()) return t('Chain name is required', 'Имя цепочки обязательно')
+    if (exitId == null) return t('Pick an exit panel', 'Выберите exit-панель')
+    if (relayId == null) return t('Pick a relay panel', 'Выберите relay-панель')
+    if (exitId === relayId) return t('Exit and relay must be different panels', 'Exit и relay — разные панели')
+    if (!exitSni.trim()) return t('Exit SNI is required', 'Exit SNI обязателен')
+    if (channels.length === 0) return t('At least one channel is required', 'Минимум один канал')
+    const names = new Set<string>()
+    for (const c of channels) {
+      const n = c.name.trim()
+      if (!n) return t('Channel name is required', 'Имя канала обязательно')
+      if (!/^[a-zA-Z0-9_-]+$/.test(n)) return t(
+        `Channel name "${n}" — letters, digits, _ and - only`,
+        `Имя канала "${n}" — только буквы, цифры, _ и -`,
+      )
+      if (names.has(n)) return t(`Duplicate channel name: ${n}`, `Имя канала повторяется: ${n}`)
+      names.add(n)
+      if (!c.client_sni.trim()) return t(
+        `Channel "${n}" — client SNI is required`,
+        `Канал "${n}" — client SNI обязателен`,
+      )
+    }
+    return null
+  }
+
+  const onSubmit = (e: React.FormEvent) => {
+    e.preventDefault()
+    const err = validate()
+    if (err) { setError(err); return }
+    setError('')
+    createMut.mutate()
+  }
+
+  const updateChannel = (idx: number, patch: Partial<ChannelDraftRow>) => {
+    setChannels((arr) => arr.map((c, i) => i === idx ? { ...c, ...patch } : c))
+  }
+  const addChannel = () => setChannels((arr) => [...arr, makeEmptyChannel()])
+  const removeChannel = (idx: number) =>
+    setChannels((arr) => arr.length > 1 ? arr.filter((_, i) => i !== idx) : arr)
+
+  return (
+    <ModalShell onClose={onClose} labelledBy="create-chain-title">
+      <form
+        onSubmit={onSubmit}
+        className="w-full max-w-3xl rounded-2xl bg-gray-950/95 border border-gray-800 p-6 m-4 max-h-[90vh] overflow-y-auto"
+      >
+        <h2 id="create-chain-title" className="text-lg font-semibold text-gray-100 mb-1">
+          {t('Create chain', 'Создать цепочку')}
+        </h2>
+        <p className="text-xs text-gray-500 mb-4">
+          {t(
+            'Wires two registered x-ui panels into a two-hop pipe. Each channel is an independent VLESS+Reality tunnel with its own SNI cover.',
+            'Связывает две зарегистрированные панели x-ui в двухзвенный туннель. Каждый канал — независимый VLESS+Reality с собственным SNI.',
+          )}
+        </p>
+
+        {error && (
+          <div className="mb-3 rounded-lg bg-red-900/30 border border-red-700/40 px-3 py-2 text-sm text-red-300 flex items-start gap-2">
+            <AlertTriangle className="h-3.5 w-3.5 mt-0.5" />
+            <span>{error}</span>
+          </div>
+        )}
+
+        {/* Identity */}
+        <div className="space-y-3">
+          <div>
+            <label className="text-xs text-gray-400 block mb-1">
+              {t('Chain name', 'Имя цепочки')}
+            </label>
+            <input
+              type="text"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="my-chain"
+              className="w-full rounded-lg bg-gray-900 border border-gray-800 px-3 py-2 text-sm text-gray-100 focus:border-brand-500 focus:outline-none"
+              autoFocus
+            />
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div>
+              <label className="text-xs text-gray-400 block mb-1">
+                {t('Exit panel', 'Exit-панель')}
+              </label>
+              <PanelPicker
+                servers={servers}
+                value={exitId}
+                onChange={setExitId}
+                disabledId={relayId}
+              />
+            </div>
+            <div>
+              <label className="text-xs text-gray-400 block mb-1">
+                {t('Relay panel', 'Relay-панель')}
+              </label>
+              <PanelPicker
+                servers={servers}
+                value={relayId}
+                onChange={setRelayId}
+                disabledId={exitId}
+              />
+            </div>
+          </div>
+
+          <div>
+            <label className="text-xs text-gray-400 block mb-1">
+              {t('Exit SNI (cover for relay → exit hop)', 'Exit SNI (маскировка relay → exit)')}
+            </label>
+            <input
+              type="text"
+              value={exitSni}
+              onChange={(e) => setExitSni(e.target.value)}
+              placeholder="www.google.com"
+              className="w-full rounded-lg bg-gray-900 border border-gray-800 px-3 py-2 text-sm text-gray-100 focus:border-brand-500 focus:outline-none"
+            />
+            <p className="text-[11px] text-gray-500 mt-1 leading-snug">
+              {t(
+                'A widely-reachable HTTPS host. The relay → exit hop will look like TLS to this domain.',
+                'Универсально-достижимый HTTPS хост. Соединение relay → exit будет выглядеть как TLS к этому домену.',
+              )}
+            </p>
+          </div>
+        </div>
+
+        {/* Channels */}
+        <div className="mt-5 space-y-2">
+          <div className="flex items-center justify-between">
+            <div className="text-[11px] uppercase tracking-wider text-gray-500">
+              {t('Channels', 'Каналы')}
+            </div>
+            <button
+              type="button"
+              onClick={addChannel}
+              className="rounded-md border border-gray-700 hover:bg-gray-800 px-2.5 py-1 text-[11px] text-gray-300 inline-flex items-center gap-1"
+            >
+              <Plus className="h-3 w-3" />
+              {t('Add channel', 'Добавить канал')}
+            </button>
+          </div>
+          <div className="space-y-2">
+            {channels.map((ch, idx) => (
+              <ChannelDraftRowEdit
+                key={ch._key}
+                value={ch}
+                onChange={(patch) => updateChannel(idx, patch)}
+                onRemove={channels.length > 1 ? () => removeChannel(idx) : undefined}
+                index={idx}
+              />
+            ))}
+          </div>
+        </div>
+
+        <div className="flex gap-2 pt-5">
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-lg border border-gray-700 px-4 py-2 text-sm text-gray-400 hover:bg-gray-800"
+          >
+            {t('Cancel', 'Отмена')}
+          </button>
+          <div className="flex-1" />
+          <button
+            type="submit"
+            disabled={createMut.isPending}
+            className="rounded-lg bg-brand-600 hover:bg-brand-500 disabled:opacity-50 px-4 py-2 text-sm text-white font-medium inline-flex items-center gap-2"
+          >
+            {createMut.isPending && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+            {t('Create chain', 'Создать цепочку')}
+          </button>
+        </div>
+
+        {createMut.isPending && (
+          <p className="text-[11px] text-gray-500 mt-2 leading-snug">
+            {t(
+              'Orchestration takes 10-30 seconds (panel API calls + xrayTemplateConfig push + Xray restart on the relay).',
+              'Оркестрация занимает 10-30 секунд (API панелей + push xrayTemplateConfig + рестарт Xray на relay).',
+            )}
+          </p>
+        )}
+      </form>
+    </ModalShell>
+  )
+}
+
+function PanelPicker({
+  servers, value, onChange, disabledId,
+}: {
+  servers: XuiServer[]
+  value: number | null
+  onChange: (id: number) => void
+  disabledId: number | null  // can't pick the same panel for the other slot
+}) {
+  return (
+    <select
+      value={value ?? ''}
+      onChange={(e) => onChange(Number(e.target.value))}
+      className="w-full rounded-lg bg-gray-900 border border-gray-800 px-3 py-2 text-sm text-gray-100 focus:border-brand-500 focus:outline-none"
+    >
+      <option value="" disabled>— pick a panel —</option>
+      {servers.map((s) => (
+        <option key={s.id} value={s.id} disabled={s.id === disabledId}>
+          {s.server_name} ({s.mode}) — {s.domain || s.server_host}
+        </option>
+      ))}
+    </select>
+  )
+}
+
+function ChannelDraftRowEdit({
+  value, onChange, onRemove, index,
+}: {
+  value: ChannelDraftRow
+  onChange: (patch: Partial<ChannelDraftRow>) => void
+  onRemove?: () => void
+  index: number
+}) {
+  const t = useT()
+  return (
+    <div className="rounded-lg border border-gray-800 bg-gray-900/30 p-3 space-y-2">
+      <div className="flex items-center justify-between gap-2">
+        <div className="text-[11px] text-gray-500 font-mono">
+          {t('Channel', 'Канал')} #{index + 1}
+        </div>
+        {onRemove && (
+          <button
+            type="button"
+            onClick={onRemove}
+            title={t('Remove channel', 'Удалить канал')}
+            className="text-gray-500 hover:text-red-400 p-1"
+          >
+            <X className="h-3.5 w-3.5" />
+          </button>
+        )}
+      </div>
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+        <div>
+          <label className="text-[11px] text-gray-500 block mb-0.5">
+            {t('Name', 'Имя')}
+          </label>
+          <input
+            type="text"
+            value={value.name}
+            onChange={(e) => onChange({ name: e.target.value })}
+            placeholder="alpha"
+            pattern="[A-Za-z0-9_-]+"
+            className="w-full rounded-md bg-gray-900 border border-gray-800 px-2 py-1 text-xs text-gray-100 focus:border-brand-500 focus:outline-none"
+          />
+        </div>
+        <div>
+          <label className="text-[11px] text-gray-500 block mb-0.5">
+            {t('Client SNI (operator-chosen)', 'Client SNI (на ваше усмотрение)')}
+          </label>
+          <input
+            type="text"
+            value={value.client_sni}
+            onChange={(e) => onChange({ client_sni: e.target.value })}
+            placeholder="example.com"
+            className="w-full rounded-md bg-gray-900 border border-gray-800 px-2 py-1 text-xs text-gray-100 focus:border-brand-500 focus:outline-none"
+          />
+        </div>
+      </div>
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+        <div>
+          <label className="text-[11px] text-gray-500 block mb-0.5">
+            {t('Relay port', 'Relay-порт')}
+          </label>
+          <input
+            type="number"
+            min={0}
+            max={65535}
+            value={value.relay_port || ''}
+            onChange={(e) => onChange({ relay_port: Number(e.target.value) || 0 })}
+            placeholder={t('auto', 'авто')}
+            className="w-full rounded-md bg-gray-900 border border-gray-800 px-2 py-1 text-xs text-gray-100 focus:border-brand-500 focus:outline-none"
+          />
+        </div>
+        <div>
+          <label className="text-[11px] text-gray-500 block mb-0.5">
+            {t('Exit port', 'Exit-порт')}
+          </label>
+          <input
+            type="number"
+            min={0}
+            max={65535}
+            value={value.exit_port || ''}
+            onChange={(e) => onChange({ exit_port: Number(e.target.value) || 0 })}
+            placeholder={t('auto', 'авто')}
+            className="w-full rounded-md bg-gray-900 border border-gray-800 px-2 py-1 text-xs text-gray-100 focus:border-brand-500 focus:outline-none"
+          />
+        </div>
+        <div className="col-span-2">
+          <label className="text-[11px] text-gray-500 block mb-0.5">
+            {t('xhttp path (optional)', 'xhttp path (необязательно)')}
+          </label>
+          <input
+            type="text"
+            value={value.exit_xhttp_path ?? ''}
+            onChange={(e) => onChange({ exit_xhttp_path: e.target.value })}
+            placeholder={t(`auto: /api/v1/${value.name || '<name>'}`, `авто: /api/v1/${value.name || '<имя>'}`)}
+            className="w-full rounded-md bg-gray-900 border border-gray-800 px-2 py-1 text-xs text-gray-100 focus:border-brand-500 focus:outline-none"
+          />
+        </div>
+      </div>
+    </div>
+  )
+}

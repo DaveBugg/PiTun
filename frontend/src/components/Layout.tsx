@@ -49,6 +49,7 @@ const NAV = [
   { to: '/nodes',        icon: Server,          label: 'Nodes'         },
   { to: '/servers',      icon: Cloud,           label: 'Servers'       },
   { to: '/xui',          icon: Layers,          label: 'X-ui'          },
+  { to: '/chains',       icon: GitBranch,       label: 'Chains'        },
   { to: '/circles',      icon: Circle,          label: 'NodeCircle'    },
   { to: '/routing',      icon: GitBranch,       label: 'Routing'       },
   { to: '/devices',      icon: Monitor,         label: 'Devices'       },

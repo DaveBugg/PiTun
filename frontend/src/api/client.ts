@@ -676,6 +676,9 @@ export function createServerTaskSocket(jobId: string): WebSocket {
 // ── x-ui-pro / 3x-ui panel management (since v1.3.0-beta.7) ──────────────────
 
 import type {
+  ChainClientRead,
+  ChainCreateChannelInput,
+  ChainRead,
   InboundPreset,
   XuiClient as XuiClientType,
   XuiInbound,
@@ -768,6 +771,71 @@ export const xuiApi = {
     await http.delete(
       `/xui/servers/${serverId}/inbounds/${inboundId}/clients/${encodeURIComponent(clientUuid)}`,
     )
+  },
+
+  // ── Chains (since v1.3.0-beta.7) ───────────────────────────────────────
+  listChains: async (): Promise<ChainRead[]> => {
+    const r = await http.get('/xui/chains')
+    return r.data
+  },
+
+  getChain: async (id: number): Promise<ChainRead> => {
+    const r = await http.get(`/xui/chains/${id}`)
+    return r.data
+  },
+
+  /** POST /api/xui/chains — atomic create. Backend may take 5-30s
+   *  because it does N×2 add_inbound calls + xrayTemplateConfig push
+   *  + Xray restart on the relay. Frontend should show a busy
+   *  indicator and accept a slow response. */
+  createChain: async (params: {
+    name: string
+    exit_xui_server_id: number
+    relay_xui_server_id: number
+    exit_sni: string
+    channels: ChainCreateChannelInput[]
+  }): Promise<ChainRead> => {
+    const r = await http.post('/xui/chains', params)
+    return r.data
+  },
+
+  deleteChain: async (id: number): Promise<void> => {
+    await http.delete(`/xui/chains/${id}`)
+  },
+
+  // Chain clients
+  listChainClients: async (chainId: number): Promise<ChainClientRead[]> => {
+    const r = await http.get(`/xui/chains/${chainId}/clients`)
+    return r.data
+  },
+
+  /** Spawns N panel-side clients (one per channel). Backend label
+   *  default = `pi-XXXXXXXX` (8 hex). */
+  addChainClient: async (
+    chainId: number, body: { label?: string } = {},
+  ): Promise<ChainClientRead> => {
+    const r = await http.post(`/xui/chains/${chainId}/clients`, body)
+    return r.data
+  },
+
+  deleteChainClient: async (
+    chainId: number, chainClientId: number,
+  ): Promise<void> => {
+    await http.delete(`/xui/chains/${chainId}/clients/${chainClientId}`)
+  },
+
+  /** Convert N (chain-client × channel) pairs into N Node rows.
+   *  Empty `channel_ids` means "all channels"; idempotent on
+   *  channels that were already exported (skipped silently). */
+  exportChainClientNodes: async (
+    chainId: number, chainClientId: number,
+    body: { channel_ids?: number[]; name_prefix?: string } = {},
+  ): Promise<{ exported_node_ids: number[] }> => {
+    const r = await http.post(
+      `/xui/chains/${chainId}/clients/${chainClientId}/export-nodes`,
+      body,
+    )
+    return r.data
   },
 }
 
