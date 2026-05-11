@@ -238,7 +238,16 @@ function UninstallRunning({
     return r ? (r as DeployJobResult) : null
   }, [jobRow])
 
-  const finalStatus = jobRow?.status ?? (done === null ? 'running' : done)
+  // WS `done` frame is authoritative — polling stops the moment it
+  // arrives, so the last polled `jobRow.status` is often still
+  // 'running' even after the job finalised. Prefer WS when it
+  // reports a terminal state; fall back to jobRow only when WS
+  // hasn't reported yet or said 'unknown' (dropped connection).
+  // Same fix as DeployModal got in beta.6 commit e105b58.
+  const finalStatus =
+    done && done !== 'unknown'
+      ? done
+      : (jobRow?.status ?? (done === null ? 'running' : done))
 
   return (
     <div>
