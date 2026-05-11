@@ -567,3 +567,194 @@ class XuiClient(SQLModel, table=True):
         default_factory=lambda: datetime.now(timezone.utc),
     )
     last_synced_at: Optional[datetime] = None
+
+
+class ProxyChain(SQLModel, table=True):
+    """Two-hop proxy chain (since v1.3.0-beta.7).
+
+    One row per (exit_panel, relay_panel) pair. Models the chain
+    pattern from the user's `setup-eu.sh` + `setup-relay.sh` reference
+    scripts: a client connects to RU `relay` (which DPI sees as TLS
+    to `client_sni`), the relay routes traffic through an EU `exit`
+    panel (which the connection between relay and exit looks like
+    HTTPS to `exit_sni` — typically `www.google.com`).
+
+    A chain has N **channels** (rows in `ChainChannel`), each one a
+    parallel pipe with its own:
+      * exit-side inbound (xhttp + Reality on the EU panel, dest =
+        exit_sni:443) + matching outbound on the relay
+      * relay-side inbound (TCP + Reality on the RU panel, dest =
+        client_sni:443)
+      * routing rule on the relay: `inboundTag=<relay-tag>` →
+        `outboundTag=<exit-tag>`
+
+    A `ChainClient` is one logical user — when created it spawns N
+    panel-side clients (one per channel), so the user gets N VLESS
+    URIs (e.g. "VPN-VK" / "VPN-MAX" / ...) all backed by the same
+    exit IP. Importing any of them as a `Node` makes PiTun route
+    through that chain end-to-end.
+    """
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    name: str
+
+    # The two panels this chain wires together. Both ON DELETE CASCADE
+    # — if the user removes either panel from PiTun (which itself
+    # cascades from the underlying Server row), the chain rows are
+    # gone too, but the panels themselves stay intact server-side
+    # until the operator uninstalls them.
+    exit_xui_server_id: int = Field(foreign_key="xuiserver.id", index=True)
+    relay_xui_server_id: int = Field(foreign_key="xuiserver.id", index=True)
+
+    # SNI the exit-side inbounds masquerade under. Reused across all
+    # channels — DPI on the relay→exit hop sees one consistent host.
+    exit_sni: str = "www.google.com"
+
+    # State machine:
+    #   `pending`    — row exists, channels created, but panel API
+    #                  calls haven't completed yet (mid-orchestration).
+    #   `deployed`   — inbounds + outbounds + routing applied; Xray
+    #                  restarted on the relay; chain is live.
+    #   `failed`     — orchestration aborted; row kept so the UI can
+    #                  show the failure + offer a retry/delete.
+    #   `degraded`   — `/sync` found drift between PiTun state and
+    #                  the panels (someone hand-edited an inbound).
+    status: str = "pending"
+
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+    )
+    updated_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+    )
+    last_synced_at: Optional[datetime] = None
+    # Free-form error message from the most recent failed
+    # orchestration attempt. Cleared on a successful re-deploy.
+    last_error: Optional[str] = Field(default=None, max_length=1000)
+
+
+class ChainChannel(SQLModel, table=True):
+    """One "pipe" inside a ProxyChain (since v1.3.0-beta.7).
+
+    Each channel is a fully-isolated VLESS+Reality tunnel: separate
+    UUID, separate x25519 keypair on both sides, separate shortId,
+    its own client_sni / xhttp_path / port pair. Multiple channels
+    inside the same chain only share the *exit panel* and the
+    *exit_sni* — everything else is per-channel so a DPI fingerprint
+    on one channel doesn't burn the others.
+    """
+
+    __table_args__ = (
+        # Each channel within a chain has a unique name (used as a
+        # tag suffix in xrayTemplateConfig — must be stable + safe).
+        UniqueConstraint("chain_id", "name", name="uq_chainchannel_chain_name"),
+    )
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    chain_id: int = Field(foreign_key="proxychain.id", index=True)
+
+    # Display + tag name. Constrained to alnum + `-` + `_` at the API
+    # layer (xray's tag matching is exact-string).
+    name: str
+    order: int = 0
+
+    # Panel-assigned inbound ids — set after the create-orchestrator
+    # has run /panel/api/inbounds/add. Used by /sync and delete to
+    # find the rows again. 0 means "not yet created" (mid-orchestration).
+    exit_inbound_remote_id: int = 0
+    relay_inbound_remote_id: int = 0
+
+    # Wire-level config — captured at create time so re-pushing the
+    # xrayTemplateConfig after a panel restart is deterministic.
+    exit_port: int                    # what the relay dials on the exit
+    relay_port: int                   # what the client dials on the relay
+    exit_xhttp_path: str = "/api/v1"  # xhttp path used on the exit side
+    client_sni: str                   # what DPI sees on client→relay
+
+    # Reality material — both sides have their own keypair so the
+    # tunnel between client→relay and relay→exit don't share crypto.
+    # `exit_*` keys are on the EU panel; `relay_*` keys are on the
+    # RU panel. uuid is the per-channel auth identity for the
+    # outbound that the relay uses to dial the exit.
+    exit_uuid: str = ""
+    exit_pbk: str = ""
+    exit_pvk: str = ""
+    exit_sid: str = ""
+
+    relay_pbk: str = ""
+    relay_pvk: str = ""
+    relay_sid: str = ""
+
+    # Remarks the user sees in the panel UI when they peek behind
+    # the curtain.
+    relay_inbound_remark: str = ""
+    exit_inbound_remark: str = ""
+
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+    )
+
+
+class ChainClient(SQLModel, table=True):
+    """One logical user on a ProxyChain (since v1.3.0-beta.7).
+
+    Maps to N panel-side clients (one per `ChainChannel`) — when the
+    user clicks "Add chain client", PiTun calls `addClient` on every
+    channel's relay-side inbound, getting N UUIDs back. Each can be
+    independently exported to a Node, but they all flow through the
+    same exit IP end-to-end so the user gets multiple SNI masquerade
+    options without juggling separate accounts.
+
+    Per-channel state (UUIDs + node IDs) lives on
+    `ChainClientChannel` rows so the table fan-out matches the
+    cardinality on the panel.
+    """
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    chain_id: int = Field(foreign_key="proxychain.id", index=True)
+
+    # Display label written into every panel-side client's `email`
+    # field. Format: `pi-XXXXXXXX` — same convention as
+    # standalone XuiClient rows, so /sync recognises them as
+    # PiTun-managed.
+    label: str = Field(index=True)
+
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+    )
+
+
+class ChainClientChannel(SQLModel, table=True):
+    """Per-channel state for a ChainClient.
+
+    Joins (ChainClient, ChainChannel) → (panel client UUID,
+    optional exported Node). Cascades from ChainClient (delete the
+    logical user → all N panel-side clients drop) but ON DELETE SET
+    NULL from Node (deleting a routed Node doesn't take the
+    bookkeeping row with it).
+    """
+
+    __table_args__ = (
+        UniqueConstraint(
+            "chain_client_id", "channel_id",
+            name="uq_chainclientchannel_pair",
+        ),
+    )
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    chain_client_id: int = Field(foreign_key="chainclient.id", index=True)
+    channel_id: int = Field(foreign_key="chainchannel.id", index=True)
+
+    # Panel-assigned per-channel UUID — what the user pastes into a
+    # VLESS client (along with the channel's relay_pbk / relay_sid /
+    # client_sni / relay_port).
+    client_uuid: str
+
+    # ON DELETE SET NULL — see ChainClient docstring.
+    exported_node_id: Optional[int] = Field(
+        default=None, foreign_key="node.id",
+    )
+
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+    )

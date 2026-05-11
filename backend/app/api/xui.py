@@ -42,9 +42,26 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.database import get_session
 from app.core.xui_api import XuiAPIError, XuiClient
+from app.core.xui_chain import (
+    ChainCreateDraft,
+    ChannelDraft,
+    orchestrate_add_client,
+    orchestrate_create,
+    orchestrate_delete,
+    orchestrate_delete_client,
+)
 from app.core.xui_presets import PRESETS, InboundPreset, get_preset, list_presets
 from app.core.xui_uri import parse_xui_uri
-from app.models import Node, Server, XuiClient as XuiClientModel, XuiServer
+from app.models import (
+    ChainChannel,
+    ChainClient,
+    ChainClientChannel,
+    Node,
+    ProxyChain,
+    Server,
+    XuiClient as XuiClientModel,
+    XuiServer,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/xui", tags=["xui"])
@@ -662,3 +679,448 @@ async def delete_client(
     if cached is not None:
         await session.delete(cached)
         await session.commit()
+
+
+# ── Chains (since v1.3.0-beta.7) ────────────────────────────────────────────
+
+
+class ChannelDraftBody(BaseModel):
+    """One channel inside a chain-create request. Server-side defaults
+    handled in xui_chain.orchestrate_create: empty ports = auto-pick,
+    empty xhttp_path = `/api/v1/<name>`, etc."""
+
+    name: str
+    client_sni: str
+    exit_port: int = 0
+    relay_port: int = 0
+    exit_xhttp_path: str = ""
+    relay_remark: str = ""
+    exit_remark: str = ""
+
+
+class ChainCreateBody(BaseModel):
+    name: str
+    exit_xui_server_id: int
+    relay_xui_server_id: int
+    exit_sni: str = "www.google.com"
+    channels: List[ChannelDraftBody]
+
+
+class ChannelRead(BaseModel):
+    id: int
+    chain_id: int
+    name: str
+    order: int
+    exit_inbound_remote_id: int
+    relay_inbound_remote_id: int
+    exit_port: int
+    relay_port: int
+    exit_xhttp_path: str
+    client_sni: str
+    relay_inbound_remark: str
+    exit_inbound_remark: str
+    # Reality public material — surfaced so the UI can render the
+    # client VLESS URL without re-asking the panel. Private keys
+    # stay backend-only.
+    exit_pbk: str
+    exit_sid: str
+    relay_pbk: str
+    relay_sid: str
+
+
+class ChainRead(BaseModel):
+    id: int
+    name: str
+    exit_xui_server_id: int
+    relay_xui_server_id: int
+    exit_sni: str
+    status: str
+    last_error: Optional[str] = None
+    last_synced_at: Optional[datetime] = None
+    created_at: datetime
+    updated_at: datetime
+    channels: List[ChannelRead] = []
+    # Connection hints for the UI — host the chain is reachable at.
+    relay_host: str = ""
+    exit_host: str = ""
+
+
+def _channel_to_read(ch: ChainChannel) -> ChannelRead:
+    return ChannelRead(
+        id=ch.id, chain_id=ch.chain_id, name=ch.name, order=ch.order,
+        exit_inbound_remote_id=ch.exit_inbound_remote_id,
+        relay_inbound_remote_id=ch.relay_inbound_remote_id,
+        exit_port=ch.exit_port, relay_port=ch.relay_port,
+        exit_xhttp_path=ch.exit_xhttp_path,
+        client_sni=ch.client_sni,
+        relay_inbound_remark=ch.relay_inbound_remark,
+        exit_inbound_remark=ch.exit_inbound_remark,
+        exit_pbk=ch.exit_pbk, exit_sid=ch.exit_sid,
+        relay_pbk=ch.relay_pbk, relay_sid=ch.relay_sid,
+    )
+
+
+async def _chain_to_read(
+    chain: ProxyChain, session: AsyncSession,
+) -> ChainRead:
+    channels = (await session.exec(
+        select(ChainChannel)
+        .where(ChainChannel.chain_id == chain.id)
+        .order_by(ChainChannel.order, ChainChannel.id),
+    )).scalars().all()
+
+    relay_host = ""
+    exit_host = ""
+    relay_xs = await session.get(XuiServer, chain.relay_xui_server_id)
+    if relay_xs is not None:
+        relay_srv = await session.get(Server, relay_xs.server_id)
+        if relay_srv is not None:
+            relay_host = relay_xs.domain or relay_srv.host
+    exit_xs = await session.get(XuiServer, chain.exit_xui_server_id)
+    if exit_xs is not None:
+        exit_srv = await session.get(Server, exit_xs.server_id)
+        if exit_srv is not None:
+            exit_host = exit_xs.domain or exit_srv.host
+
+    return ChainRead(
+        id=chain.id, name=chain.name,
+        exit_xui_server_id=chain.exit_xui_server_id,
+        relay_xui_server_id=chain.relay_xui_server_id,
+        exit_sni=chain.exit_sni,
+        status=chain.status,
+        last_error=chain.last_error,
+        last_synced_at=chain.last_synced_at,
+        created_at=chain.created_at, updated_at=chain.updated_at,
+        channels=[_channel_to_read(ch) for ch in channels],
+        relay_host=relay_host, exit_host=exit_host,
+    )
+
+
+@router.get("/chains", response_model=List[ChainRead])
+async def list_chains(session: AsyncSession = Depends(get_session)):
+    rows = (await session.exec(select(ProxyChain))).scalars().all()
+    return [await _chain_to_read(c, session) for c in rows]
+
+
+@router.post("/chains", response_model=ChainRead, status_code=201)
+async def create_chain(
+    body: ChainCreateBody, session: AsyncSession = Depends(get_session),
+):
+    if not body.channels:
+        raise HTTPException(400, detail="At least one channel is required")
+    if len(body.channels) > 32:
+        # Soft cap — xrayTemplateConfig with 32 outbounds is already
+        # the size of a small download; beyond that the relay's
+        # config-validate step on /panel/server/restartXrayService
+        # starts to be noticeably slow.
+        raise HTTPException(
+            400, detail="Too many channels (max 32 per chain)",
+        )
+
+    draft = ChainCreateDraft(
+        name=body.name,
+        exit_xui_server_id=body.exit_xui_server_id,
+        relay_xui_server_id=body.relay_xui_server_id,
+        exit_sni=body.exit_sni,
+        channels=[
+            ChannelDraft(
+                name=ch.name,
+                client_sni=ch.client_sni,
+                exit_port=ch.exit_port,
+                relay_port=ch.relay_port,
+                exit_xhttp_path=ch.exit_xhttp_path,
+                relay_remark=ch.relay_remark,
+                exit_remark=ch.exit_remark,
+            )
+            for ch in body.channels
+        ],
+    )
+
+    try:
+        chain = await orchestrate_create(draft=draft, session=session)
+    except ValueError as exc:
+        raise HTTPException(400, detail=str(exc))
+    except XuiAPIError as exc:
+        raise HTTPException(
+            502, detail=f"Panel error ({exc.kind}): {exc}",
+        )
+    return await _chain_to_read(chain, session)
+
+
+@router.get("/chains/{chain_id}", response_model=ChainRead)
+async def get_chain(chain_id: int, session: AsyncSession = Depends(get_session)):
+    chain = await session.get(ProxyChain, chain_id)
+    if chain is None:
+        raise HTTPException(404, detail=f"Chain id={chain_id} not found")
+    return await _chain_to_read(chain, session)
+
+
+@router.delete("/chains/{chain_id}", status_code=204)
+async def delete_chain(
+    chain_id: int, session: AsyncSession = Depends(get_session),
+):
+    chain = await session.get(ProxyChain, chain_id)
+    if chain is None:
+        raise HTTPException(404, detail=f"Chain id={chain_id} not found")
+    channels = (await session.exec(
+        select(ChainChannel).where(ChainChannel.chain_id == chain_id),
+    )).scalars().all()
+    await orchestrate_delete(chain=chain, channels=list(channels), session=session)
+
+
+class ChainClientCreateBody(BaseModel):
+    label: Optional[str] = None
+
+
+class ChainClientChannelRead(BaseModel):
+    id: int
+    channel_id: int
+    channel_name: str
+    client_uuid: str
+    exported_node_id: Optional[int] = None
+    # Ready-to-paste VLESS URL for the user (assembled server-side
+    # from the channel's relay-side Reality material).
+    vless_uri: str
+
+
+class ChainClientRead(BaseModel):
+    id: int
+    chain_id: int
+    label: str
+    created_at: datetime
+    channels: List[ChainClientChannelRead] = []
+
+
+def _vless_uri(
+    *,
+    uuid: str,
+    host: str,
+    port: int,
+    pbk: str,
+    sid: str,
+    sni: str,
+    remark: str,
+) -> str:
+    """Build a vless+tcp+reality URL the user pastes into a client.
+
+    Mirrors the format `setup-relay.sh` emits: `vless://<uuid>@<host>:
+    <port>?type=tcp&security=reality&fp=chrome&pbk=...&sni=...&sid=...
+    &flow=xtls-rprx-vision#<remark>`.
+    """
+    import urllib.parse as up
+    qs = up.urlencode({
+        "type": "tcp",
+        "security": "reality",
+        "fp": "chrome",
+        "pbk": pbk,
+        "sni": sni,
+        "sid": sid,
+        "flow": "xtls-rprx-vision",
+    })
+    fragment = up.quote(remark, safe="")
+    return f"vless://{uuid}@{host}:{port}?{qs}#{fragment}"
+
+
+async def _chain_client_to_read(
+    chain_client: ChainClient, session: AsyncSession,
+) -> ChainClientRead:
+    chain = await session.get(ProxyChain, chain_client.chain_id)
+    relay_xs = await session.get(XuiServer, chain.relay_xui_server_id) if chain else None
+    relay_srv = await session.get(Server, relay_xs.server_id) if relay_xs else None
+    relay_host = (
+        (relay_xs.domain or relay_srv.host)
+        if relay_xs and relay_srv
+        else "127.0.0.1"
+    )
+
+    pairs = (await session.exec(
+        select(ChainClientChannel)
+        .where(ChainClientChannel.chain_client_id == chain_client.id),
+    )).scalars().all()
+    channels = (await session.exec(
+        select(ChainChannel)
+        .where(ChainChannel.chain_id == chain_client.chain_id)
+        .order_by(ChainChannel.order, ChainChannel.id),
+    )).scalars().all()
+    channels_by_id = {ch.id: ch for ch in channels}
+
+    out_channels: List[ChainClientChannelRead] = []
+    for pair in pairs:
+        ch = channels_by_id.get(pair.channel_id)
+        if ch is None:
+            continue
+        uri = _vless_uri(
+            uuid=pair.client_uuid,
+            host=relay_host,
+            port=ch.relay_port,
+            pbk=ch.relay_pbk,
+            sid=ch.relay_sid,
+            sni=ch.client_sni,
+            remark=f"{chain.name if chain else 'chain'}-{ch.name}",
+        )
+        out_channels.append(ChainClientChannelRead(
+            id=pair.id, channel_id=ch.id, channel_name=ch.name,
+            client_uuid=pair.client_uuid,
+            exported_node_id=pair.exported_node_id,
+            vless_uri=uri,
+        ))
+
+    return ChainClientRead(
+        id=chain_client.id, chain_id=chain_client.chain_id,
+        label=chain_client.label, created_at=chain_client.created_at,
+        channels=out_channels,
+    )
+
+
+@router.get("/chains/{chain_id}/clients", response_model=List[ChainClientRead])
+async def list_chain_clients(
+    chain_id: int, session: AsyncSession = Depends(get_session),
+):
+    chain = await session.get(ProxyChain, chain_id)
+    if chain is None:
+        raise HTTPException(404, detail=f"Chain id={chain_id} not found")
+    rows = (await session.exec(
+        select(ChainClient).where(ChainClient.chain_id == chain_id)
+        .order_by(ChainClient.id),
+    )).scalars().all()
+    return [await _chain_client_to_read(r, session) for r in rows]
+
+
+@router.post(
+    "/chains/{chain_id}/clients",
+    response_model=ChainClientRead, status_code=201,
+)
+async def create_chain_client(
+    chain_id: int,
+    body: ChainClientCreateBody,
+    session: AsyncSession = Depends(get_session),
+):
+    chain = await session.get(ProxyChain, chain_id)
+    if chain is None:
+        raise HTTPException(404, detail=f"Chain id={chain_id} not found")
+    if chain.status != "deployed":
+        raise HTTPException(
+            400,
+            detail=(
+                f"Chain status is {chain.status!r} — cannot add clients "
+                "until it's 'deployed'."
+            ),
+        )
+    channels = (await session.exec(
+        select(ChainChannel).where(ChainChannel.chain_id == chain_id)
+        .order_by(ChainChannel.order, ChainChannel.id),
+    )).scalars().all()
+    if not channels:
+        raise HTTPException(400, detail="Chain has no channels")
+
+    try:
+        cc = await orchestrate_add_client(
+            chain=chain, channels=list(channels), label=body.label,
+            session=session,
+        )
+    except XuiAPIError as exc:
+        raise HTTPException(
+            502, detail=f"Panel error ({exc.kind}): {exc}",
+        )
+    return await _chain_client_to_read(cc, session)
+
+
+@router.delete(
+    "/chains/{chain_id}/clients/{chain_client_id}", status_code=204,
+)
+async def delete_chain_client(
+    chain_id: int, chain_client_id: int,
+    session: AsyncSession = Depends(get_session),
+):
+    chain = await session.get(ProxyChain, chain_id)
+    chain_client = await session.get(ChainClient, chain_client_id)
+    if chain is None or chain_client is None or chain_client.chain_id != chain_id:
+        raise HTTPException(404, detail="Chain or chain-client not found")
+    pairs = (await session.exec(
+        select(ChainClientChannel)
+        .where(ChainClientChannel.chain_client_id == chain_client_id),
+    )).scalars().all()
+    channels = (await session.exec(
+        select(ChainChannel).where(ChainChannel.chain_id == chain_id),
+    )).scalars().all()
+    channels_by_id = {ch.id: ch for ch in channels}
+    await orchestrate_delete_client(
+        chain=chain, chain_client=chain_client,
+        pairs=list(pairs), channels_by_id=channels_by_id,
+        session=session,
+    )
+
+
+class ChainClientExportBody(BaseModel):
+    """Pick which channels to export. Empty list = all of them."""
+    channel_ids: List[int] = []
+    # Optional Node-name prefix; defaults to `<chain.name>-<client.label>`.
+    name_prefix: Optional[str] = None
+
+
+@router.post("/chains/{chain_id}/clients/{chain_client_id}/export-nodes")
+async def export_chain_client_nodes(
+    chain_id: int, chain_client_id: int,
+    body: ChainClientExportBody,
+    session: AsyncSession = Depends(get_session),
+):
+    """Convert the chain-client's per-channel UUIDs into routable
+    Node rows. One Node per (chain-client × channel) pair selected.
+
+    Idempotent on re-call: existing exports (where exported_node_id
+    is already set on the channel pair) are skipped rather than
+    duplicated. The user can delete the Node manually to get a
+    fresh export."""
+    chain = await session.get(ProxyChain, chain_id)
+    chain_client = await session.get(ChainClient, chain_client_id)
+    if chain is None or chain_client is None or chain_client.chain_id != chain_id:
+        raise HTTPException(404, detail="Chain or chain-client not found")
+
+    pairs = (await session.exec(
+        select(ChainClientChannel)
+        .where(ChainClientChannel.chain_client_id == chain_client_id),
+    )).scalars().all()
+    channels = (await session.exec(
+        select(ChainChannel).where(ChainChannel.chain_id == chain_id),
+    )).scalars().all()
+    channels_by_id = {ch.id: ch for ch in channels}
+
+    selected_ids = set(body.channel_ids) if body.channel_ids else None
+    name_prefix = body.name_prefix or f"{chain.name}-{chain_client.label}"
+
+    relay_xs = await session.get(XuiServer, chain.relay_xui_server_id)
+    relay_srv = await session.get(Server, relay_xs.server_id) if relay_xs else None
+    relay_host = (relay_xs.domain or relay_srv.host) if relay_xs and relay_srv else "127.0.0.1"
+
+    created_node_ids: List[int] = []
+    for pair in pairs:
+        ch = channels_by_id.get(pair.channel_id)
+        if ch is None:
+            continue
+        if selected_ids is not None and pair.channel_id not in selected_ids:
+            continue
+        if pair.exported_node_id is not None:
+            # Already exported — skip silently. The UI sees the
+            # node link via the chain-client read.
+            continue
+        node = Node(
+            name=f"{name_prefix}-{ch.name}",
+            protocol="vless",
+            address=relay_host,
+            port=ch.relay_port,
+            uuid=pair.client_uuid,
+            sni=ch.client_sni,
+            pbk=ch.relay_pbk,
+            sid=ch.relay_sid,
+            flow="xtls-rprx-vision",
+            transport="tcp",
+            security="reality",
+            fingerprint="chrome",
+        )
+        session.add(node)
+        await session.flush()
+        pair.exported_node_id = node.id
+        session.add(pair)
+        created_node_ids.append(node.id)
+    await session.commit()
+    return {"exported_node_ids": created_node_ids}
