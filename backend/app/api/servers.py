@@ -814,6 +814,30 @@ async def uninstall_server(
                         f"[pitun] Removed ServerDeployment row #{deployment_id_for_log}.",
                     )
 
+                # xui: also drop the XuiServer side-table row (which
+                # cascades XuiClient rows + any chain rows that
+                # referenced this panel). Not tied to ServerDeployment
+                # — XuiServer.server_id → Server.id is the only FK
+                # — so removing the deployment row alone leaves the
+                # panel "registered but unreachable" in PiTun, which
+                # is exactly the bug the user hit ("removed but still
+                # showing in X-ui sidebar").
+                if protocol == "xui":
+                    from app.models import XuiServer
+                    xs = (await runner_session.exec(
+                        select(XuiServer)
+                        .where(XuiServer.server_id == srv_id)
+                    )).first()
+                    if xs is not None:
+                        xs_id = xs.id
+                        await runner_session.delete(xs)
+                        await runner_session.commit()
+                        await on_line(
+                            "stdout",
+                            f"[pitun] Removed XuiServer row #{xs_id} "
+                            "(panel + clients + chain refs cascaded).",
+                        )
+
         return {
             "deployment_id": deployment_id_for_log,
             "node_id": None,
