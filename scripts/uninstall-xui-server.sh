@@ -188,6 +188,33 @@ else
     info "fail2ban kept (use --remove-fail2ban to also remove it)"
 fi
 
+# ── 5b. Optimization drop-ins ───────────────────────────────────────────────
+# Roll back the sysctl / ulimits / logrotate / journald drop-ins that
+# setup-xui-server.sh dropped under section 7b. Removing the files +
+# re-running `sysctl --system` reverts the running kernel to the
+# distro defaults; the swap file is intentionally LEFT in place
+# because removing it on a busy box can OOM-kill running processes,
+# and 2-4 GB of disk is cheap relative to that risk. Operator can
+# `swapoff /swapfile && rm /swapfile` themselves once they've
+# stopped anything memory-sensitive.
+log "Removing PiTun optimization drop-ins..."
+rm -f /etc/sysctl.d/99-pitun-xui-optimize.conf
+rm -f /etc/modules-load.d/pitun-bbr.conf
+rm -f /etc/logrotate.d/pitun-x-ui /etc/logrotate.d/pitun-nginx
+rm -f /etc/systemd/journald.conf.d/pitun-size-limit.conf
+rm -f /etc/systemd/system.conf.d/pitun-limits.conf
+sed -i '/\* .*nofile          1048576/d;/\* .*nproc           65535/d' \
+    /etc/security/limits.conf 2>/dev/null || true
+sed -i '/ulimit -n 1048576/d;/ulimit -u 65535/d' /etc/profile 2>/dev/null || true
+sysctl --system >/dev/null 2>&1 || true
+systemctl daemon-reload 2>/dev/null || true
+systemctl restart systemd-journald 2>/dev/null || true
+
+# ── 5c. Let's Encrypt renewal hook ──────────────────────────────────────────
+# Drop the post-renewal hook that restarted x-ui after cert rotation;
+# without x-ui installed it would just print errors on every renewal.
+rm -f /etc/letsencrypt/renewal-hooks/deploy/x-ui-reload.sh
+
 # ── 6. apt autoremove ──────────────────────────────────────────────────────
 log "Running apt autoremove..."
 DEBIAN_FRONTEND=noninteractive apt-get autoremove -y -qq >/dev/null 2>&1 || true

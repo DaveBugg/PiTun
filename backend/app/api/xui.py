@@ -179,16 +179,26 @@ def _xui_to_read(xs: XuiServer, srv: Server) -> XuiServerRead:
 def _api_base_url(xs: XuiServer, srv: Server) -> str:
     """Compose the panel's API base URL from the parts we stored.
 
-    Bare mode: `https://<server.host>:<panel_port><basepath>` (self-signed)
-    xui-pro mode: `http://<domain>:<panel_port><basepath>` (TLS terminates
-                  at nginx — the panel itself runs HTTP behind it).
-    The XuiClient verify_tls flag stays False in both cases — bare uses
-    self-signed; xui-pro doesn't see a cert at all because the URL is
-    HTTP.
+    Bare mode:    `http://<server.host>:<panel_port><basepath>` — no
+                  domain, no LE cert; setup-xui-server.sh actively
+                  clears the panel's webCertFile/webCertKey so the
+                  panel serves plain HTTP. PiTun is the only intended
+                  caller; the api_token is the auth gate, and bare
+                  mode is for Reality-only setups where the user
+                  isn't exposing a fakesite anyway.
+    xui-pro mode: `https://<domain>:<panel_port><basepath>` — since
+                  v1.3.0-beta.7 setup-xui-server.sh wires the LE cert
+                  into the panel's webCertFile / webCertKey settings,
+                  so the panel itself terminates TLS with a real cert
+                  on its random high port. Apex-domain nginx is a
+                  separate concern (fakesite on :443).
+    The XuiClient verify_tls flag stays False in xui-pro mode — the
+    cert is real but SNI on the panel port may not match (some VPS
+    providers' reverse DNS), so we skip strict verification.
     """
     if xs.mode == "xui-pro" and xs.domain:
-        return f"http://{xs.domain}:{xs.panel_port}{xs.panel_basepath}"
-    return f"https://{srv.host}:{xs.panel_port}{xs.panel_basepath}"
+        return f"https://{xs.domain}:{xs.panel_port}{xs.panel_basepath}"
+    return f"http://{srv.host}:{xs.panel_port}{xs.panel_basepath}"
 
 
 async def _get_xs_or_404(
@@ -305,12 +315,12 @@ async def import_xui_server(
         if mode not in ("bare", "xui-pro"):
             raise HTTPException(400, detail=f"mode must be 'bare' or 'xui-pro', got {mode!r}")
 
-    # Probe the token + URL before committing the row.
-    base_url = (
-        f"http://{domain}:{panel_port}{panel_basepath}"
-        if mode == "xui-pro" and domain
-        else f"https://{srv.host}:{panel_port}{panel_basepath}"
-    )
+    # Probe the token + URL before committing the row. Mirror of
+    # `_api_base_url` — xui-pro panel HTTPS (LE cert), bare panel HTTP.
+    if mode == "xui-pro" and domain:
+        base_url = f"https://{domain}:{panel_port}{panel_basepath}"
+    else:
+        base_url = f"http://{srv.host}:{panel_port}{panel_basepath}"
     async with XuiClient(
         base_url=base_url, api_token=api_token, verify_tls=False,
     ) as client:

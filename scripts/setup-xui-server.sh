@@ -34,7 +34,7 @@
 #   DOMAIN=<sub.domain.tld>   See above. Empty triggers bare-3x-ui mode.
 #   EMAIL=<addr>              Let's Encrypt registration email (DOMAIN mode
 #                             only). Defaults to admin@<DOMAIN> if missing.
-#   XUI_VERSION=v3.0.0        Pinned 3x-ui release tag. Both modes use this.
+#   XUI_VERSION=v3.0.1        Pinned 3x-ui release tag. Both modes use this.
 #                             Override at your own risk — the Bearer API
 #                             middleware exists since v3.0.0; anything older
 #                             requires cookie+CSRF auth which PiTun doesn't
@@ -50,6 +50,12 @@
 #                             or 22 = no-op). Mirrors setup-naive-server.sh.
 #   SSH_KEEP_22=yes           Keep :22 as a safety fallback during cutover.
 #   INSTALL_FAIL2BAN=yes|no   Install fail2ban with sshd jail. Default yes.
+#   OPTIMIZE=yes|no           Apply VPS tuning for high-conn-count proxy
+#                             workloads (BBR + sysctl TCP buffers + swap +
+#                             ulimits + logrotate). Default yes — x-ui is
+#                             always a proxy, not a static-content host,
+#                             so the defaults matter. Set `no` to skip if
+#                             the VPS is already tuned by your provisioner.
 #   PITUN_AUTO_CONTINUE=yes   Skip the soft-warning interactive prompts;
 #                             non-interactive deploys (PiTun UI) set this.
 #
@@ -78,12 +84,13 @@ info() { echo -e "${BLUE}[i]${NC} $*"; }
 # ── Defaults ────────────────────────────────────────────────────────────────
 DOMAIN="${DOMAIN:-}"
 EMAIL="${EMAIL:-}"
-XUI_VERSION="${XUI_VERSION:-v3.0.0}"
+XUI_VERSION="${XUI_VERSION:-v3.0.1}"
 PANEL_PORT="${PANEL_PORT:-}"
 PANEL_BASEPATH="${PANEL_BASEPATH:-}"
 PANEL_USER="${PANEL_USER:-}"
 PANEL_PASS="${PANEL_PASS:-}"
 INSTALL_FAIL2BAN="${INSTALL_FAIL2BAN:-yes}"
+OPTIMIZE="${OPTIMIZE:-yes}"
 PITUN_AUTO_CONTINUE="${PITUN_AUTO_CONTINUE:-no}"
 
 # Random URL-safe string. `openssl rand -hex` is the simplest portable
@@ -269,6 +276,64 @@ sqlite3 "$XUIDB" <<SQL
 DELETE FROM settings WHERE key = 'webPort';
 INSERT INTO settings (key, value) VALUES ('webPort', '${PANEL_PORT}');
 SQL
+
+# ── 4b. Wire the Let's Encrypt cert into the panel for HTTPS ────────────────
+# x-ui-pro provisions a LE cert for the apex domain via certbot, but the
+# panel itself (on its random high port) keeps serving plain HTTP unless
+# we plumb the cert paths into x-ui's own settings. v3.0.1's `x-ui setting
+# -webCert / -webCertKey` writes those settings so the panel reads them on
+# startup.
+#
+# Why this matters for PiTun:
+#  * The Bearer api_token goes in Authorization headers — HTTP exposes
+#    it to anyone sniffing the LAN/internet path between PiTun and the
+#    panel. HTTPS-with-real-cert closes that.
+#  * 3x-ui's settings page nags about "Panel is served over plain HTTP"
+#    when there's no cert configured. Annoying + correct.
+#
+# Renewal: certbot's deploy hook restarts x-ui so the panel picks up
+# the new cert (x-ui caches paths, not contents, but restart is the
+# clean signal).
+if [[ "$INSTALL_MODE" == "xui-pro" ]]; then
+    LE_CERT="/etc/letsencrypt/live/${DOMAIN}/fullchain.pem"
+    LE_KEY="/etc/letsencrypt/live/${DOMAIN}/privkey.pem"
+    if [[ -f "$LE_CERT" ]] && [[ -f "$LE_KEY" ]]; then
+        log "Wiring Let's Encrypt cert into x-ui panel..."
+        /usr/local/x-ui/x-ui setting \
+            -webCert "$LE_CERT" \
+            -webCertKey "$LE_KEY" \
+            >/dev/null
+        # LE renewal hook so the panel picks up rotated certs.
+        mkdir -p /etc/letsencrypt/renewal-hooks/deploy
+        cat >/etc/letsencrypt/renewal-hooks/deploy/x-ui-reload.sh <<'XEOF'
+#!/bin/bash
+# Auto-installed by PiTun's setup-xui-server.sh — restarts the panel
+# when certbot rotates the LE cert so x-ui re-reads the new bytes.
+systemctl restart x-ui
+XEOF
+        chmod 0755 /etc/letsencrypt/renewal-hooks/deploy/x-ui-reload.sh
+        info "Panel HTTPS enabled (cert: $LE_CERT)"
+    else
+        warn "LE cert not at $LE_CERT — panel stays on HTTP."
+        warn "Run 'certbot --nginx -d $DOMAIN' manually then re-deploy."
+    fi
+else
+    # Bare mode → plain HTTP for the panel. Upstream 3x-ui v3.0.1
+    # auto-generates a self-signed cert at install time + populates
+    # webCertFile/webCertKey, so the panel comes up on https://. The
+    # api_token is the actual auth, the panel listens on a high
+    # random port that nothing else hits, and the user explicitly
+    # opted into bare mode = "no nginx, no LE, keep it simple".
+    # Clear the cert settings via sqlite (the `-webCert ""` CLI flag
+    # is treated as "no change", not "clear"), so the panel falls
+    # back to plain HTTP on next start.
+    log "Bare mode → clearing self-signed cert settings (HTTP-only panel)..."
+    sqlite3 "$XUIDB" <<SQL
+DELETE FROM settings WHERE key IN ('webCertFile', 'webKeyFile');
+INSERT INTO settings (key, value) VALUES ('webCertFile', '');
+INSERT INTO settings (key, value) VALUES ('webKeyFile', '');
+SQL
+fi
 
 systemctl start x-ui
 
@@ -463,6 +528,243 @@ if [[ "$INSTALL_MODE" == "xui-pro" ]]; then
     ufw allow 443/tcp >/dev/null 2>&1 || true
 fi
 ufw --force enable >/dev/null 2>&1 || true
+
+# ── 7b. VPS optimization for proxy workloads (opt-out via OPTIMIZE=no) ──────
+# x-ui hosts an xray-core process which fans out into many concurrent TCP
+# sessions — a default Debian/Ubuntu install leaves enough headroom for a
+# webserver but throttles hard at a few hundred conn / sec because the TCP
+# socket buffers + somaxconn + file-max ceilings weren't tuned for that
+# pattern. Apply a focused profile derived from the user's reference
+# `optimize-server.sh` (BBR + sysctl buffers + swap + ulimits + logrotate)
+# — same set of knobs, no menu (we always apply the full profile for
+# x-ui boxes; toggle with OPTIMIZE=no to skip entirely).
+if [[ "${OPTIMIZE:-yes}" == "yes" ]]; then
+    log "Applying VPS optimization profile for proxy workloads..."
+
+    # RAM-aware tuning. Tight RAM (<=1 GB) → smaller TCP buffers + smaller
+    # min_free_kbytes to avoid OOM under burst. Generous RAM (>2 GB) →
+    # 64 MB max socket buffers, 2 MB tcp_mem mid tier.
+    RAM_MB=$(free -m | awk '/Mem:/{print $2}')
+    if [[ "$RAM_MB" -le 1024 ]]; then
+        MIN_FREE_KB=16384
+        RMEM_MAX=16777216; WMEM_MAX=16777216
+        TCP_RMEM="8192 524288 16777216"
+        TCP_WMEM="8192 524288 16777216"
+        TCP_MEM="32768 524288 16777216"
+        UDP_MEM="32768 524288 16777216"
+        SWAP_SIZE="2G"
+    elif [[ "$RAM_MB" -le 2048 ]]; then
+        MIN_FREE_KB=32768
+        RMEM_MAX=33554432; WMEM_MAX=33554432
+        TCP_RMEM="16384 1048576 33554432"
+        TCP_WMEM="16384 1048576 33554432"
+        TCP_MEM="65536 1048576 33554432"
+        UDP_MEM="65536 1048576 33554432"
+        SWAP_SIZE="2G"
+    else
+        MIN_FREE_KB=65536
+        RMEM_MAX=67108864; WMEM_MAX=67108864
+        TCP_RMEM="16384 1048576 67108864"
+        TCP_WMEM="16384 1048576 67108864"
+        TCP_MEM="65536 2097152 67108864"
+        UDP_MEM="65536 2097152 67108864"
+        SWAP_SIZE="4G"
+    fi
+
+    # ── BBR ──────────────────────────────────────────────────────────────
+    # BBR is the modern TCP congestion control; on transit links with
+    # any packet loss it consistently beats CUBIC (Debian/Ubuntu default).
+    # Module is loaded out of the box on Debian 12+ kernels, but we make
+    # the activation persistent.
+    if ! lsmod | grep -q tcp_bbr; then
+        modprobe tcp_bbr 2>/dev/null || true
+    fi
+    if ! grep -q "tcp_bbr" /etc/modules-load.d/*.conf 2>/dev/null; then
+        echo "tcp_bbr" > /etc/modules-load.d/pitun-bbr.conf
+    fi
+
+    # ── sysctl drop-in ───────────────────────────────────────────────────
+    # Use a drop-in under /etc/sysctl.d/ so we don't disturb the user's
+    # own /etc/sysctl.conf. `sysctl --system` picks up the drop-in on
+    # reboot; we also `sysctl -p` it now for the running kernel.
+    cat >/etc/sysctl.d/99-pitun-xui-optimize.conf <<SYSEOF
+# Written by setup-xui-server.sh — proxy workload tuning. Remove this
+# drop-in (and reboot OR \`sysctl --system\`) to revert.
+
+# ── File system ──
+fs.file-max = 67108864
+
+# ── Queueing & Congestion ──
+net.core.default_qdisc = fq
+net.ipv4.tcp_congestion_control = bbr
+
+# ── Socket buffers ──
+net.core.netdev_max_backlog = 32768
+net.core.optmem_max = 262144
+net.core.somaxconn = 65536
+net.core.rmem_max = ${RMEM_MAX}
+net.core.wmem_max = ${WMEM_MAX}
+net.core.rmem_default = 1048576
+net.core.wmem_default = 1048576
+
+# ── TCP tuning ──
+net.ipv4.tcp_rmem = ${TCP_RMEM}
+net.ipv4.tcp_wmem = ${TCP_WMEM}
+net.ipv4.tcp_mem = ${TCP_MEM}
+net.ipv4.tcp_fin_timeout = 20
+net.ipv4.tcp_keepalive_time = 600
+net.ipv4.tcp_keepalive_probes = 5
+net.ipv4.tcp_keepalive_intvl = 15
+net.ipv4.tcp_max_orphans = 819200
+net.ipv4.tcp_max_syn_backlog = 20480
+net.ipv4.tcp_max_tw_buckets = 1440000
+net.ipv4.tcp_mtu_probing = 1
+net.ipv4.tcp_notsent_lowat = 16384
+net.ipv4.tcp_retries2 = 8
+net.ipv4.tcp_sack = 1
+net.ipv4.tcp_dsack = 1
+net.ipv4.tcp_slow_start_after_idle = 0
+net.ipv4.tcp_window_scaling = 1
+net.ipv4.tcp_syncookies = 1
+net.ipv4.tcp_tw_reuse = 1
+net.ipv4.tcp_fastopen = 3
+net.ipv4.ip_local_port_range = 1024 65535
+
+# ── UDP ──
+net.ipv4.udp_mem = ${UDP_MEM}
+
+# ── UNIX sockets ──
+net.unix.max_dgram_qlen = 256
+
+# ── VM ──
+vm.min_free_kbytes = ${MIN_FREE_KB}
+vm.swappiness = 10
+vm.vfs_cache_pressure = 120
+vm.dirty_ratio = 20
+
+# ── Security ──
+net.ipv4.conf.default.rp_filter = 2
+net.ipv4.conf.all.rp_filter = 2
+net.ipv4.conf.all.accept_source_route = 0
+net.ipv4.conf.default.accept_source_route = 0
+
+# ── Kernel ──
+kernel.panic = 1
+SYSEOF
+    sysctl --system >/dev/null 2>&1 || sysctl -p /etc/sysctl.d/99-pitun-xui-optimize.conf >/dev/null 2>&1 || true
+    info "sysctl applied (BBR + TCP tuning for RAM=${RAM_MB}MB)"
+
+    # ── swap ─────────────────────────────────────────────────────────────
+    # Most VPS images ship without swap. Adding 2-4 GB keeps the OOM
+    # killer from culling xray under a memory burst (common when many
+    # clients pull big files through at once).
+    CURRENT_SWAP=$(swapon --show --bytes --noheadings 2>/dev/null | awk '{sum+=$3} END{print int(sum/1024/1024)}')
+    CURRENT_SWAP=${CURRENT_SWAP:-0}
+    if [[ "$CURRENT_SWAP" -lt 1024 ]]; then
+        log "Creating ${SWAP_SIZE} swapfile..."
+        if [[ -f /swapfile ]]; then
+            swapoff /swapfile 2>/dev/null || true
+            rm -f /swapfile
+        fi
+        # fallocate works on every modern Linux FS (ext4/xfs/btrfs).
+        # If it fails (some VFAT VPS images), fall back to dd. We
+        # compute MiB count by stripping the trailing G and multiplying.
+        if ! fallocate -l "$SWAP_SIZE" /swapfile 2>/dev/null; then
+            swap_gb="${SWAP_SIZE%G}"
+            dd if=/dev/zero of=/swapfile bs=1M count=$(( swap_gb * 1024 )) \
+                status=none 2>/dev/null \
+                || warn "swap allocation failed — skipping"
+        fi
+        if [[ -f /swapfile ]] && [[ -s /swapfile ]]; then
+            chmod 600 /swapfile
+            mkswap /swapfile >/dev/null 2>&1
+            swapon /swapfile 2>/dev/null || true
+            if ! grep -q "/swapfile" /etc/fstab; then
+                echo "/swapfile   none    swap    sw    0   0" >> /etc/fstab
+            fi
+            info "swap=${SWAP_SIZE} mounted + persisted"
+        fi
+    else
+        info "swap already configured (${CURRENT_SWAP}MB) — skipping"
+    fi
+
+    # ── ulimits ──────────────────────────────────────────────────────────
+    # Default `nofile=1024` is a death sentence for an xray box. Bump
+    # to 1M for both soft + hard, mirror via systemd defaults (so
+    # x-ui.service inherits the higher cap on next start).
+    for PATTERN in "soft nofile" "hard nofile" "soft nproc" "hard nproc"; do
+        sed -i "/\*.*${PATTERN}/d" /etc/security/limits.conf 2>/dev/null || true
+    done
+    cat >>/etc/security/limits.conf <<'LIMEOF'
+*               soft    nofile          1048576
+*               hard    nofile          1048576
+*               soft    nproc           65535
+*               hard    nproc           65535
+LIMEOF
+    sed -i '/ulimit -[nu]/d' /etc/profile 2>/dev/null || true
+    echo "ulimit -n 1048576" >> /etc/profile
+    echo "ulimit -u 65535"   >> /etc/profile
+    mkdir -p /etc/systemd/system.conf.d
+    cat >/etc/systemd/system.conf.d/pitun-limits.conf <<'SDLIM'
+[Manager]
+DefaultLimitNOFILE=1048576
+DefaultLimitNPROC=65535
+SDLIM
+    systemctl daemon-reload 2>/dev/null || true
+    info "ulimits: nofile=1048576, nproc=65535"
+
+    # ── logrotate ─────────────────────────────────────────────────────────
+    # Without rotation x-ui's stdout + nginx's access log eat the disk
+    # over weeks. journald gets a hard cap too.
+    cat >/etc/logrotate.d/pitun-x-ui <<'LRXUI'
+/var/log/x-ui/*.log {
+    daily
+    missingok
+    rotate 3
+    maxsize 50M
+    compress
+    delaycompress
+    notifempty
+    copytruncate
+}
+LRXUI
+    if [[ -d /etc/nginx ]] || command -v nginx >/dev/null 2>&1; then
+        cat >/etc/logrotate.d/pitun-nginx <<'LRNG'
+/var/log/nginx/*.log {
+    daily
+    missingok
+    rotate 3
+    maxsize 50M
+    compress
+    delaycompress
+    notifempty
+    create 0640 www-data adm
+    sharedscripts
+    prerotate
+        if [ -d /etc/logrotate.d/httpd-prerotate ]; then
+            run-parts /etc/logrotate.d/httpd-prerotate;
+        fi
+    endscript
+    postrotate
+        invoke-rc.d nginx rotate >/dev/null 2>&1 || true
+    endscript
+}
+LRNG
+    fi
+    mkdir -p /etc/systemd/journald.conf.d
+    cat >/etc/systemd/journald.conf.d/pitun-size-limit.conf <<'JDLOG'
+[Journal]
+SystemMaxUse=100M
+SystemKeepFree=200M
+MaxFileSec=1day
+JDLOG
+    systemctl restart systemd-journald 2>/dev/null || true
+    info "logrotate + journald caps configured"
+
+    info "VPS optimization complete (BBR / sysctl / swap / ulimits / logs)"
+else
+    info "OPTIMIZE=no — skipping VPS tuning profile."
+fi
 
 # ── 8. Emit URI for PiTun's URI parser ──────────────────────────────────────
 # Format: xui://<api_token>@<host>:<panel_port><basepath>?user=<e>&pass=<e>&domain=<e>
