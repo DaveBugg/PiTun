@@ -222,9 +222,10 @@ def _build_relay_inbound_payload(
     """TCP + Reality + xtls-rprx-vision inbound on the relay panel.
 
     This is what end-user clients dial. `client_sni` is the
-    masquerade host the DPI between the user and the relay sees;
-    typically a popular russian site (vkvideo.ru / max.ru / dzen.ru
-    / reg.ru in the reference scripts).
+    masquerade host the DPI between the user and the relay sees —
+    a domain the operator picked for their threat model. PiTun
+    ships no defaults here; the channel-create UI is a free-text
+    field.
     """
     sni = channel.client_sni
     settings = {

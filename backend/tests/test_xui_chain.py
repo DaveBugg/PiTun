@@ -10,6 +10,11 @@ contract of:
   * `build_xray_template_config` — outbounds + routing rules layout
 
 Plus URI generation, tag conventions, and port allocation.
+
+Channel names + SNIs in this file are intentionally neutral
+(`alpha`/`beta`, `example.com`/`example.org`) — PiTun ships no
+hardcoded masquerade-target presets. Each operator picks their
+own per their threat model. See memory/feedback_chain_naming_opsec.
 """
 from __future__ import annotations
 
@@ -34,15 +39,15 @@ from app.models import ChainChannel, ProxyChain
 
 class TestTagConventions:
     def test_exit_tag_format(self):
-        assert _exit_tag(7, "vk") == "chain-7-vk-exit"
+        assert _exit_tag(7, "alpha") == "chain-7-alpha-exit"
 
     def test_relay_tag_format(self):
-        assert _relay_tag(7, "vk") == "chain-7-vk-relay"
+        assert _relay_tag(7, "alpha") == "chain-7-alpha-relay"
 
     def test_tags_unique_per_chain_channel(self):
         # Two channels of the same name on different chains don't
         # collide (chain_id is in the tag).
-        assert _relay_tag(1, "vk") != _relay_tag(2, "vk")
+        assert _relay_tag(1, "alpha") != _relay_tag(2, "alpha")
 
 
 # ── Exit-inbound payload ───────────────────────────────────────────────────
@@ -51,43 +56,43 @@ class TestTagConventions:
 class TestBuildExitInboundPayload:
     def test_wire_shape(self):
         draft = ChannelDraft(
-            name="vk",
-            client_sni="vkvideo.ru",  # only used on relay; here ignored
+            name="alpha",
+            client_sni="example.com",  # only used on relay; here ignored
             exit_port=10443,
-            exit_xhttp_path="/api/v1/vk",
-            exit_remark="VK-Exit",
+            exit_xhttp_path="/api/v1/alpha",
+            exit_remark="Alpha-Exit",
         )
         payload = _build_exit_inbound_payload(
             chain_id=42, channel=draft,
             bootstrap_uuid="UUID-X",
-            exit_sni="www.google.com",
+            exit_sni="cover.example.net",
             private_key="PRIV", public_key="PUB", short_id="SID",
-            bootstrap_email="chain-42-vk-boot",
+            bootstrap_email="chain-42-alpha-boot",
         )
         assert payload["protocol"] == "vless"
         assert payload["port"] == 10443
-        assert payload["tag"] == "chain-42-vk-exit"
-        assert payload["remark"] == "VK-Exit"
+        assert payload["tag"] == "chain-42-alpha-exit"
+        assert payload["remark"] == "Alpha-Exit"
         # Settings: one bootstrap client with no flow (xhttp doesn't
         # use xtls-rprx-vision).
         client = payload["settings"]["clients"][0]
         assert client["id"] == "UUID-X"
         assert client["flow"] == ""
-        assert client["email"] == "chain-42-vk-boot"
+        assert client["email"] == "chain-42-alpha-boot"
         # Stream: xhttp + reality with the user-provided path.
         ss = payload["streamSettings"]
         assert ss["network"] == "xhttp"
         assert ss["security"] == "reality"
-        assert ss["realitySettings"]["dest"] == "www.google.com:443"
-        assert ss["realitySettings"]["serverNames"] == ["www.google.com"]
+        assert ss["realitySettings"]["dest"] == "cover.example.net:443"
+        assert ss["realitySettings"]["serverNames"] == ["cover.example.net"]
         assert ss["realitySettings"]["privateKey"] == "PRIV"
         assert ss["realitySettings"]["shortIds"] == ["SID"]
         assert ss["realitySettings"]["settings"]["publicKey"] == "PUB"
-        assert ss["xhttpSettings"]["path"] == "/api/v1/vk"
+        assert ss["xhttpSettings"]["path"] == "/api/v1/alpha"
 
     def test_default_xhttp_path_when_empty(self):
         draft = ChannelDraft(
-            name="max", client_sni="max.ru",
+            name="beta", client_sni="example.org",
             exit_port=10444, exit_xhttp_path="",
         )
         payload = _build_exit_inbound_payload(
@@ -96,7 +101,7 @@ class TestBuildExitInboundPayload:
             private_key="p", public_key="P", short_id="s",
             bootstrap_email="e",
         )
-        assert payload["streamSettings"]["xhttpSettings"]["path"] == "/api/v1/max"
+        assert payload["streamSettings"]["xhttpSettings"]["path"] == "/api/v1/beta"
 
 
 # ── Relay-inbound payload ──────────────────────────────────────────────────
@@ -105,26 +110,26 @@ class TestBuildExitInboundPayload:
 class TestBuildRelayInboundPayload:
     def test_uses_client_sni_and_vision(self):
         draft = ChannelDraft(
-            name="vk", client_sni="vkvideo.ru",
-            relay_port=443, relay_remark="VPN-VK",
+            name="alpha", client_sni="example.com",
+            relay_port=443, relay_remark="Channel-Alpha",
         )
         payload = _build_relay_inbound_payload(
             chain_id=7, channel=draft,
             bootstrap_uuid="U-RELAY",
             private_key="PR", public_key="PB", short_id="SD",
-            bootstrap_email="chain-7-vk-boot",
+            bootstrap_email="chain-7-alpha-boot",
         )
         assert payload["port"] == 443
-        assert payload["tag"] == "chain-7-vk-relay"
-        assert payload["remark"] == "VPN-VK"
+        assert payload["tag"] == "chain-7-alpha-relay"
+        assert payload["remark"] == "Channel-Alpha"
         client = payload["settings"]["clients"][0]
         # Relay-side bootstrap client carries the vision flow.
         assert client["flow"] == "xtls-rprx-vision"
         ss = payload["streamSettings"]
         assert ss["network"] == "tcp"
         assert ss["security"] == "reality"
-        assert ss["realitySettings"]["dest"] == "vkvideo.ru:443"
-        assert ss["realitySettings"]["serverNames"] == ["vkvideo.ru"]
+        assert ss["realitySettings"]["dest"] == "example.com:443"
+        assert ss["realitySettings"]["serverNames"] == ["example.com"]
 
 
 # ── xrayTemplateConfig ─────────────────────────────────────────────────────
@@ -135,25 +140,25 @@ class TestBuildXrayTemplate:
         chain = ProxyChain(
             id=3, name="test",
             exit_xui_server_id=1, relay_xui_server_id=2,
-            exit_sni="www.google.com",
+            exit_sni="cover.example.net",
         )
         ch1 = ChainChannel(
-            id=10, chain_id=3, name="vk", order=0,
+            id=10, chain_id=3, name="alpha", order=0,
             exit_port=10443, relay_port=443,
-            exit_xhttp_path="/api/v1/vk",
-            client_sni="vkvideo.ru",
-            exit_uuid="UUID-VK", exit_pbk="PBK-VK",
-            exit_pvk="PVK-VK", exit_sid="SID-VK",
-            relay_pbk="r-pbk-vk", relay_pvk="r-pvk-vk", relay_sid="r-sid-vk",
+            exit_xhttp_path="/api/v1/alpha",
+            client_sni="example.com",
+            exit_uuid="UUID-A", exit_pbk="PBK-A",
+            exit_pvk="PVK-A", exit_sid="SID-A",
+            relay_pbk="r-pbk-a", relay_pvk="r-pvk-a", relay_sid="r-sid-a",
         )
         ch2 = ChainChannel(
-            id=11, chain_id=3, name="max", order=1,
+            id=11, chain_id=3, name="beta", order=1,
             exit_port=10444, relay_port=8443,
-            exit_xhttp_path="/api/v1/max",
-            client_sni="max.ru",
-            exit_uuid="UUID-MAX", exit_pbk="PBK-MAX",
-            exit_pvk="PVK-MAX", exit_sid="SID-MAX",
-            relay_pbk="r-pbk-max", relay_pvk="r-pvk-max", relay_sid="r-sid-max",
+            exit_xhttp_path="/api/v1/beta",
+            client_sni="example.org",
+            exit_uuid="UUID-B", exit_pbk="PBK-B",
+            exit_pvk="PVK-B", exit_sid="SID-B",
+            relay_pbk="r-pbk-b", relay_pvk="r-pvk-b", relay_sid="r-sid-b",
         )
         tpl = build_xray_template_config(
             chain=chain, channels=[ch1, ch2],
@@ -162,43 +167,43 @@ class TestBuildXrayTemplate:
 
         # Chain outbounds — one per channel + api + direct + blocked.
         tags = [o["tag"] for o in tpl["outbounds"]]
-        assert "chain-vk" in tags
-        assert "chain-max" in tags
+        assert "chain-alpha" in tags
+        assert "chain-beta" in tags
         assert "api" in tags
         assert "direct" in tags
         assert "blocked" in tags
 
-        # vk outbound: vless+xhttp+reality dialing the exit host on
-        # the exit-port with our UUID + Reality material.
-        vk = next(o for o in tpl["outbounds"] if o["tag"] == "chain-vk")
-        assert vk["protocol"] == "vless"
-        vnext = vk["settings"]["vnext"][0]
+        # Alpha outbound: vless+xhttp+reality dialing the exit host
+        # on the exit-port with our UUID + Reality material.
+        alpha = next(o for o in tpl["outbounds"] if o["tag"] == "chain-alpha")
+        assert alpha["protocol"] == "vless"
+        vnext = alpha["settings"]["vnext"][0]
         assert vnext["address"] == "1.2.3.4"
         assert vnext["port"] == 10443
-        assert vnext["users"][0]["id"] == "UUID-VK"
-        ss = vk["streamSettings"]
+        assert vnext["users"][0]["id"] == "UUID-A"
+        ss = alpha["streamSettings"]
         assert ss["network"] == "xhttp"
         assert ss["security"] == "reality"
-        assert ss["realitySettings"]["serverName"] == "www.google.com"
-        assert ss["realitySettings"]["publicKey"] == "PBK-VK"
-        assert ss["realitySettings"]["shortId"] == "SID-VK"
-        assert ss["xhttpSettings"]["path"] == "/api/v1/vk"
+        assert ss["realitySettings"]["serverName"] == "cover.example.net"
+        assert ss["realitySettings"]["publicKey"] == "PBK-A"
+        assert ss["realitySettings"]["shortId"] == "SID-A"
+        assert ss["xhttpSettings"]["path"] == "/api/v1/alpha"
 
         # Routing — one rule per channel: relay inboundTag → chain
         # outboundTag. Plus the api rule + bittorrent blackhole.
         rules = tpl["routing"]["rules"]
         assert {"type": "field", "inboundTag": ["api"], "outboundTag": "api"} in rules
         # Each chain rule by tag-shape (we don't enforce ordering).
-        vk_rule = next(
+        alpha_rule = next(
             r for r in rules
-            if r.get("outboundTag") == "chain-vk"
+            if r.get("outboundTag") == "chain-alpha"
         )
-        assert vk_rule["inboundTag"] == ["chain-3-vk-relay"]
-        max_rule = next(
+        assert alpha_rule["inboundTag"] == ["chain-3-alpha-relay"]
+        beta_rule = next(
             r for r in rules
-            if r.get("outboundTag") == "chain-max"
+            if r.get("outboundTag") == "chain-beta"
         )
-        assert max_rule["inboundTag"] == ["chain-3-max-relay"]
+        assert beta_rule["inboundTag"] == ["chain-3-beta-relay"]
         assert any(
             r.get("outboundTag") == "blocked" and r.get("protocol") == ["bittorrent"]
             for r in rules
@@ -210,7 +215,7 @@ class TestBuildXrayTemplate:
         chain = ProxyChain(
             id=99, name="x",
             exit_xui_server_id=1, relay_xui_server_id=2,
-            exit_sni="www.google.com",
+            exit_sni="cover.example.net",
         )
         tpl = build_xray_template_config(
             chain=chain, channels=[], exit_host="127.0.0.1",
