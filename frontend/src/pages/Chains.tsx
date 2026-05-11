@@ -706,7 +706,7 @@ function CreateChainModal({
             />
           </div>
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-[1fr_auto_1fr] gap-3 items-end">
             <div>
               <label className="text-xs text-gray-400 block mb-1">
                 {t('Exit panel', 'Exit-панель')}
@@ -714,10 +714,31 @@ function CreateChainModal({
               <PanelPicker
                 servers={servers}
                 value={exitId}
-                onChange={setExitId}
-                disabledId={relayId}
+                onChange={(id) => {
+                  // Picking the panel currently in the other slot
+                  // auto-swaps them — saves the user from a 3-step
+                  // dance when there are only 2 panels and they want
+                  // to flip exit/relay.
+                  if (id === relayId) {
+                    setRelayId(exitId)
+                  }
+                  setExitId(id)
+                }}
               />
             </div>
+            <button
+              type="button"
+              onClick={() => {
+                const a = exitId, b = relayId
+                setExitId(b)
+                setRelayId(a)
+              }}
+              disabled={exitId == null && relayId == null}
+              title={t('Swap exit ↔ relay', 'Поменять exit ↔ relay местами')}
+              className="rounded-lg border border-gray-700 hover:bg-gray-800 disabled:opacity-50 px-2 py-2 text-gray-300 hover:text-gray-100 text-sm transition-colors"
+            >
+              ⇄
+            </button>
             <div>
               <label className="text-xs text-gray-400 block mb-1">
                 {t('Relay panel', 'Relay-панель')}
@@ -725,8 +746,12 @@ function CreateChainModal({
               <PanelPicker
                 servers={servers}
                 value={relayId}
-                onChange={setRelayId}
-                disabledId={exitId}
+                onChange={(id) => {
+                  if (id === exitId) {
+                    setExitId(relayId)
+                  }
+                  setRelayId(id)
+                }}
               />
             </div>
           </div>
@@ -812,13 +837,16 @@ function CreateChainModal({
 }
 
 function PanelPicker({
-  servers, value, onChange, disabledId,
+  servers, value, onChange,
 }: {
   servers: XuiServer[]
   value: number | null
   onChange: (id: number) => void
-  disabledId: number | null  // can't pick the same panel for the other slot
 }) {
+  // No `disabledId` prop — picking the panel that's currently in the
+  // other slot is allowed and triggers an auto-swap in the parent.
+  // That's much friendlier UX than the previous "disable the other
+  // option" pattern, which dead-ended users with only 2 panels.
   return (
     <select
       value={value ?? ''}
@@ -827,7 +855,7 @@ function PanelPicker({
     >
       <option value="" disabled>— pick a panel —</option>
       {servers.map((s) => (
-        <option key={s.id} value={s.id} disabled={s.id === disabledId}>
+        <option key={s.id} value={s.id}>
           {s.server_name} ({s.mode}) — {s.domain || s.server_host}
         </option>
       ))}
