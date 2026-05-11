@@ -295,11 +295,37 @@ SQL
 # the new cert (x-ui caches paths, not contents, but restart is the
 # clean signal).
 if [[ "$INSTALL_MODE" == "xui-pro" ]]; then
-    LE_CERT="/etc/letsencrypt/live/${DOMAIN}/fullchain.pem"
-    LE_KEY="/etc/letsencrypt/live/${DOMAIN}/privkey.pem"
-    if [[ -f "$LE_CERT" ]] && [[ -f "$LE_KEY" ]]; then
+    # Find the lineage directory under /etc/letsencrypt/live/ that holds a
+    # cert covering $DOMAIN. certbot's lineage naming isn't always the
+    # FQDN — when there's a pre-existing folder for any ancestor (or a
+    # prior cert for the same subject), certbot will reuse that name.
+    # E.g. requesting cert for `scripttest.daveprod.space` may land in
+    # `/etc/letsencrypt/live/daveprod.space/`. We scan all lineages and
+    # pick the one whose CN or SAN actually matches $DOMAIN.
+    LE_CERT=""
+    LE_KEY=""
+    if [[ -d /etc/letsencrypt/live ]]; then
+        for d in /etc/letsencrypt/live/*/; do
+            [[ -f "${d}fullchain.pem" ]] || continue
+            # Check both CN and SAN — certbot may store the subject under
+            # CN= or via X509v3 SAN: DNS:...
+            if openssl x509 -in "${d}fullchain.pem" -noout -ext subjectAltName 2>/dev/null \
+                | grep -qiE "DNS:[[:space:]]*${DOMAIN}([[:space:]]|,|$)"; then
+                LE_CERT="${d}fullchain.pem"
+                LE_KEY="${d}privkey.pem"
+                break
+            fi
+        done
+    fi
+
+    if [[ -n "$LE_CERT" ]] && [[ -f "$LE_CERT" ]] && [[ -f "$LE_KEY" ]]; then
         log "Wiring Let's Encrypt cert into x-ui panel..."
-        /usr/local/x-ui/x-ui setting \
+        # Note: this is the `cert` subcommand, NOT `setting`. Earlier
+        # versions of this script used `setting -webCert` which silently
+        # no-ops — the setting subcommand's flag list includes -webCert /
+        # -webCertKey but the handler doesn't call updateCert. Only the
+        # `cert` subcommand actually writes webCertFile / webKeyFile.
+        /usr/local/x-ui/x-ui cert \
             -webCert "$LE_CERT" \
             -webCertKey "$LE_KEY" \
             >/dev/null
@@ -314,7 +340,7 @@ XEOF
         chmod 0755 /etc/letsencrypt/renewal-hooks/deploy/x-ui-reload.sh
         info "Panel HTTPS enabled (cert: $LE_CERT)"
     else
-        warn "LE cert not at $LE_CERT — panel stays on HTTP."
+        warn "No LE cert covering '$DOMAIN' found under /etc/letsencrypt/live/."
         warn "Run 'certbot --nginx -d $DOMAIN' manually then re-deploy."
     fi
 else
