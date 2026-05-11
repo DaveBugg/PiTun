@@ -354,6 +354,7 @@ async def import_xui_server(
         session.add(existing)
         await session.commit()
         await session.refresh(existing)
+        await session.refresh(srv)
         return _xui_to_read(existing, srv)
 
     xs = XuiServer(
@@ -370,6 +371,7 @@ async def import_xui_server(
     session.add(xs)
     await session.commit()
     await session.refresh(xs)
+    await session.refresh(srv)
     return _xui_to_read(xs, srv)
 
 
@@ -419,7 +421,12 @@ async def probe_xui_server(
             xs.last_check_error = f"{exc.kind}: {str(exc)[:300]}"
     session.add(xs)
     await session.commit()
+    # Re-hydrate both rows post-commit. `session.commit()` expires every
+    # ORM instance in the session, and `_xui_to_read` reads srv.name +
+    # srv.host — touching those without a refresh triggers a sync lazy-
+    # load callback inside the async session, which 500s.
     await session.refresh(xs)
+    await session.refresh(srv)
     return _xui_to_read(xs, srv)
 
 
