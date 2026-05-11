@@ -196,7 +196,7 @@ async def _get_xs_or_404(
 ) -> tuple[XuiServer, Server]:
     xs = (await session.exec(
         select(XuiServer).where(XuiServer.id == server_id),
-    )).scalars().first()
+    )).first()
     if xs is None:
         raise HTTPException(404, detail=f"XuiServer id={server_id} not found")
     srv = await session.get(Server, xs.server_id)
@@ -240,7 +240,7 @@ async def list_inbound_presets():
 
 @router.get("/servers", response_model=List[XuiServerRead])
 async def list_xui_servers(session: AsyncSession = Depends(get_session)):
-    rows = (await session.exec(select(XuiServer))).scalars().all()
+    rows = (await session.exec(select(XuiServer))).all()
     out: List[XuiServerRead] = []
     for xs in rows:
         srv = await session.get(Server, xs.server_id)
@@ -329,7 +329,7 @@ async def import_xui_server(
     # layer too — if we ever end up here with a duplicate it's a bug.
     existing = (await session.exec(
         select(XuiServer).where(XuiServer.server_id == body.server_id),
-    )).scalars().first()
+    )).first()
     if existing is not None:
         existing.api_token = api_token
         existing.panel_user = panel_user
@@ -380,7 +380,7 @@ async def delete_xui_server(
     SSHs in and runs uninstall-xui-server.sh."""
     xs = (await session.exec(
         select(XuiServer).where(XuiServer.id == xui_server_id),
-    )).scalars().first()
+    )).first()
     if xs is None:
         raise HTTPException(404, detail=f"XuiServer id={xui_server_id} not found")
     await session.delete(xs)
@@ -563,7 +563,7 @@ async def delete_inbound(
         select(XuiClientModel)
         .where(XuiClientModel.xui_server_id == xui_server_id)
         .where(XuiClientModel.inbound_remote_id == inbound_id),
-    )).scalars().all()
+    )).all()
     for row in cached:
         await session.delete(row)
     await session.commit()
@@ -675,7 +675,7 @@ async def delete_client(
         .where(XuiClientModel.xui_server_id == xui_server_id)
         .where(XuiClientModel.inbound_remote_id == inbound_id)
         .where(XuiClientModel.client_uuid == client_uuid),
-    )).scalars().first()
+    )).first()
     if cached is not None:
         await session.delete(cached)
         await session.commit()
@@ -767,7 +767,7 @@ async def _chain_to_read(
         select(ChainChannel)
         .where(ChainChannel.chain_id == chain.id)
         .order_by(ChainChannel.order, ChainChannel.id),
-    )).scalars().all()
+    )).all()
 
     relay_host = ""
     exit_host = ""
@@ -798,7 +798,7 @@ async def _chain_to_read(
 
 @router.get("/chains", response_model=List[ChainRead])
 async def list_chains(session: AsyncSession = Depends(get_session)):
-    rows = (await session.exec(select(ProxyChain))).scalars().all()
+    rows = (await session.exec(select(ProxyChain))).all()
     return [await _chain_to_read(c, session) for c in rows]
 
 
@@ -864,7 +864,7 @@ async def delete_chain(
         raise HTTPException(404, detail=f"Chain id={chain_id} not found")
     channels = (await session.exec(
         select(ChainChannel).where(ChainChannel.chain_id == chain_id),
-    )).scalars().all()
+    )).all()
     await orchestrate_delete(chain=chain, channels=list(channels), session=session)
 
 
@@ -936,12 +936,12 @@ async def _chain_client_to_read(
     pairs = (await session.exec(
         select(ChainClientChannel)
         .where(ChainClientChannel.chain_client_id == chain_client.id),
-    )).scalars().all()
+    )).all()
     channels = (await session.exec(
         select(ChainChannel)
         .where(ChainChannel.chain_id == chain_client.chain_id)
         .order_by(ChainChannel.order, ChainChannel.id),
-    )).scalars().all()
+    )).all()
     channels_by_id = {ch.id: ch for ch in channels}
 
     out_channels: List[ChainClientChannelRead] = []
@@ -982,7 +982,7 @@ async def list_chain_clients(
     rows = (await session.exec(
         select(ChainClient).where(ChainClient.chain_id == chain_id)
         .order_by(ChainClient.id),
-    )).scalars().all()
+    )).all()
     return [await _chain_client_to_read(r, session) for r in rows]
 
 
@@ -1009,7 +1009,7 @@ async def create_chain_client(
     channels = (await session.exec(
         select(ChainChannel).where(ChainChannel.chain_id == chain_id)
         .order_by(ChainChannel.order, ChainChannel.id),
-    )).scalars().all()
+    )).all()
     if not channels:
         raise HTTPException(400, detail="Chain has no channels")
 
@@ -1039,10 +1039,10 @@ async def delete_chain_client(
     pairs = (await session.exec(
         select(ChainClientChannel)
         .where(ChainClientChannel.chain_client_id == chain_client_id),
-    )).scalars().all()
+    )).all()
     channels = (await session.exec(
         select(ChainChannel).where(ChainChannel.chain_id == chain_id),
-    )).scalars().all()
+    )).all()
     channels_by_id = {ch.id: ch for ch in channels}
     await orchestrate_delete_client(
         chain=chain, chain_client=chain_client,
@@ -1079,10 +1079,10 @@ async def export_chain_client_nodes(
     pairs = (await session.exec(
         select(ChainClientChannel)
         .where(ChainClientChannel.chain_client_id == chain_client_id),
-    )).scalars().all()
+    )).all()
     channels = (await session.exec(
         select(ChainChannel).where(ChainChannel.chain_id == chain_id),
-    )).scalars().all()
+    )).all()
     channels_by_id = {ch.id: ch for ch in channels}
 
     selected_ids = set(body.channel_ids) if body.channel_ids else None

@@ -403,7 +403,7 @@ async def deploy_to_server(
                 async with AsyncSession(get_async_engine()) as s:
                     existing_xs = (await s.exec(
                         select(XuiServer).where(XuiServer.server_id == srv_id),
-                    )).scalars().first()
+                    )).first()
                     if existing_xs is not None:
                         existing_xs.api_token = xui_cfg.api_token
                         existing_xs.panel_user = xui_cfg.panel_user
