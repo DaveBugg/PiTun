@@ -74,7 +74,11 @@ export function UninstallModal({
           <div className="flex-1 min-w-0">
             <h2 id="uninstall-modal-title" className="text-lg font-semibold text-gray-100">
               {t('Uninstall', 'Удалить')}{' '}
-              <span className="text-red-300">{protocol === 'naive' ? 'NaiveProxy' : 'WireGuard'}</span>{' '}
+              <span className="text-red-300">{
+                protocol === 'naive' ? 'NaiveProxy'
+                  : protocol === 'wireguard' ? 'WireGuard'
+                  : 'x-ui'
+              }</span>{' '}
               {t('from', 'с')}{' '}
               <span className="text-brand-400">{server.name}</span>
             </h2>
@@ -127,6 +131,14 @@ function ConfirmView(props: {
         t('Caddy package + /etc/caddy/ + /var/log/caddy/', 'Пакет Caddy + /etc/caddy/ + /var/log/caddy/'),
         t('Decoy site under /var/www/html/', 'Сайт-приманка в /var/www/html/'),
         t('PiTun-side ServerDeployment row (config metadata)', 'Запись ServerDeployment в PiTun (метаданные конфига)'),
+      ]
+    : props.protocol === 'xui'
+    ? [
+        t('x-ui systemd unit + binary + /etc/x-ui/', 'systemd-юнит x-ui + бинарь + /etc/x-ui/'),
+        t('nginx (purged) + /var/www/html/ (xui-pro mode only)', 'nginx (полное удаление) + /var/www/html/ (только в xui-pro режиме)'),
+        t('certbot + tor + warp-plus (if installed by xui-pro)', 'certbot + tor + warp-plus (если ставились x-ui-pro)'),
+        t('PiTun-side XuiServer + XuiClient rows (cascade-delete)', 'Записи XuiServer + XuiClient в PiTun (каскадное удаление)'),
+        t('Linked Node(s) kept; chain inbounds removed via panel API', 'Связанные Node-ы остаются; chain-инбаунды удаляются через API'),
       ]
     : [
         t('wg-quick@wg0 (stop + disable) + iptables NAT rules', 'wg-quick@wg0 (стоп + disable) + iptables NAT'),
@@ -334,8 +346,9 @@ function StatusBanner({
       <CheckCircle2 className="h-4 w-4 mt-0.5" />
       <div className="min-w-0">
         <div className="font-medium">
-          {protocol === 'naive' ? t('NaiveProxy uninstalled', 'NaiveProxy удалён') :
-            t('WireGuard uninstalled', 'WireGuard удалён')}
+          {protocol === 'naive' ? t('NaiveProxy uninstalled', 'NaiveProxy удалён')
+            : protocol === 'xui' ? t('x-ui uninstalled', 'x-ui удалён')
+            : t('WireGuard uninstalled', 'WireGuard удалён')}
         </div>
         {result?.duration_sec ? (
           <div className="text-xs text-emerald-300/80 mt-0.5">

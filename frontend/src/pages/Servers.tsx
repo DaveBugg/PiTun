@@ -34,7 +34,7 @@ import {
   useDeploymentClients,
 } from '@/hooks/useServers'
 import { useT } from '@/hooks/useT'
-import type { Server, ServerCreate, ServerUpdate, ServerDeploymentProtocol } from '@/types'
+import type { Server, ServerCreate, ServerUpdate, ServerDeployment, ServerDeploymentProtocol } from '@/types'
 
 /**
  * Servers page — list of SSH-reachable VPS instances the user manages from
@@ -471,6 +471,7 @@ function ServerRow({
   const { data: deployments = [] } = useDeployments(server.id)
   const naive = deployments.find((d) => d.protocol === 'naive')
   const wireguard = deployments.find((d) => d.protocol === 'wireguard')
+  const xui = deployments.find((d) => d.protocol === 'xui')
   const createNode = useCreateNodeFromDeployment()
 
   const handleCreateNode = () => {
@@ -489,6 +490,7 @@ function ServerRow({
         )}
         {naive && <DeploymentBadge deployment={naive} onCreateNode={handleCreateNode} pending={createNode.isPending} />}
         {wireguard && <WireGuardBadge serverId={server.id} onManageClients={onManageClients} />}
+        {xui && <XuiBadge deployment={xui} />}
       </td>
       <td className="px-4 py-3">
         <div className="text-gray-300 font-mono text-xs">
@@ -564,6 +566,15 @@ function ServerRow({
             <IconBtn
               onClick={() => onUninstall('wireguard')}
               title={t('Wipe WireGuard from VPS', 'Удалить WireGuard с VPS')}
+              icon={Trash}
+              danger
+              disabled={server.status === 'offline'}
+            />
+          )}
+          {xui && (
+            <IconBtn
+              onClick={() => onUninstall('xui')}
+              title={t('Wipe x-ui from VPS', 'Удалить x-ui с VPS')}
               icon={Trash}
               danger
               disabled={server.status === 'offline'}
@@ -719,6 +730,37 @@ function WireGuardBadge({
     </div>
   )
 }
+
+// x-ui's parallel to WireGuardBadge. Multi-client like WG (one VPS
+// hosts many vless / trojan / socks inbounds, each with N clients)
+// but the management UI lives on its own page (`/xui`) rather than a
+// modal — too much surface for the table view. We just surface the
+// deployment status + a "Manage" jump-link.
+function XuiBadge({ deployment }: { deployment: ServerDeployment }) {
+  const t = useT()
+  const cfg = (deployment.config ?? {}) as { domain?: string; mode?: string }
+  const mode = cfg.mode || 'bare'
+  return (
+    <div className="mt-1 inline-flex items-center gap-2 text-[11px]">
+      <span className="text-gray-500">
+        <Sparkles className="inline h-3 w-3 mr-1 text-yellow-500" />
+        {t('x-ui configured', 'x-ui настроен')}
+        <span className="text-gray-600 font-mono"> · {mode}</span>
+        {cfg.domain && (
+          <span className="text-gray-600"> · {cfg.domain}</span>
+        )}
+      </span>
+      <Link
+        to="/xui"
+        className="rounded bg-brand-600/20 hover:bg-brand-600/30 text-brand-300 px-1.5 py-0.5 text-[11px] font-medium transition-colors"
+        title={t('Open x-ui page', 'Открыть страницу x-ui')}
+      >
+        {t('Manage →', 'Управление →')}
+      </Link>
+    </div>
+  )
+}
+
 
 function IconBtn({
   onClick,
