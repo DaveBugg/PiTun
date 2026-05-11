@@ -431,10 +431,16 @@ def _pick_port(
 
 def _api_base_url(xs: XuiServer, srv: Server) -> str:
     """Mirror of the helper in api/xui.py. Duplicated to avoid an
-    import cycle (xui_chain → api/xui → models)."""
+    import cycle (xui_chain → api/xui → models).
+
+    Bare mode → plain HTTP on a random high port (panel uses no cert).
+    xui-pro mode → HTTPS via LE cert wired into the panel's
+    webCertFile / webCertKey settings by setup-xui-server.sh's
+    section 4b.
+    """
     if xs.mode == "xui-pro" and xs.domain:
-        return f"http://{xs.domain}:{xs.panel_port}{xs.panel_basepath}"
-    return f"https://{srv.host}:{xs.panel_port}{xs.panel_basepath}"
+        return f"https://{xs.domain}:{xs.panel_port}{xs.panel_basepath}"
+    return f"http://{srv.host}:{xs.panel_port}{xs.panel_basepath}"
 
 
 def _wrap_settings_json(payload: Dict[str, Any]) -> Dict[str, Any]:
