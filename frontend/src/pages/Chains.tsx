@@ -35,8 +35,27 @@ export default function ChainsPage() {
   const { data: chains = [], isLoading: chainsLoading, error: chainsError } =
     useQuery<ChainRead[]>({
       queryKey: ['xui', 'chains'],
-      queryFn: () => xuiApi.listChains(),
+      // 404 from /xui/chains means the backend predates beta.7 (the
+      // endpoint doesn't exist at all). That's not a "load failed" —
+      // it's a "you haven't deployed the new backend yet" situation,
+      // and the right UX is the same EmptyState as "no chains yet".
+      // Treat any non-200 EXCEPT 404 as a real error.
+      queryFn: async () => {
+        try {
+          return await xuiApi.listChains()
+        } catch (e: unknown) {
+          const status = (e as { response?: { status?: number } })?.response?.status
+          if (status === 404) return []
+          throw e
+        }
+      },
       refetchOnWindowFocus: false,
+      // Don't hammer a missing endpoint with the default 3 retries.
+      retry: (failureCount, err: unknown) => {
+        const status = (err as { response?: { status?: number } })?.response?.status
+        if (status === 404 || status === 401 || status === 403) return false
+        return failureCount < 2
+      },
     })
 
   const { data: servers = [], isLoading: serversLoading } = useQuery<XuiServer[]>({
