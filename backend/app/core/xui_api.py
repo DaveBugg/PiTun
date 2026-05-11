@@ -123,8 +123,14 @@ class XuiClient:
     # ── HTTP plumbing ──────────────────────────────────────────────────
     def _ensure_client(self) -> httpx.AsyncClient:
         if self._http is None:
+            # Don't pass base_url to httpx — its urljoin semantics drop
+            # the path component when the request path starts with `/`
+            # (RFC 3986: absolute path replaces base path). For our
+            # panels that means `https://h:port/<basepath>` + `/panel/
+            # api/inbounds/list` collapses to `https://h:port/panel/...`,
+            # missing the basepath and getting a 307 redirect back from
+            # the panel. Building full URLs in `_request` instead.
             self._http = httpx.AsyncClient(
-                base_url=self.base_url,
                 headers={
                     "Authorization": f"Bearer {self.api_token}",
                     # The panel responds JSON either way, but being
@@ -134,6 +140,10 @@ class XuiClient:
                 },
                 verify=self.verify_tls,
                 timeout=self.timeout,
+                # Follow 307/308 redirects belt-and-suspenders — if a
+                # future panel version changes its routing, we don't
+                # want a hard 307 break to look like an auth failure.
+                follow_redirects=True,
                 # The panel issues self-signed cert and HTTP/1.1; no
                 # http/2 needed and the negotiation overhead per call
                 # is wasted on a one-shot RPC client.
@@ -158,9 +168,14 @@ class XuiClient:
         `msg`, etc. depending on the endpoint.
         """
         client = self._ensure_client()
+        # Concatenate ourselves. `self.base_url` ends without a trailing
+        # slash (normalised in xui_uri.parse_xui_uri); `path` starts
+        # with `/` so the join produces a single `/` between basepath
+        # and the API path.
+        url = f"{self.base_url}{path}"
         try:
             resp = await client.request(
-                method, path, json=json,
+                method, url, json=json,
                 timeout=timeout if timeout is not None else self.timeout,
             )
         except httpx.TimeoutException as exc:
