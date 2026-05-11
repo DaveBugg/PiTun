@@ -835,6 +835,23 @@ function ProtocolPick(props: {
 
 
 // ── XuiFields ─────────────────────────────────────────────────────────────
+/** Strip the leftmost label from a domain when it has 3+ parts, so
+ *  Let's Encrypt registration uses the apex domain rather than the
+ *  subdomain the panel sits on. `scripttest.daveprod.space` →
+ *  `daveprod.space`; `daveprod.space` → `daveprod.space` (kept as-is
+ *  on 2-label hosts). Matches the symmetric logic in fake-2fa.php's
+ *  brand-derivation. Doesn't handle multi-label TLDs (`.co.uk` etc.)
+ *  precisely — that needs the public-suffix list, overkill for this
+ *  placeholder. */
+function apexDomain(domain: string): string {
+  const cleaned = domain.trim().toLowerCase()
+  if (!cleaned) return ''
+  const parts = cleaned.split('.')
+  if (parts.length <= 2) return cleaned
+  return parts.slice(1).join('.')
+}
+
+
 function XuiFields(props: {
   domain: string
   email: string
@@ -880,15 +897,15 @@ function XuiFields(props: {
         <FieldL
           label={t("Let's Encrypt email (optional)", 'Email для Let\'s Encrypt (необязательно)')}
           hint={t(
-            'defaults to admin@<domain>',
-            'по умолчанию admin@<домен>',
+            'defaults to admin@<apex-domain>',
+            'по умолчанию admin@<домен-2-уровня>',
           )}
         >
           <input
             type="email"
             value={props.email}
             onChange={(e) => props.setEmail(e.target.value)}
-            placeholder={`admin@${props.domain || 'example.com'}`}
+            placeholder={`admin@${apexDomain(props.domain) || 'example.com'}`}
             className={inputCls}
           />
         </FieldL>

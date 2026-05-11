@@ -332,10 +332,12 @@ class ServerDeployRequest(BaseModel):
     def _validate_protocol(cls, v: str) -> str:
         # Mirror the gate in core/deploy.SUPPORTED_PROTOCOLS — kept in
         # sync manually since this validator runs before the request
-        # body even reaches the endpoint.
-        if v not in ("naive", "wireguard"):
+        # body even reaches the endpoint. `xui` added in v1.3.0-beta.7
+        # for x-ui-pro / 3x-ui panel installs.
+        if v not in ("naive", "wireguard", "xui"):
             raise ValueError(
-                f"Unsupported protocol: {v!r} (expected 'naive' or 'wireguard')"
+                f"Unsupported protocol: {v!r} "
+                f"(expected 'naive', 'wireguard' or 'xui')"
             )
         return v
 
@@ -438,14 +440,15 @@ class ServerDeploymentBase(BaseModel):
         # Gate the protocol string on **both** request and response paths.
         # The runner/router code branches on this value, so a typo here
         # would silently create a row nothing else can deserialise. As
-        # of v1.3.0-beta.4 we accept naive (single-tunnel) and wireguard
-        # (multi-client via DeploymentClient). Loosen further when Hy2 /
-        # XTLS deployments land. NB: the read path also uses this base
-        # — when adding a new protocol, both ServerDeployRequest's
-        # validator (in core/deploy.SUPPORTED_PROTOCOLS) AND this set
-        # need to grow in lockstep, otherwise listing existing rows
-        # 500s on the new protocol.
-        valid = {"naive", "wireguard"}
+        # of v1.3.0-beta.7 we accept naive (single-tunnel), wireguard
+        # (multi-client via DeploymentClient), and xui (panel-as-
+        # deployment, side-table at XuiServer). Loosen further when
+        # Hy2 / XTLS deployments land. NB: the read path also uses
+        # this base — when adding a new protocol, both
+        # ServerDeployRequest's validator AND this set need to grow
+        # in lockstep, otherwise listing existing rows 500s on the
+        # new protocol.
+        valid = {"naive", "wireguard", "xui"}
         if v not in valid:
             raise ValueError(f"protocol must be one of {valid}")
         return v

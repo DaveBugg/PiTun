@@ -254,7 +254,8 @@ def build_xui_env(
                 Reality-only setups.
       * set   → full x-ui-pro stack (nginx + Let's Encrypt + fakesite).
 
-    `email` defaults to admin@<domain> when DOMAIN is set; harmless
+    `email` defaults to admin@<apex-domain> when DOMAIN is set
+    (`scripttest.daveprod.space` → `admin@daveprod.space`); harmless
     to leave empty in bare mode (the script ignores it).
 
     The script generates panel creds + token itself and emits them on
@@ -262,12 +263,23 @@ def build_xui_env(
     PANEL_USER / PANEL_PASS here so re-runs always rotate to fresh
     values (matching the install-on-a-clean-VPS expectation).
     """
+    # Apex-domain default for the Let's Encrypt registration email
+    # (since v1.3.0-beta.7). Stripping the leftmost label when the
+    # domain has 3+ parts gives `admin@daveprod.space` rather than
+    # `admin@scripttest.daveprod.space` — apex addresses are far more
+    # likely to be a real mailbox a human reads (LE expiry-notification
+    # emails matter). Doesn't handle multi-label TLDs (`.co.uk` etc.)
+    # precisely; that needs the public-suffix list which is overkill
+    # for a default the user can always override.
+    def _apex(d: str) -> str:
+        parts = d.split(".")
+        return ".".join(parts[1:]) if len(parts) > 2 else d
+
     env: dict[str, str] = {
         "DOMAIN": domain or "",
         # If the user picked a domain but didn't supply email,
-        # default to admin@<domain> so Let's Encrypt has a valid
-        # registration address. Empty when bare-mode.
-        "EMAIL": email or (f"admin@{domain}" if domain else ""),
+        # default to admin@<apex-domain>. Empty when bare-mode.
+        "EMAIL": email or (f"admin@{_apex(domain)}" if domain else ""),
         # Skip soft-warning interactive prompts (DNS check, etc.)
         # the same way the naive script does.
         "PITUN_AUTO_CONTINUE": "yes",
