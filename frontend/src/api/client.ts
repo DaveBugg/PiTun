@@ -773,6 +773,21 @@ export const xuiApi = {
     )
   },
 
+  /** Convert one inbound-side client (vless / vmess / trojan / etc.)
+   *  into a routable PiTun Node. Idempotent — re-export of the same
+   *  client returns the existing node id. `clientId` accepts the
+   *  UUID or the client email. */
+  exportInboundClientToNode: async (
+    serverId: number, inboundId: number, clientId: string,
+    body: { name?: string } = {},
+  ): Promise<{ node_id: number; reused: boolean }> => {
+    const r = await http.post(
+      `/xui/servers/${serverId}/inbounds/${inboundId}/clients/${encodeURIComponent(clientId)}/export-node`,
+      body,
+    )
+    return r.data
+  },
+
   // ── Chains (since v1.3.0-beta.7) ───────────────────────────────────────
   listChains: async (): Promise<ChainRead[]> => {
     const r = await http.get('/xui/chains')
@@ -801,6 +816,17 @@ export const xuiApi = {
 
   deleteChain: async (id: number): Promise<void> => {
     await http.delete(`/xui/chains/${id}`)
+  },
+
+  /** Run a read-only diagnostic sweep over both panels + the live
+   *  xray config. Returns a list of pass/fail/warn checks. */
+  healthcheckChain: async (id: number): Promise<{
+    chain_id: number
+    ok: boolean
+    checks: { name: string; status: 'ok' | 'warn' | 'fail'; detail?: string }[]
+  }> => {
+    const r = await http.post(`/xui/chains/${id}/healthcheck`)
+    return r.data
   },
 
   // Chain clients

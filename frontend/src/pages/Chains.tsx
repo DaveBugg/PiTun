@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   GitBranch, Loader2, AlertTriangle, RefreshCw, Plus, Trash2, X, Copy, Check,
-  Users, Download, ChevronRight,
+  Users, Upload, ChevronRight, Activity, CheckCircle2, XCircle,
 } from 'lucide-react'
 
 import { xuiApi } from '@/api/client'
@@ -296,6 +296,14 @@ function ChainDetail({ chain }: { chain: ChainRead }) {
     },
   })
 
+  // Diagnostic sweep — reachability, xray state, inbound presence,
+  // and the most-bitten check: relay's running config has the chain
+  // outbound + matching routing rule. Result panel stays mounted
+  // until the user closes or re-runs.
+  const healthMut = useMutation({
+    mutationFn: () => xuiApi.healthcheckChain(chain.id),
+  })
+
   return (
     <section className="rounded-xl border border-gray-800 bg-gray-950/60 p-4 space-y-3">
       <header className="flex items-start justify-between gap-3 flex-wrap">
@@ -321,6 +329,18 @@ function ChainDetail({ chain }: { chain: ChainRead }) {
         <div className="flex items-center gap-2">
           <button
             type="button"
+            onClick={() => healthMut.mutate()}
+            disabled={healthMut.isPending}
+            className="rounded-lg border border-gray-700 hover:bg-brand-900/30 hover:border-brand-700/50 hover:text-brand-300 px-2.5 py-1.5 text-xs text-gray-300 inline-flex items-center gap-1.5"
+            title={t('Probe panels + running xray config for chain health', 'Проверить панели и running xray-config для здоровья цепочки')}
+          >
+            {healthMut.isPending
+              ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              : <Activity className="h-3.5 w-3.5" />}
+            {t('Check health', 'Проверка')}
+          </button>
+          <button
+            type="button"
             onClick={async () => {
               const ok = await confirm({
                 title: t('Delete chain?', 'Удалить цепочку?'),
@@ -343,6 +363,56 @@ function ChainDetail({ chain }: { chain: ChainRead }) {
           </button>
         </div>
       </header>
+
+      {/* Healthcheck result panel — shown after a probe runs.
+          Each check carries its own colour so the bad rows pop. */}
+      {(healthMut.data || healthMut.error) && (
+        <div className={`rounded-lg border px-3 py-2 space-y-1 ${
+          healthMut.data?.ok
+            ? 'border-green-700/40 bg-green-900/10'
+            : 'border-yellow-700/40 bg-yellow-900/10'
+        }`}>
+          <div className="flex items-center justify-between gap-2">
+            <div className="text-[11px] font-medium uppercase tracking-wider">
+              {healthMut.isPending
+                ? t('Probing…', 'Проверка…')
+                : healthMut.data?.ok
+                  ? t('Healthy', 'Здорова')
+                  : t('Issues found', 'Найдены проблемы')}
+            </div>
+            <button
+              type="button"
+              onClick={() => healthMut.reset()}
+              className="text-gray-500 hover:text-gray-300 p-0.5"
+              title={t('Dismiss', 'Скрыть')}
+            >
+              <X className="h-3 w-3" />
+            </button>
+          </div>
+          {healthMut.error && (
+            <div className="text-[11px] text-red-300">
+              {String((healthMut.error as Error).message)}
+            </div>
+          )}
+          {healthMut.data?.checks.map((c, i) => (
+            <div key={i} className="flex items-start gap-1.5 text-[11px]">
+              {c.status === 'ok' ? (
+                <CheckCircle2 className="h-3 w-3 mt-0.5 shrink-0 text-green-400" />
+              ) : c.status === 'warn' ? (
+                <AlertTriangle className="h-3 w-3 mt-0.5 shrink-0 text-yellow-400" />
+              ) : (
+                <XCircle className="h-3 w-3 mt-0.5 shrink-0 text-red-400" />
+              )}
+              <div className="min-w-0">
+                <span className="text-gray-200">{c.name}</span>
+                {c.detail && (
+                  <span className="text-gray-500"> — <span className="font-mono">{c.detail}</span></span>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
 
       {/* Channels */}
       <div className="space-y-2">
@@ -543,8 +613,8 @@ function ChainClientCard({
             >
               {exportMut.isPending
                 ? <Loader2 className="h-3 w-3 animate-spin" />
-                : <Download className="h-3 w-3" />}
-              {t('Export all to Nodes', 'Экспортировать все в Nodes')}
+                : <Upload className="h-3 w-3" />}
+              {t('Export to Nodes', 'Экспортировать в Nodes')}
             </button>
           </div>
         </div>
@@ -799,6 +869,8 @@ function CreateChainModal({
                 onChange={(patch) => updateChannel(idx, patch)}
                 onRemove={channels.length > 1 ? () => removeChannel(idx) : undefined}
                 index={idx}
+                exitMode={servers.find((s) => s.id === exitId)?.mode}
+                relayMode={servers.find((s) => s.id === relayId)?.mode}
               />
             ))}
           </div>
@@ -864,14 +936,21 @@ function PanelPicker({
 }
 
 function ChannelDraftRowEdit({
-  value, onChange, onRemove, index,
+  value, onChange, onRemove, index, exitMode, relayMode,
 }: {
   value: ChannelDraftRow
   onChange: (patch: Partial<ChannelDraftRow>) => void
   onRemove?: () => void
   index: number
+  exitMode?: string
+  relayMode?: string
 }) {
   const t = useT()
+  // xui-pro panels run on a domain with Caddy/ACME → ports 80 + 443
+  // are bound outside the panel's view. Surface this client-side so
+  // the user doesn't get a 4xx from the backend port validator.
+  const relayReserved = relayMode === 'xui-pro' && (value.relay_port === 80 || value.relay_port === 443)
+  const exitReserved = exitMode === 'xui-pro' && (value.exit_port === 80 || value.exit_port === 443)
   return (
     <div className="rounded-lg border border-gray-800 bg-gray-900/30 p-3 space-y-2">
       <div className="flex items-center justify-between gap-2">
@@ -928,8 +1007,13 @@ function ChannelDraftRowEdit({
             value={value.relay_port || ''}
             onChange={(e) => onChange({ relay_port: Number(e.target.value) || 0 })}
             placeholder={t('auto', 'авто')}
-            className="w-full rounded-md bg-gray-900 border border-gray-800 px-2 py-1 text-xs text-gray-100 focus:border-brand-500 focus:outline-none"
+            className={`w-full rounded-md bg-gray-900 border px-2 py-1 text-xs text-gray-100 focus:outline-none ${relayReserved ? 'border-red-500/60 focus:border-red-500' : 'border-gray-800 focus:border-brand-500'}`}
           />
+          {relayReserved && (
+            <div className="text-[10px] text-red-400 mt-0.5 leading-tight">
+              {t('Reserved by panel HTTPS (Caddy / ACME)', 'Занят панелью HTTPS (Caddy / ACME)')}
+            </div>
+          )}
         </div>
         <div>
           <label className="text-[11px] text-gray-500 block mb-0.5">
@@ -942,8 +1026,13 @@ function ChannelDraftRowEdit({
             value={value.exit_port || ''}
             onChange={(e) => onChange({ exit_port: Number(e.target.value) || 0 })}
             placeholder={t('auto', 'авто')}
-            className="w-full rounded-md bg-gray-900 border border-gray-800 px-2 py-1 text-xs text-gray-100 focus:border-brand-500 focus:outline-none"
+            className={`w-full rounded-md bg-gray-900 border px-2 py-1 text-xs text-gray-100 focus:outline-none ${exitReserved ? 'border-red-500/60 focus:border-red-500' : 'border-gray-800 focus:border-brand-500'}`}
           />
+          {exitReserved && (
+            <div className="text-[10px] text-red-400 mt-0.5 leading-tight">
+              {t('Reserved by panel HTTPS (Caddy / ACME)', 'Занят панелью HTTPS (Caddy / ACME)')}
+            </div>
+          )}
         </div>
         <div className="col-span-2">
           <label className="text-[11px] text-gray-500 block mb-0.5">

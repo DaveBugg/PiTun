@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   Layers, Loader2, AlertTriangle, ExternalLink, Trash2, Plus, RefreshCw,
   ShieldCheck, ShieldAlert, Server as ServerIcon, KeyRound, Copy, Check,
+  ChevronRight, ChevronDown, Upload,
 } from 'lucide-react'
 
 import { xuiApi } from '@/api/client'
@@ -303,6 +304,7 @@ function ServerDetail({ server }: { server: XuiServer }) {
       {inbounds.map((ib) => (
         <InboundCard
           key={ib.id}
+          serverId={server.id}
           inbound={ib}
           onAddClient={() => setShowAddClientFor(ib.id)}
           onDelete={async () => {
@@ -351,47 +353,121 @@ function ServerDetail({ server }: { server: XuiServer }) {
 // ── Inbound card ────────────────────────────────────────────────────────────
 
 function InboundCard({
-  inbound, onAddClient, onDelete, removing,
+  serverId, inbound, onAddClient, onDelete, removing,
 }: {
+  serverId: number
   inbound: XuiInbound
   onAddClient: () => void
   onDelete: () => void
   removing: boolean
 }) {
   const t = useT()
-  // Parse the panel's JSON-in-JSON settings to count clients.
-  let clientCount = 0
+  const qc = useQueryClient()
+  const confirm = useConfirm()
+  const [expanded, setExpanded] = useState(false)
+
+  // Parse the panel's JSON-in-JSON settings into a typed client list.
+  // Each protocol stores its identity field slightly differently
+  // (vless/vmess → id, trojan → password, ss → password, socks → user)
+  // but the panel docs guarantee an `email` field per client across
+  // every protocol — we surface that as the row label.
+  type ParsedClient = {
+    id?: string         // vless / vmess UUID
+    password?: string   // trojan / ss
+    user?: string       // socks
+    email?: string
+    flow?: string
+    enable?: boolean
+  }
+  let clients: ParsedClient[] = []
   try {
     const s = JSON.parse(inbound.settings)
     const arr = s.clients ?? s.accounts ?? []
-    clientCount = Array.isArray(arr) ? arr.length : 0
+    clients = Array.isArray(arr) ? arr : []
   } catch { /* ignore */ }
+
+  // Chain-managed inbound? The chain orchestrator tags every inbound
+  // it creates as `chain-<chain_id>-<channel>-<role>`. Those rows
+  // need to stay read-only on the panel page — clients on them are
+  // managed exclusively through the Chains tab, and a panel-side
+  // delete would orphan the chain DB state.
+  const isChainManaged = (inbound.tag || '').startsWith('chain-')
+
+  // Map of UUID/email → exported Node id (backend-attached).
+  const exports = inbound._pitun_exports || {}
+
+  const exportMut = useMutation({
+    mutationFn: (clientId: string) =>
+      xuiApi.exportInboundClientToNode(serverId, inbound.id, clientId),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['nodes'] })
+    },
+  })
+  const delClientMut = useMutation({
+    mutationFn: (clientUuid: string) =>
+      xuiApi.deleteClient(serverId, inbound.id, clientUuid),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['xui', 'inbounds', serverId] })
+    },
+  })
+
+  // Pick the "natural id" we ship to the export endpoint: UUID for
+  // vless/vmess, email for trojan/ss/socks (everything has email).
+  const clientNaturalId = (c: ParsedClient): string =>
+    c.id || c.email || c.password || c.user || ''
 
   return (
     <div className="rounded-lg border border-gray-800 bg-gray-900/40 p-3 space-y-2">
       <div className="flex items-start justify-between gap-3 flex-wrap">
-        <div className="min-w-0">
-          <div className="flex items-center gap-2 flex-wrap">
-            <span className="font-medium text-gray-100">{inbound.remark || `inbound-${inbound.id}`}</span>
-            <span className="text-[10px] px-1.5 py-0.5 rounded font-mono bg-gray-800 text-gray-400 uppercase">
-              {inbound.protocol}
-            </span>
-            <span className="text-[11px] text-gray-500 font-mono">:{inbound.port}</span>
-            {!inbound.enable && (
-              <span className="text-[10px] px-1.5 py-0.5 rounded bg-yellow-900/30 text-yellow-300 border border-yellow-700/40">
-                disabled
+        <button
+          type="button"
+          onClick={() => setExpanded((v) => !v)}
+          className="min-w-0 flex-1 text-left flex items-start gap-2 hover:opacity-80 transition-opacity"
+        >
+          {expanded
+            ? <ChevronDown className="h-3.5 w-3.5 text-gray-500 mt-1 shrink-0" />
+            : <ChevronRight className="h-3.5 w-3.5 text-gray-500 mt-1 shrink-0" />}
+          <div className="min-w-0">
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className="font-medium text-gray-100">{inbound.remark || `inbound-${inbound.id}`}</span>
+              <span className="text-[10px] px-1.5 py-0.5 rounded font-mono bg-gray-800 text-gray-400 uppercase">
+                {inbound.protocol}
               </span>
-            )}
+              <span className="text-[11px] text-gray-500 font-mono">:{inbound.port}</span>
+              {!inbound.enable && (
+                <span className="text-[10px] px-1.5 py-0.5 rounded bg-yellow-900/30 text-yellow-300 border border-yellow-700/40">
+                  disabled
+                </span>
+              )}
+              {isChainManaged && (
+                <span
+                  className="text-[10px] px-1.5 py-0.5 rounded bg-purple-900/30 text-purple-300 border border-purple-700/40 font-mono"
+                  title={t(
+                    'This inbound is part of a chain. Manage its clients on the Chains tab.',
+                    'Этот инбаунд принадлежит цепочке. Управление клиентами — на вкладке «Цепочки».',
+                  )}
+                >
+                  chain
+                </span>
+              )}
+            </div>
+            <div className="text-[11px] text-gray-500 mt-0.5">
+              {t(`${clients.length} client${clients.length === 1 ? '' : 's'}`, `${clients.length} клиент${clients.length === 1 ? '' : 'ов'}`)}
+            </div>
           </div>
-          <div className="text-[11px] text-gray-500 mt-0.5">
-            {t(`${clientCount} client${clientCount === 1 ? '' : 's'}`, `${clientCount} клиент${clientCount === 1 ? '' : 'ов'}`)}
-          </div>
-        </div>
+        </button>
         <div className="flex items-center gap-1.5">
           <button
             type="button"
             onClick={onAddClient}
-            className="rounded-md border border-gray-700 hover:bg-gray-800 px-2 py-1 text-[11px] text-gray-300 inline-flex items-center gap-1"
+            disabled={isChainManaged}
+            title={isChainManaged
+              ? t(
+                  'Chain-managed inbound — add clients from the Chains tab.',
+                  'Инбаунд цепочки — клиенты добавляются на вкладке «Цепочки».',
+                )
+              : undefined}
+            className="rounded-md border border-gray-700 hover:bg-gray-800 disabled:hover:bg-transparent disabled:opacity-50 disabled:cursor-not-allowed px-2 py-1 text-[11px] text-gray-300 inline-flex items-center gap-1"
           >
             <Plus className="h-3 w-3" />
             {t('Add client', 'Добавить клиента')}
@@ -399,9 +475,14 @@ function InboundCard({
           <button
             type="button"
             onClick={onDelete}
-            disabled={removing}
-            title={t('Delete inbound', 'Удалить инбаунд')}
-            className="rounded-md border border-gray-700 hover:bg-red-900/30 hover:border-red-700/40 hover:text-red-300 p-1 text-gray-500 disabled:opacity-50"
+            disabled={removing || isChainManaged}
+            title={isChainManaged
+              ? t(
+                  'Chain-managed inbound — delete the chain from the Chains tab to remove it.',
+                  'Инбаунд цепочки — удалите цепочку на вкладке «Цепочки», чтобы убрать его.',
+                )
+              : t('Delete inbound', 'Удалить инбаунд')}
+            className="rounded-md border border-gray-700 hover:bg-red-900/30 hover:border-red-700/40 hover:text-red-300 disabled:hover:bg-transparent disabled:hover:border-gray-700 disabled:hover:text-gray-500 disabled:opacity-50 disabled:cursor-not-allowed p-1 text-gray-500"
           >
             {removing
               ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
@@ -409,6 +490,120 @@ function InboundCard({
           </button>
         </div>
       </div>
+
+      {/* Client list — expanded view. The panel returns clients
+          inline inside the inbound's `settings`, so this is free
+          data with no extra round-trip. */}
+      {expanded && (
+        <div className="pl-6 space-y-1.5 pt-1 border-t border-gray-800/60">
+          {clients.length === 0 && (
+            <div className="text-[11px] text-gray-500 py-1">
+              {t('No clients yet — use "Add client" above.', 'Клиентов нет — используйте «Добавить клиента» выше.')}
+            </div>
+          )}
+          {clients.map((c, idx) => {
+            const naturalId = clientNaturalId(c)
+            const isExporting = exportMut.isPending && exportMut.variables === naturalId
+            const isDeleting = delClientMut.isPending && delClientMut.variables === naturalId
+            const lastExport = exportMut.data && exportMut.variables === naturalId ? exportMut.data : null
+            return (
+              // Persistent export badge — backend attaches a map of
+              // client-id → node-id on every inbound, so the badge
+              // survives reloads. lastExport (from the local mutation)
+              // wins when present so users see the fresh result
+              // immediately after clicking Export.
+              <div key={naturalId || idx} className="flex items-center justify-between gap-2 text-[11px] py-1">
+                <div className="min-w-0 flex items-center gap-2">
+                  <KeyRound className="h-3 w-3 text-gray-500 shrink-0" />
+                  <div className="min-w-0 truncate">
+                    <span className="text-gray-200 font-medium">{c.email || (c.id ? c.id.slice(0, 8) : t('(unnamed)', '(без имени)'))}</span>
+                    {c.id && (
+                      <span className="text-gray-500 font-mono ml-1.5">{c.id.slice(0, 8)}…</span>
+                    )}
+                    {c.flow && (
+                      <span className="text-gray-600 ml-1.5">· {c.flow}</span>
+                    )}
+                    {c.enable === false && (
+                      <span className="text-yellow-300 ml-1.5">· disabled</span>
+                    )}
+                  </div>
+                </div>
+                <div className="flex items-center gap-1 shrink-0">
+                  {(() => {
+                    // Fresh export from the local mutation wins over
+                    // the cached badge from the inbound payload.
+                    const exportedNodeId =
+                      (lastExport && lastExport.node_id) ??
+                      exports[naturalId] ??
+                      (c.email ? exports[c.email] : undefined)
+                    if (exportedNodeId !== undefined) {
+                      return (
+                        <span
+                          className="rounded-md border border-green-700/50 bg-green-900/20 text-green-300 px-1.5 py-0.5 text-[10px] inline-flex items-center gap-1"
+                          title={t(
+                            `Already exported as Node #${exportedNodeId}`,
+                            `Уже экспортировано как Node #${exportedNodeId}`,
+                          )}
+                        >
+                          <Check className="h-3 w-3" />
+                          Node #{exportedNodeId}
+                        </span>
+                      )
+                    }
+                    return (
+                      <button
+                        type="button"
+                        onClick={() => naturalId && exportMut.mutate(naturalId)}
+                        disabled={!naturalId || isExporting}
+                        title={t('Export this client as a Node', 'Экспортировать этого клиента в Nodes')}
+                        className="rounded-md border border-gray-700 hover:bg-brand-900/30 hover:border-brand-700/50 hover:text-brand-300 px-1.5 py-0.5 text-[10px] text-gray-300 inline-flex items-center gap-1 disabled:opacity-50"
+                      >
+                        {isExporting
+                          ? <Loader2 className="h-3 w-3 animate-spin" />
+                          : <Upload className="h-3 w-3" />}
+                        {t('Export to Nodes', 'Экспорт в Nodes')}
+                      </button>
+                    )
+                  })()}
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      if (!naturalId) return
+                      const ok = await confirm({
+                        title: t('Delete client?', 'Удалить клиента?'),
+                        body: t(
+                          `Client "${c.email || naturalId}" will be removed from the panel. Any traffic using its credentials stops immediately.`,
+                          `Клиент «${c.email || naturalId}» будет удалён с панели. Трафик через его credentials немедленно прервётся.`,
+                        ),
+                        confirmLabel: t('Delete', 'Удалить'),
+                        danger: true,
+                      })
+                      if (ok) delClientMut.mutate(naturalId)
+                    }}
+                    disabled={!naturalId || isDeleting || isChainManaged}
+                    title={isChainManaged
+                      ? t(
+                          'Chain client — manage via the Chains tab.',
+                          'Клиент цепочки — управление на вкладке «Цепочки».',
+                        )
+                      : t('Delete client', 'Удалить клиента')}
+                    className="rounded-md border border-gray-700 hover:bg-red-900/30 hover:border-red-700/40 hover:text-red-300 disabled:hover:bg-transparent disabled:hover:border-gray-700 disabled:hover:text-gray-500 disabled:opacity-50 disabled:cursor-not-allowed p-1 text-gray-500"
+                  >
+                    {isDeleting
+                      ? <Loader2 className="h-3 w-3 animate-spin" />
+                      : <Trash2 className="h-3 w-3" />}
+                  </button>
+                </div>
+              </div>
+            )
+          })}
+          {exportMut.error && (
+            <div className="text-[11px] text-red-300 pt-1">
+              {t('Export failed', 'Ошибка экспорта')}: {String((exportMut.error as Error).message)}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   )
 }

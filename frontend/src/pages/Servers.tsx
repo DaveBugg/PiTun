@@ -488,9 +488,13 @@ function ServerRow({
         {server.description && (
           <div className="text-xs text-gray-500 mt-0.5 line-clamp-1">{server.description}</div>
         )}
-        {naive && <DeploymentBadge deployment={naive} onCreateNode={handleCreateNode} pending={createNode.isPending} />}
-        {wireguard && <WireGuardBadge serverId={server.id} onManageClients={onManageClients} />}
-        {xui && <XuiBadge deployment={xui} />}
+        {(naive || wireguard || xui) && (
+          <div className="mt-1 flex flex-col items-start gap-1">
+            {naive && <DeploymentBadge deployment={naive} onCreateNode={handleCreateNode} pending={createNode.isPending} />}
+            {wireguard && <WireGuardBadge serverId={server.id} onManageClients={onManageClients} />}
+            {xui && <XuiBadge deployment={xui} />}
+          </div>
+        )}
       </td>
       <td className="px-4 py-3">
         <div className="text-gray-300 font-mono text-xs">
@@ -674,7 +678,7 @@ function DeploymentBadge({
 
   // configured — has plan, no node yet, offer one-click creation
   return (
-    <div className="mt-1 inline-flex items-center gap-2 text-[11px]">
+    <div className="inline-flex items-center gap-2 text-[11px]">
       <span className="text-gray-500">
         <Sparkles className="inline h-3 w-3 mr-1 text-yellow-500" />
         {t('Naive configured', 'Naive настроен')}
@@ -711,7 +715,7 @@ function WireGuardBadge({
   const total = data?.clients.length ?? 0
   const orphans = data?.clients.filter((c) => c.status === 'orphan').length ?? 0
   return (
-    <div className="mt-1 inline-flex items-center gap-2 text-[11px]">
+    <div className="inline-flex items-center gap-2 text-[11px]">
       <span className="text-gray-500">
         <Sparkles className="inline h-3 w-3 mr-1 text-yellow-500" />
         {t('WireGuard configured', 'WireGuard настроен')}
@@ -741,7 +745,7 @@ function XuiBadge({ deployment }: { deployment: ServerDeployment }) {
   const cfg = (deployment.config ?? {}) as { domain?: string; mode?: string }
   const mode = cfg.mode || 'bare'
   return (
-    <div className="mt-1 inline-flex items-center gap-2 text-[11px]">
+    <div className="inline-flex items-center gap-2 text-[11px]">
       <span className="text-gray-500">
         <Sparkles className="inline h-3 w-3 mr-1 text-yellow-500" />
         {t('x-ui configured', 'x-ui настроен')}

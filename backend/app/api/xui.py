@@ -45,6 +45,8 @@ from app.core.xui_api import XuiAPIError, XuiClient
 from app.core.xui_chain import (
     ChainCreateDraft,
     ChannelDraft,
+    _exit_tag,
+    _relay_tag,
     orchestrate_add_client,
     orchestrate_create,
     orchestrate_delete,
@@ -436,7 +438,13 @@ async def list_inbounds(
 ):
     """Live list of inbounds from the panel. Includes everything —
     PiTun-managed AND hand-added. Frontend filters by `email` prefix
-    when it wants the PiTun-managed subset."""
+    when it wants the PiTun-managed subset.
+
+    Each inbound dict gets a `_pitun_exports` field — a map of
+    `{client_uuid_or_email: node_id}` covering every client on the
+    inbound that PiTun has already exported as a Node. The frontend
+    renders a "→ Node #N" badge from this without a per-row round-trip.
+    """
     xs, srv = await _get_xs_or_404(xui_server_id, session)
     base_url = _api_base_url(xs, srv)
     async with XuiClient(
@@ -446,6 +454,30 @@ async def list_inbounds(
             inbounds = await client.list_inbounds()
         except XuiAPIError as exc:
             raise HTTPException(502, detail=f"Panel error ({exc.kind}): {exc}")
+
+    # Pull every exported-client row for this panel in a single
+    # query, group by inbound id. The cache covers two paths into
+    # Node rows: clients added via PiTun's add-client UI, and
+    # clients exported via the new export-node endpoint (which
+    # back-fills the cache row's exported_node_id).
+    exports_q = (
+        select(XuiClientModel)
+        .where(XuiClientModel.xui_server_id == xui_server_id)
+        .where(XuiClientModel.exported_node_id.is_not(None))
+    )
+    exports = list((await session.exec(exports_q)).all())
+    by_inbound: Dict[int, Dict[str, int]] = {}
+    for row in exports:
+        by_inbound.setdefault(row.inbound_remote_id, {})
+        if row.client_uuid:
+            by_inbound[row.inbound_remote_id][row.client_uuid] = row.exported_node_id  # type: ignore[assignment]
+        if row.label:
+            # Also key by email/label so the frontend can match
+            # protocols where client_uuid is empty (trojan / ss).
+            by_inbound[row.inbound_remote_id][row.label] = row.exported_node_id  # type: ignore[assignment]
+
+    for ib in inbounds:
+        ib["_pitun_exports"] = by_inbound.get(int(ib.get("id") or 0), {})
     return inbounds
 
 
@@ -557,9 +589,23 @@ async def delete_inbound(
     xui_server_id: int, inbound_id: int,
     session: AsyncSession = Depends(get_session),
 ):
-    """Delete an inbound on the panel + drop any cached XuiClient
-    rows that referenced it. Hand-added clients on a hand-added
-    inbound aren't tracked — the panel just makes them disappear."""
+    """Delete an inbound on the panel + cascade-clean PiTun state.
+
+    The cascade covers three things tied to this inbound:
+      1. The panel-side inbound itself (`del_inbound`).
+      2. Every cached `XuiClient` row pointing at it.
+      3. Every `Node` row those cache rows exported as routable
+         outbounds. The clients are gone → their UUIDs no longer
+         authenticate → the Nodes can never connect; leaving them
+         around just confuses /nodes and breaks health-checks.
+    """
+    # The endpoint commits multiple times below; the orchestrate_*
+    # `_no_expire_on_commit` pattern keeps ORM reads cheap afterwards.
+    try:
+        session.sync_session.expire_on_commit = False
+    except Exception:  # noqa: BLE001
+        pass
+
     xs, srv = await _get_xs_or_404(xui_server_id, session)
     base_url = _api_base_url(xs, srv)
     async with XuiClient(
@@ -573,15 +619,19 @@ async def delete_inbound(
                 detail=f"Panel rejected del-inbound ({exc.kind}): {exc}",
             )
 
-    # Drop our cache rows. We don't cascade-delete the exported Nodes
-    # — those stand on their own; the user can clean them up via
-    # /api/nodes if they want.
-    cached = (await session.exec(
+    cached = list((await session.exec(
         select(XuiClientModel)
         .where(XuiClientModel.xui_server_id == xui_server_id)
         .where(XuiClientModel.inbound_remote_id == inbound_id),
-    )).all()
+    )).all())
+    # Cascade-delete the exported Nodes that this inbound's clients
+    # produced. Best-effort: if the Node was already deleted by the
+    # operator on /nodes, the session.get returns None and we skip.
     for row in cached:
+        if row.exported_node_id:
+            node = await session.get(Node, row.exported_node_id)
+            if node is not None:
+                await session.delete(node)
         await session.delete(row)
     await session.commit()
 
@@ -675,6 +725,22 @@ async def delete_client(
     xui_server_id: int, inbound_id: int, client_uuid: str,
     session: AsyncSession = Depends(get_session),
 ):
+    """Delete one client on the panel + cascade-clean PiTun state.
+
+    Mirror of `delete_inbound` but scoped to a single client:
+      1. Remove the client from the panel (`del_client`).
+      2. Drop the cached `XuiClient` row.
+      3. Cascade-delete the exported `Node` row, if any.
+      4. Bounce Xray on the panel so the running config drops the
+         credentials (x-ui-pro persists del to the panel DB but
+         doesn't auto-reload Xray — same gotcha we hit in beta.7
+         with addClient on chain inbounds).
+    """
+    try:
+        session.sync_session.expire_on_commit = False
+    except Exception:  # noqa: BLE001
+        pass
+
     xs, srv = await _get_xs_or_404(xui_server_id, session)
     base_url = _api_base_url(xs, srv)
     async with XuiClient(
@@ -687,6 +753,13 @@ async def delete_client(
                 502,
                 detail=f"Panel rejected delClient ({exc.kind}): {exc}",
             )
+        # Reload Xray so the deleted credentials stop authenticating
+        # in the running config. Best-effort.
+        try:
+            await client.restart_xray()
+        except XuiAPIError as exc:
+            logger.warning("delete_client: restart_xray failed: %s", exc)
+
     cached = (await session.exec(
         select(XuiClientModel)
         .where(XuiClientModel.xui_server_id == xui_server_id)
@@ -694,8 +767,264 @@ async def delete_client(
         .where(XuiClientModel.client_uuid == client_uuid),
     )).first()
     if cached is not None:
+        if cached.exported_node_id:
+            node = await session.get(Node, cached.exported_node_id)
+            if node is not None:
+                await session.delete(node)
         await session.delete(cached)
         await session.commit()
+
+
+class XuiClientExportNodeBody(BaseModel):
+    """Optional override for the export name; defaults to
+    `<inbound-remark>-<client-email or short-uuid>`."""
+    name: Optional[str] = None
+
+
+@router.post(
+    "/servers/{xui_server_id}/inbounds/{inbound_id}/clients/{client_id}/export-node",
+)
+async def export_inbound_client_to_node(
+    xui_server_id: int, inbound_id: int, client_id: str,
+    body: XuiClientExportNodeBody,
+    session: AsyncSession = Depends(get_session),
+):
+    """Turn one inbound-side client into a routable PiTun Node.
+
+    `client_id` matches either the client UUID (vless / vmess) or
+    its email (any protocol). We resolve the inbound from the panel
+    (live source of truth), pull the client's id / flow, then build
+    a Node row using the inbound's transport / TLS / Reality fields.
+
+    Idempotent: if a Node with the same uuid/password + address +
+    port already exists, returns it without duplicating.
+    """
+    # Disable expire-on-commit for this session: the endpoint does
+    # session.commit() and then reads `node.id` on the return line,
+    # which under SQLAlchemy's default would re-load the instance
+    # via the sync greenlet → MissingGreenlet. Same systemic fix
+    # we applied to the orchestrate_* functions.
+    try:
+        session.sync_session.expire_on_commit = False
+    except Exception:  # noqa: BLE001
+        pass
+    xs, srv = await _get_xs_or_404(xui_server_id, session)
+    base_url = _api_base_url(xs, srv)
+    async with XuiClient(
+        base_url=base_url, api_token=xs.api_token, verify_tls=False,
+    ) as client:
+        try:
+            inbound = await client.get_inbound(inbound_id)
+        except XuiAPIError as exc:
+            raise HTTPException(
+                404 if exc.kind == "not_found" else 502,
+                detail=f"Inbound lookup failed ({exc.kind}): {exc}",
+            )
+
+    settings = inbound.get("settings") or "{}"
+    if isinstance(settings, str):
+        try:
+            settings = json.loads(settings)
+        except ValueError:
+            settings = {}
+    clients = (settings or {}).get("clients") or []
+    target = None
+    for c in clients:
+        if c.get("id") == client_id or c.get("email") == client_id:
+            target = c
+            break
+    if target is None:
+        raise HTTPException(
+            404, detail=f"Client {client_id!r} not found on inbound {inbound_id}",
+        )
+
+    stream = inbound.get("streamSettings") or "{}"
+    if isinstance(stream, str):
+        try:
+            stream = json.loads(stream)
+        except ValueError:
+            stream = {}
+
+    # IP wins over panel domain — same rationale as the chain
+    # exporter (the domain is only a Reality SNI cover, the actual
+    # dial address should be the VPS IP).
+    address = srv.host
+    port = int(inbound.get("port") or 0)
+    protocol = (inbound.get("protocol") or "").lower()
+
+    network = stream.get("network") or "tcp"
+    security = stream.get("security") or "none"
+    sni = ""
+    fingerprint = "chrome"
+    alpn = ""
+    reality_pbk = ""
+    reality_sid = ""
+    reality_spx = ""
+    ws_path = "/"
+    ws_host = ""
+    grpc_service = ""
+    http_path = "/"
+    http_host = ""
+
+    tls_settings = (stream.get("tlsSettings") or {})
+    if tls_settings:
+        sni = tls_settings.get("serverName") or ""
+        fingerprint = tls_settings.get("fingerprint") or fingerprint
+        alpn_val = tls_settings.get("alpn") or []
+        alpn = ",".join(alpn_val) if isinstance(alpn_val, list) else str(alpn_val)
+    reality_settings = (stream.get("realitySettings") or {})
+    if reality_settings:
+        sni = reality_settings.get("serverName") or (
+            (reality_settings.get("serverNames") or [""])[0]
+        ) or sni
+        fingerprint = (
+            (reality_settings.get("settings") or {}).get("fingerprint")
+            or fingerprint
+        )
+        reality_pbk = (
+            (reality_settings.get("settings") or {}).get("publicKey") or ""
+        )
+        reality_sid = ((reality_settings.get("shortIds") or [""])[0])
+        reality_spx = (
+            (reality_settings.get("settings") or {}).get("spiderX") or ""
+        )
+        if security == "none" and reality_pbk:
+            security = "reality"
+    ws_settings = (stream.get("wsSettings") or {})
+    if ws_settings:
+        ws_path = ws_settings.get("path") or "/"
+        ws_host = ws_settings.get("host") or ""
+        if not ws_host:
+            ws_host = ((ws_settings.get("headers") or {}).get("Host") or "")
+    grpc_settings = (stream.get("grpcSettings") or {})
+    if grpc_settings:
+        grpc_service = grpc_settings.get("serviceName") or ""
+    http_settings = (
+        stream.get("httpSettings")
+        or stream.get("xhttpSettings")
+        or {}
+    )
+    if http_settings:
+        http_path = http_settings.get("path") or "/"
+        host = http_settings.get("host")
+        if isinstance(host, list) and host:
+            http_host = host[0]
+        elif isinstance(host, str):
+            http_host = host
+        if not http_host and network == "xhttp":
+            http_host = sni or address
+
+    # Build the Node row. Field names match the ORM exactly — same
+    # gotcha that bit the chain exporter (silently-dropped unknown
+    # kwargs).
+    uuid_val = target.get("id") or ""
+    password_val = target.get("password") or ""
+    label = target.get("email") or (uuid_val[:8] if uuid_val else "client")
+    name = body.name or f"{inbound.get('remark') or 'inbound-' + str(inbound_id)}-{label}"
+
+    # Idempotency — same (uuid, address, port) tuple → reuse.
+    natural_key = uuid_val or password_val
+    if natural_key:
+        existing = (await session.exec(
+            select(Node)
+            .where(Node.protocol == (protocol or "vless"))
+            .where(Node.address == address)
+            .where(Node.port == port)
+            .where(
+                (Node.uuid == natural_key) | (Node.password == natural_key)
+            ),
+        )).first()
+        if existing is not None:
+            # Cache may still be stale (e.g. Node row created via a
+            # different path); ensure the link is recorded so the
+            # inbound-list export badges show up.
+            cached_existing = (await session.exec(
+                select(XuiClientModel)
+                .where(XuiClientModel.xui_server_id == xui_server_id)
+                .where(XuiClientModel.inbound_remote_id == inbound_id)
+                .where(
+                    (XuiClientModel.client_uuid == client_id)
+                    | (XuiClientModel.label == client_id)
+                ),
+            )).first()
+            if cached_existing is None:
+                cached_existing = XuiClientModel(
+                    xui_server_id=xui_server_id,
+                    inbound_remote_id=inbound_id,
+                    client_uuid=natural_key,
+                    label=(target.get("email") or natural_key[:8]),
+                    inbound_protocol=protocol or "vless",
+                    inbound_port=port,
+                    inbound_remark=inbound.get("remark") or "",
+                    config_json=json.dumps(target),
+                    last_synced_at=datetime.now(timezone.utc),
+                    exported_node_id=existing.id,
+                )
+                session.add(cached_existing)
+                await session.commit()
+            elif cached_existing.exported_node_id != existing.id:
+                cached_existing.exported_node_id = existing.id
+                session.add(cached_existing)
+                await session.commit()
+            return {"node_id": existing.id, "reused": True}
+
+    node = Node(
+        name=name,
+        protocol=protocol or "vless",
+        address=address,
+        port=port,
+        uuid=uuid_val or None,
+        password=password_val or None,
+        transport=network,
+        tls=security,
+        sni=sni or address,
+        fingerprint=fingerprint,
+        alpn=alpn,
+        ws_path=ws_path,
+        ws_host=ws_host,
+        grpc_service=grpc_service,
+        http_path=http_path,
+        http_host=http_host,
+        reality_pbk=reality_pbk,
+        reality_sid=reality_sid,
+        reality_spx=reality_spx,
+        flow=target.get("flow") or None,
+    )
+    session.add(node)
+    await session.flush()
+    # Update or seed the cached XuiClient row's exported_node_id so
+    # both /sync bookkeeping and the inbound-list export badges work
+    # across page reloads. The row may not exist yet if the client
+    # was added directly on the panel (not via PiTun's add-client
+    # endpoint) — in that case we insert a fresh row.
+    cached = (await session.exec(
+        select(XuiClientModel)
+        .where(XuiClientModel.xui_server_id == xui_server_id)
+        .where(XuiClientModel.inbound_remote_id == inbound_id)
+        .where(
+            (XuiClientModel.client_uuid == client_id)
+            | (XuiClientModel.label == client_id)
+        ),
+    )).first()
+    if cached is None:
+        cached = XuiClientModel(
+            xui_server_id=xui_server_id,
+            inbound_remote_id=inbound_id,
+            client_uuid=uuid_val,
+            label=label,
+            inbound_protocol=protocol or "vless",
+            inbound_port=port,
+            inbound_remark=inbound.get("remark") or "",
+            config_json=json.dumps(target),
+            last_synced_at=datetime.now(timezone.utc),
+            exported_node_id=node.id,
+        )
+        session.add(cached)
+    elif cached.exported_node_id is None:
+        cached.exported_node_id = node.id
+        session.add(cached)
+    await session.commit()
+    return {"node_id": node.id, "reused": False}
 
 
 # ── Chains (since v1.3.0-beta.7) ────────────────────────────────────────────
@@ -786,18 +1115,21 @@ async def _chain_to_read(
         .order_by(ChainChannel.order, ChainChannel.id),
     )).all()
 
+    # Display the VPS IPs in the chain summary, not the panel domain.
+    # The domain only acts as a Reality SNI cover; the actual
+    # connection address is the IP.
     relay_host = ""
     exit_host = ""
     relay_xs = await session.get(XuiServer, chain.relay_xui_server_id)
     if relay_xs is not None:
         relay_srv = await session.get(Server, relay_xs.server_id)
         if relay_srv is not None:
-            relay_host = relay_xs.domain or relay_srv.host
+            relay_host = relay_srv.host
     exit_xs = await session.get(XuiServer, chain.exit_xui_server_id)
     if exit_xs is not None:
         exit_srv = await session.get(Server, exit_xs.server_id)
         if exit_srv is not None:
-            exit_host = exit_xs.domain or exit_srv.host
+            exit_host = exit_srv.host
 
     return ChainRead(
         id=chain.id, name=chain.name,
@@ -885,6 +1217,256 @@ async def delete_chain(
     await orchestrate_delete(chain=chain, channels=list(channels), session=session)
 
 
+# ── Chain healthcheck ────────────────────────────────────────────────
+
+
+class ChainHealthCheckResult(BaseModel):
+    name: str
+    status: str  # "ok" | "warn" | "fail"
+    detail: Optional[str] = None
+
+
+class ChainHealthCheckResponse(BaseModel):
+    chain_id: int
+    ok: bool
+    checks: List[ChainHealthCheckResult]
+
+
+@router.post(
+    "/chains/{chain_id}/healthcheck",
+    response_model=ChainHealthCheckResponse,
+)
+async def healthcheck_chain(
+    chain_id: int, session: AsyncSession = Depends(get_session),
+):
+    """Run a series of probes against both panels + the live xray
+    config and return a structured pass/fail report.
+
+    Checks (per side where applicable):
+      * panel reachable + Bearer token valid
+      * xray process running on the VPS
+      * each chain inbound exists, is enabled, on the expected port
+      * relay's running xray has the chain outbound + matching
+        routing rule (otherwise traffic from clients gets blackholed)
+
+    The endpoint is read-only — no panel state is mutated.
+    """
+    chain = await session.get(ProxyChain, chain_id)
+    if chain is None:
+        raise HTTPException(404, detail=f"Chain id={chain_id} not found")
+    channels = list((await session.exec(
+        select(ChainChannel).where(ChainChannel.chain_id == chain_id),
+    )).all())
+
+    exit_xs = await session.get(XuiServer, chain.exit_xui_server_id)
+    relay_xs = await session.get(XuiServer, chain.relay_xui_server_id)
+    exit_srv = await session.get(Server, exit_xs.server_id) if exit_xs else None
+    relay_srv = await session.get(Server, relay_xs.server_id) if relay_xs else None
+
+    checks: List[ChainHealthCheckResult] = []
+
+    def _add(name: str, status: str, detail: Optional[str] = None) -> None:
+        checks.append(ChainHealthCheckResult(name=name, status=status, detail=detail))
+
+    async def _probe_side(
+        label: str, xs: Optional[XuiServer], srv: Optional[Server],
+        expected_remote_ids_ports: List[tuple[int, int, str]],
+    ) -> Optional[Dict[str, Any]]:
+        """Probe one panel: panel reachability, xray state, each inbound.
+        Returns the running xray config dict (for relay caller to use)
+        or None on early failure."""
+        if xs is None or srv is None:
+            _add(f"{label}: panel resolvable", "fail", "XuiServer or Server row missing")
+            return None
+        try:
+            async with XuiClient(
+                base_url=_api_base_url(xs, srv),
+                api_token=xs.api_token, verify_tls=False,
+            ) as c:
+                # 1. Reachability + auth.
+                try:
+                    await c.probe()
+                    _add(f"{label}: panel reachable", "ok", f"{srv.host}:{xs.panel_port}")
+                except XuiAPIError as exc:
+                    _add(f"{label}: panel reachable", "fail", str(exc))
+                    return None
+
+                # 2. xray state via server/status (Bearer).
+                running_cfg: Optional[Dict[str, Any]] = None
+                try:
+                    body = await c._request("GET", "/panel/api/server/status")
+                    obj = body.get("obj") or {}
+                    xray_obj = obj.get("xray") or {}
+                    state = str(xray_obj.get("state") or "")
+                    if state == "running":
+                        _add(f"{label}: xray running", "ok", xray_obj.get("version") or "")
+                    else:
+                        _add(
+                            f"{label}: xray running", "fail",
+                            f"state={state!r} errorMsg={xray_obj.get('errorMsg')!r}",
+                        )
+                except XuiAPIError as exc:
+                    _add(f"{label}: xray running", "fail", str(exc))
+
+                # 3. Live xray config (for outbound/routing checks below).
+                try:
+                    cfg_body = await c._request("GET", "/panel/api/server/getConfigJson")
+                    running_cfg = cfg_body.get("obj") or {}
+                except XuiAPIError as exc:
+                    _add(f"{label}: running config readable", "warn", str(exc))
+
+                # 4. Inbound checks.
+                for remote_id, expected_port, expected_tag in expected_remote_ids_ports:
+                    if not remote_id:
+                        _add(
+                            f"{label}: inbound for {expected_tag}",
+                            "fail",
+                            "no remote_id stored (chain create never completed?)",
+                        )
+                        continue
+                    try:
+                        ib_body = await c._request(
+                            "GET", f"/panel/api/inbounds/get/{remote_id}",
+                        )
+                        ib = ib_body.get("obj") or {}
+                        if not ib.get("enable"):
+                            _add(
+                                f"{label}: inbound #{remote_id}", "warn",
+                                f"disabled (expected enable=true)",
+                            )
+                        elif int(ib.get("port") or 0) != expected_port:
+                            _add(
+                                f"{label}: inbound #{remote_id}", "fail",
+                                f"port={ib.get('port')} expected {expected_port}",
+                            )
+                        else:
+                            _add(
+                                f"{label}: inbound #{remote_id}", "ok",
+                                f"port={expected_port} tag={ib.get('tag')}",
+                            )
+                    except XuiAPIError as exc:
+                        _add(
+                            f"{label}: inbound #{remote_id}", "fail",
+                            str(exc),
+                        )
+                return running_cfg
+        except Exception as exc:  # noqa: BLE001
+            _add(f"{label}: panel reachable", "fail", str(exc))
+            return None
+
+    # Exit side: just inbounds + xray-running.
+    exit_targets = [
+        (ch.exit_inbound_remote_id, ch.exit_port, _exit_tag(chain.id or 0, ch.name))
+        for ch in channels
+    ]
+    await _probe_side("Exit", exit_xs, exit_srv, exit_targets)
+
+    # Relay side: inbounds + check chain routing in running xray.
+    relay_targets = [
+        (ch.relay_inbound_remote_id, ch.relay_port, _relay_tag(chain.id or 0, ch.name))
+        for ch in channels
+    ]
+    relay_cfg = await _probe_side("Relay", relay_xs, relay_srv, relay_targets)
+
+    # The most diagnostic check: does the relay's running config
+    # actually route chain inbound traffic through the chain outbound?
+    # Without this, the inbound accepts TLS but xray has nowhere to
+    # send the bytes → silent drop / blackhole (the bug that bit us
+    # in beta.7 testing). Verify per channel.
+    if relay_cfg:
+        out_tags = {
+            (ob.get("tag") or "") for ob in (relay_cfg.get("outbounds") or [])
+        }
+        rules = (relay_cfg.get("routing") or {}).get("rules") or []
+        in_to_out: Dict[str, str] = {}
+        for r in rules:
+            for tag in (r.get("inboundTag") or []):
+                in_to_out[tag] = r.get("outboundTag") or ""
+        for ch in channels:
+            relay_tag = _relay_tag(chain.id or 0, ch.name)
+            chain_out_tag = f"chain-{chain.id or 0}-{ch.name}"
+            if chain_out_tag not in out_tags:
+                _add(
+                    f"Relay: chain outbound for {ch.name}", "fail",
+                    f"outbound {chain_out_tag!r} missing from running xray config "
+                    "— template push may have silently failed",
+                )
+                continue
+            mapped = in_to_out.get(relay_tag)
+            if mapped == chain_out_tag:
+                _add(
+                    f"Relay: routing {ch.name}", "ok",
+                    f"{relay_tag} → {chain_out_tag}",
+                )
+            else:
+                _add(
+                    f"Relay: routing {ch.name}", "fail",
+                    f"inbound {relay_tag!r} routes to {mapped!r}, "
+                    f"expected {chain_out_tag!r}",
+                )
+
+    # End-to-end live probe: ask the relay panel to actually dial
+    # through each chain outbound and fetch the Google generate_204
+    # test URL. This closes the loop — exits a "configured" but
+    # actually-broken hop (Reality cert mismatch, UFW on exit closed,
+    # exit xray crashed, etc.) won't pass.
+    if relay_cfg and relay_xs is not None and relay_srv is not None:
+        # Map running-config outbounds by tag so we send the same
+        # JSON shape xray actually has.
+        out_by_tag = {
+            (ob.get("tag") or ""): ob
+            for ob in (relay_cfg.get("outbounds") or [])
+        }
+        try:
+            async with XuiClient(
+                base_url=_api_base_url(relay_xs, relay_srv),
+                api_token=relay_xs.api_token, verify_tls=False,
+                panel_user=relay_xs.panel_user, panel_pass=relay_xs.panel_pass,
+            ) as c:
+                for ch in channels:
+                    chain_out_tag = f"chain-{chain.id or 0}-{ch.name}"
+                    ob = out_by_tag.get(chain_out_tag)
+                    if ob is None:
+                        # Already flagged above as fail; skip the live probe.
+                        continue
+                    try:
+                        result = await c.test_outbound(ob)
+                    except XuiAPIError as exc:
+                        _add(
+                            f"Relay → Exit live probe ({ch.name})",
+                            "fail", f"panel rejected: {exc}",
+                        )
+                        continue
+                    # The panel returns {success, delay, error?} —
+                    # `success: true` + a delay in ms is a green.
+                    if result.get("success") or (
+                        isinstance(result.get("delay"), (int, float))
+                        and result.get("delay", 0) > 0
+                        and not result.get("error")
+                    ):
+                        delay = result.get("delay")
+                        _add(
+                            f"Relay → Exit live probe ({ch.name})", "ok",
+                            f"delay={delay}ms" if delay is not None else None,
+                        )
+                    else:
+                        err = result.get("error") or result.get("msg") or str(result)
+                        _add(
+                            f"Relay → Exit live probe ({ch.name})", "fail",
+                            str(err)[:200],
+                        )
+        except Exception as exc:  # noqa: BLE001
+            _add(
+                "Relay → Exit live probe", "warn",
+                f"cookie session failed: {exc}",
+            )
+
+    ok = all(c.status == "ok" for c in checks)
+    return ChainHealthCheckResponse(
+        chain_id=chain_id, ok=ok, checks=checks,
+    )
+
+
 class ChainClientCreateBody(BaseModel):
     label: Optional[str] = None
 
@@ -944,11 +1526,10 @@ async def _chain_client_to_read(
     chain = await session.get(ProxyChain, chain_client.chain_id)
     relay_xs = await session.get(XuiServer, chain.relay_xui_server_id) if chain else None
     relay_srv = await session.get(Server, relay_xs.server_id) if relay_xs else None
-    relay_host = (
-        (relay_xs.domain or relay_srv.host)
-        if relay_xs and relay_srv
-        else "127.0.0.1"
-    )
+    # IP, not domain — see the export-nodes endpoint for the
+    # reasoning (the domain only matters as a Reality SNI cover, and
+    # that lives in `client_sni`).
+    relay_host = relay_srv.host if relay_srv else "127.0.0.1"
 
     pairs = (await session.exec(
         select(ChainClientChannel)
@@ -1107,7 +1688,11 @@ async def export_chain_client_nodes(
 
     relay_xs = await session.get(XuiServer, chain.relay_xui_server_id)
     relay_srv = await session.get(Server, relay_xs.server_id) if relay_xs else None
-    relay_host = (relay_xs.domain or relay_srv.host) if relay_xs and relay_srv else "127.0.0.1"
+    # Use the VPS's IP as the dial address, not the panel domain. The
+    # domain only matters as a Reality SNI cover — and that lives in
+    # `client_sni` per-channel. The IP also avoids extra DNS lookups
+    # on every health-check and lets us bypass DNS-level blocks.
+    relay_host = (relay_srv.host if relay_srv else "127.0.0.1")
 
     created_node_ids: List[int] = []
     for pair in pairs:
@@ -1120,6 +1705,11 @@ async def export_chain_client_nodes(
             # Already exported — skip silently. The UI sees the
             # node link via the chain-client read.
             continue
+        # Field names must match the Node ORM exactly. SQLModel /
+        # Pydantic silently drops unknown kwargs (no AttributeError),
+        # which is how earlier exports landed with tls='none' and
+        # blank reality_pbk / reality_sid — those kwargs were named
+        # `security`, `pbk`, `sid`.
         node = Node(
             name=f"{name_prefix}-{ch.name}",
             protocol="vless",
@@ -1127,11 +1717,11 @@ async def export_chain_client_nodes(
             port=ch.relay_port,
             uuid=pair.client_uuid,
             sni=ch.client_sni,
-            pbk=ch.relay_pbk,
-            sid=ch.relay_sid,
+            reality_pbk=ch.relay_pbk,
+            reality_sid=ch.relay_sid,
             flow="xtls-rprx-vision",
             transport="tcp",
-            security="reality",
+            tls="reality",
             fingerprint="chrome",
         )
         session.add(node)

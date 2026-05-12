@@ -47,6 +47,7 @@ from typing import Any, Dict, List, Optional
 
 from sqlmodel.ext.asyncio.session import AsyncSession
 
+from app.core.ssh import exec_remote_script
 from app.core.xui_api import XuiAPIError, XuiClient
 from app.models import (
     ChainChannel,
@@ -58,6 +59,77 @@ from app.models import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _no_expire_on_commit(session: AsyncSession) -> None:
+    """Disable expire-on-commit for the rest of this session's life.
+
+    SQLAlchemy's default is to mark every attached instance as expired
+    after `commit()`, so the next attribute access reloads via the DB.
+    In a sync session that's transparent; in an AsyncSession the
+    reload tries to dispatch IO through the sync greenlet and
+    crashes with `MissingGreenlet: can't call await_only() here`.
+
+    Every orchestrate_* function below commits multiple times and
+    keeps reading from the same ORM instances afterwards
+    (`exit_xs.api_token`, `exit_srv.host`, `channel.exit_port`, …).
+    Snapshotting each field by hand turned out to be brittle — new
+    fields kept getting added and the bug re-surfaced — so we just
+    flip the session-level flag once at entry and read freely.
+
+    Safe because the orchestrators are the sole writer to the
+    XuiServer / Server / ChainChannel rows they touch during the
+    call; nothing else races to overwrite them mid-flight.
+    """
+    try:
+        session.sync_session.expire_on_commit = False
+    except Exception:  # noqa: BLE001 — be defensive; SA internals may rename
+        pass
+
+
+async def _ufw_chain_ports(
+    server: Server, ports: List[int], *, action: str,
+) -> None:
+    """Open / close TCP ports on the VPS via SSH + UFW.
+
+    UFW on a default-deny VPS will silently drop SYNs to chain inbound
+    ports until we explicitly allow them. The reference setup-eu.sh /
+    setup-relay.sh do this inline because they run on the VPS itself;
+    PiTun creates inbounds through the panel API, so the UFW step has
+    to happen separately.
+
+    `action` is "allow" or "delete-allow"; best-effort — a failure
+    here is logged but doesn't abort the chain operation. The user
+    can always open / close the port manually.
+    """
+    if not ports:
+        return
+    cmd = "set -e\n"
+    for p in ports:
+        if action == "allow":
+            cmd += f"ufw allow {int(p)}/tcp || true\n"
+        elif action == "delete-allow":
+            cmd += f"ufw delete allow {int(p)}/tcp || true\n"
+    cmd += "ufw reload || true\n"
+    try:
+        res = await exec_remote_script(
+            host=server.host, port=server.port or 22,
+            username=server.user or "root",
+            password=server.password,
+            private_key=server.private_key,
+            script_content=cmd,
+            timeout=30.0,
+        )
+        if not res.ok:
+            logger.warning(
+                "ufw %s on %s ports=%s: exit=%s err=%s",
+                action, server.host, ports, res.exit_code, res.error,
+            )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "ufw %s on %s ports=%s raised: %s",
+            action, server.host, ports, exc,
+        )
 
 
 # ── Input shapes (used by the API layer + tests) ────────────────────────────
@@ -311,7 +383,11 @@ def build_xray_template_config(
     ]
 
     for ch in channels:
-        chain_tag = f"chain-{ch.name}"
+        # Chain id in the tag so two chains sharing the same channel
+        # name on the same relay don't collide when we rebuild the
+        # combined template (Phase 9 bug — pushed an empty template
+        # on delete that wiped routes for OTHER chains on the relay).
+        chain_tag = f"chain-{chain.id or 0}-{ch.name}"
         outbounds.append({
             "tag": chain_tag,
             "protocol": "vless",
@@ -399,6 +475,126 @@ def build_xray_template_config(
     }
 
 
+async def build_combined_relay_template(
+    *,
+    session: AsyncSession,
+    relay_xui_server_id: int,
+    exclude_chain_id: Optional[int] = None,
+) -> Dict[str, Any]:
+    """Build a single xrayTemplateConfig that covers EVERY chain
+    currently bound to this relay panel.
+
+    The relay's xrayTemplateConfig is a panel-wide setting — one
+    template per panel — so a per-chain push wipes any sibling chain
+    that happened to share the same relay. We instead rebuild from
+    the DB on every create/delete: pull all chains where
+    `relay_xui_server_id == this_panel` (minus `exclude_chain_id`
+    when the caller is mid-delete), walk their channels, and merge.
+
+    Outbound tags are namespaced as `chain-<chain_id>-<channel_name>`
+    so two different chains on the same relay can have channels
+    with identical names without colliding.
+    """
+    # Sqlmodel select kept local to avoid a circular import.
+    from sqlmodel import select as _select
+
+    q = _select(ProxyChain).where(
+        ProxyChain.relay_xui_server_id == relay_xui_server_id,
+    )
+    if exclude_chain_id is not None:
+        q = q.where(ProxyChain.id != exclude_chain_id)
+    chains_for_panel = list((await session.exec(q)).all())
+
+    # Synthesise a template that aggregates every chain's outbounds /
+    # rules. Easiest path: build per-chain and stitch the lists. We
+    # use the first chain (sorted by id) as the "owner" for the
+    # api-inbound port nonce so re-pushes stay deterministic.
+    aggregated_outbounds: List[Dict[str, Any]] = [
+        {"tag": "api", "protocol": "freedom", "settings": {}},
+    ]
+    aggregated_rules: List[Dict[str, Any]] = [
+        {"type": "field", "inboundTag": ["api"], "outboundTag": "api"},
+    ]
+
+    chains_for_panel.sort(key=lambda c: c.id or 0)
+    api_port = 50001
+    for ch_idx, c in enumerate(chains_for_panel):
+        channels_q = _select(ChainChannel).where(ChainChannel.chain_id == c.id)
+        chs = list((await session.exec(channels_q)).all())
+        if not chs:
+            continue
+        # Need exit_host for the per-chain outbound. Each chain can
+        # have its own exit panel — resolve via the chain's
+        # exit_xui_server_id → Server.host.
+        exit_xs_row = await session.get(XuiServer, c.exit_xui_server_id)
+        exit_srv_row = (
+            await session.get(Server, exit_xs_row.server_id)
+            if exit_xs_row else None
+        )
+        exit_host_val = exit_srv_row.host if exit_srv_row else "127.0.0.1"
+        per_chain = build_xray_template_config(
+            chain=c, channels=chs, exit_host=exit_host_val,
+        )
+        # Skip per-chain's api/direct/blocked baseline — we add it
+        # once at the bottom. Keep only the `chain-*` outbounds and
+        # rules.
+        for ob in per_chain.get("outbounds", []):
+            tag = ob.get("tag") or ""
+            if tag.startswith("chain-"):
+                aggregated_outbounds.append(ob)
+        for r in per_chain.get("routing", {}).get("rules", []):
+            out_tag = r.get("outboundTag") or ""
+            if out_tag.startswith("chain-"):
+                aggregated_rules.append(r)
+        if ch_idx == 0:
+            # api_port is derived from the chain id; first chain wins.
+            api_port = 50000 + (c.id or 0) % 9999
+
+    # Tail outbounds + the bittorrent block rule. Same as a single-
+    # chain template.
+    aggregated_outbounds.append({
+        "tag": "direct", "protocol": "freedom",
+        "settings": {"domainStrategy": "AsIs"},
+    })
+    aggregated_outbounds.append({
+        "tag": "blocked", "protocol": "blackhole", "settings": {},
+    })
+    aggregated_rules.append({
+        "type": "field", "outboundTag": "blocked",
+        "protocol": ["bittorrent"],
+    })
+
+    return {
+        "log": {"loglevel": "warning"},
+        "api": {
+            "services": ["HandlerService", "LoggerService", "StatsService"],
+            "tag": "api",
+        },
+        "inbounds": [
+            {
+                "listen": "127.0.0.1", "port": api_port,
+                "protocol": "dokodemo-door",
+                "settings": {"address": "127.0.0.1"},
+                "tag": "api",
+            },
+        ],
+        "outbounds": aggregated_outbounds,
+        "routing": {
+            "domainStrategy": "IPIfNonMatch",
+            "rules": aggregated_rules,
+        },
+        "policy": {
+            "levels": {
+                "0": {"statsUserDownlink": True, "statsUserUplink": True},
+            },
+            "system": {
+                "statsInboundDownlink": True, "statsInboundUplink": True,
+            },
+        },
+        "stats": {},
+    }
+
+
 # ── Port allocation ─────────────────────────────────────────────────────────
 
 
@@ -459,30 +655,23 @@ async def _push_xray_template(
     relay_client: XuiClient,
     template: Dict[str, Any],
 ) -> None:
-    """POST the xrayTemplateConfig to the relay panel via /panel/
-    setting/update.
+    """Replace the relay's xray template via /panel/xray/update.
 
-    The setting endpoint takes a form-encoded body of the form
-    `<key>=<value>` for each setting to update; xrayTemplateConfig
-    expects the value as a JSON STRING (one more layer of JSON-in-
-    JSON — the panel deserialises it itself before handing to Xray).
+    3x-ui v3.0.1 dropped `xrayTemplateConfig` from /panel/setting/all
+    — xray config now lives in its own XraySettingController under
+    /panel/xray/*. We fetch the current template (just to preserve
+    `outboundTestUrl`), then push the new one. Cookie+CSRF auth —
+    requires the relay XuiClient to be built with `panel_user` +
+    `panel_pass`.
     """
-    body = {
-        "xrayTemplateConfig": json.dumps(template, separators=(",", ":")),
-    }
-    await relay_client._request(
-        "POST", "/panel/setting/update", json=body,
-        timeout=30.0,
-    )
+    current = await relay_client.get_xray_setting()
+    test_url = current.get("outboundTestUrl") if isinstance(current, dict) else None
+    await relay_client.push_xray_setting(template, test_url)
 
 
 async def _restart_xray(relay_client: XuiClient) -> None:
-    """POST /panel/server/restartXrayService — picks up the
-    xrayTemplateConfig we just pushed."""
-    await relay_client._request(
-        "POST", "/panel/server/restartXrayService",
-        timeout=30.0,
-    )
+    """Restart Xray on the relay so it picks up the new template."""
+    await relay_client.restart_xray()
 
 
 async def orchestrate_create(
@@ -518,6 +707,7 @@ async def orchestrate_create(
     on the panels may still need manual cleanup the user wants to
     see.
     """
+    _no_expire_on_commit(session)
     # Step 1 — resolve panels.
     exit_xs = await session.get(XuiServer, draft.exit_xui_server_id)
     relay_xs = await session.get(XuiServer, draft.relay_xui_server_id)
@@ -543,20 +733,42 @@ async def orchestrate_create(
     exit_url = _api_base_url(exit_xs, exit_srv)
     relay_url = _api_base_url(relay_xs, relay_srv)
 
+    # Snapshot every ORM attribute we'll need AFTER the step-3 commit
+    # below. The commit expires every attached instance, and any
+    # subsequent attribute read triggers SQLAlchemy's sync lazy-load
+    # callback inside the async session — `MissingGreenlet: can't call
+    # await_only() here`. Cache them all here once.
+    exit_token = exit_xs.api_token
+    relay_token = relay_xs.api_token
+    exit_host = exit_srv.host
+    relay_host = relay_srv.host  # noqa: F841 — kept for symmetry / future use
+    # Cookie+CSRF creds — only the relay needs them (to update
+    # xrayTemplateConfig via /panel/setting/update in step 5).
+    relay_user = relay_xs.panel_user
+    relay_pass = relay_xs.panel_pass
+
     # Step 2 — port allocation.
     # Probe each panel for ports already in use so we don't collide
     # with hand-added inbounds the operator may have set up.
     async with XuiClient(
-        base_url=exit_url, api_token=exit_xs.api_token, verify_tls=False,
+        base_url=exit_url, api_token=exit_token, verify_tls=False,
     ) as exit_client:
         exit_existing = await exit_client.list_inbounds()
     async with XuiClient(
-        base_url=relay_url, api_token=relay_xs.api_token, verify_tls=False,
+        base_url=relay_url, api_token=relay_token, verify_tls=False,
     ) as relay_client:
         relay_existing = await relay_client.list_inbounds()
 
     exit_used = {int(ib.get("port") or 0) for ib in exit_existing}
     relay_used = {int(ib.get("port") or 0) for ib in relay_existing}
+    # xui-pro panels run on a domain → Caddy/nginx/LE-ACME hold
+    # ports 80 + 443 outside the panel's own inbound list. Binding
+    # an inbound there makes Xray start with "address already in
+    # use" and leaves the chain half-broken. Reserve them upfront.
+    if exit_xs.mode == "xui-pro":
+        exit_used |= {80, 443}
+    if relay_xs.mode == "xui-pro":
+        relay_used |= {80, 443}
 
     # Apply user-supplied ports first (so the auto-pick respects them
     # as "already chosen"), then fill gaps.
@@ -566,16 +778,20 @@ async def orchestrate_create(
         if ch.exit_port == 0:
             ch.exit_port = _pick_port(auto_exit, exit_used, 10000, 19999)
         elif ch.exit_port in exit_used:
+            why = "reserved by panel HTTPS (Caddy / ACME)" \
+                if ch.exit_port in (80, 443) and exit_xs.mode == "xui-pro" \
+                else "already in use on exit panel"
             raise ValueError(
-                f"Channel {ch.name!r}: exit_port {ch.exit_port} "
-                "already in use on exit panel"
+                f"Channel {ch.name!r}: exit_port {ch.exit_port} — {why}"
             )
         if ch.relay_port == 0:
             ch.relay_port = _pick_port(auto_relay, relay_used, 20000, 29999)
         elif ch.relay_port in relay_used:
+            why = "reserved by panel HTTPS (Caddy / ACME)" \
+                if ch.relay_port in (80, 443) and relay_xs.mode == "xui-pro" \
+                else "already in use on relay panel"
             raise ValueError(
-                f"Channel {ch.name!r}: relay_port {ch.relay_port} "
-                "already in use on relay panel"
+                f"Channel {ch.name!r}: relay_port {ch.relay_port} — {why}"
             )
 
     # Step 3 — DB rows. Commit so we have a chain_id to use in tags
@@ -612,6 +828,14 @@ async def orchestrate_create(
         channel_rows.append(row)
     await session.flush()  # populate row.id for each channel
     await session.commit()
+    # commit() above expires every attached ORM instance. The loop in
+    # step 4 below reads `ch.name` / `chain.id` / etc., which would
+    # otherwise trigger SQLAlchemy's sync lazy-load callback inside
+    # the async session — `MissingGreenlet: can't call await_only()`.
+    # Refresh them eagerly to repopulate the attribute cache.
+    await session.refresh(chain)
+    for row in channel_rows:
+        await session.refresh(row)
 
     # Step 4 — panel-side create. Track every (panel, remote_id)
     # pair we successfully add so rollback can undo them.
@@ -620,9 +844,10 @@ async def orchestrate_create(
 
     try:
         async with XuiClient(
-            base_url=exit_url, api_token=exit_xs.api_token, verify_tls=False,
+            base_url=exit_url, api_token=exit_token, verify_tls=False,
         ) as exit_client, XuiClient(
-            base_url=relay_url, api_token=relay_xs.api_token, verify_tls=False,
+            base_url=relay_url, api_token=relay_token, verify_tls=False,
+            panel_user=relay_user, panel_pass=relay_pass,
         ) as relay_client:
 
             for ch in channel_rows:
@@ -688,11 +913,30 @@ async def orchestrate_create(
                 ch.relay_sid = relay_sid
                 session.add(ch)
             await session.commit()
+            # Same expire-on-commit gotcha as above — step 5 reads
+            # chain.id, ch.exit_port, ch.relay_port, ch.exit_uuid, etc.
+            await session.refresh(chain)
+            for row in channel_rows:
+                await session.refresh(row)
 
-            # Step 5 — push xrayTemplateConfig to the relay.
-            template = build_xray_template_config(
-                chain=chain, channels=channel_rows,
-                exit_host=exit_srv.host,
+            # Step 4e — open the chain inbound ports in UFW. Without
+            # this, SYNs from clients (relay) and from the relay's
+            # chain outbound (exit) get silently dropped by the
+            # default-deny ufw policy on a fresh VPS.
+            exit_ports_open = [ch.exit_port for ch in channel_rows]
+            relay_ports_open = [ch.relay_port for ch in channel_rows]
+            await _ufw_chain_ports(exit_srv, exit_ports_open, action="allow")
+            await _ufw_chain_ports(relay_srv, relay_ports_open, action="allow")
+
+            # Step 5 — push xrayTemplateConfig to the relay. We
+            # rebuild a COMBINED template covering every chain bound
+            # to this relay (including the one we just inserted into
+            # the DB at step 3) — the panel stores one template per
+            # panel, so a single-chain push would wipe routes for any
+            # other chains sharing the same relay.
+            template = await build_combined_relay_template(
+                session=session,
+                relay_xui_server_id=chain.relay_xui_server_id,
             )
             await _push_xray_template(
                 relay_client=relay_client, template=template,
@@ -711,8 +955,8 @@ async def orchestrate_create(
             chain.id, len(created_exit), len(created_relay), exc,
         )
         await _rollback_inbounds(
-            exit_url=exit_url, exit_token=exit_xs.api_token,
-            relay_url=relay_url, relay_token=relay_xs.api_token,
+            exit_url=exit_url, exit_token=exit_token,
+            relay_url=relay_url, relay_token=relay_token,
             exit_ids=created_exit, relay_ids=created_relay,
         )
         chain.status = "failed"
@@ -794,6 +1038,7 @@ async def orchestrate_delete(
     after the inbounds disappear — but doing it anyway gives us a
     clean slate for the next chain on the same relay. So we do.
     """
+    _no_expire_on_commit(session)
     exit_xs = await session.get(XuiServer, chain.exit_xui_server_id)
     relay_xs = await session.get(XuiServer, chain.relay_xui_server_id)
     exit_srv = await session.get(Server, exit_xs.server_id) if exit_xs else None
@@ -822,6 +1067,7 @@ async def orchestrate_delete(
             async with XuiClient(
                 base_url=_api_base_url(relay_xs, relay_srv),
                 api_token=relay_xs.api_token, verify_tls=False,
+                panel_user=relay_xs.panel_user, panel_pass=relay_xs.panel_pass,
             ) as c:
                 for ch in channels:
                     if ch.relay_inbound_remote_id:
@@ -832,15 +1078,20 @@ async def orchestrate_delete(
                                 "delete: relay inbound %s removal failed: %s",
                                 ch.relay_inbound_remote_id, e,
                             )
-                # Push an empty-chain xrayTemplateConfig so xray's
-                # routing table doesn't carry stale rules.
+                # Push a COMBINED template covering every OTHER
+                # chain still bound to this relay. Pushing an empty
+                # template would wipe routes for unrelated sibling
+                # chains (the beta.7 footgun: deleting chain A killed
+                # chain B because both rode this same relay). The
+                # excluded `chain.id` is the one being torn down.
                 try:
-                    empty_template = build_xray_template_config(
-                        chain=chain, channels=[],
-                        exit_host=exit_srv.host if exit_srv else "127.0.0.1",
+                    template = await build_combined_relay_template(
+                        session=session,
+                        relay_xui_server_id=chain.relay_xui_server_id,
+                        exclude_chain_id=chain.id,
                     )
                     await _push_xray_template(
-                        relay_client=c, template=empty_template,
+                        relay_client=c, template=template,
                     )
                     await _restart_xray(c)
                 except Exception as e:  # noqa: BLE001
@@ -849,6 +1100,22 @@ async def orchestrate_delete(
                     )
         except Exception as e:  # noqa: BLE001
             logger.warning("delete: relay panel unreachable: %s", e)
+
+    # Close the chain ports in UFW on both VPSes. Mirror of the
+    # `_ufw_chain_ports(..., action="allow")` calls in
+    # orchestrate_create. Best-effort.
+    if exit_srv:
+        await _ufw_chain_ports(
+            exit_srv,
+            [ch.exit_port for ch in channels if ch.exit_port],
+            action="delete-allow",
+        )
+    if relay_srv:
+        await _ufw_chain_ports(
+            relay_srv,
+            [ch.relay_port for ch in channels if ch.relay_port],
+            action="delete-allow",
+        )
 
     # DB cleanup — channels + clients + client-channels cascade from
     # the chain row via ON DELETE CASCADE in the migration.
@@ -876,6 +1143,7 @@ async def orchestrate_add_client(
     channels 0..K-1 to keep the user/channel cardinality in lock-step
     (otherwise /sync would report N-1 hand-added clients next time).
     """
+    _no_expire_on_commit(session)
     relay_xs = await session.get(XuiServer, chain.relay_xui_server_id)
     if relay_xs is None:
         raise RuntimeError(f"relay panel id={chain.relay_xui_server_id} missing")
@@ -917,6 +1185,13 @@ async def orchestrate_add_client(
                     client_uuid=uuid,
                 )
                 session.add(cc)
+            # x-ui-pro persists the client to the panel DB but doesn't
+            # automatically reload Xray's running config (the generated
+            # /usr/local/x-ui/bin/config.json still has only the prior
+            # clients). Without this restart, the new UUID returns a
+            # silent Reality drop → "Offline" Node + zero-byte speed
+            # tests. Bounce Xray to pick up the inbound update.
+            await c.restart_xray()
     except Exception:
         # Rollback panel-side adds (best-effort).
         if added:
@@ -957,6 +1232,7 @@ async def orchestrate_delete_client(
 ) -> None:
     """Remove every panel-side client this ChainClient maps to, then
     drop the DB row (which cascades the ClientChannel pairs)."""
+    _no_expire_on_commit(session)
     relay_xs = await session.get(XuiServer, chain.relay_xui_server_id)
     if relay_xs is None:
         await session.delete(chain_client)
@@ -986,6 +1262,13 @@ async def orchestrate_delete_client(
                         "delete client: panel del_client (%s,%s) failed: %s",
                         ch.relay_inbound_remote_id, pair.client_uuid, e,
                     )
+            # Mirror orchestrate_add_client: x-ui-pro persists the
+            # delete to the panel DB but doesn't reload Xray, so the
+            # removed UUID would keep working until the next restart.
+            try:
+                await c.restart_xray()
+            except Exception as e:  # noqa: BLE001
+                logger.warning("delete client: restart_xray failed: %s", e)
     except Exception as e:  # noqa: BLE001
         logger.warning("delete client: relay panel unreachable: %s", e)
 

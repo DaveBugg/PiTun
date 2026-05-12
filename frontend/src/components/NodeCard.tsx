@@ -66,6 +66,7 @@ export function NodeCard({
           </div>
           <div className="min-w-0">
             <div className="flex items-center gap-2 flex-wrap">
+              <span className="text-xs text-gray-500 font-mono shrink-0">#{node.id}</span>
               <span className="text-sm font-medium text-gray-100 truncate">{node.name}</span>
               {isActive && (
                 <span className="rounded-full bg-brand-600/20 px-2 py-0.5 text-xs text-brand-400">

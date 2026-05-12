@@ -295,27 +295,57 @@ async def deploy_to_server(
 
     # 443-slot mutual exclusion (since v1.3.0-beta.7).
     # NaiveProxy's Caddy and x-ui-pro's nginx both bind :443/tcp on the
-    # VPS — they can't coexist on the same machine. WireGuard is UDP-
-    # only and slot-orthogonal. Without this guard, deploying x-ui on
-    # top of an already-naive server runs apt-installs to completion
-    # and only fails when nginx tries to bind :443, leaving the box
-    # half-installed. Refuse synchronously instead.
-    WEB_443_SLOT = {"naive", "xui"}
-    if body.protocol in WEB_443_SLOT:
-        existing_443 = (await session.exec(
+    # VPS. Bare-mode x-ui (no domain) runs on a random high port and is
+    # slot-orthogonal — it can coexist with naive. WireGuard is UDP-
+    # only and never conflicts. So the guard fires only when BOTH the
+    # candidate and the existing deployment claim :443.
+    def _binds_443(protocol: str, config: dict | None) -> bool:
+        if protocol == "naive":
+            return True
+        if protocol == "xui":
+            # xui-pro mode is "domain is set". Bare-mode = empty domain.
+            return bool((config or {}).get("domain"))
+        return False
+
+    if _binds_443(body.protocol, body.config or {}):
+        existing = (await session.exec(
             select(ServerDeployment)
             .where(ServerDeployment.server_id == server_id)
-            .where(ServerDeployment.protocol.in_(WEB_443_SLOT))
-            .where(ServerDeployment.protocol != body.protocol)
+            .where(ServerDeployment.protocol.in_({"naive", "xui"}))
+            .where(ServerDeployment.status == "deployed")
+        )).all()
+        for d in existing:
+            if d.protocol == body.protocol:
+                continue
+            if _binds_443(d.protocol, d.config or {}):
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        f"Server already has {d.protocol!r} deployed "
+                        f"which binds :443. Uninstall it before deploying "
+                        f"{body.protocol!r} — naive (Caddy) and x-ui-pro "
+                        f"(nginx) can't coexist on the same VPS. "
+                        f"Bare-mode x-ui (no domain) would be fine."
+                    ),
+                )
+
+    # Only one x-ui panel per server. Re-running the installer
+    # rotates panel creds + API token, orphaning the stored XuiServer
+    # row (and any chain that references it). Mode-switching (bare ⇄
+    # pro) goes through uninstall + fresh install.
+    if body.protocol == "xui":
+        existing_xui = (await session.exec(
+            select(ServerDeployment)
+            .where(ServerDeployment.server_id == server_id)
+            .where(ServerDeployment.protocol == "xui")
+            .where(ServerDeployment.status == "deployed")
         )).first()
-        if existing_443 is not None and existing_443.status == "deployed":
+        if existing_xui is not None:
             raise HTTPException(
                 status_code=409,
                 detail=(
-                    f"Server already has {existing_443.protocol!r} deployed "
-                    f"which binds :443. Uninstall it before deploying "
-                    f"{body.protocol!r} — naive (Caddy) and x-ui-pro "
-                    f"(nginx) can't coexist on the same VPS."
+                    "Server already has x-ui deployed. Uninstall it "
+                    "first to switch modes (bare ⇄ pro) or reinstall."
                 ),
             )
 
@@ -823,13 +853,73 @@ async def uninstall_server(
                 # is exactly the bug the user hit ("removed but still
                 # showing in X-ui sidebar").
                 if protocol == "xui":
-                    from app.models import XuiServer
+                    from app.models import (
+                        XuiServer,
+                        XuiClient as XuiClientModel,
+                        ProxyChain,
+                        ChainChannel,
+                        ChainClient,
+                        ChainClientChannel,
+                        Node,
+                    )
                     xs = (await runner_session.exec(
                         select(XuiServer)
                         .where(XuiServer.server_id == srv_id)
                     )).first()
                     if xs is not None:
                         xs_id = xs.id
+                        # Collect every exported Node row tied to this
+                        # panel BEFORE we cascade-delete the linking
+                        # rows. The FK from XuiClient / ChainClientChannel
+                        # to Node is ON DELETE SET NULL (reverse-only),
+                        # so a panel uninstall would otherwise leave
+                        # orphan Node entries in /nodes that can never
+                        # authenticate (their UUIDs are gone).
+                        orphan_node_ids: set[int] = set()
+                        # 1. Inbound clients exported via X-ui page.
+                        xui_clients = (await runner_session.exec(
+                            select(XuiClientModel)
+                            .where(XuiClientModel.xui_server_id == xs_id)
+                            .where(XuiClientModel.exported_node_id.is_not(None))
+                        )).all()
+                        for c in xui_clients:
+                            if c.exported_node_id:
+                                orphan_node_ids.add(c.exported_node_id)
+                        # 2. Chain clients exported via the Chains tab.
+                        # Walk chains using this panel (either side) →
+                        # their channels → client/channel pairs.
+                        chains = (await runner_session.exec(
+                            select(ProxyChain)
+                            .where(
+                                (ProxyChain.exit_xui_server_id == xs_id)
+                                | (ProxyChain.relay_xui_server_id == xs_id)
+                            )
+                        )).all()
+                        for ch in chains:
+                            pairs = (await runner_session.exec(
+                                select(ChainClientChannel)
+                                .join(
+                                    ChainClient,
+                                    ChainClient.id == ChainClientChannel.chain_client_id,
+                                )
+                                .where(ChainClient.chain_id == ch.id)
+                                .where(ChainClientChannel.exported_node_id.is_not(None))
+                            )).all()
+                            for pair in pairs:
+                                if pair.exported_node_id:
+                                    orphan_node_ids.add(pair.exported_node_id)
+                        for nid in orphan_node_ids:
+                            node_row = await runner_session.get(Node, nid)
+                            if node_row is not None:
+                                await runner_session.delete(node_row)
+                        if orphan_node_ids:
+                            await runner_session.commit()
+                            await on_line(
+                                "stdout",
+                                f"[pitun] Cascade-removed {len(orphan_node_ids)} "
+                                "orphan Node row(s) tied to the panel.",
+                            )
+
                         await runner_session.delete(xs)
                         await runner_session.commit()
                         await on_line(

@@ -768,6 +768,10 @@ export interface XuiInbound {
   total?: number
   // Parsed clientStats from /list (panel adds it for some endpoints).
   clientStats?: Array<{ email: string; total?: number; up?: number; down?: number }>
+  // Backend-attached map of `{client_uuid_or_email: node_id}` for
+  // clients PiTun has already exported as routable Nodes. Lets the
+  // UI render an "→ Node #N" badge without a separate round-trip.
+  _pitun_exports?: Record<string, number>
 }
 
 /** PiTun-managed XuiClient row — returned by `POST .../clients` and

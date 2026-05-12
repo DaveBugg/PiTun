@@ -1,10 +1,11 @@
-"""Bearer-authenticated client for the 3x-ui v3.0.0+ panel API.
+"""Authenticated client for the 3x-ui v3.0.0+ panel API.
 
-PiTun talks to deployed x-ui panels strictly over HTTPS-or-HTTP +
-`Authorization: Bearer <api_token>`. Cookie/CSRF auth is reserved
-for the install-time bootstrap inside `setup-xui-server.sh` — once
-that script emits the URI, every subsequent panel interaction runs
-through this module via a token.
+Default auth is `Authorization: Bearer <api_token>`. A handful of
+UI-internal endpoints (notably `/panel/setting/update`) live outside
+`/panel/api/*` and reject Bearer — the panel docs themselves note
+that Bearer applies only to `/panel/api/*`. For those we fall back
+to the cookie+CSRF login flow (POST `/login` + `/csrf-token`) on
+demand; the credentials come from `panel_user` / `panel_pass`.
 
 Why Bearer-only at the API layer
 --------------------------------
@@ -33,10 +34,14 @@ Endpoint surface (subset — what PiTun needs in beta.7)
   GET    /panel/api/server/getNewUUID              → util
   GET    /panel/api/server/getNewX25519Cert        → util (Reality keypair)
 
-The setting endpoints (`getApiToken` / `regenerateApiToken`) live
-under `/panel/setting/*` (XUIController, cookie-only) — NOT here.
-Those are install-time only; runtime token rotation goes through
-the deploy-runner re-running `setup-xui-server.sh` if needed.
+UI-internal endpoints (cookie+CSRF) used by PiTun:
+  POST   /panel/setting/update                     → push xrayTemplateConfig
+  POST   /login        (with X-CSRF-Token)         → bootstrap session
+  GET    /csrf-token                               → mint CSRF token
+
+Token rotation endpoints (`getApiToken` / `regenerateApiToken`) live
+under `/panel/setting/*` as well and remain install-time only — the
+deploy-runner re-runs `setup-xui-server.sh` for that.
 
 TLS verification
 ----------------
@@ -106,7 +111,14 @@ class XuiClient:
     api_token: str
     verify_tls: bool = False
     timeout: float = _DEFAULT_TIMEOUT
+    # Cookie+CSRF credentials. Optional because the vast majority of
+    # call sites only need Bearer (inbounds/clients/server-utils). The
+    # chain orchestrator's relay client passes them so it can update
+    # xrayTemplateConfig via /panel/setting/update.
+    panel_user: Optional[str] = None
+    panel_pass: Optional[str] = None
     _http: Optional[httpx.AsyncClient] = None
+    _csrf_token: Optional[str] = None
 
     async def __aenter__(self) -> "XuiClient":
         self._ensure_client()
@@ -234,6 +246,143 @@ class XuiClient:
                 status=resp.status_code,
             )
         return body
+
+    # ── Cookie + CSRF (UI-internal endpoints) ─────────────────────────
+    async def _ensure_cookie_session(self) -> str:
+        """Mint a CSRF token + log in if we don't have a live session.
+        Returns the CSRF token to attach to the next unsafe request.
+
+        Idempotent: if we already have a CSRF token AND the httpx
+        client cookie jar holds a session cookie, no network calls.
+        On a 401/403 from a downstream cookie call the caller can
+        force a refresh by `self._csrf_token = None` and retrying.
+        """
+        client = self._ensure_client()
+        if self._csrf_token and client.cookies:
+            return self._csrf_token
+        if not self.panel_user or not self.panel_pass:
+            raise XuiAPIError(
+                "cookie-mode endpoint requires panel_user + panel_pass",
+                kind="auth",
+            )
+        # 1. GET /csrf-token. Doesn't need auth.
+        url = f"{self.base_url}/csrf-token"
+        try:
+            r = await client.get(url, headers={"X-Requested-With": "XMLHttpRequest"})
+        except httpx.HTTPError as exc:
+            raise XuiAPIError(
+                f"csrf-token transport error: {exc}", kind="transport",
+            ) from exc
+        if not r.is_success:
+            raise XuiAPIError(
+                f"csrf-token HTTP {r.status_code}: {r.text[:200]}",
+                kind="http", status=r.status_code,
+            )
+        try:
+            csrf = (r.json() or {}).get("obj")
+        except ValueError:
+            csrf = None
+        if not isinstance(csrf, str) or not csrf:
+            raise XuiAPIError(
+                f"csrf-token returned no obj: {r.text[:200]}", kind="format",
+            )
+
+        # 2. POST /login. The panel accepts JSON {username, password,
+        # twoFactorCode?} and sets a session cookie on success. CSRF
+        # token must be in the header.
+        login_url = f"{self.base_url}/login"
+        try:
+            r = await client.post(
+                login_url,
+                json={"username": self.panel_user, "password": self.panel_pass},
+                headers={
+                    "X-CSRF-Token": csrf,
+                    "X-Requested-With": "XMLHttpRequest",
+                },
+            )
+        except httpx.HTTPError as exc:
+            raise XuiAPIError(
+                f"/login transport error: {exc}", kind="transport",
+            ) from exc
+        if not r.is_success:
+            raise XuiAPIError(
+                f"/login HTTP {r.status_code}: {r.text[:200]}",
+                kind="auth", status=r.status_code,
+            )
+        try:
+            body = r.json() or {}
+        except ValueError:
+            body = {}
+        if not body.get("success"):
+            raise XuiAPIError(
+                f"/login rejected: {body.get('msg') or r.text[:200]}",
+                kind="auth", status=r.status_code,
+            )
+
+        self._csrf_token = csrf
+        return csrf
+
+    async def _cookie_request(
+        self,
+        method: str,
+        path: str,
+        *,
+        form: Optional[Dict[str, Any]] = None,
+        timeout: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        """Issue a UI-internal request authenticated by session cookie
+        + CSRF header. Body is sent form-encoded (the only shape the
+        UI endpoints accept). One auto-retry on 401/403 after refresh.
+        """
+        client = self._ensure_client()
+        url = f"{self.base_url}{path}"
+        for attempt in range(2):
+            csrf = await self._ensure_cookie_session()
+            headers = {
+                "X-CSRF-Token": csrf,
+                "X-Requested-With": "XMLHttpRequest",
+                "Content-Type": "application/x-www-form-urlencoded",
+            }
+            try:
+                resp = await client.request(
+                    method, url, data=form or {}, headers=headers,
+                    timeout=timeout if timeout is not None else self.timeout,
+                )
+            except httpx.TimeoutException as exc:
+                raise XuiAPIError(
+                    f"timeout after {timeout or self.timeout}s on {method} {path}",
+                    kind="timeout",
+                ) from exc
+            except httpx.HTTPError as exc:
+                raise XuiAPIError(
+                    f"transport error on {method} {path}: {exc}",
+                    kind="transport",
+                ) from exc
+            if resp.status_code in (401, 403) and attempt == 0:
+                self._csrf_token = None
+                client.cookies.clear()
+                continue
+            if not resp.is_success:
+                raise XuiAPIError(
+                    f"HTTP {resp.status_code} on {method} {path}: {resp.text[:300]}",
+                    kind="http", status=resp.status_code,
+                )
+            try:
+                body = resp.json()
+            except ValueError as exc:
+                raise XuiAPIError(
+                    f"non-JSON response on {method} {path}: {resp.text[:200]}",
+                    kind="format", status=resp.status_code,
+                ) from exc
+            if not isinstance(body, dict) or not body.get("success"):
+                msg = body.get("msg") if isinstance(body, dict) else None
+                raise XuiAPIError(
+                    f"panel rejected {method} {path}: {msg or body!r}",
+                    kind="api", status=resp.status_code,
+                )
+            return body
+        # unreachable — loop either returns or raises on second iter
+        raise XuiAPIError(f"unreachable cookie retry exhausted on {path}", kind="api")
 
     # ── High-level API ─────────────────────────────────────────────────
     async def probe(self) -> None:
@@ -373,3 +522,102 @@ class XuiClient:
                 f"x25519 payload missing keys: {obj!r}", kind="format",
             )
         return priv, pub
+
+    async def restart_xray(self) -> None:
+        """POST /panel/api/server/restartXrayService. Bearer-authed —
+        documented under the Server API section of the panel docs.
+        """
+        await self._request(
+            "POST", "/panel/api/server/restartXrayService",
+            timeout=_LARGE_PAYLOAD_TIMEOUT,
+        )
+
+    async def get_xray_setting(self) -> Dict[str, Any]:
+        """Fetch the panel's current xray template + metadata.
+
+        Returns the parsed `obj` dict — keys typically include
+        `xraySetting` (the full xray config dict), `outboundTestUrl`,
+        `inboundTags`, `clientReverseTags`. Cookie+CSRF auth: the
+        `/panel/xray/*` namespace is the v3.0.1 XraySettingController
+        (separate from `/panel/setting/*` which has no xray bits).
+        """
+        body = await self._cookie_request(
+            "POST", "/panel/xray/", timeout=_LARGE_PAYLOAD_TIMEOUT,
+        )
+        obj = body.get("obj")
+        # The panel double-encodes: `obj` is a JSON STRING. Parse once.
+        if isinstance(obj, str):
+            import json as _json
+            try:
+                obj = _json.loads(obj)
+            except ValueError as exc:
+                raise XuiAPIError(
+                    f"/panel/xray/ obj not JSON-decodable: {obj[:200]}",
+                    kind="format",
+                ) from exc
+        if not isinstance(obj, dict):
+            raise XuiAPIError(
+                f"/panel/xray/ unexpected shape: {type(obj).__name__}",
+                kind="format",
+            )
+        return obj
+
+    async def test_outbound(
+        self,
+        outbound: Dict[str, Any],
+        *,
+        mode: str = "",
+        all_outbounds: Optional[List[Dict[str, Any]]] = None,
+    ) -> Dict[str, Any]:
+        """Probe an outbound via /panel/xray/testOutbound.
+
+        `mode=""` (default) does a full HTTP probe through the
+        outbound to the panel's configured test URL (defaults to
+        Google's generate_204). `mode="tcp"` is a faster dial-only
+        check that doesn't pass any L7 traffic. Cookie+CSRF auth.
+
+        Returns the parsed `obj` from the response — a dict typically
+        with `success`, `delay`, `error` (when the probe failed).
+        """
+        import json as _json
+        form: Dict[str, str] = {
+            "outbound": _json.dumps(outbound, separators=(",", ":")),
+        }
+        if mode:
+            form["mode"] = mode
+        if all_outbounds is not None:
+            form["allOutbounds"] = _json.dumps(
+                all_outbounds, separators=(",", ":"),
+            )
+        body = await self._cookie_request(
+            "POST", "/panel/xray/testOutbound",
+            form=form, timeout=_LARGE_PAYLOAD_TIMEOUT,
+        )
+        obj = body.get("obj")
+        return obj if isinstance(obj, dict) else {"raw": obj}
+
+    async def push_xray_setting(
+        self,
+        xray_setting: Dict[str, Any],
+        outbound_test_url: Optional[str] = None,
+    ) -> None:
+        """Replace the panel's xray template via /panel/xray/update.
+
+        Body is form-encoded with two fields:
+          * `xraySetting`     — full xray config as a JSON string
+          * `outboundTestUrl` — defaults to Google's generate_204 if
+                                empty / omitted
+        Cookie+CSRF auth.
+        """
+        import json as _json
+        form: Dict[str, str] = {
+            "xraySetting": _json.dumps(xray_setting, separators=(",", ":")),
+            "outboundTestUrl": (
+                outbound_test_url
+                or "https://www.google.com/generate_204"
+            ),
+        }
+        await self._cookie_request(
+            "POST", "/panel/xray/update",
+            form=form, timeout=_LARGE_PAYLOAD_TIMEOUT,
+        )

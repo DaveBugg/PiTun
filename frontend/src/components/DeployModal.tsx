@@ -65,11 +65,26 @@ export function DeployModal({
   const existingXui = deployments.find((d) => d.protocol === 'xui')
 
   // 443-slot mutex (matches the backend guard in `POST /servers/{id}/
-  // deploy`): naive ⇔ xui can't coexist because both bind :443. Used
-  // below to grey out the conflicting button so users see WHY they
-  // can't pick the other one without a backend 409 round-trip.
-  const naiveBlocksXui = existingNaive?.status === 'deployed'
-  const xuiBlocksNaive = existingXui?.status === 'deployed'
+  // deploy`). Only deployments that actually bind :443 conflict:
+  //   * naive → always (Caddy)
+  //   * xui   → only when domain is set (xui-pro nginx). Bare-mode xui
+  //             runs on a random high port and is slot-orthogonal.
+  // So bare-xui + naive can coexist; only xui-pro blocks naive.
+  const existingXuiHasDomain = !!(
+    (existingXui?.config as { domain?: string } | undefined)?.domain
+  )
+  const naiveOn443Deployed = existingNaive?.status === 'deployed'
+  const xuiProDeployed = existingXui?.status === 'deployed' && existingXuiHasDomain
+  const xuiAnyDeployed = existingXui?.status === 'deployed'
+  // naive can't be installed when xui-pro already holds :443.
+  const naiveDisabled = xuiProDeployed
+  // Only one x-ui panel per server — re-running the installer
+  // rotates the admin creds + API token and would orphan the stored
+  // XuiServer row. Switching modes (bare ↔ pro) requires uninstall
+  // first.
+  const xuiDisabled = xuiAnyDeployed
+  // The domain field inside XuiFields warns when naive holds :443.
+  const naiveBlocksXuiPro = naiveOn443Deployed
 
   // Protocol selector — defaults to whichever is already deployed; if
   // neither, default to naive (the older / more common path).
@@ -237,8 +252,9 @@ export function DeployModal({
             serverPort={server.port}
             xuiDomain={xuiDomain}
             xuiEmail={xuiEmail}
-            naiveBlocksXui={naiveBlocksXui}
-            xuiBlocksNaive={xuiBlocksNaive}
+            naiveDisabled={naiveDisabled}
+            xuiDisabled={xuiDisabled}
+            naiveBlocksXuiPro={naiveBlocksXuiPro}
             wgClientName={wgClientName}
             wgServerPort={wgServerPort}
             wgDns1={wgDns1}
@@ -291,8 +307,9 @@ function DeployForm(props: {
   serverPort: number
   xuiDomain: string
   xuiEmail: string
-  naiveBlocksXui: boolean
-  xuiBlocksNaive: boolean
+  naiveDisabled: boolean
+  xuiDisabled: boolean
+  naiveBlocksXuiPro: boolean
   wgClientName: string; wgServerPort: string; wgDns1: string
   wgDns2: string; wgAllowedIps: string
   error: string; submitting: boolean
@@ -317,6 +334,10 @@ function DeployForm(props: {
   const isNaive = props.protocol === 'naive'
   const isXui = props.protocol === 'xui'
   const isWg = props.protocol === 'wireguard'
+  // Pre-empt the backend 409 when the operator typed a domain into
+  // x-ui Fields but naive is already on :443. The warning banner in
+  // XuiFields explains why; here we just gate the submit button.
+  const xuiProConflict = isXui && !!props.xuiDomain.trim() && props.naiveBlocksXuiPro
   return (
     <form onSubmit={props.onSubmit}>
       {props.error && (
@@ -336,10 +357,10 @@ function DeployForm(props: {
           title={t('NaiveProxy', 'NaiveProxy')}
           subtitle={t('HTTPS, single tunnel', 'HTTPS, один туннель')}
           onClick={() => props.setProtocol('naive')}
-          disabled={props.xuiBlocksNaive}
+          disabled={props.naiveDisabled}
           disabledHint={t(
-            'x-ui is already deployed on :443. Uninstall it first.',
-            'x-ui уже занимает :443. Сначала удалите его.',
+            'x-ui-pro already holds :443 on this server. Uninstall it (or switch to bare-mode) first.',
+            'x-ui-pro уже занимает :443 на этом сервере. Сначала удалите его (или переключите на bare-режим).',
           )}
         />
         <ProtocolPick
@@ -348,10 +369,10 @@ function DeployForm(props: {
           title={t('x-ui', 'x-ui')}
           subtitle={t('panel + Reality/TLS', 'панель + Reality/TLS')}
           onClick={() => props.setProtocol('xui')}
-          disabled={props.naiveBlocksXui}
+          disabled={props.xuiDisabled}
           disabledHint={t(
-            'NaiveProxy is already deployed on :443. Uninstall it first.',
-            'NaiveProxy уже занимает :443. Сначала удалите его.',
+            'x-ui is already installed on this server. Uninstall it first to switch modes (bare ⇄ pro) or reinstall.',
+            'x-ui уже установлен на этом сервере. Сначала удалите его, чтобы сменить режим (bare ⇄ pro) или переустановить.',
           )}
         />
         <ProtocolPick
@@ -385,6 +406,7 @@ function DeployForm(props: {
           email={props.xuiEmail}
           setDomain={props.setXuiDomain}
           setEmail={props.setXuiEmail}
+          naiveBlocksXuiPro={props.naiveBlocksXuiPro}
         />
       )}
       {isWg && (
@@ -447,7 +469,11 @@ function DeployForm(props: {
         </button>
         <button
           type="submit"
-          disabled={props.submitting}
+          disabled={props.submitting || xuiProConflict}
+          title={xuiProConflict ? t(
+            'Clear the domain to install in bare mode, or uninstall NaiveProxy first.',
+            'Очистите домен для bare-режима или сначала удалите NaiveProxy.',
+          ) : undefined}
           className="flex-1 rounded-lg bg-brand-600 px-4 py-2 text-sm font-medium text-white hover:bg-brand-500 disabled:opacity-50 transition-colors flex items-center justify-center gap-1.5"
         >
           {props.submitting ? (
@@ -857,11 +883,24 @@ function XuiFields(props: {
   email: string
   setDomain: (v: string) => void
   setEmail: (v: string) => void
+  naiveBlocksXuiPro: boolean
 }) {
   const t = useT()
   const hasDomain = !!props.domain.trim()
+  const proConflict = hasDomain && props.naiveBlocksXuiPro
   return (
     <div className="space-y-3">
+      {proConflict && (
+        <div className="rounded-lg border border-red-700/50 bg-red-900/20 px-3 py-2 text-xs text-red-200 flex items-start gap-2">
+          <Sparkles className="h-3.5 w-3.5 mt-0.5 flex-shrink-0 text-red-400" />
+          <span>
+            {t(
+              'NaiveProxy already binds :443 on this VPS. Domain mode (x-ui-pro) needs :443 for nginx + Let\'s Encrypt — clear the domain to install in bare mode, or uninstall NaiveProxy first.',
+              'NaiveProxy уже занимает :443 на этом VPS. Domain-режим (x-ui-pro) требует :443 для nginx + Let\'s Encrypt — очистите домен для установки в bare-режиме, либо сначала удалите NaiveProxy.',
+            )}
+          </span>
+        </div>
+      )}
       <div className="rounded-lg border border-blue-700/40 bg-blue-900/10 px-3 py-2 text-xs text-blue-200 flex items-start gap-2">
         <Sparkles className="h-3.5 w-3.5 mt-0.5 flex-shrink-0 text-blue-400" />
         <span>

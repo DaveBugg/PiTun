@@ -166,16 +166,18 @@ class TestBuildXrayTemplate:
         )
 
         # Chain outbounds — one per channel + api + direct + blocked.
+        # Tag is `chain-<chain_id>-<channel_name>` so two chains
+        # sharing the same channel name on one relay don't collide.
         tags = [o["tag"] for o in tpl["outbounds"]]
-        assert "chain-alpha" in tags
-        assert "chain-beta" in tags
+        assert "chain-3-alpha" in tags
+        assert "chain-3-beta" in tags
         assert "api" in tags
         assert "direct" in tags
         assert "blocked" in tags
 
         # Alpha outbound: vless+xhttp+reality dialing the exit host
         # on the exit-port with our UUID + Reality material.
-        alpha = next(o for o in tpl["outbounds"] if o["tag"] == "chain-alpha")
+        alpha = next(o for o in tpl["outbounds"] if o["tag"] == "chain-3-alpha")
         assert alpha["protocol"] == "vless"
         vnext = alpha["settings"]["vnext"][0]
         assert vnext["address"] == "1.2.3.4"
@@ -196,12 +198,12 @@ class TestBuildXrayTemplate:
         # Each chain rule by tag-shape (we don't enforce ordering).
         alpha_rule = next(
             r for r in rules
-            if r.get("outboundTag") == "chain-alpha"
+            if r.get("outboundTag") == "chain-3-alpha"
         )
         assert alpha_rule["inboundTag"] == ["chain-3-alpha-relay"]
         beta_rule = next(
             r for r in rules
-            if r.get("outboundTag") == "chain-beta"
+            if r.get("outboundTag") == "chain-3-beta"
         )
         assert beta_rule["inboundTag"] == ["chain-3-beta-relay"]
         assert any(
