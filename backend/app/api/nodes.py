@@ -394,6 +394,40 @@ async def import_nodes(
 # imports. Same envelope shape is used by the Servers and (eventually)
 # Routing exports — reuse the helper functions in `app/core/io_bundle.py`.
 
+@router.get("/export-uris")
+async def export_nodes_uris(session: AsyncSession = Depends(get_session)):
+    """Plain-text export — one VPN URI per line.
+
+    Counterpart to the existing `POST /api/nodes/import` (which takes
+    a list of URIs). Useful for "give me my list of nodes to paste
+    into another client" or for a quick offline backup that any vless
+    / v2rayN-compatible reader can ingest.
+
+    Nodes whose protocol doesn't have a URI form (currently
+    WireGuard) are skipped silently; everything else round-trips
+    through PiTun's own parser.
+    """
+    from app.core.uri_formatter import node_to_uri
+
+    rows = (await session.exec(select(Node).order_by(Node.order, Node.id))).all()
+    lines: List[str] = []
+    for n in rows:
+        uri = node_to_uri(n)
+        if uri:
+            lines.append(uri)
+    body = "\n".join(lines) + ("\n" if lines else "")
+
+    from fastapi.responses import PlainTextResponse
+    return PlainTextResponse(
+        content=body,
+        headers={
+            "Content-Disposition": (
+                f'attachment; filename="pitun-nodes-{datetime.now().strftime("%Y%m%d-%H%M%S")}.txt"'
+            ),
+        },
+    )
+
+
 @router.get("/export-json")
 async def export_nodes_json(session: AsyncSession = Depends(get_session)):
     """Return all nodes as a downloadable JSON bundle."""

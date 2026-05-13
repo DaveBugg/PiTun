@@ -1,7 +1,9 @@
 import { useState, useRef } from 'react'
 import { Upload, Link } from 'lucide-react'
 import { clsx } from 'clsx'
+import { useQueryClient } from '@tanstack/react-query'
 import { useImportNodes } from '@/hooks/useNodes'
+import { nodesApi } from '@/api/client'
 
 interface Props {
   onDone?: (count: number) => void
@@ -10,13 +12,37 @@ interface Props {
 
 type Tab = 'text' | 'file'
 
+/** Detect whether the pasted/uploaded content is a PiTun JSON bundle
+ *  vs. a list of proxy URIs. Returns `'json'` only when the parse
+ *  succeeds AND the envelope carries the recognised `kind` — any
+ *  other JSON-looking blob (random snippet that happens to start
+ *  with `{`) gets treated as a URI list so the URI parser can do
+ *  its own best-effort thing. */
+function detectKind(text: string): 'json' | 'uri' {
+  const t = text.trim()
+  if (!t.startsWith('{') && !t.startsWith('[')) return 'uri'
+  try {
+    const parsed = JSON.parse(t)
+    if (
+      parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      && (parsed as { kind?: string }).kind === 'pitun-nodes-export'
+    ) {
+      return 'json'
+    }
+  } catch { /* not JSON — fall through */ }
+  return 'uri'
+}
+
 export function UriImport({ onDone, onCancel }: Props) {
   const [tab, setTab] = useState<Tab>('text')
   const [uris, setUris] = useState('')
   const [result, setResult] = useState<{ imported: number; skipped: number; errors: string[] } | null>(null)
   const fileRef = useRef<HTMLInputElement>(null)
+  const qc = useQueryClient()
 
-  const { mutate: importNodes, isPending } = useImportNodes()
+  const { mutate: importNodes, isPending: importingUris } = useImportNodes()
+  const [importingJson, setImportingJson] = useState(false)
+  const isPending = importingUris || importingJson
 
   const handleFile = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
@@ -27,8 +53,31 @@ export function UriImport({ onDone, onCancel }: Props) {
     setTab('text')
   }
 
-  const handleSubmit = () => {
+  const handleSubmit = async () => {
     if (!uris.trim()) return
+    const kind = detectKind(uris)
+    if (kind === 'json') {
+      // PiTun JSON bundle — route to /import-json (full-fidelity
+      // round-trip). `replace=false` by default so it's an additive
+      // merge — duplicates skipped on natural-key match.
+      setImportingJson(true)
+      try {
+        const bundle = JSON.parse(uris)
+        const data = await nodesApi.importJSON(bundle, false)
+        qc.invalidateQueries({ queryKey: ['nodes'] })
+        setResult({ imported: data.imported, skipped: data.skipped, errors: data.errors })
+        onDone?.(data.imported)
+      } catch (err) {
+        setResult({
+          imported: 0, skipped: 0,
+          errors: [String((err as Error).message || err)],
+        })
+      } finally {
+        setImportingJson(false)
+      }
+      return
+    }
+    // URI list — paste or .txt file contents.
     importNodes(
       { uris },
       {
@@ -67,9 +116,9 @@ export function UriImport({ onDone, onCancel }: Props) {
           onClick={() => fileRef.current?.click()}
         >
           <Upload className="h-8 w-8 text-gray-600 mb-2" />
-          <p className="text-sm text-gray-400">Click to upload subscription / URI list file</p>
-          <p className="text-xs text-gray-600 mt-1">Supports: .txt, .yaml, .yml, base64</p>
-          <input ref={fileRef} type="file" className="hidden" accept=".txt,.yaml,.yml" onChange={handleFile} />
+          <p className="text-sm text-gray-400">Click to upload a nodes file</p>
+          <p className="text-xs text-gray-600 mt-1">Auto-detect: PiTun JSON bundle, URI list, Clash YAML, base64</p>
+          <input ref={fileRef} type="file" className="hidden" accept=".txt,.yaml,.yml,.json" onChange={handleFile} />
         </div>
       )}
 
@@ -78,9 +127,17 @@ export function UriImport({ onDone, onCancel }: Props) {
           value={uris}
           onChange={(e) => setUris(e.target.value)}
           rows={10}
-          placeholder={`Paste proxy URIs (one per line) or base64-encoded list:\n\nvless://...\nvmess://...\ntrojan://...\nnaive+https://user:pass@example.com:443/?padding=1#MyNaive`}
+          placeholder={`Paste proxy URIs (one per line) or a PiTun JSON bundle — format is auto-detected:\n\nvless://...\nvmess://...\ntrojan://...\nnaive+https://user:pass@example.com:443/?padding=1#MyNaive`}
           className="w-full rounded-lg bg-gray-800 border border-gray-700 px-3 py-2 text-sm text-gray-100 font-mono focus:border-brand-500 focus:outline-none resize-none"
         />
+      )}
+
+      {uris.trim() && (
+        <p className="text-[11px] text-gray-500">
+          Detected format: <span className="font-mono text-gray-300">
+            {detectKind(uris) === 'json' ? 'PiTun JSON bundle' : 'URI list / Clash / base64'}
+          </span>
+        </p>
       )}
 
       {result && (

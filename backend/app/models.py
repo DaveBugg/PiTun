@@ -48,6 +48,11 @@ class Node(SQLModel, table=True):
     # gRPC
     grpc_service: Optional[str] = None
     grpc_mode: str = "gun"
+    # `:authority` HTTP/2 header. nginx-fronted gRPC inbounds route by
+    # this — e.g. x-ui-pro's trojan-grpc preset defaults it to the
+    # panel domain. Optional; left NULL the outbound omits the field
+    # and xray uses the destination host as authority.
+    grpc_authority: Optional[str] = None
 
     # H2 / XHTTP / HTTPUpgrade
     http_path: str = "/"

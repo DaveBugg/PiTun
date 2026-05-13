@@ -55,6 +55,7 @@ class NodeBase(BaseModel):
     ws_headers: Optional[str] = None
     grpc_service: Optional[str] = None
     grpc_mode: str = "gun"
+    grpc_authority: Optional[str] = None
     http_path: str = "/"
     http_host: Optional[str] = None
     kcp_seed: Optional[str] = None

@@ -3,7 +3,7 @@ import {
 } from 'lucide-react'
 import { clsx } from 'clsx'
 import type { Node } from '@/types'
-import { StatusBadge, ProtocolBadge } from './StatusBadge'
+import { StatusBadge } from './StatusBadge'
 import { useServers } from '@/hooks/useServers'
 
 interface Props {
@@ -75,15 +75,33 @@ export function NodeCard({
               )}
             </div>
             <div className="mt-1 flex items-center gap-2 flex-wrap">
-              <ProtocolBadge protocol={node.protocol} />
+              {/* Order: ip:port first (most identifying), then
+                  protocol → transport → security. Shared palette
+                  with the X-ui InboundCard so both lists feel
+                  coherent: protocol=blue, transport=green,
+                  reality=purple, tls=orange. `tcp` is the implicit
+                  default for vless-reality-vision and similar — we
+                  hide it to keep the row tight. */}
               <span className="text-xs text-gray-500 font-mono">
                 {node.address}:{node.port}
               </span>
+              <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-900/30 text-blue-300 border border-blue-700/40 uppercase font-mono">
+                {node.protocol}
+              </span>
               {node.transport !== 'tcp' && (
-                <span className="text-xs text-gray-600 uppercase">{node.transport}</span>
+                <span className="text-[10px] px-1.5 py-0.5 rounded bg-green-900/30 text-green-300 border border-green-700/40 uppercase font-mono">
+                  {node.transport}
+                </span>
               )}
-              {node.tls !== 'none' && (
-                <span className="text-xs text-gray-600 uppercase">{node.tls}</span>
+              {node.tls === 'reality' && (
+                <span className="text-[10px] px-1.5 py-0.5 rounded bg-purple-900/30 text-purple-300 border border-purple-700/40 uppercase font-mono">
+                  reality
+                </span>
+              )}
+              {node.tls === 'tls' && (
+                <span className="text-[10px] px-1.5 py-0.5 rounded bg-orange-900/30 text-orange-300 border border-orange-700/40 uppercase font-mono">
+                  tls
+                </span>
               )}
               {node.chain_node_id && (
                 <span className="text-xs text-blue-400 font-mono flex items-center gap-1">

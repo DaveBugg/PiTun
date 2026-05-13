@@ -30,6 +30,7 @@ const DEFAULTS: FormData = {
   ws_headers: '',
   grpc_service: '',
   grpc_mode: 'gun',
+  grpc_authority: '',
   http_path: '/',
   http_host: '',
   kcp_seed: '',
@@ -271,7 +272,23 @@ export function NodeForm({ initial, onSave, onCancel, loading, nodes = [] }: Pro
             </div>
           )}
 
-          {showGrpc && fld('gRPC Service Name', inp('grpc_service'))}
+          {showGrpc && (
+            <div className="space-y-3">
+              {fld('gRPC Service Name', inp('grpc_service'))}
+              <div className="grid grid-cols-2 gap-3">
+                {fld(
+                  'Mode',
+                  sel('grpc_mode', ['gun', 'multi']),
+                  'multi = H2 multi-stream (recommended behind nginx).',
+                )}
+                {fld(
+                  'Authority',
+                  inp('grpc_authority'),
+                  ':authority HTTP/2 header — nginx routes by this. Leave empty to use destination host.',
+                )}
+              </div>
+            </div>
+          )}
 
           {showHttp && (
             <div className="grid grid-cols-2 gap-3">

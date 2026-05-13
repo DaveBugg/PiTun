@@ -1004,6 +1004,26 @@ else
     warn "Could not verify HTTPS in 60s. Check 'journalctl -u caddy -n 100' for details."
 fi
 
+# ── 10.5 Post-install Go cleanup ────────────────────────────────────────────
+# xcaddy bootstraps a full Go toolchain (~2.5 GB) just to build Caddy
+# with the forwardproxy plugin, then never needs it again. Drop it
+# once Caddy itself is running so small-disk VPSes don't carry the
+# dead weight. Re-running the installer re-downloads Go on demand
+# (~80 MB, ~1 min).
+#
+# Inlined (was a sibling `cleanup-go.sh` in an earlier revision, but
+# PiTun deploys setup-*.sh via single-file SFTP — the helper never
+# made it to the VPS and `set -e` aborted the script).
+if systemctl is-active --quiet caddy 2>/dev/null; then
+    if [ -e /root/go ] || [ -e /root/.cache/go-build ] || [ -e /usr/local/go ]; then
+        log "Freeing ~2.5 GB by removing Go SDK / build cache (Caddy already built)..."
+        rm -rf /root/go /root/.cache/go-build /usr/local/go 2>/dev/null || true
+        [ -L /usr/local/bin/go ] && rm -f /usr/local/bin/go
+        info "Go tooling removed (re-installs on next reinstall if needed)."
+    fi
+fi
+
+
 # ── 11. Print import URI ────────────────────────────────────────────────────
 # URL-encode user and pass for the URI
 urlencode() {

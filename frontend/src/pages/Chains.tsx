@@ -296,6 +296,19 @@ function ChainDetail({ chain }: { chain: ChainRead }) {
     },
   })
 
+  const delChannelMut = useMutation({
+    mutationFn: (channelId: number) =>
+      xuiApi.deleteChainChannel(chain.id, channelId),
+    onSuccess: () => {
+      // Channel delete may also fold the chain away (last-channel
+      // branch) — invalidate both lists so the UI reflects either
+      // outcome without a manual refresh.
+      qc.invalidateQueries({ queryKey: ['xui', 'chains'] })
+      qc.invalidateQueries({ queryKey: ['xui', 'chains', chain.id, 'clients'] })
+      qc.invalidateQueries({ queryKey: ['nodes'] })
+    },
+  })
+
   // Diagnostic sweep — reachability, xray state, inbound presence,
   // and the most-bitten check: relay's running config has the chain
   // outbound + matching routing rule. Result panel stays mounted
@@ -420,19 +433,60 @@ function ChainDetail({ chain }: { chain: ChainRead }) {
           {t('Channels', 'Каналы')}
         </div>
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-          {chain.channels.map((ch) => (
-            <div key={ch.id} className="rounded-lg border border-gray-800 bg-gray-900/40 p-3">
-              <div className="flex items-center gap-1.5 flex-wrap">
-                <span className="font-medium text-gray-100">{ch.name}</span>
-                <span className="text-[10px] px-1.5 py-0.5 rounded font-mono bg-gray-800 text-gray-400">
-                  :{ch.relay_port} → :{ch.exit_port}
-                </span>
+          {chain.channels.map((ch) => {
+            const isDeletingThis =
+              delChannelMut.isPending && delChannelMut.variables === ch.id
+            const isLast = chain.channels.length === 1
+            return (
+              <div key={ch.id} className="rounded-lg border border-gray-800 bg-gray-900/40 p-3 flex items-start justify-between gap-2">
+                <div className="min-w-0">
+                  <div className="flex items-center gap-1.5 flex-wrap">
+                    <span className="font-medium text-gray-100">{ch.name}</span>
+                    <span className="text-[10px] px-1.5 py-0.5 rounded font-mono bg-gray-800 text-gray-400">
+                      :{ch.relay_port} → :{ch.exit_port}
+                    </span>
+                  </div>
+                  <div className="text-[11px] text-gray-500 mt-0.5 font-mono">
+                    SNI: {ch.client_sni}
+                  </div>
+                </div>
+                {/* Per-channel delete — drops both inbounds, closes
+                    UFW ports, repushes the relay template without
+                    this channel, and cascade-removes any exported
+                    Nodes. The "last channel" case folds the whole
+                    chain away (warns the operator first). */}
+                <button
+                  type="button"
+                  onClick={async () => {
+                    const ok = await confirm({
+                      title: isLast
+                        ? t('Delete the last channel? Chain will be removed.', 'Удалить последний канал? Цепочка тоже удалится.')
+                        : t(`Delete channel "${ch.name}"?`, `Удалить канал «${ch.name}»?`),
+                      body: isLast
+                        ? t(
+                            'This is the only channel left in this chain. Removing it tears down the whole chain — every client config and exported Node tied to this chain will stop working.',
+                            'Это единственный канал в цепочке. После удаления вся цепочка снимется — все клиентские конфиги и экспортированные Nodes по этой цепочке перестанут работать.',
+                          )
+                        : t(
+                            `Inbounds on both panels will be removed and any Nodes exported from "${ch.name}" will be cascade-deleted. Other channels in this chain stay untouched.`,
+                            `Инбаунды на обеих панелях будут удалены, и Nodes, экспортированные из «${ch.name}», тоже снесутся каскадом. Остальные каналы цепочки не затронуты.`,
+                          ),
+                      confirmLabel: t('Delete', 'Удалить'),
+                      danger: true,
+                    })
+                    if (ok) delChannelMut.mutate(ch.id)
+                  }}
+                  disabled={isDeletingThis}
+                  title={t('Delete channel', 'Удалить канал')}
+                  className="rounded-md border border-gray-700 hover:bg-red-900/30 hover:border-red-700/40 hover:text-red-300 p-1 text-gray-500 disabled:opacity-50 shrink-0"
+                >
+                  {isDeletingThis
+                    ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    : <Trash2 className="h-3.5 w-3.5" />}
+                </button>
               </div>
-              <div className="text-[11px] text-gray-500 mt-0.5 font-mono">
-                SNI: {ch.client_sni}
-              </div>
-            </div>
-          ))}
+            )
+          })}
         </div>
       </div>
 

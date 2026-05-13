@@ -89,6 +89,27 @@ export function RuleEditor({ initial, nodeOptions = [], onSave, onCancel, loadin
   const set = <K extends keyof typeof form>(k: K, v: typeof form[K]) =>
     setForm((f) => ({ ...f, [k]: v }))
 
+  // `match_value` is the canonical form (comma-joined, no whitespace)
+  // and is what we ship to the API. The textarea stores its own
+  // "raw" state because normalising on every keystroke deletes the
+  // trailing separator the operator just typed (`abc,` becomes
+  // `abc` before they can type the second tag — no commas survive,
+  // no newlines either). Canonicalisation happens at submit and
+  // when GeoTagPicker appends a tag.
+  const canonicalize = (raw: string): string =>
+    raw
+      .split(/[\n,]+/)
+      .map((s) => s.trim())
+      .filter(Boolean)
+      .join(',')
+  const toDisplay = (canonical: string): string =>
+    canonical
+      ? canonical.split(',').map((s) => s.trim()).filter(Boolean).join(',\n')
+      : ''
+  const [matchValueRaw, setMatchValueRaw] = useState<string>(
+    () => toDisplay(initial?.match_value ?? ''),
+  )
+
   const isNodeAction = form.action.startsWith('node:') || form.action === '_node'
   const isBalancerAction = form.action.startsWith('balancer:') || form.action === '_balancer'
 
@@ -106,7 +127,10 @@ export function RuleEditor({ initial, nodeOptions = [], onSave, onCancel, loadin
       name: form.name,
       enabled: form.enabled,
       rule_type: form.rule_type,
-      match_value: form.match_value,
+      // Canonicalise here — the textarea is the source of truth
+      // while the dialog is open, but the API expects a flat
+      // comma-joined string without trailing separators / spaces.
+      match_value: canonicalize(matchValueRaw),
       action: action as RoutingRuleCreate['action'],
       order: form.order,
     })
@@ -156,26 +180,35 @@ export function RuleEditor({ initial, nodeOptions = [], onSave, onCancel, loadin
           <span className="ml-2 font-normal text-gray-600">({RULE_TYPE_HINTS[form.rule_type]})</span>
         </label>
         <textarea
-          value={form.match_value}
-          onChange={(e) => set('match_value', e.target.value)}
+          value={matchValueRaw}
+          onChange={(e) => setMatchValueRaw(e.target.value)}
           required
-          rows={3}
+          rows={8}
           // `<datalist>` autocomplete only works on `<input>`, not
           // `<textarea>`. Comma-separated multi-tag entry is a textarea
           // here, so we keep the textarea for editing but show a
           // browse-the-tag-list helper underneath when the rule_type
           // is one we know how to autocomplete.
-          className="w-full rounded bg-gray-800 border border-gray-700 px-3 py-1.5 text-sm text-gray-100 font-mono focus:border-brand-500 focus:outline-none resize-none"
+          //
+          // `resize-y` lets the operator drag for taller views when
+          // editing big geosite groups (50+ tags). Default 8 rows
+          // already covers most cases without the dialog growing
+          // beyond viewport.
+          className="w-full rounded bg-gray-800 border border-gray-700 px-3 py-1.5 text-sm text-gray-100 font-mono focus:border-brand-500 focus:outline-none resize-y"
           placeholder={RULE_TYPE_HINTS[form.rule_type]}
         />
         {(form.rule_type === 'geosite' || form.rule_type === 'geoip') && geoCategories && (
           <GeoTagPicker
             available={form.rule_type === 'geosite' ? geoCategories.geosite : geoCategories.geoip}
-            currentValue={form.match_value}
+            currentValue={canonicalize(matchValueRaw)}
             onAppend={(tag) => {
-              // Append with comma-separator if there's existing content
-              const cur = form.match_value.trim()
-              set('match_value', cur ? `${cur},${tag}` : tag)
+              // Append to the raw display state too — the textarea is
+              // the source of truth while the dialog is open, the
+              // form field is only computed at submit.
+              setMatchValueRaw((cur) => {
+                const trimmed = cur.replace(/[\s,]+$/, '')
+                return trimmed ? `${trimmed},\n${tag}` : tag
+              })
             }}
           />
         )}

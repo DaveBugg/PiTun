@@ -132,6 +132,68 @@ async def _ufw_chain_ports(
         )
 
 
+async def _clear_xray_template_via_ssh(server: Server) -> None:
+    """Hard-clear `xrayTemplateConfig` on the panel + restart x-ui.
+
+    Why over SSH instead of the panel API:
+      The `/panel/xray/update` endpoint only knows how to set
+      `xraySetting` to a value. Pushing an empty string stores `''`
+      in the settings table but the panel keeps using the previously
+      assembled `bin/config.json` — so the chain outbound + routing
+      rule survive a subsequent restart and any unmatched inbound
+      traffic ends up falling through to `* -> blocked`. Only a hard
+      `DELETE FROM settings WHERE key = 'xrayTemplateConfig'` + an
+      explicit `x-ui restart` causes the panel to rebuild routing
+      from defaults (api → api, geoip:private → blocked,
+      bittorrent → blocked) so standalone inbounds get the implicit
+      catch-all `direct` outbound xray picks when no rule matches.
+
+    Called on the LAST chain-delete for a relay panel so the operator
+    can keep adding plain inbounds without their traffic blackholing.
+    Best-effort: failure is logged but doesn't unwind the delete.
+    """
+    cmd = (
+        "set -e\n"
+        # The panel can install its sqlite in either location depending
+        # on how old the installer was; try both.
+        "for db in /etc/x-ui/x-ui.db /usr/local/x-ui/db/x-ui.db; do\n"
+        "  if [ -f \"$db\" ]; then\n"
+        "    sqlite3 \"$db\" \"DELETE FROM settings WHERE key='xrayTemplateConfig';\"\n"
+        "  fi\n"
+        "done\n"
+        "x-ui restart >/dev/null 2>&1 || systemctl restart x-ui >/dev/null 2>&1 || true\n"
+    )
+    try:
+        # `x-ui restart` can take 30-45s on slow VPSes (Go's runtime
+        # init + xray's startup + the panel writing a fresh
+        # bin/config.json from sqlite). Give it real headroom; the
+        # operator-visible side of the chain delete already returned
+        # by the time this runs, so a long wait here doesn't block UX.
+        res = await exec_remote_script(
+            host=server.host, port=server.port or 22,
+            username=server.user or "root",
+            password=server.password,
+            private_key=server.private_key,
+            script_content=cmd,
+            timeout=90.0,
+        )
+        if not res.ok:
+            logger.warning(
+                "clear xrayTemplateConfig on %s: exit=%s err=%s",
+                server.host, res.exit_code, res.error,
+            )
+        else:
+            logger.info(
+                "Last chain removed from relay %s — xrayTemplateConfig "
+                "deleted + x-ui restarted (panel auto-routing restored).",
+                server.host,
+            )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "clear xrayTemplateConfig on %s raised: %s", server.host, exc,
+        )
+
+
 # ── Input shapes (used by the API layer + tests) ────────────────────────────
 
 
@@ -770,10 +832,39 @@ async def orchestrate_create(
     if relay_xs.mode == "xui-pro":
         relay_used |= {80, 443}
 
+    # Per-draft uniqueness pre-check. Two channels claiming the same
+    # port on the same panel side will succeed on the API level (the
+    # panel happily takes both into its sqlite) but xray will only
+    # bind one of them, leaving the other's Reality keys orphan. The
+    # client URL for the orphan channel keeps "connecting" on TCP
+    # (xray's other inbound is listening) but Reality handshake
+    # silently drops because the keys don't match → speedtest shows
+    # "too small (0B)". Catch this UP FRONT instead of letting the
+    # operator chase a silent-failure mode after the fact.
+    user_exit_ports: Dict[int, str] = {}
+    user_relay_ports: Dict[int, str] = {}
+    for ch in draft.channels:
+        if ch.exit_port:
+            if ch.exit_port in user_exit_ports:
+                raise ValueError(
+                    f"Channels {user_exit_ports[ch.exit_port]!r} and {ch.name!r} "
+                    f"both claim exit_port {ch.exit_port} — each channel must "
+                    "land on a different port on the exit panel."
+                )
+            user_exit_ports[ch.exit_port] = ch.name
+        if ch.relay_port:
+            if ch.relay_port in user_relay_ports:
+                raise ValueError(
+                    f"Channels {user_relay_ports[ch.relay_port]!r} and {ch.name!r} "
+                    f"both claim relay_port {ch.relay_port} — each channel must "
+                    "land on a different port on the relay panel."
+                )
+            user_relay_ports[ch.relay_port] = ch.name
+
     # Apply user-supplied ports first (so the auto-pick respects them
     # as "already chosen"), then fill gaps.
-    auto_exit = {ch.exit_port for ch in draft.channels if ch.exit_port}
-    auto_relay = {ch.relay_port for ch in draft.channels if ch.relay_port}
+    auto_exit = set(user_exit_ports.keys())
+    auto_relay = set(user_relay_ports.keys())
     for ch in draft.channels:
         if ch.exit_port == 0:
             ch.exit_port = _pick_port(auto_exit, exit_used, 10000, 19999)
@@ -1021,6 +1112,154 @@ async def _rollback_inbounds(
 # ── Delete ──────────────────────────────────────────────────────────────────
 
 
+async def orchestrate_delete_channel(
+    *,
+    chain: ProxyChain,
+    channel: ChainChannel,
+    session: AsyncSession,
+) -> bool:
+    """Remove a single channel from an existing chain.
+
+    Pipeline (mirror of `orchestrate_delete`'s per-channel work, scoped
+    to one channel + leaving the chain row alive if other channels
+    remain):
+      1. Delete the channel's exit-side inbound on the exit panel.
+      2. Delete the channel's relay-side inbound on the relay panel.
+      3. Close exit_port + relay_port in UFW on each VPS.
+      4. Rebuild the combined relay template covering the remaining
+         channels + restart relay Xray.
+      5. Cascade-delete every `Node` row exported from this channel's
+         ChainClientChannel rows. Without this they'd survive as
+         orphans pointing at a UUID that no longer authenticates.
+      6. Drop the ChainChannel DB row — cascades ChainClientChannel
+         pairs via FK ON DELETE CASCADE.
+
+    If this was the *last* channel of the chain, the orchestrator
+    skips the relay-template repush (nothing left to route) and
+    asks the caller to tear down the chain entirely. Returns True
+    when the chain has remaining channels (UI keeps it visible),
+    False when the caller should drop the ProxyChain row too.
+    """
+    _no_expire_on_commit(session)
+
+    exit_xs = await session.get(XuiServer, chain.exit_xui_server_id)
+    relay_xs = await session.get(XuiServer, chain.relay_xui_server_id)
+    exit_srv = await session.get(Server, exit_xs.server_id) if exit_xs else None
+    relay_srv = await session.get(Server, relay_xs.server_id) if relay_xs else None
+
+    # Count siblings UP FRONT so the return value + the relay-template
+    # branching agree regardless of which inner blocks executed.
+    from sqlmodel import select as _select
+    siblings_q = _select(ChainChannel).where(
+        ChainChannel.chain_id == chain.id,
+    ).where(ChainChannel.id != channel.id)
+    siblings = list((await session.exec(siblings_q)).all())
+    has_siblings = bool(siblings)
+
+    # 1. Exit-side inbound.
+    if exit_xs and exit_srv and channel.exit_inbound_remote_id:
+        try:
+            async with XuiClient(
+                base_url=_api_base_url(exit_xs, exit_srv),
+                api_token=exit_xs.api_token, verify_tls=False,
+            ) as c:
+                try:
+                    await c.del_inbound(channel.exit_inbound_remote_id)
+                except Exception as e:  # noqa: BLE001
+                    logger.warning(
+                        "delete_channel: exit inbound %s removal failed: %s",
+                        channel.exit_inbound_remote_id, e,
+                    )
+        except Exception as e:  # noqa: BLE001
+            logger.warning("delete_channel: exit panel unreachable: %s", e)
+
+    # 2+4. Relay-side inbound + template re-push.
+    if relay_xs and relay_srv and channel.relay_inbound_remote_id:
+        try:
+            async with XuiClient(
+                base_url=_api_base_url(relay_xs, relay_srv),
+                api_token=relay_xs.api_token, verify_tls=False,
+                panel_user=relay_xs.panel_user, panel_pass=relay_xs.panel_pass,
+            ) as c:
+                try:
+                    await c.del_inbound(channel.relay_inbound_remote_id)
+                except Exception as e:  # noqa: BLE001
+                    logger.warning(
+                        "delete_channel: relay inbound %s removal failed: %s",
+                        channel.relay_inbound_remote_id, e,
+                    )
+                if has_siblings:
+                    # Other channels still ride this relay — rebuild
+                    # the combined template *excluding* this channel.
+                    # `build_combined_relay_template` reads from DB,
+                    # so we delete the DB row FIRST then rebuild.
+                    await session.delete(channel)
+                    await session.flush()
+                    template = await build_combined_relay_template(
+                        session=session,
+                        relay_xui_server_id=chain.relay_xui_server_id,
+                    )
+                    try:
+                        await _push_xray_template(
+                            relay_client=c, template=template,
+                        )
+                        await _restart_xray(c)
+                    except Exception as e:  # noqa: BLE001
+                        logger.warning(
+                            "delete_channel: relay template repush failed: %s", e,
+                        )
+                else:
+                    # Last channel — clear the panel template entirely
+                    # so the panel's auto-routing kicks back in. We
+                    # also clear via SSH because pushing an empty
+                    # template doesn't reset xray's running config
+                    # (the bare-panel gotcha we hit in beta.7).
+                    await session.delete(channel)
+                    await session.flush()
+                    try:
+                        await _clear_xray_template_via_ssh(relay_srv)
+                    except Exception as e:  # noqa: BLE001
+                        logger.warning(
+                            "delete_channel: relay template clear failed: %s", e,
+                        )
+        except Exception as e:  # noqa: BLE001
+            logger.warning("delete_channel: relay panel unreachable: %s", e)
+    else:
+        # No relay panel reachable to issue del_inbound — still drop
+        # the DB row so PiTun's view stays consistent.
+        await session.delete(channel)
+        await session.flush()
+
+    # 3. UFW close (best-effort, both sides).
+    if exit_srv and channel.exit_port:
+        await _ufw_chain_ports(
+            exit_srv, [channel.exit_port], action="delete-allow",
+        )
+    if relay_srv and channel.relay_port:
+        await _ufw_chain_ports(
+            relay_srv, [channel.relay_port], action="delete-allow",
+        )
+
+    # 5. Cascade-clean Node rows that were exported from this
+    # channel's ChainClientChannel pairs. The FK ChainClientChannel
+    # → Node is ON DELETE SET NULL, so the link rows vanish with
+    # the channel cascade but the Nodes survive — match them by
+    # name suffix (`-<channel.name>`, the convention from
+    # `export_chain_client_nodes`) and address (relay host) so we
+    # never collateral-delete an unrelated Node.
+    from app.models import Node
+    suffix = f"-{channel.name}"
+    orphan_nodes = list((await session.exec(
+        _select(Node).where(Node.name.like(f"%{suffix}"))
+    )).all())
+    for n in orphan_nodes:
+        if relay_srv and n.address == relay_srv.host:
+            await session.delete(n)
+
+    await session.commit()
+    return has_siblings
+
+
 async def orchestrate_delete(
     *,
     chain: ProxyChain,
@@ -1078,22 +1317,42 @@ async def orchestrate_delete(
                                 "delete: relay inbound %s removal failed: %s",
                                 ch.relay_inbound_remote_id, e,
                             )
-                # Push a COMBINED template covering every OTHER
-                # chain still bound to this relay. Pushing an empty
-                # template would wipe routes for unrelated sibling
-                # chains (the beta.7 footgun: deleting chain A killed
-                # chain B because both rode this same relay). The
-                # excluded `chain.id` is the one being torn down.
+                # Two paths depending on whether this relay still
+                # carries OTHER chains:
+                #   * yes → rebuild a COMBINED template covering the
+                #           remaining chains. Pushing an empty
+                #           template would wipe their routes (the
+                #           beta.7 footgun: deleting chain A killed
+                #           chain B because both rode this relay).
+                #   * no  → DELETE the `xrayTemplateConfig` key
+                #           entirely so the panel falls back to its
+                #           auto-generated routing for the standalone
+                #           inbounds (regular vless / trojan / socks
+                #           added through the X-ui page). Just
+                #           pushing `xraySetting=""` doesn't reset
+                #           the running config — only a hard sqlite
+                #           DELETE + `x-ui restart` does, so we run
+                #           that over SSH.
                 try:
-                    template = await build_combined_relay_template(
-                        session=session,
-                        relay_xui_server_id=chain.relay_xui_server_id,
-                        exclude_chain_id=chain.id,
-                    )
-                    await _push_xray_template(
-                        relay_client=c, template=template,
-                    )
-                    await _restart_xray(c)
+                    from sqlmodel import select as _select
+                    others_q = _select(ProxyChain).where(
+                        ProxyChain.relay_xui_server_id == chain.relay_xui_server_id,
+                    ).where(ProxyChain.id != chain.id)
+                    others = list((await session.exec(others_q)).all())
+                    if others:
+                        template = await build_combined_relay_template(
+                            session=session,
+                            relay_xui_server_id=chain.relay_xui_server_id,
+                            exclude_chain_id=chain.id,
+                        )
+                        await _push_xray_template(
+                            relay_client=c, template=template,
+                        )
+                        await _restart_xray(c)
+                    else:
+                        # Last chain on this relay — restore panel's
+                        # auto-routing.
+                        await _clear_xray_template_via_ssh(relay_srv)
                 except Exception as e:  # noqa: BLE001
                     logger.warning(
                         "delete: relay template cleanup failed: %s", e,

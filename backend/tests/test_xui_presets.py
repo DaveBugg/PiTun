@@ -110,40 +110,56 @@ class TestVlessXhttpReality:
         assert ss["network"] == "xhttp"
         assert ss["security"] == "reality"
         assert ss["xhttpSettings"]["path"] == "/abc/xyz"
-        assert ss["xhttpSettings"]["mode"] == "packet-up"
+        # `auto` matches what known-good vless-xhttp-reality clients
+        # ship — `packet-up` requires explicit `&mode=packet-up` in
+        # the link, which most panel-emitted URLs don't carry.
+        assert ss["xhttpSettings"]["mode"] == "auto"
         # No flow (vision is TCP-only on Reality).
         client = payload["settings"]["clients"][0]
         assert client["flow"] == ""
 
 
 class TestVlessWs:
-    def test_tls_with_ws_path(self):
+    def test_xui_pro_reverse_proxy_shape(self):
+        """Domain-mode presets follow xui-pro's reverse-proxy
+        convention: inbound listens on a random high port, path is
+        prefixed with that port, and `externalProxy` points the
+        client-facing endpoint at <domain>:443 + TLS (nginx upstairs
+        terminates TLS for us)."""
         p = get_preset("vless-ws")
         assert p is not None
         payload = p.build_payload(
-            {"port": "443", "ws_path": "/secret"},
+            {"ws_path": "secret"},
             uuid="u-uuid",
             domain="proxy.example.com",
         )
+        # Random port — NOT 443 (nginx holds 443).
+        assert 30000 <= payload["port"] < 40000
         ss = payload["streamSettings"]
         assert ss["network"] == "ws"
-        assert ss["security"] == "tls"
-        assert ss["tlsSettings"]["serverName"] == "proxy.example.com"
-        assert ss["wsSettings"]["path"] == "/secret"
+        # nginx terminates TLS; inbound itself is plain ws.
+        assert ss["security"] == "none"
+        assert "tlsSettings" not in ss
+        # Path = `/<inbound_port>/<tail>`.
+        assert ss["wsSettings"]["path"] == f"/{payload['port']}/secret"
         assert ss["wsSettings"]["headers"]["Host"] == "proxy.example.com"
+        # externalProxy points clients at the panel domain on :443.
+        ep = ss["externalProxy"]
+        assert isinstance(ep, list) and len(ep) == 1
+        assert ep[0]["dest"] == "proxy.example.com"
+        assert ep[0]["port"] == 443
+        assert ep[0]["forceTls"] == "tls"
 
     def test_random_ws_path_when_omitted(self):
         p = get_preset("vless-ws")
         assert p is not None
         payload = p.build_payload(
-            {"port": "443"},
-            uuid="u", domain="d.example",
+            {}, uuid="u", domain="d.example",
         )
-        # Some `/<hex>`-shaped path was generated; non-empty + leading
-        # slash is the only contract.
+        # `/<port>/<hex>` shape — non-empty tail.
         path = payload["streamSettings"]["wsSettings"]["path"]
-        assert path.startswith("/")
-        assert len(path) > 1
+        assert path.startswith(f"/{payload['port']}/")
+        assert len(path) > len(f"/{payload['port']}/")
 
 
 class TestTrojanGrpc:
@@ -151,20 +167,31 @@ class TestTrojanGrpc:
         p = get_preset("trojan-grpc")
         assert p is not None
         payload = p.build_payload(
-            {"port": "443"},
-            domain="t.example.com",
+            {}, domain="t.example.com",
         )
         assert payload["protocol"] == "trojan"
+        # Inbound on a random high port (xui-pro reverse-proxy).
+        assert 30000 <= payload["port"] < 40000
         client = payload["settings"]["clients"][0]
-        # Trojan uses `password`, not `id`.
-        assert "id" not in client
+        assert "id" not in client  # Trojan uses `password`, not `id`.
         assert client["password"] and len(client["password"]) > 10
         ss = payload["streamSettings"]
         assert ss["network"] == "grpc"
-        assert ss["security"] == "tls"
-        assert ss["tlsSettings"]["serverName"] == "t.example.com"
-        # gRPC service name is non-empty (random by default).
-        assert ss["grpcSettings"]["serviceName"]
+        assert ss["security"] == "none"
+        assert "tlsSettings" not in ss
+        # gRPC service name carries the port prefix nginx routes on,
+        # with a leading slash to match the panel-UI display form.
+        assert ss["grpcSettings"]["serviceName"].startswith(
+            f"/{payload['port']}/",
+        )
+        # Multi-stream H2 + authority — matches the upstream-recommended
+        # config for nginx-fronted gRPC.
+        assert ss["grpcSettings"]["multiMode"] is True
+        assert ss["grpcSettings"]["authority"] == "t.example.com"
+        ep = ss["externalProxy"]
+        assert ep[0]["dest"] == "t.example.com"
+        assert ep[0]["port"] == 443
+        assert ep[0]["forceTls"] == "tls"
 
 
 class TestSocks5:

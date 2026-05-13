@@ -35,7 +35,7 @@ import secrets
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from pydantic import BaseModel
 from sqlmodel import select
 from sqlmodel.ext.asyncio.session import AsyncSession
@@ -47,9 +47,11 @@ from app.core.xui_chain import (
     ChannelDraft,
     _exit_tag,
     _relay_tag,
+    _ufw_chain_ports,
     orchestrate_add_client,
     orchestrate_create,
     orchestrate_delete,
+    orchestrate_delete_channel,
     orchestrate_delete_client,
 )
 from app.core.xui_presets import PRESETS, InboundPreset, get_preset, list_presets
@@ -81,6 +83,10 @@ class PresetFieldRead(BaseModel):
     help: str = ""
     choices: Optional[List[str]] = None
     placeholder: str = ""
+    # Runtime-resolved default hint: when set, the frontend pre-fills
+    # the input from the matching panel attribute instead of `default`.
+    # Currently supported: "panel_domain".
+    default_from: Optional[str] = None
 
 
 class PresetRead(BaseModel):
@@ -102,7 +108,7 @@ def _preset_to_read(p: InboundPreset) -> PresetRead:
             PresetFieldRead(
                 name=f.name, label=f.label, type=f.type, required=f.required,
                 default=f.default, help=f.help, choices=f.choices,
-                placeholder=f.placeholder,
+                placeholder=f.placeholder, default_from=f.default_from,
             )
             for f in p.fields
         ],
@@ -432,6 +438,757 @@ async def probe_xui_server(
     return _xui_to_read(xs, srv)
 
 
+# ── XuiServer fakesite (random / upload) ───────────────────────────────────
+
+
+_FAKESITE_ROTATE_SCRIPT = r"""#!/usr/bin/env bash
+set -euo pipefail
+
+# Pick a random template from /root/randomfakehtml-master and copy it
+# into nginx's served root. Mirror of the upstream x-ui-pro.sh
+# `-RandomTemplate y` flow but scoped: no panel restart, no domain
+# fiddling, no extra prompts — just file shuffle + permissions.
+
+ARCHIVE_DIR="/root/randomfakehtml-master"
+NGINX_ROOT="/var/www/html"
+
+if ! command -v unzip >/dev/null 2>&1; then
+    echo "[pitun] installing unzip…"
+    apt-get update -qq
+    apt-get install -y -qq unzip
+fi
+
+if [ ! -d "$ARCHIVE_DIR" ] || [ -z "$(ls -A "$ARCHIVE_DIR" 2>/dev/null)" ]; then
+    echo "[pitun] randomfakehtml master archive missing — re-downloading…"
+    cd /root
+    rm -rf randomfakehtml-master randomfakehtml-master.zip
+    wget -qO randomfakehtml-master.zip \
+        https://github.com/GFW4Fun/randomfakehtml/archive/refs/heads/master.zip
+    unzip -q randomfakehtml-master.zip
+    rm -f randomfakehtml-master.zip
+fi
+
+# Pick a random sub-template. `find -mindepth 1 -maxdepth 1 -type d`
+# + shuffle gives uniform sampling without depending on python/jq.
+template=$(find "$ARCHIVE_DIR" -mindepth 1 -maxdepth 1 -type d \
+    | shuf -n 1)
+[ -z "$template" ] && { echo "[pitun] archive contains no template dirs" >&2; exit 1; }
+
+name=$(basename "$template")
+echo "[pitun] rotating fakesite → $name"
+
+mkdir -p "$NGINX_ROOT"
+# Wipe the served root (NOT the parent — don't touch /var/www itself
+# or other vhosts that might share it).
+find "$NGINX_ROOT" -mindepth 1 -delete
+
+cp -r "$template"/* "$NGINX_ROOT"/ 2>/dev/null || true
+# Some templates ship hidden files — pick them up too.
+shopt -s dotglob nullglob
+cp -r "$template"/.* "$NGINX_ROOT"/ 2>/dev/null || true
+shopt -u dotglob nullglob
+
+chown -R www-data:www-data "$NGINX_ROOT"
+find "$NGINX_ROOT" -type d -exec chmod 755 {} +
+find "$NGINX_ROOT" -type f -exec chmod 644 {} +
+
+# Force nginx to drop any sendfile-cached references to the old files.
+nginx -t >/dev/null 2>&1 && nginx -s reload || true
+
+echo "PITUN_FAKESITE_NAME=$name"
+"""
+
+
+_FAKESITE_UPLOAD_SCRIPT_TEMPLATE = r"""#!/usr/bin/env bash
+set -euo pipefail
+
+# Replace the served fakesite root with the contents of a zip the
+# operator uploaded. The zip lands at $ZIP_PATH; we validate, extract
+# to a staging dir, swap it in, then drop the zip + staging dir.
+
+ZIP_PATH="__ZIP_PATH__"
+NGINX_ROOT="/var/www/html"
+STAGE_DIR="$(mktemp -d /tmp/pitun-fakesite-XXXXXX)"
+
+if ! command -v unzip >/dev/null 2>&1; then
+    echo "[pitun] installing unzip…"
+    apt-get update -qq
+    apt-get install -y -qq unzip
+fi
+
+if [ ! -s "$ZIP_PATH" ]; then
+    echo "[pitun] upload missing: $ZIP_PATH" >&2
+    exit 1
+fi
+
+# Reject anything pathologically large (>100 MB). A real fakesite is
+# rarely past ~20 MB and a 100 MB+ archive on a 10 GB / 1 GB RAM VPS
+# is asking for trouble.
+zip_bytes=$(stat -c %s "$ZIP_PATH" 2>/dev/null || stat -f %z "$ZIP_PATH" 2>/dev/null || echo 0)
+if [ "$zip_bytes" -gt 104857600 ]; then
+    echo "[pitun] zip too large: $zip_bytes bytes (cap 100 MB)" >&2
+    exit 1
+fi
+
+unzip -q -o "$ZIP_PATH" -d "$STAGE_DIR"
+
+# If the zip wraps everything in a single top-level directory (the
+# common GitHub-style export), drop into it so we don't end up with
+# /var/www/html/<single-dir>/index.html. Otherwise keep the contents
+# flat.
+inner_count=$(find "$STAGE_DIR" -mindepth 1 -maxdepth 1 | wc -l)
+if [ "$inner_count" = "1" ]; then
+    only=$(find "$STAGE_DIR" -mindepth 1 -maxdepth 1)
+    if [ -d "$only" ]; then
+        SRC="$only"
+    else
+        SRC="$STAGE_DIR"
+    fi
+else
+    SRC="$STAGE_DIR"
+fi
+
+# Require an index.html anywhere — otherwise nginx would just 404
+# the apex and the operator gets confused.
+if ! find "$SRC" -maxdepth 2 -iname 'index.html' | grep -q .; then
+    echo "[pitun] zip has no index.html at the top level" >&2
+    rm -rf "$STAGE_DIR" "$ZIP_PATH"
+    exit 1
+fi
+
+mkdir -p "$NGINX_ROOT"
+find "$NGINX_ROOT" -mindepth 1 -delete
+cp -r "$SRC"/* "$NGINX_ROOT"/ 2>/dev/null || true
+shopt -s dotglob nullglob
+cp -r "$SRC"/.* "$NGINX_ROOT"/ 2>/dev/null || true
+shopt -u dotglob nullglob
+
+chown -R www-data:www-data "$NGINX_ROOT"
+find "$NGINX_ROOT" -type d -exec chmod 755 {} +
+find "$NGINX_ROOT" -type f -exec chmod 644 {} +
+
+nginx -t >/dev/null 2>&1 && nginx -s reload || true
+
+rm -rf "$STAGE_DIR" "$ZIP_PATH"
+echo "PITUN_FAKESITE_UPLOADED=ok"
+"""
+
+
+class FakesiteRotateResponse(BaseModel):
+    ok: bool
+    name: Optional[str] = None
+    detail: Optional[str] = None
+
+
+def _ssh_creds(srv: Server) -> Dict[str, Any]:
+    if srv.auth_type == "password" and srv.password:
+        return {"password": srv.password}
+    if srv.auth_type == "key" and srv.private_key:
+        return {"private_key": srv.private_key}
+    return {}
+
+
+@router.post(
+    "/servers/{xui_server_id}/fakesite/rotate",
+    response_model=FakesiteRotateResponse,
+)
+async def rotate_fakesite(
+    xui_server_id: int, session: AsyncSession = Depends(get_session),
+):
+    """Pick a random template from the bundled `randomfakehtml-master`
+    archive (downloaded by setup-xui-server.sh) and swap it into
+    nginx's served root. Re-fetches the archive on demand if it's
+    missing (e.g. operator cleaned `/root` to free disk).
+
+    Only meaningful in xui-pro mode — bare-mode panels run no nginx
+    fronting and have no fakesite to rotate. Returns 400 in that case.
+    """
+    try:
+        session.sync_session.expire_on_commit = False
+    except Exception:  # noqa: BLE001
+        pass
+    xs, srv = await _get_xs_or_404(xui_server_id, session)
+    if xs.mode != "xui-pro":
+        raise HTTPException(
+            400,
+            detail=(
+                "Fakesite rotation requires xui-pro mode (nginx + LE "
+                "cert fronting :443). Bare panels serve no fakesite."
+            ),
+        )
+    creds = _ssh_creds(srv)
+    if not creds:
+        raise HTTPException(
+            400, detail="Server row has no SSH credentials.",
+        )
+
+    from app.core.ssh import exec_remote_script
+    result = await exec_remote_script(
+        host=srv.host,
+        port=srv.port or 22,
+        username=srv.user or "root",
+        script_content=_FAKESITE_ROTATE_SCRIPT,
+        timeout=120.0,
+        **creds,
+    )
+
+    name: Optional[str] = None
+    for line in (result.stdout or "").splitlines():
+        if line.startswith("PITUN_FAKESITE_NAME="):
+            name = line.split("=", 1)[1].strip() or None
+
+    if not result.ok:
+        raise HTTPException(
+            502,
+            detail=(
+                (result.error or f"exit {result.exit_code}")
+                + (f": {result.stderr[:300]}" if result.stderr else "")
+            ),
+        )
+    return FakesiteRotateResponse(ok=True, name=name, detail=None)
+
+
+@router.post(
+    "/servers/{xui_server_id}/fakesite/upload",
+    response_model=FakesiteRotateResponse,
+)
+async def upload_fakesite(
+    xui_server_id: int,
+    file: UploadFile = File(...),
+    session: AsyncSession = Depends(get_session),
+):
+    """Replace the served fakesite root with the contents of an
+    operator-uploaded ZIP. Same SCP+exec pattern as the manual-script
+    upload path for naive templates: bytes land in /tmp on the VPS,
+    a shell script validates + extracts + swaps + chowns + nginx -s
+    reloads, then cleans up.
+
+    Validation: zip ≤100 MB, must contain `index.html` within the
+    first two levels (so nginx has something to serve at /).
+    """
+    try:
+        session.sync_session.expire_on_commit = False
+    except Exception:  # noqa: BLE001
+        pass
+    xs, srv = await _get_xs_or_404(xui_server_id, session)
+    if xs.mode != "xui-pro":
+        raise HTTPException(
+            400,
+            detail="Fakesite upload requires xui-pro mode.",
+        )
+    if not (file.filename or "").lower().endswith(".zip"):
+        raise HTTPException(400, detail="Upload must be a .zip file.")
+    blob = await file.read()
+    if not blob:
+        raise HTTPException(400, detail="Empty upload.")
+    if len(blob) > 100 * 1024 * 1024:
+        raise HTTPException(
+            400, detail=f"Upload too large: {len(blob)} bytes (cap 100 MB).",
+        )
+    creds = _ssh_creds(srv)
+    if not creds:
+        raise HTTPException(
+            400, detail="Server row has no SSH credentials.",
+        )
+
+    # Upload the bytes to a fixed path on the VPS, then run the
+    # extractor script against that path. Reuse `exec_remote_script`'s
+    # asyncssh client: a one-shot upload via its SFTP channel keeps
+    # us on the same SO_MARK-tagged socket that tproxy bypasses.
+    from app.core.ssh import exec_remote_script, upload_file_to_remote
+    remote_zip = f"/tmp/pitun-fakesite-{xui_server_id}-{secrets.token_hex(4)}.zip"
+    try:
+        await upload_file_to_remote(
+            host=srv.host,
+            port=srv.port or 22,
+            username=srv.user or "root",
+            remote_path=remote_zip,
+            content=blob,
+            timeout=120.0,
+            **creds,
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(502, detail=f"SFTP upload failed: {exc}")
+
+    script = _FAKESITE_UPLOAD_SCRIPT_TEMPLATE.replace("__ZIP_PATH__", remote_zip)
+    result = await exec_remote_script(
+        host=srv.host,
+        port=srv.port or 22,
+        username=srv.user or "root",
+        script_content=script,
+        timeout=120.0,
+        **creds,
+    )
+    if not result.ok:
+        raise HTTPException(
+            502,
+            detail=(
+                (result.error or f"exit {result.exit_code}")
+                + (f": {result.stderr[:300]}" if result.stderr else "")
+            ),
+        )
+    return FakesiteRotateResponse(ok=True, name="(uploaded)", detail=None)
+
+
+# ── XuiServer healthcheck ──────────────────────────────────────────────────
+
+
+class XuiServerHealthCheckResult(BaseModel):
+    name: str
+    status: str  # "ok" | "warn" | "fail"
+    detail: Optional[str] = None
+
+
+class XuiServerHealthCheckResponse(BaseModel):
+    xui_server_id: int
+    ok: bool
+    checks: List[XuiServerHealthCheckResult]
+
+
+_HEALTH_SCRIPT = r"""#!/usr/bin/env bash
+# Single-pass remote probe — collects everything we want in one SSH
+# round-trip + emits each result on a separate line prefixed by a tag
+# the backend parses with `<tag>|<ok|warn|fail>|<detail>`. Best-effort
+# everywhere: a missing binary or service falls back to a warn line
+# rather than aborting the whole script.
+
+emit() { printf '%s\n' "$1|$2|$3"; }
+
+# nginx — only relevant when the panel was installed in xui-pro mode
+# (fronted by nginx + Let's Encrypt). Bare panels run a self-signed
+# panel HTTPS straight off the Go binary's port, no nginx involved —
+# checking it would always emit a noisy "inactive" warning on a
+# perfectly healthy bare install.
+if [ "${HEALTHCHECK_MODE:-bare}" = "xui-pro" ]; then
+  if command -v systemctl >/dev/null 2>&1; then
+    st=$(systemctl is-active nginx 2>/dev/null || true)
+    if [ "$st" = "active" ]; then
+      ver=$(nginx -v 2>&1 | head -c 80 | tr -d '\n')
+      emit nginx ok "$ver"
+    elif [ -z "$st" ] || [ "$st" = "inactive" ] || [ "$st" = "failed" ]; then
+      emit nginx fail "systemctl says: $st"
+    else
+      emit nginx warn "state=$st"
+    fi
+  else
+    emit nginx warn "systemctl not found"
+  fi
+fi
+
+# unzip — used by fakesite rotation. Warn (not fail) if missing; the
+# rotation endpoint will install on demand.
+if command -v unzip >/dev/null 2>&1; then
+  emit unzip ok "$(unzip -v 2>&1 | head -1 | head -c 60)"
+else
+  emit unzip warn "unzip not installed (fakesite rotation will install on demand)"
+fi
+
+# UFW
+if command -v ufw >/dev/null 2>&1; then
+  ufw_st=$(ufw status 2>/dev/null | head -1 | tr -d '\r')
+  case "$ufw_st" in
+    *active*) emit ufw ok "$ufw_st" ;;
+    *inactive*) emit ufw warn "$ufw_st — ports not gated; OK if your provider firewalls" ;;
+    *) emit ufw warn "$ufw_st" ;;
+  esac
+else
+  emit ufw warn "ufw not installed"
+fi
+
+# Disk free on /
+df_out=$(df -BM / 2>/dev/null | awk 'NR==2 {gsub(/M/,"",$4); gsub(/%/,"",$5); print $4" "$5}')
+if [ -n "$df_out" ]; then
+  free_mb=${df_out% *}
+  used_pct=${df_out#* }
+  if [ "${used_pct:-0}" -ge 95 ] 2>/dev/null; then
+    emit disk fail "${free_mb}M free, ${used_pct}% used"
+  elif [ "${used_pct:-0}" -ge 85 ] 2>/dev/null; then
+    emit disk warn "${free_mb}M free, ${used_pct}% used"
+  else
+    emit disk ok "${free_mb}M free, ${used_pct}% used"
+  fi
+else
+  emit disk warn "df parse failed"
+fi
+
+# Memory free %
+mem_pct=$(awk '/MemAvailable/{a=$2} /MemTotal/{t=$2} END{ if (t>0) printf "%d", a*100/t }' /proc/meminfo 2>/dev/null)
+if [ -n "$mem_pct" ]; then
+  if [ "$mem_pct" -lt 10 ]; then
+    emit mem warn "${mem_pct}% available"
+  else
+    emit mem ok "${mem_pct}% available"
+  fi
+else
+  emit mem warn "/proc/meminfo unavailable"
+fi
+
+# TLS cert expiry — only when a panel domain + matching LE cert exist.
+# The setup script stores certs under /etc/letsencrypt/live/<apex>;
+# we accept any matching CN/SAN. Quiet skip when no domain installed.
+DOMAIN="${HEALTHCHECK_DOMAIN:-}"
+if [ -n "$DOMAIN" ]; then
+  found=""
+  for dir in /etc/letsencrypt/live/*/; do
+    cert="${dir}fullchain.pem"
+    [ -r "$cert" ] || continue
+    if openssl x509 -in "$cert" -noout -ext subjectAltName 2>/dev/null | grep -qi "DNS:$DOMAIN\b"; then
+      found="$cert"
+      break
+    fi
+    cn=$(openssl x509 -in "$cert" -noout -subject 2>/dev/null | sed -n 's/.*CN *= *\([^,]*\).*/\1/p' | tr -d ' ')
+    if [ "$cn" = "$DOMAIN" ]; then
+      found="$cert"
+      break
+    fi
+  done
+  if [ -n "$found" ]; then
+    end=$(openssl x509 -in "$found" -noout -enddate 2>/dev/null | cut -d= -f2)
+    end_s=$(date -d "$end" +%s 2>/dev/null || echo 0)
+    now_s=$(date +%s)
+    days_left=$(( (end_s - now_s) / 86400 ))
+    if [ "$days_left" -lt 0 ]; then
+      emit cert fail "expired ${days_left#-} days ago"
+    elif [ "$days_left" -lt 14 ]; then
+      emit cert warn "expires in ${days_left} day(s) — renew soon"
+    else
+      emit cert ok "valid for ${days_left} more day(s)"
+    fi
+  else
+    emit cert warn "no LE cert matching $DOMAIN under /etc/letsencrypt/live"
+  fi
+fi
+"""
+
+
+@router.post(
+    "/servers/{xui_server_id}/healthcheck",
+    response_model=XuiServerHealthCheckResponse,
+)
+async def healthcheck_xui_server(
+    xui_server_id: int, session: AsyncSession = Depends(get_session),
+):
+    """Run a multi-layer probe against the panel + VPS and return a
+    structured pass/fail report.
+
+    Three layers:
+      1. Panel API (Bearer) — `inbounds/list` proves the token works.
+      2. Panel-internal `/panel/api/server/status` — xray state +
+         system snapshot (cpu / mem / uptime / disk).
+      3. SSH-driven VPS probe — nginx state, ufw, disk %, mem %,
+         cert expiry (for domain-mode panels). Best-effort: every
+         remote check survives missing binaries with a `warn` result,
+         and the whole layer is skipped if the SSH session can't be
+         opened (the panel-side checks still surface).
+
+    The endpoint is read-only — no state is mutated.
+    """
+    try:
+        session.sync_session.expire_on_commit = False
+    except Exception:  # noqa: BLE001
+        pass
+    xs, srv = await _get_xs_or_404(xui_server_id, session)
+
+    checks: List[XuiServerHealthCheckResult] = []
+
+    def _add(name: str, status: str, detail: Optional[str] = None) -> None:
+        checks.append(
+            XuiServerHealthCheckResult(name=name, status=status, detail=detail),
+        )
+
+    # Layer 1+2: panel-side checks via Bearer API.
+    base_url = _api_base_url(xs, srv)
+    xray_state = ""
+    try:
+        async with XuiClient(
+            base_url=base_url, api_token=xs.api_token, verify_tls=False,
+        ) as client:
+            try:
+                await client.probe()
+                _add(
+                    "Panel API reachable", "ok",
+                    f"{srv.host}:{xs.panel_port}{xs.panel_basepath}",
+                )
+            except XuiAPIError as exc:
+                _add("Panel API reachable", "fail", f"{exc.kind}: {exc}")
+                # No point chasing the rest of the panel checks if the
+                # token's dead. Skip to SSH layer.
+                raise
+
+            try:
+                body = await client._request("GET", "/panel/api/server/status")
+                obj = body.get("obj") or {}
+                xray = obj.get("xray") or {}
+                xray_state = xray.get("state") or ""
+                if xray_state == "running":
+                    _add("Xray running", "ok", xray.get("version") or "")
+                else:
+                    err = xray.get("errorMsg") or xray_state or "not running"
+                    _add("Xray running", "fail", str(err)[:300])
+                cpu_pct = obj.get("cpu")
+                mem = obj.get("mem") or {}
+                mem_total = mem.get("total") or 0
+                mem_used = mem.get("current") or 0
+                disk = obj.get("disk") or {}
+                disk_total = disk.get("total") or 0
+                disk_used = disk.get("current") or 0
+                _add(
+                    "Panel host snapshot", "ok",
+                    "cpu={cpu}% · mem={mu}/{mt} MB · disk={du}/{dt} MB".format(
+                        cpu=int(cpu_pct or 0),
+                        mu=int((mem_used or 0) / 1024 / 1024),
+                        mt=int((mem_total or 0) / 1024 / 1024),
+                        du=int((disk_used or 0) / 1024 / 1024),
+                        dt=int((disk_total or 0) / 1024 / 1024),
+                    ),
+                )
+            except XuiAPIError as exc:
+                _add(
+                    "Panel /server/status", "warn",
+                    f"{exc.kind}: {exc}",
+                )
+    except XuiAPIError:
+        # Already surfaced as a fail row above; carry on to SSH layer.
+        pass
+
+    # Layer 3: SSH-driven VPS probe. Optional — skip when the Server
+    # row has neither password nor key. Best-effort.
+    if srv.auth_type == "password" and srv.password:
+        creds: Dict[str, Any] = {"password": srv.password}
+    elif srv.auth_type == "key" and srv.private_key:
+        creds = {"private_key": srv.private_key}
+    else:
+        creds = {}
+
+    if creds:
+        from app.core.ssh import exec_remote_script
+        try:
+            result = await exec_remote_script(
+                host=srv.host,
+                port=srv.port or 22,
+                username=srv.user or "root",
+                script_content=_HEALTH_SCRIPT,
+                env={
+                    "HEALTHCHECK_DOMAIN": xs.domain or "",
+                    "HEALTHCHECK_MODE": xs.mode or "bare",
+                },
+                timeout=20.0,
+                **creds,
+            )
+        except Exception as exc:  # noqa: BLE001
+            _add("VPS SSH probe", "warn", f"connection failed: {exc}")
+            result = None
+
+        if result is not None:
+            if not result.ok and not result.stdout:
+                _add(
+                    "VPS SSH probe", "warn",
+                    (result.error or "exit "
+                     f"{result.exit_code}")[:200],
+                )
+            else:
+                for raw_line in (result.stdout or "").splitlines():
+                    line = raw_line.strip()
+                    if not line or "|" not in line:
+                        continue
+                    parts = line.split("|", 2)
+                    if len(parts) < 2:
+                        continue
+                    tag, status = parts[0], parts[1]
+                    detail = parts[2] if len(parts) > 2 else None
+                    pretty = {
+                        "nginx": "nginx running",
+                        "unzip": "unzip available",
+                        "ufw": "UFW status",
+                        "disk": "Disk free",
+                        "mem": "Memory free",
+                        "cert": "TLS cert (Let's Encrypt)",
+                    }.get(tag, tag)
+                    if status not in ("ok", "warn", "fail"):
+                        status = "warn"
+                    _add(pretty, status, detail or None)
+    else:
+        _add(
+            "VPS SSH probe", "warn",
+            "no SSH credentials on Server row — set auth_type+password/key",
+        )
+
+    ok = all(c.status == "ok" for c in checks)
+    return XuiServerHealthCheckResponse(
+        xui_server_id=xui_server_id, ok=ok, checks=checks,
+    )
+
+
+# ── XuiServer sync (reconcile cache ↔ panel) ──────────────────────────────
+
+
+class XuiServerSyncResponse(BaseModel):
+    xui_server_id: int
+    added: int
+    updated: int
+    removed: int
+    chain_skipped: int
+    orphan_nodes_removed: int
+
+
+@router.post(
+    "/servers/{xui_server_id}/sync",
+    response_model=XuiServerSyncResponse,
+)
+async def sync_xui_server(
+    xui_server_id: int, session: AsyncSession = Depends(get_session),
+):
+    """Reconcile PiTun's `XuiClient` cache with the panel's live state.
+
+    The panel is the source of truth — humans can add / remove clients
+    via its own UI without telling PiTun, and a stale cache breaks
+    Node-export badges, /sync workflows, and (worst) cascade-delete
+    on uninstall (a removed-by-hand client lingers as a Node row
+    that can never authenticate). Sync walks every NON-chain inbound:
+
+      * Client present on panel + in cache  → refresh the cached
+        protocol / port / remark / config blob from the panel's
+        current shape (the operator may have edited it).
+      * Client present on panel, missing from cache → INSERT a fresh
+        cache row so future PiTun-driven ops (delete-client, export)
+        recognise it as managed.
+      * Cache row whose client vanished from the panel → DELETE the
+        cache row + cascade-delete the linked `Node` (matches what
+        the explicit `/clients/<uuid>` DELETE endpoint does, since
+        the credentials no longer work either way).
+
+    Chain inbounds (`tag` starts with `chain-`) are intentionally
+    skipped — their clients live under the chain orchestrator's
+    bookkeeping (`ChainClient` / `ChainClientChannel`) and PiTun
+    is the source of truth there, not the panel.
+    """
+    try:
+        session.sync_session.expire_on_commit = False
+    except Exception:  # noqa: BLE001
+        pass
+
+    xs, srv = await _get_xs_or_404(xui_server_id, session)
+    base_url = _api_base_url(xs, srv)
+    async with XuiClient(
+        base_url=base_url, api_token=xs.api_token, verify_tls=False,
+    ) as client:
+        try:
+            inbounds = await client.list_inbounds()
+        except XuiAPIError as exc:
+            raise HTTPException(
+                502, detail=f"Panel list_inbounds failed ({exc.kind}): {exc}",
+            )
+
+    # Build the canonical "what the panel actually has" view. Tuple
+    # `(inbound_remote_id, client_uuid)` is the natural key — for
+    # trojan/ss/socks the panel still emits a stable `id`/`password`
+    # at the same slot we treat as `client_uuid` in our cache, so a
+    # single key works across protocols.
+    chain_skipped = 0
+    panel_view: Dict[tuple, Dict[str, Any]] = {}
+    for ib in inbounds:
+        if (ib.get("tag") or "").startswith("chain-"):
+            chain_skipped += 1
+            continue
+        ib_id = int(ib.get("id") or 0)
+        if not ib_id:
+            continue
+        try:
+            settings = json.loads(ib.get("settings") or "{}")
+        except ValueError:
+            settings = {}
+        ib_proto = (ib.get("protocol") or "").lower()
+        ib_port = int(ib.get("port") or 0)
+        ib_remark = ib.get("remark") or ""
+        for c in (settings.get("clients") or []):
+            uuid_val = (
+                c.get("id")
+                or c.get("password")
+                or c.get("user")
+                or ""
+            )
+            if not uuid_val:
+                continue
+            panel_view[(ib_id, uuid_val)] = {
+                "label": c.get("email") or uuid_val[:8],
+                "protocol": ib_proto,
+                "port": ib_port,
+                "remark": ib_remark,
+                "config": c,
+            }
+
+    # Pull the existing cache for this panel in one go.
+    cache_rows = list((await session.exec(
+        select(XuiClientModel)
+        .where(XuiClientModel.xui_server_id == xui_server_id),
+    )).all())
+    cache_by_key = {
+        (r.inbound_remote_id, r.client_uuid): r for r in cache_rows
+    }
+
+    added = 0
+    updated = 0
+    removed = 0
+    orphan_node_ids: List[int] = []
+
+    now = datetime.now(timezone.utc)
+    for key, pv in panel_view.items():
+        existing = cache_by_key.get(key)
+        if existing is None:
+            session.add(XuiClientModel(
+                xui_server_id=xui_server_id,
+                inbound_remote_id=key[0],
+                client_uuid=key[1],
+                label=pv["label"],
+                inbound_protocol=pv["protocol"],
+                inbound_port=pv["port"],
+                inbound_remark=pv["remark"],
+                config_json=json.dumps(pv["config"]),
+                last_synced_at=now,
+            ))
+            added += 1
+        else:
+            existing.label = pv["label"]
+            existing.inbound_protocol = pv["protocol"]
+            existing.inbound_port = pv["port"]
+            existing.inbound_remark = pv["remark"]
+            existing.config_json = json.dumps(pv["config"])
+            existing.last_synced_at = now
+            session.add(existing)
+            updated += 1
+
+    # Cache rows whose key disappeared from the panel — drop them
+    # AND cascade-clean the linked Node row. Skip chain-tag inbounds
+    # at this step too (we don't even cache chain clients here, but
+    # be defensive against legacy rows from older PiTun builds).
+    for key, row in cache_by_key.items():
+        if key in panel_view:
+            continue
+        # Look up whether the inbound itself disappeared (the panel
+        # del-inbound path would have cascaded all its clients).
+        # Either way, the cache row is stale — drop it.
+        if row.exported_node_id:
+            orphan_node_ids.append(row.exported_node_id)
+        await session.delete(row)
+        removed += 1
+
+    from app.models import Node
+    orphan_nodes_removed = 0
+    for nid in orphan_node_ids:
+        n = await session.get(Node, nid)
+        if n is not None:
+            await session.delete(n)
+            orphan_nodes_removed += 1
+
+    await session.commit()
+    return XuiServerSyncResponse(
+        xui_server_id=xui_server_id,
+        added=added, updated=updated, removed=removed,
+        chain_skipped=chain_skipped,
+        orphan_nodes_removed=orphan_nodes_removed,
+    )
+
+
 @router.get("/servers/{xui_server_id}/inbounds")
 async def list_inbounds(
     xui_server_id: int, session: AsyncSession = Depends(get_session),
@@ -537,7 +1294,11 @@ async def create_inbound(
         # the frontend never handles the private key.
         resolved: Dict[str, Any] = {}
         try:
-            if preset.protocol in ("vless", "trojan"):
+            # vless inbounds need a server-generated UUID for the
+            # bootstrap client; trojan uses a password (the preset
+            # generates it itself if not supplied). Passing `uuid` to
+            # _build_trojan_grpc would TypeError on the kwarg.
+            if preset.protocol == "vless":
                 resolved["uuid"] = await client.get_new_uuid()
             if preset.supports_reality:
                 priv, pub = await client.get_new_x25519_cert()
@@ -575,6 +1336,39 @@ async def create_inbound(
                 502,
                 detail=f"Panel rejected add-inbound ({exc.kind}): {exc}",
             )
+        # Force Xray to pick up the new inbound. Both bare 3x-ui and
+        # x-ui-pro persist `add_inbound` straight into their own
+        # sqlite but don't reload Xray's running config — the
+        # `bin/config.json` keeps the pre-create snapshot, the new
+        # inbound never starts listening with the right Reality keys,
+        # and Speedtest hits TCP (the inbound's TCP listener IS up,
+        # owned by the panel's own watchdog process) but Reality
+        # handshake silently drops. Mirror of the same gotcha we
+        # already patched in `orchestrate_add_client`.
+        try:
+            await client.restart_xray()
+        except XuiAPIError as exc:
+            logger.warning(
+                "create_inbound: restart_xray after add_inbound failed: %s", exc,
+            )
+
+    # Open the inbound's listen port in UFW on the VPS. Standalone
+    # inbounds bind directly on the host (no nginx fronting), so a
+    # default-deny firewall would silently drop SYNs. Domain-mode
+    # presets use `externalProxy` over :443 — nginx terminates and
+    # forwards to a random localhost port, no extra UFW rule needed
+    # — but the inbound's literal port still benefits from being
+    # opened (panel may also serve it directly for testing). Best-
+    # effort: a failure logs but doesn't block the create response.
+    inbound_port = int(payload.get("port") or 0)
+    if inbound_port and not preset.needs_domain:
+        try:
+            await _ufw_chain_ports(srv, [inbound_port], action="allow")
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "create_inbound: ufw allow %s failed on srv=%s: %s",
+                inbound_port, srv.id, exc,
+            )
 
     # The panel returns the inbound with a new `id` — re-fetch live so
     # the frontend renders identical data to a subsequent /list call.
@@ -608,15 +1402,49 @@ async def delete_inbound(
 
     xs, srv = await _get_xs_or_404(xui_server_id, session)
     base_url = _api_base_url(xs, srv)
+    # Snapshot the inbound's listen port BEFORE the delete so we
+    # know which UFW rule to retract. Best-effort: a 404 here just
+    # means the panel already lost track of the inbound.
+    inbound_port_to_close: int = 0
+    ib_meta: Dict[str, Any] = {}
     async with XuiClient(
         base_url=base_url, api_token=xs.api_token, verify_tls=False,
     ) as client:
+        try:
+            ib_meta = await client.get_inbound(inbound_id)
+            inbound_port_to_close = int(ib_meta.get("port") or 0)
+        except XuiAPIError:
+            pass
         try:
             await client.del_inbound(inbound_id)
         except XuiAPIError as exc:
             raise HTTPException(
                 502,
                 detail=f"Panel rejected del-inbound ({exc.kind}): {exc}",
+            )
+        # Force Xray to drop the inbound from its running config.
+        # Same persist-to-DB-but-not-runtime quirk as add_inbound /
+        # add_client. Best-effort.
+        try:
+            await client.restart_xray()
+        except XuiAPIError as exc:
+            logger.warning(
+                "delete_inbound: restart_xray failed: %s", exc,
+            )
+
+    # Mirror the create-time UFW open. Standalone inbounds bound a
+    # public port via UFW allow; the matching deny goes here. Skip
+    # silently for chain-managed inbounds (chain orchestrator owns
+    # those rules) and for ports we couldn't read off the panel.
+    if inbound_port_to_close and not (ib_meta.get("tag") or "").startswith("chain-"):
+        try:
+            await _ufw_chain_ports(
+                srv, [inbound_port_to_close], action="delete-allow",
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "delete_inbound: ufw close %s failed on srv=%s: %s",
+                inbound_port_to_close, srv.id, exc,
             )
 
     cached = list((await session.exec(
@@ -687,6 +1515,15 @@ async def add_client(
             raise HTTPException(
                 502,
                 detail=f"Panel rejected addClient ({exc.kind}): {exc}",
+            )
+        # Same gotcha as `create_inbound`: x-ui persists addClient to
+        # its DB but doesn't reload Xray. Without this restart the
+        # fresh UUID returns a silent Reality drop.
+        try:
+            await client.restart_xray()
+        except XuiAPIError as exc:
+            logger.warning(
+                "add_client: restart_xray failed: %s", exc,
             )
 
     row = XuiClientModel(
@@ -845,16 +1682,42 @@ async def export_inbound_client_to_node(
         except ValueError:
             stream = {}
 
-    # IP wins over panel domain — same rationale as the chain
-    # exporter (the domain is only a Reality SNI cover, the actual
-    # dial address should be the VPS IP).
+    # Default: dial the VPS IP directly on the inbound's own port.
+    # This is correct for Reality / SOCKS5 / anything not fronted by
+    # nginx. For xui-pro domain-mode inbounds we override below from
+    # `externalProxy` — those advertise a reverse-proxied endpoint
+    # (the client must hit `<domain>:443` with TLS, NOT the inbound's
+    # localhost-ish port).
     address = srv.host
     port = int(inbound.get("port") or 0)
     protocol = (inbound.get("protocol") or "").lower()
 
     network = stream.get("network") or "tcp"
     security = stream.get("security") or "none"
-    sni = ""
+
+    # externalProxy ↣ xui-pro reverse-proxy convention. When present,
+    # `dest`/`port`/`forceTls` describe what the CLIENT should dial,
+    # while the inbound itself stays on its random local port behind
+    # nginx. Always take the first entry — multi-front setups (e.g.
+    # both a CDN and a direct domain) would emit several, and the
+    # first one wins by panel convention.
+    ep_list = stream.get("externalProxy") or []
+    if isinstance(ep_list, list) and ep_list:
+        ep = ep_list[0] if isinstance(ep_list[0], dict) else {}
+        ep_dest = ep.get("dest") or ""
+        ep_port = int(ep.get("port") or 0)
+        ep_force_tls = (ep.get("forceTls") or "").lower()
+        if ep_dest:
+            address = ep_dest
+            # SNI matches the cert nginx serves on :443 — same as dest.
+            sni_from_ep = ep_dest
+        if ep_port:
+            port = ep_port
+        if ep_force_tls == "tls":
+            security = "tls"
+    else:
+        sni_from_ep = ""
+    sni = sni_from_ep
     fingerprint = "chrome"
     alpn = ""
     reality_pbk = ""
@@ -897,8 +1760,15 @@ async def export_inbound_client_to_node(
         if not ws_host:
             ws_host = ((ws_settings.get("headers") or {}).get("Host") or "")
     grpc_settings = (stream.get("grpcSettings") or {})
+    grpc_authority = ""
+    grpc_mode = "gun"
     if grpc_settings:
         grpc_service = grpc_settings.get("serviceName") or ""
+        grpc_authority = grpc_settings.get("authority") or ""
+        # Panel stores multiMode as a bool; our ORM model encodes
+        # the same toggle as `grpc_mode in {"gun","multi"}`.
+        if grpc_settings.get("multiMode") is True:
+            grpc_mode = "multi"
     http_settings = (
         stream.get("httpSettings")
         or stream.get("xhttpSettings")
@@ -911,8 +1781,12 @@ async def export_inbound_client_to_node(
             http_host = host[0]
         elif isinstance(host, str):
             http_host = host
-        if not http_host and network == "xhttp":
-            http_host = sni or address
+        # Don't auto-fill for xhttp — Reality+xhttp uses serverName
+        # from realitySettings for SNI cover, and a non-empty Host
+        # header pointing at the wrong target breaks path matching
+        # (matches the user's hand-rolled working URL where `host=`
+        # is empty). For h2/http the panel already returns the right
+        # host, so we honour it.
 
     # Build the Node row. Field names match the ORM exactly — same
     # gotcha that bit the chain exporter (silently-dropped unknown
@@ -922,8 +1796,53 @@ async def export_inbound_client_to_node(
     label = target.get("email") or (uuid_val[:8] if uuid_val else "client")
     name = body.name or f"{inbound.get('remark') or 'inbound-' + str(inbound_id)}-{label}"
 
-    # Idempotency — same (uuid, address, port) tuple → reuse.
     natural_key = uuid_val or password_val
+
+    # Re-export path: if PiTun's cache already links this client to a
+    # Node, UPDATE that Node in place. This keeps the Node id stable
+    # (so any saved routing rules / chain_node_id refs survive) and
+    # picks up changes from re-exports — e.g. the beta.7 fix moving
+    # domain-mode inbounds from `IP:<random_port>` to `<domain>:443`
+    # with `tls=tls` would otherwise leave a stale Node row.
+    cached_for_update = (await session.exec(
+        select(XuiClientModel)
+        .where(XuiClientModel.xui_server_id == xui_server_id)
+        .where(XuiClientModel.inbound_remote_id == inbound_id)
+        .where(
+            (XuiClientModel.client_uuid == client_id)
+            | (XuiClientModel.label == client_id)
+        ),
+    )).first()
+    if cached_for_update is not None and cached_for_update.exported_node_id:
+        existing = await session.get(Node, cached_for_update.exported_node_id)
+        if existing is not None:
+            existing.protocol = protocol or "vless"
+            existing.address = address
+            existing.port = port
+            existing.uuid = uuid_val or None
+            existing.password = password_val or None
+            existing.transport = network
+            existing.tls = security
+            existing.sni = sni or address
+            existing.fingerprint = fingerprint
+            existing.alpn = alpn
+            existing.ws_path = ws_path
+            existing.ws_host = ws_host
+            existing.grpc_service = grpc_service
+            existing.grpc_mode = grpc_mode
+            existing.grpc_authority = grpc_authority or None
+            existing.http_path = http_path
+            existing.http_host = http_host
+            existing.reality_pbk = reality_pbk
+            existing.reality_sid = reality_sid
+            existing.reality_spx = reality_spx
+            existing.flow = target.get("flow") or None
+            existing.server_id = srv.id
+            session.add(existing)
+            await session.commit()
+            return {"node_id": existing.id, "reused": True}
+
+    # Idempotency — same (uuid, address, port) tuple → reuse.
     if natural_key:
         existing = (await session.exec(
             select(Node)
@@ -983,12 +1902,18 @@ async def export_inbound_client_to_node(
         ws_path=ws_path,
         ws_host=ws_host,
         grpc_service=grpc_service,
+        grpc_mode=grpc_mode,
+        grpc_authority=grpc_authority or None,
         http_path=http_path,
         http_host=http_host,
         reality_pbk=reality_pbk,
         reality_sid=reality_sid,
         reality_spx=reality_spx,
         flow=target.get("flow") or None,
+        # Wire the Node to its source Server so the "Привязанный
+        # сервер" picker reflects the relationship and uninstall-time
+        # cascades stay clean.
+        server_id=srv.id,
     )
     session.add(node)
     await session.flush()
@@ -1215,6 +2140,47 @@ async def delete_chain(
         select(ChainChannel).where(ChainChannel.chain_id == chain_id),
     )).all()
     await orchestrate_delete(chain=chain, channels=list(channels), session=session)
+
+
+@router.delete(
+    "/chains/{chain_id}/channels/{channel_id}",
+    status_code=204,
+)
+async def delete_chain_channel(
+    chain_id: int,
+    channel_id: int,
+    session: AsyncSession = Depends(get_session),
+):
+    """Remove a single channel from a chain.
+
+    Drops the channel's exit + relay inbounds on the panels, closes
+    their UFW ports, re-pushes the relay's combined template
+    (excluding this channel), cascade-cleans linked Nodes, then
+    removes the `ChainChannel` row. If the deleted channel was the
+    last one in the chain, the `ProxyChain` row is also dropped so
+    the UI doesn't show a phantom empty chain.
+    """
+    chain = await session.get(ProxyChain, chain_id)
+    if chain is None:
+        raise HTTPException(404, detail=f"Chain id={chain_id} not found")
+    channel = await session.get(ChainChannel, channel_id)
+    if channel is None or channel.chain_id != chain_id:
+        raise HTTPException(
+            404,
+            detail=f"Channel id={channel_id} not found on chain {chain_id}",
+        )
+    has_siblings = await orchestrate_delete_channel(
+        chain=chain, channel=channel, session=session,
+    )
+    if not has_siblings:
+        # Empty chain has no purpose — fold the chain row away too.
+        # All panel-side state was already cleaned during the
+        # channel removal (last-channel branch in
+        # `orchestrate_delete_channel`).
+        chain_fresh = await session.get(ProxyChain, chain_id)
+        if chain_fresh is not None:
+            await session.delete(chain_fresh)
+            await session.commit()
 
 
 # ── Chain healthcheck ────────────────────────────────────────────────

@@ -557,6 +557,64 @@ async def exec_remote_script(
         )
 
 
+# ── SFTP one-shot file upload ────────────────────────────────────────────────
+
+
+async def upload_file_to_remote(
+    *,
+    host: str,
+    port: int = 22,
+    username: str = "root",
+    password: Optional[str] = None,
+    private_key: Optional[str] = None,
+    passphrase: Optional[str] = None,
+    remote_path: str,
+    content: bytes,
+    timeout: float = 120.0,
+) -> None:
+    """Push `content` bytes to `remote_path` via SFTP.
+
+    Mirrors `exec_remote_script`'s connection plumbing so the upload
+    rides the same SO_MARK-tagged socket — important on the PiTun
+    host where tproxy would otherwise drop the SSH packets.
+
+    Raises on any failure (DNS, TCP, auth, SFTP write); callers map
+    to HTTPException. We deliberately do NOT chmod here — the script
+    that consumes the file handles permissions in its own pass, so
+    the SFTP-default 0644 is fine for the brief lifetime.
+    """
+    try:
+        import asyncssh  # type: ignore
+    except Exception as exc:  # noqa: BLE001
+        raise RuntimeError(f"asyncssh not installed: {exc}") from exc
+
+    ip = await _resolve_direct(host)
+    loop = asyncio.get_event_loop()
+    sock, _ = await loop.run_in_executor(
+        None, _connect_marked, ip, port, _CONNECT_TIMEOUT_S,
+    )
+
+    connect_kwargs: dict = {
+        "host": host, "port": port, "username": username,
+        "known_hosts": None, "sock": sock,
+    }
+    if private_key:
+        key_obj = asyncssh.import_private_key(
+            private_key, passphrase=passphrase or None,
+        )
+        connect_kwargs["client_keys"] = [key_obj]
+    elif password:
+        connect_kwargs["password"] = password
+
+    async with asyncio.timeout(timeout):
+        async with asyncssh.connect(**connect_kwargs) as conn:
+            async with conn.start_sftp_client() as sftp:
+                # Open in binary write mode; asyncssh's SFTP wraps
+                # the remote file handle in a context manager.
+                async with sftp.open(remote_path, "wb") as fh:
+                    await fh.write(content)
+
+
 # ── Streaming variant for the v1.3.0 server-tasks subsystem ──────────────────
 
 

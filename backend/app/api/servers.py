@@ -862,6 +862,7 @@ async def uninstall_server(
                         ChainClientChannel,
                         Node,
                     )
+                    from app.core.xui_chain import orchestrate_delete
                     xs = (await runner_session.exec(
                         select(XuiServer)
                         .where(XuiServer.server_id == srv_id)
@@ -869,12 +870,12 @@ async def uninstall_server(
                     if xs is not None:
                         xs_id = xs.id
                         # Collect every exported Node row tied to this
-                        # panel BEFORE we cascade-delete the linking
-                        # rows. The FK from XuiClient / ChainClientChannel
-                        # to Node is ON DELETE SET NULL (reverse-only),
-                        # so a panel uninstall would otherwise leave
-                        # orphan Node entries in /nodes that can never
-                        # authenticate (their UUIDs are gone).
+                        # panel BEFORE we tear chains down. The FK from
+                        # XuiClient / ChainClientChannel to Node is
+                        # ON DELETE SET NULL (reverse-only), so a panel
+                        # uninstall would otherwise leave orphan Node
+                        # entries in /nodes that can never authenticate
+                        # (their UUIDs are gone with the VPS).
                         orphan_node_ids: set[int] = set()
                         # 1. Inbound clients exported via X-ui page.
                         xui_clients = (await runner_session.exec(
@@ -886,15 +887,13 @@ async def uninstall_server(
                             if c.exported_node_id:
                                 orphan_node_ids.add(c.exported_node_id)
                         # 2. Chain clients exported via the Chains tab.
-                        # Walk chains using this panel (either side) →
-                        # their channels → client/channel pairs.
-                        chains = (await runner_session.exec(
+                        chains = list((await runner_session.exec(
                             select(ProxyChain)
                             .where(
                                 (ProxyChain.exit_xui_server_id == xs_id)
                                 | (ProxyChain.relay_xui_server_id == xs_id)
                             )
-                        )).all()
+                        )).all())
                         for ch in chains:
                             pairs = (await runner_session.exec(
                                 select(ChainClientChannel)
@@ -918,6 +917,44 @@ async def uninstall_server(
                                 "stdout",
                                 f"[pitun] Cascade-removed {len(orphan_node_ids)} "
                                 "orphan Node row(s) tied to the panel.",
+                            )
+
+                        # 3. Tear every chain down via the orchestrator
+                        # BEFORE deleting the XuiServer row. The
+                        # orchestrator deletes panel-side inbounds on
+                        # BOTH sides and rebuilds the relay template,
+                        # so the SURVIVING peer panel (the one we're
+                        # not uninstalling) gets its leftover chain
+                        # inbounds cleaned. The disappearing panel
+                        # fails silently (best-effort try/except in
+                        # orchestrate_delete) — which is exactly what
+                        # we want, since its VPS is being wiped anyway.
+                        # Without this step the relay would still serve
+                        # the chain inbound until the operator notices,
+                        # and the exit panel would carry orphan exit
+                        # inbounds matching deleted chains.
+                        for ch in chains:
+                            channels = list((await runner_session.exec(
+                                select(ChainChannel)
+                                .where(ChainChannel.chain_id == ch.id)
+                            )).all())
+                            try:
+                                await orchestrate_delete(
+                                    chain=ch, channels=channels,
+                                    session=runner_session,
+                                )
+                            except Exception as exc:  # noqa: BLE001
+                                logger.warning(
+                                    "uninstall_xui: orchestrate_delete chain=%s "
+                                    "failed: %s — DB rows will be cascaded by the "
+                                    "XuiServer delete below",
+                                    ch.id, exc,
+                                )
+                        if chains:
+                            await on_line(
+                                "stdout",
+                                f"[pitun] Tore down {len(chains)} chain(s) — "
+                                "removed inbounds on the peer panel.",
                             )
 
                         await runner_session.delete(xs)

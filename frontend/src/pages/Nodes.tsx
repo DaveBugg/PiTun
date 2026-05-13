@@ -1,6 +1,6 @@
 import * as React from 'react'
 import { useState } from 'react'
-import { Plus, Download, Activity, Search, Filter, GripVertical, Gauge, FileDown, FileUp } from 'lucide-react'
+import { Plus, Activity, Search, Filter, GripVertical, Gauge, FileDown, FileUp } from 'lucide-react'
 import { clsx } from 'clsx'
 import { useQueryClient, useMutation } from '@tanstack/react-query'
 import {
@@ -139,17 +139,18 @@ export function Nodes() {
             <Gauge className={clsx('h-4 w-4', speedAll.isPending && 'animate-spin')} />
             {speedAll.isPending ? 'Testing…' : 'Speed All'}
           </button>
+          {/* Unified Import — paste URIs OR drop a PiTun JSON bundle;
+              the modal auto-detects which path to take. */}
           <button
             onClick={() => setModal('import')}
             className="flex items-center gap-1.5 rounded-lg bg-gray-700 px-3 py-2 text-sm text-gray-200 hover:bg-gray-600 transition-colors"
-            title="Import VPN URIs, Clash YAML, or xray JSON"
+            title="Import nodes — paste URIs or upload a PiTun JSON bundle; format is auto-detected"
           >
-            <Download className="h-4 w-4" />
-            Import URI
+            <FileUp className="h-4 w-4" />
+            Import
           </button>
-          {/* JSON backup pair — full-fidelity round-trip via the
-              /export-json + /import-json endpoints. Distinct from
-              "Import URI" above, which parses VPN protocol URIs. */}
+          {/* Export dropdown — pick between URI-list (.txt) and
+              full-fidelity JSON bundle (.json). */}
           <NodesJsonIO />
           <button
             onClick={() => { setEditNode(null); setModal('add') }}
@@ -294,7 +295,13 @@ export function Nodes() {
 function Modal({ title, children, onClose }: { title: string; children: React.ReactNode; onClose: () => void }) {
   return (
     <ModalShell onClose={onClose} labelledBy="nodes-modal-title">
-      <div className="w-full max-w-2xl max-h-[90vh] overflow-y-auto rounded-2xl bg-gray-950 border border-gray-800 p-6">
+      {/* `w-full` here would resolve against ModalShell's
+          stopPropagation wrapper, which has no width and lets the
+          flex parent shrink the child to its content's natural
+          width — observed as a ~360px-wide Import dialog on a 1080p
+          screen. `w-[min(92vw,42rem)]` clamps to a sane max but
+          guarantees at least 92% of the viewport on phones. */}
+      <div className="w-[min(92vw,42rem)] max-h-[90vh] overflow-y-auto rounded-2xl bg-gray-950 border border-gray-800 p-6">
         <h2 id="nodes-modal-title" className="text-base font-semibold text-gray-100 mb-5">{title}</h2>
         {children}
       </div>
@@ -303,105 +310,82 @@ function Modal({ title, children, onClose }: { title: string; children: React.Re
 }
 
 
-// ── JSON backup / restore (export + import) ─────────────────────────────────
+// ── Export dropdown (URIs / JSON) ───────────────────────────────────────────
 //
-// Two buttons rendered together: "Export JSON" downloads a bundle of
-// every node, "Import JSON" reads a previously-exported bundle and
-// posts it to /api/nodes/import-json. Distinct from the "Import URI"
-// flow which parses VPN protocol URIs — the JSON path is a true
-// round-trip backup, including protocol-specific fields (transport,
-// TLS, WireGuard, Hysteria, NaiveProxy padding…).
+// Single "Export" button that opens a tiny popover with two choices:
+//   * Export as URI list (.txt) — one `vless://…` per line, the
+//     shareable format every v2rayN-compatible client understands.
+//   * Export as JSON bundle (.json) — full-fidelity round-trip with
+//     protocol-specific fields (WG / Hysteria / Naive padding…).
+//
+// Import is unified into the existing UriImport modal (with auto-
+// detection of pasted/uploaded format), so this file no longer
+// owns an import button — see Nodes.tsx for the wire-up.
 
 function NodesJsonIO() {
-  const fileRef = React.useRef<HTMLInputElement | null>(null)
-  const qc = useQueryClient()
-  const confirm = useConfirm()
+  const [open, setOpen] = React.useState(false)
+  const menuRef = React.useRef<HTMLDivElement | null>(null)
 
-  const handleExport = async () => {
+  // Click-outside dismiss. Mounting a global listener while the menu
+  // is open is cheaper than a portaled overlay and matches what the
+  // other dropdowns in the project do.
+  React.useEffect(() => {
+    if (!open) return
+    const onDown = (e: MouseEvent) => {
+      // The unqualified `Node` collides with the project's own
+      // Node ORM type imported from `@/types` — qualify against
+      // `globalThis.Node` so TS picks the DOM definition.
+      const target = e.target as globalThis.Node | null
+      if (menuRef.current && target && !menuRef.current.contains(target)) {
+        setOpen(false)
+      }
+    }
+    document.addEventListener('mousedown', onDown)
+    return () => document.removeEventListener('mousedown', onDown)
+  }, [open])
+
+  const runExport = async (which: 'uris' | 'json') => {
+    setOpen(false)
     try {
-      await nodesApi.exportJSON()
+      if (which === 'uris') await nodesApi.exportURIs()
+      else await nodesApi.exportJSON()
     } catch (err: unknown) {
       alert('Export failed: ' + (err instanceof Error ? err.message : String(err)))
     }
   }
 
-  const handlePickFile = () => fileRef.current?.click()
-
-  const handleFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0]
-    e.target.value = ''  // allow picking the same file twice
-    if (!file) return
-    let bundle: unknown
-    try {
-      const text = await file.text()
-      bundle = JSON.parse(text)
-    } catch {
-      alert('Invalid JSON file')
-      return
-    }
-
-    // Choice between additive merge and full replace. Replace is
-    // destructive — wipes all existing nodes — so confirm explicitly.
-    const replace = await confirm({
-      title: 'Import nodes',
-      body: (
-        <>
-          <p className="mb-2 text-sm text-gray-300">
-            How should this bundle be applied?
-          </p>
-          <ul className="text-xs text-gray-400 space-y-1 list-disc list-inside">
-            <li><b className="text-gray-200">Cancel:</b> abort the import.</li>
-            <li><b className="text-gray-200">OK (Replace):</b> wipe all existing nodes first, then insert from the bundle.</li>
-          </ul>
-          <p className="mt-3 text-xs text-yellow-500/90">
-            Tip: cancel here and re-run as additive merge by clicking Import again with replace=off (default — duplicates are skipped).
-          </p>
-        </>
-      ),
-      confirmLabel: 'Replace all',
-      cancelLabel: 'Cancel',
-      danger: true,
-    })
-
-    try {
-      const result = await nodesApi.importJSON(bundle, replace)
-      qc.invalidateQueries({ queryKey: ['nodes'] })
-      const errSuffix = result.errors?.length
-        ? `\nErrors:\n${result.errors.slice(0, 5).join('\n')}`
-        : ''
-      alert(
-        `Imported: ${result.imported}, skipped: ${result.skipped}${errSuffix}`,
-      )
-    } catch (err: unknown) {
-      alert('Import failed: ' + (err instanceof Error ? err.message : String(err)))
-    }
-  }
-
   return (
-    <>
-      <input
-        ref={fileRef}
-        type="file"
-        accept="application/json,.json"
-        onChange={handleFile}
-        className="hidden"
-      />
+    <div ref={menuRef} className="relative">
       <button
-        onClick={handleExport}
+        onClick={() => setOpen((v) => !v)}
         className="flex items-center gap-1.5 rounded-lg bg-gray-700 px-3 py-2 text-sm text-gray-200 hover:bg-gray-600 transition-colors"
-        title="Download all nodes as a JSON backup"
+        title="Download nodes as a file (.txt URIs or .json bundle)"
       >
         <FileDown className="h-4 w-4" />
-        Export JSON
+        Export
       </button>
-      <button
-        onClick={handlePickFile}
-        className="flex items-center gap-1.5 rounded-lg bg-gray-700 px-3 py-2 text-sm text-gray-200 hover:bg-gray-600 transition-colors"
-        title="Restore nodes from a JSON backup"
-      >
-        <FileUp className="h-4 w-4" />
-        Import JSON
-      </button>
-    </>
+      {open && (
+        <div className="absolute right-0 mt-1 w-64 rounded-lg border border-gray-700 bg-gray-900 shadow-lg z-50 overflow-hidden">
+          <button
+            onClick={() => runExport('uris')}
+            className="w-full text-left px-3 py-2 hover:bg-gray-800 text-sm text-gray-200 border-b border-gray-800"
+          >
+            <div className="font-medium">URI list (.txt)</div>
+            <div className="text-[11px] text-gray-500 mt-0.5">
+              Shareable: one vless://… per line. WG nodes skipped.
+            </div>
+          </button>
+          <button
+            onClick={() => runExport('json')}
+            className="w-full text-left px-3 py-2 hover:bg-gray-800 text-sm text-gray-200"
+          >
+            <div className="font-medium">JSON bundle (.json)</div>
+            <div className="text-[11px] text-gray-500 mt-0.5">
+              Full-fidelity backup — every field, including WG / Hysteria.
+            </div>
+          </button>
+        </div>
+      )}
+    </div>
   )
 }

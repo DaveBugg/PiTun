@@ -1,9 +1,9 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   Layers, Loader2, AlertTriangle, ExternalLink, Trash2, Plus, RefreshCw,
   ShieldCheck, ShieldAlert, Server as ServerIcon, KeyRound, Copy, Check,
-  ChevronRight, ChevronDown, Upload,
+  ChevronRight, ChevronDown, Upload, Shuffle, UploadCloud,
 } from 'lucide-react'
 
 import { xuiApi } from '@/api/client'
@@ -201,12 +201,41 @@ function ServerDetail({ server }: { server: XuiServer }) {
     refetchOnWindowFocus: false,
   })
 
-  const probeMut = useMutation({
-    mutationFn: () => xuiApi.probeServer(server.id),
+  // Healthcheck modal — fires the new multi-layer probe (panel API +
+  // xray state + SSH-checked nginx/ufw/cert/disk) when the user
+  // clicks "Проверить". Reuses the chain-style "checks list" shape
+  // so the UI is uniform across X-ui and Chains. The old cheap
+  // Bearer-only `probeServer` endpoint still exists for callers that
+  // just want a token re-test (sidebar list-refresh, etc.).
+  const [showHealth, setShowHealth] = useState(false)
+  const healthMut = useMutation({
+    mutationFn: () => xuiApi.healthcheckServer(server.id),
+  })
+
+  // Reconcile the panel ↔ PiTun cache. Refresh-button does the local
+  // re-fetch; this one calls a server endpoint that writes back to
+  // the `XuiClient` cache table — picks up hand-added / hand-deleted
+  // clients the operator made via the panel UI and cascades any
+  // Node rows whose backing client vanished.
+  const syncMut = useMutation({
+    mutationFn: () => xuiApi.syncServer(server.id),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['xui', 'servers'] })
+      qc.invalidateQueries({ queryKey: ['xui', 'inbounds', server.id] })
+      qc.invalidateQueries({ queryKey: ['nodes'] })
     },
   })
+
+  // Fakesite rotation — xui-pro only. The "rotate" button just calls
+  // the backend (random template from the bundled archive); upload
+  // is gated by a hidden <input type=file> wired to a button.
+  const rotateMut = useMutation({
+    mutationFn: () => xuiApi.rotateFakesite(server.id),
+  })
+  const uploadMut = useMutation({
+    mutationFn: (zip: File) => xuiApi.uploadFakesite(server.id, zip),
+  })
+  const fileInputRef = useRef<HTMLInputElement | null>(null)
+  const isXuiPro = server.mode === 'xui-pro'
 
   const delInboundMut = useMutation({
     mutationFn: (id: number) => xuiApi.deleteInbound(server.id, id),
@@ -249,19 +278,96 @@ function ServerDetail({ server }: { server: XuiServer }) {
               <span>{server.last_check_error}</span>
             </div>
           )}
+          {/* Inline result for the fakesite rotate/upload mutations.
+              Lives next to the header so the operator sees what just
+              happened without an extra modal. */}
+          {rotateMut.data && (
+            <div className="mt-2 rounded-md bg-green-900/20 border border-green-700/40 px-2 py-1 text-[11px] text-green-300 flex items-start gap-1.5">
+              <Check className="h-3 w-3 mt-0.5 shrink-0" />
+              <span>
+                {t(`Fakesite rotated → ${rotateMut.data.name || '(unknown)'}`, `Фейк-сайт обновлён → ${rotateMut.data.name || '(неизвестно)'}`)}
+              </span>
+            </div>
+          )}
+          {rotateMut.error && (
+            <div className="mt-2 rounded-md bg-red-900/20 border border-red-700/40 px-2 py-1 text-[11px] text-red-300 flex items-start gap-1.5">
+              <AlertTriangle className="h-3 w-3 mt-0.5 shrink-0" />
+              <span>
+                {t('Rotation failed', 'Ошибка ротации')}: {
+                  ((rotateMut.error as { response?: { data?: { detail?: string } } }).response?.data?.detail
+                    || (rotateMut.error as Error).message
+                    || 'unknown')
+                }
+              </span>
+            </div>
+          )}
+          {uploadMut.data && (
+            <div className="mt-2 rounded-md bg-green-900/20 border border-green-700/40 px-2 py-1 text-[11px] text-green-300 flex items-start gap-1.5">
+              <Check className="h-3 w-3 mt-0.5 shrink-0" />
+              <span>{t('Fakesite uploaded', 'Фейк-сайт загружен')}</span>
+            </div>
+          )}
+          {syncMut.data && (
+            <div className="mt-2 rounded-md bg-blue-900/20 border border-blue-700/40 px-2 py-1 text-[11px] text-blue-200 flex items-start gap-1.5">
+              <Check className="h-3 w-3 mt-0.5 shrink-0" />
+              <span>
+                {t(
+                  `Sync: +${syncMut.data.added} added · ${syncMut.data.updated} updated · -${syncMut.data.removed} removed${syncMut.data.orphan_nodes_removed ? ` · ${syncMut.data.orphan_nodes_removed} orphan Node(s) cleaned` : ''}${syncMut.data.chain_skipped ? ` · ${syncMut.data.chain_skipped} chain inbound(s) skipped` : ''}`,
+                  `Синхронизация: +${syncMut.data.added} добавлено · ${syncMut.data.updated} обновлено · -${syncMut.data.removed} удалено${syncMut.data.orphan_nodes_removed ? ` · ${syncMut.data.orphan_nodes_removed} осиротевших Node убрано` : ''}${syncMut.data.chain_skipped ? ` · ${syncMut.data.chain_skipped} chain-инбаунда пропущено` : ''}`,
+                )}
+              </span>
+            </div>
+          )}
+          {syncMut.error && (
+            <div className="mt-2 rounded-md bg-red-900/20 border border-red-700/40 px-2 py-1 text-[11px] text-red-300 flex items-start gap-1.5">
+              <AlertTriangle className="h-3 w-3 mt-0.5 shrink-0" />
+              <span>
+                {t('Sync failed', 'Ошибка синхронизации')}: {
+                  ((syncMut.error as { response?: { data?: { detail?: string } } }).response?.data?.detail
+                    || (syncMut.error as Error).message
+                    || 'unknown')
+                }
+              </span>
+            </div>
+          )}
+          {uploadMut.error && (
+            <div className="mt-2 rounded-md bg-red-900/20 border border-red-700/40 px-2 py-1 text-[11px] text-red-300 flex items-start gap-1.5">
+              <AlertTriangle className="h-3 w-3 mt-0.5 shrink-0" />
+              <span>
+                {t('Upload failed', 'Ошибка загрузки')}: {
+                  ((uploadMut.error as { response?: { data?: { detail?: string } } }).response?.data?.detail
+                    || (uploadMut.error as Error).message
+                    || 'unknown')
+                }
+              </span>
+            </div>
+          )}
         </div>
-        <div className="flex items-center gap-2">
+        {/* Toolbar wraps on narrow viewports — by beta.7 we have 5
+            buttons (Check / Refresh / Rotate fakesite / Upload zip /
+            Add inbound) which together overflow a 360px mobile
+            screen. `flex-wrap` reflows onto multiple lines, and
+            `justify-end` keeps everything against the right edge so
+            the primary "Add inbound" CTA stays where the operator
+            expects it on desktop. */}
+        <div className="flex items-center justify-end gap-2 flex-wrap">
           <button
             type="button"
-            onClick={() => probeMut.mutate()}
-            disabled={probeMut.isPending}
+            onClick={() => {
+              setShowHealth(true)
+              healthMut.mutate()
+            }}
+            disabled={healthMut.isPending}
             className="rounded-lg border border-gray-700 hover:bg-gray-800 px-2.5 py-1.5 text-xs text-gray-300 inline-flex items-center gap-1.5"
-            title={t('Re-test the Bearer token', 'Проверить Bearer-токен')}
+            title={t(
+              'Run a deep health-check (panel API, xray, nginx, UFW, TLS cert, disk)',
+              'Глубокая проверка: API панели, xray, nginx, UFW, TLS-сертификат, диск',
+            )}
           >
-            {probeMut.isPending
+            {healthMut.isPending
               ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
               : <ShieldCheck className="h-3.5 w-3.5" />}
-            {t('Probe', 'Проверить')}
+            {t('Check', 'Проверить')}
           </button>
           <button
             type="button"
@@ -271,6 +377,73 @@ function ServerDetail({ server }: { server: XuiServer }) {
             <RefreshCw className="h-3.5 w-3.5" />
             {t('Refresh', 'Обновить')}
           </button>
+          {/* Sync = server-side reconcile of XuiClient cache ↔ panel.
+              Distinct from Refresh (which just re-fetches the list
+              the UI renders). Use after you've added/removed clients
+              directly in the panel UI to keep PiTun's view honest. */}
+          <button
+            type="button"
+            onClick={() => syncMut.mutate()}
+            disabled={syncMut.isPending}
+            className="rounded-lg border border-gray-700 hover:bg-gray-800 px-2.5 py-1.5 text-xs text-gray-300 inline-flex items-center gap-1.5 disabled:opacity-50"
+            title={t(
+              'Reconcile the PiTun client cache with what is actually on the panel right now',
+              'Сверить локальный кеш PiTun с текущим состоянием панели',
+            )}
+          >
+            {syncMut.isPending
+              ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              : <RefreshCw className="h-3.5 w-3.5" />}
+            {t('Sync', 'Синхронизация')}
+          </button>
+          {/* Fakesite controls — xui-pro only. Bare panels run no
+              nginx fronting, so there's no /var/www/html to rotate. */}
+          {isXuiPro && (
+            <>
+              <button
+                type="button"
+                onClick={() => rotateMut.mutate()}
+                disabled={rotateMut.isPending || uploadMut.isPending}
+                className="rounded-lg border border-gray-700 hover:bg-gray-800 px-2.5 py-1.5 text-xs text-gray-300 inline-flex items-center gap-1.5 disabled:opacity-50"
+                title={t(
+                  'Pick a random fakesite template from the bundled archive and swap it into nginx',
+                  'Выбрать случайный фейк-сайт из встроенного архива и переключить nginx на него',
+                )}
+              >
+                {rotateMut.isPending
+                  ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  : <Shuffle className="h-3.5 w-3.5" />}
+                {t('Rotate fakesite', 'Ротация фейк-сайта')}
+              </button>
+              <button
+                type="button"
+                onClick={() => fileInputRef.current?.click()}
+                disabled={rotateMut.isPending || uploadMut.isPending}
+                className="rounded-lg border border-gray-700 hover:bg-gray-800 px-2.5 py-1.5 text-xs text-gray-300 inline-flex items-center gap-1.5 disabled:opacity-50"
+                title={t(
+                  'Upload your own fakesite as a .zip (must contain index.html, ≤100 MB)',
+                  'Загрузить свой фейк-сайт .zip (нужен index.html, до 100 MB)',
+                )}
+              >
+                {uploadMut.isPending
+                  ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  : <UploadCloud className="h-3.5 w-3.5" />}
+                {t('Upload zip', 'Загрузить ZIP')}
+              </button>
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept=".zip,application/zip,application/x-zip-compressed"
+                className="hidden"
+                onChange={(e) => {
+                  const f = e.target.files?.[0]
+                  if (f) uploadMut.mutate(f)
+                  // Reset so picking the same file twice still fires.
+                  e.target.value = ''
+                }}
+              />
+            </>
+          )}
           <button
             type="button"
             onClick={() => setShowAddInbound(true)}
@@ -345,7 +518,130 @@ function ServerDetail({ server }: { server: XuiServer }) {
           }}
         />
       )}
+
+      {showHealth && (
+        <HealthCheckModal
+          serverName={server.server_name}
+          loading={healthMut.isPending}
+          error={healthMut.error}
+          result={healthMut.data}
+          onClose={() => setShowHealth(false)}
+          onRetry={() => healthMut.mutate()}
+        />
+      )}
     </section>
+  )
+}
+
+
+// ── Health-check modal ─────────────────────────────────────────────────────
+
+function HealthCheckModal({
+  serverName, loading, error, result, onClose, onRetry,
+}: {
+  serverName: string
+  loading: boolean
+  error: unknown
+  result: { ok: boolean; checks: Array<{ name: string; status: 'ok' | 'warn' | 'fail'; detail?: string | null }> } | undefined
+  onClose: () => void
+  onRetry: () => void
+}) {
+  const t = useT()
+  const errMsg = error
+    ? ((error as { response?: { data?: { detail?: unknown } }, message?: string }).response?.data?.detail
+       ?? (error as Error).message
+       ?? 'unknown error')
+    : null
+
+  const statusPill = (s: 'ok' | 'warn' | 'fail') => {
+    if (s === 'ok') return 'bg-green-900/30 text-green-300 border-green-700/40'
+    if (s === 'warn') return 'bg-yellow-900/30 text-yellow-300 border-yellow-700/40'
+    return 'bg-red-900/30 text-red-300 border-red-700/40'
+  }
+
+  return (
+    <ModalShell onClose={onClose} labelledBy="xui-health-title">
+      <div className="w-full max-w-xl rounded-2xl bg-gray-950/95 border border-gray-800 p-6 m-4 max-h-[90vh] overflow-y-auto">
+        <h2 id="xui-health-title" className="text-lg font-semibold text-gray-100 mb-1">
+          {t('Server health-check', 'Проверка сервера')}
+        </h2>
+        <p className="text-xs text-gray-500 mb-4">{serverName}</p>
+
+        {loading && (
+          <div className="text-sm text-gray-400 inline-flex items-center gap-2">
+            <Loader2 className="h-4 w-4 animate-spin" />
+            {t('Running probes…', 'Запуск проверок…')}
+          </div>
+        )}
+
+        {!loading && errMsg && (
+          <div className="rounded-lg bg-red-900/20 border border-red-700/40 px-3 py-2 text-sm text-red-300 flex items-start gap-2">
+            <AlertTriangle className="h-3.5 w-3.5 mt-0.5" />
+            <span>{String(errMsg)}</span>
+          </div>
+        )}
+
+        {!loading && !errMsg && result && (
+          <div className="space-y-2">
+            <div className={
+              'rounded-lg border px-3 py-2 text-sm flex items-center gap-2 ' +
+              (result.ok
+                ? 'bg-green-900/20 border-green-700/40 text-green-300'
+                : 'bg-yellow-900/20 border-yellow-700/40 text-yellow-200')
+            }>
+              {result.ok ? <Check className="h-4 w-4" /> : <AlertTriangle className="h-4 w-4" />}
+              <span>
+                {result.ok
+                  ? t('All checks passed', 'Все проверки прошли')
+                  : t('Some checks need attention', 'Некоторые проверки требуют внимания')}
+              </span>
+            </div>
+            <ul className="space-y-1.5">
+              {result.checks.map((c, i) => (
+                <li
+                  key={`${c.name}-${i}`}
+                  className="rounded-md border border-gray-800 bg-gray-900/40 px-3 py-2 flex items-start justify-between gap-3"
+                >
+                  <div className="min-w-0">
+                    <div className="text-sm text-gray-200">{c.name}</div>
+                    {c.detail && (
+                      <div className="text-[11px] text-gray-500 mt-0.5 break-all">
+                        {c.detail}
+                      </div>
+                    )}
+                  </div>
+                  <span className={
+                    'shrink-0 text-[10px] px-1.5 py-0.5 rounded border uppercase font-mono ' +
+                    statusPill(c.status)
+                  }>
+                    {c.status}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+
+        <div className="flex justify-end gap-2 mt-5">
+          <button
+            type="button"
+            onClick={onRetry}
+            disabled={loading}
+            className="rounded-lg border border-gray-700 hover:bg-gray-800 px-3 py-1.5 text-xs text-gray-300 inline-flex items-center gap-1.5 disabled:opacity-50"
+          >
+            <RefreshCw className="h-3.5 w-3.5" />
+            {t('Re-run', 'Перезапустить')}
+          </button>
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-lg bg-brand-600 hover:bg-brand-500 px-3 py-1.5 text-xs text-white font-medium"
+          >
+            {t('Close', 'Закрыть')}
+          </button>
+        </div>
+      </div>
+    </ModalShell>
   )
 }
 
@@ -384,6 +680,31 @@ function InboundCard({
     const s = JSON.parse(inbound.settings)
     const arr = s.clients ?? s.accounts ?? []
     clients = Array.isArray(arr) ? arr : []
+  } catch { /* ignore */ }
+
+  // Parse streamSettings once to surface transport + security tags.
+  // x-ui-pro stores both fields top-level under streamSettings, plus
+  // the JSON-in-JSON quirk forces us to JSON.parse the outer blob.
+  // Network is normalised to lowercase for stable badge matching;
+  // `splithttp` → `xhttp` because that's the legacy alias the panel
+  // sometimes still emits.
+  let inboundNetwork = ''
+  let inboundSecurity = ''
+  try {
+    const ss = JSON.parse(inbound.streamSettings || '{}')
+    const net = String(ss.network || '').toLowerCase()
+    inboundNetwork = net === 'splithttp' ? 'xhttp' : net
+    inboundSecurity = String(ss.security || '').toLowerCase()
+    // xui-pro domain-mode inbounds emit `security: "none"` but tunnel
+    // through nginx on :443 with TLS — the giveaway is an
+    // `externalProxy` entry with `forceTls: "tls"`. Surface that as
+    // a TLS badge so the user sees the effective wire shape.
+    if (inboundSecurity === 'none' && Array.isArray(ss.externalProxy)) {
+      const ep = ss.externalProxy[0]
+      if (ep && typeof ep === 'object' && String(ep.forceTls || '').toLowerCase() === 'tls') {
+        inboundSecurity = 'tls'
+      }
+    }
   } catch { /* ignore */ }
 
   // Chain-managed inbound? The chain orchestrator tags every inbound
@@ -430,10 +751,30 @@ function InboundCard({
           <div className="min-w-0">
             <div className="flex items-center gap-2 flex-wrap">
               <span className="font-medium text-gray-100">{inbound.remark || `inbound-${inbound.id}`}</span>
-              <span className="text-[10px] px-1.5 py-0.5 rounded font-mono bg-gray-800 text-gray-400 uppercase">
+              {/* Order: port first (concrete identifying info) →
+                  protocol → transport → security → state badges.
+                  Palette (shared with NodeCard so the two lists feel
+                  the same): protocol=blue, transport=green,
+                  reality=purple, tls=orange, chain=red. */}
+              <span className="text-[11px] text-gray-500 font-mono">:{inbound.port}</span>
+              <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-900/30 text-blue-300 border border-blue-700/40 uppercase font-mono">
                 {inbound.protocol}
               </span>
-              <span className="text-[11px] text-gray-500 font-mono">:{inbound.port}</span>
+              {inboundNetwork && inboundNetwork !== 'tcp' && (
+                <span className="text-[10px] px-1.5 py-0.5 rounded bg-green-900/30 text-green-300 border border-green-700/40 uppercase font-mono">
+                  {inboundNetwork}
+                </span>
+              )}
+              {inboundSecurity === 'reality' && (
+                <span className="text-[10px] px-1.5 py-0.5 rounded bg-purple-900/30 text-purple-300 border border-purple-700/40 uppercase font-mono">
+                  reality
+                </span>
+              )}
+              {inboundSecurity === 'tls' && (
+                <span className="text-[10px] px-1.5 py-0.5 rounded bg-orange-900/30 text-orange-300 border border-orange-700/40 uppercase font-mono">
+                  tls
+                </span>
+              )}
               {!inbound.enable && (
                 <span className="text-[10px] px-1.5 py-0.5 rounded bg-yellow-900/30 text-yellow-300 border border-yellow-700/40">
                   disabled
@@ -441,7 +782,7 @@ function InboundCard({
               )}
               {isChainManaged && (
                 <span
-                  className="text-[10px] px-1.5 py-0.5 rounded bg-purple-900/30 text-purple-300 border border-purple-700/40 font-mono"
+                  className="text-[10px] px-1.5 py-0.5 rounded bg-red-900/30 text-red-300 border border-red-700/40 font-mono uppercase"
                   title={t(
                     'This inbound is part of a chain. Manage its clients on the Chains tab.',
                     'Этот инбаунд принадлежит цепочке. Управление клиентами — на вкладке «Цепочки».',
@@ -550,6 +891,27 @@ function InboundCard({
                         </span>
                       )
                     }
+                    // Chain-managed inbounds get their clients
+                    // exported through the Chains tab — that path
+                    // wires the resulting Node into the chain's
+                    // ChainClientChannel.exported_node_id link so
+                    // cascade-delete on chain teardown works. The
+                    // generic per-inbound export endpoint here would
+                    // create a bare Node with no such link, leaving
+                    // an orphan if the chain is later removed.
+                    if (isChainManaged) {
+                      return (
+                        <span
+                          className="text-[10px] text-gray-500 italic px-1.5 py-0.5"
+                          title={t(
+                            'Chain client — export from the Chains tab.',
+                            'Клиент цепочки — экспорт со вкладки «Цепочки».',
+                          )}
+                        >
+                          {t('via Chains', 'через Цепочки')}
+                        </span>
+                      )
+                    }
                     return (
                       <button
                         type="button"
@@ -631,16 +993,24 @@ function AddInboundModal({
 
   const preset = presets.find((p) => p.id === presetId) ?? null
 
-  // Pre-populate defaults when picking a preset.
+  // Pre-populate defaults when picking a preset. Fields with a
+  // `default_from` hint pull from a runtime panel attribute instead
+  // of the static `default` — e.g. trojan-grpc's `authority` should
+  // default to the selected panel's domain so nginx routes work
+  // without manual edits.
   useEffect(() => {
     if (!preset) return
     const next: Record<string, string> = {}
     for (const f of preset.fields) {
-      next[f.name] = f.default ?? ''
+      if (f.default_from === 'panel_domain') {
+        next[f.name] = server.domain ?? ''
+      } else {
+        next[f.name] = f.default ?? ''
+      }
     }
     setValues(next)
     setError('')
-  }, [preset])
+  }, [preset, server.domain])
 
   const createMut = useMutation({
     mutationFn: () => {
@@ -712,25 +1082,22 @@ function AddInboundModal({
           </div>
         ) : (
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mb-4">
-            {presets.map((p) => {
-              const blockedByDomain = p.needs_domain && server.mode === 'bare'
-              return (
+            {/* On bare panels (no domain, no nginx fronting :443) the
+                domain-mode presets fundamentally can't work — skip
+                rendering them entirely so the picker stays focused
+                on the actually-installable subset. */}
+            {presets
+              .filter((p) => !(p.needs_domain && server.mode === 'bare'))
+              .map((p) => (
                 <button
                   key={p.id}
                   type="button"
-                  onClick={() => !blockedByDomain && setPresetId(p.id)}
-                  disabled={blockedByDomain}
-                  title={blockedByDomain
-                    ? t('Needs a domain. Redeploy panel in xui-pro mode.', 'Нужен домен. Переустановите панель в режиме xui-pro.')
-                    : undefined
-                  }
+                  onClick={() => setPresetId(p.id)}
                   className={
                     'rounded-lg border px-3 py-2 text-left transition-colors ' +
-                    (blockedByDomain
-                      ? 'border-gray-800 bg-gray-900/20 text-gray-600 cursor-not-allowed opacity-50'
-                      : (p.id === presetId
-                        ? 'border-brand-500/60 bg-brand-600/10 text-brand-200'
-                        : 'border-gray-800 bg-gray-900/40 text-gray-400 hover:border-gray-700 hover:text-gray-200'))
+                    (p.id === presetId
+                      ? 'border-brand-500/60 bg-brand-600/10 text-brand-200'
+                      : 'border-gray-800 bg-gray-900/40 text-gray-400 hover:border-gray-700 hover:text-gray-200')
                   }
                 >
                   <div className="text-sm font-medium flex items-center gap-1.5 flex-wrap">
@@ -750,8 +1117,7 @@ function AddInboundModal({
                     {p.description}
                   </div>
                 </button>
-              )
-            })}
+              ))}
           </div>
         )}
 

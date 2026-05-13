@@ -52,10 +52,19 @@ def _stream_settings(node: Node) -> Dict[str, Any]:
         }
 
     elif node.transport == "grpc":
-        stream["grpcSettings"] = {
+        grpc_settings: Dict[str, Any] = {
             "serviceName": node.grpc_service or "",
             "multiMode": node.grpc_mode == "multi",
         }
+        # Only emit `authority` when set — xray defaults to the
+        # outbound's destination host otherwise. The x-ui-pro
+        # reverse-proxy convention requires the matching authority
+        # for nginx to route correctly; standalone Reality / direct
+        # gRPC setups don't need it and a stray header would just
+        # confuse downstream caching.
+        if node.grpc_authority:
+            grpc_settings["authority"] = node.grpc_authority
+        stream["grpcSettings"] = grpc_settings
 
     elif node.transport in ("h2", "http"):
         stream["httpSettings"] = {
@@ -65,10 +74,23 @@ def _stream_settings(node: Node) -> Dict[str, Any]:
 
     elif node.transport in ("xhttp", "splithttp"):
         stream["network"] = "xhttp"
-        stream["xhttpSettings"] = {
+        xhttp: Dict[str, Any] = {
             "path": node.http_path or "/",
-            "host": node.http_host or node.sni or node.address,
+            # `mode: "auto"` lets xray pick at runtime — matches the
+            # reference vless-xhttp-reality URL the user shipped, and
+            # is compatible with `packet-up` server-side. Hard-coding
+            # `packet-up` here would break clients that emit the URL
+            # without an explicit `mode=` (xray treats absent as auto).
+            "mode": "auto",
         }
+        # Host header: only emit when explicitly set. For Reality+xhttp
+        # the SNI already lives in realitySettings.serverName, and a
+        # stray Host header pointing at the dial IP confuses xray's
+        # path matching. The user's hand-rolled working reference has
+        # `host=` empty in the URL.
+        if node.http_host:
+            xhttp["host"] = node.http_host
+        stream["xhttpSettings"] = xhttp
 
     elif node.transport == "httpupgrade":
         stream["httpupgradeSettings"] = {

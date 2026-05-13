@@ -67,6 +67,12 @@ class PresetField:
     help: str = ""
     choices: Optional[List[str]] = None
     placeholder: str = ""
+    # Frontend hint: instead of a static `default`, pre-fill from a
+    # runtime panel attribute. Currently the only handled value is
+    # "panel_domain" (used by trojan-grpc's authority field — the
+    # sensible default is the panel's own domain so nginx routes
+    # match the cert it serves).
+    default_from: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -108,6 +114,48 @@ def _sniff() -> Dict[str, Any]:
         "metadataOnly": False,
         "routeOnly": False,
     }
+
+
+def _random_xui_pro_port() -> int:
+    """Pick a random high port for an xui-pro reverse-proxied inbound.
+
+    x-ui-pro fronts every domain-mode inbound through nginx on
+    :443. The inbound itself listens on a random localhost-ish port
+    and nginx reverse-proxies into it by URL path. Range is the
+    free part of the dynamic port range; we avoid the very top so
+    short-lived test/probe sockets in 60000+ don't collide.
+    """
+    return secrets.choice(range(30000, 40000))
+
+
+def _xui_pro_external_proxy(domain: str) -> List[Dict[str, Any]]:
+    """The single externalProxy entry every domain-mode inbound on
+    xui-pro needs — declares "the real client-facing endpoint is
+    tls://<panel-domain>:443" so x-ui-pro's nginx fronting layer
+    knows where to wire its 443 location block. Path on this side
+    must match the inbound's own path field (`/<port>/<tail>`).
+    """
+    return [{
+        "forceTls": "tls",
+        "dest": domain,
+        "port": 443,
+        "remark": "",
+    }]
+
+
+def _xui_pro_path(inbound_port: int, tail: str) -> str:
+    """Compose the URL path under the xui-pro convention:
+    `/<inbound_port>/<tail>`. nginx routes 443 traffic to the
+    matching localhost port purely by this prefix.
+
+    Empty / `/` tails get replaced with a fresh random hex so the
+    path can never collapse to bare `/<port>/` (which would shadow
+    the entire port-prefix path namespace).
+    """
+    clean = (tail or "").strip().lstrip("/")
+    if not clean:
+        clean = secrets.token_hex(4)
+    return f"/{inbound_port}/{clean}"
 
 
 def _client_email_label() -> str:
@@ -224,7 +272,14 @@ def _build_vless_xhttp_reality(
         },
         "xhttpSettings": {
             "path": xhttp_path,
-            "mode": "packet-up",
+            # `auto` matches what known-good hand-rolled vless-xhttp-
+            # reality clients ship with; `packet-up` requires the
+            # client to opt in explicitly via `&mode=packet-up`, and
+            # most clients (incl. the link xray emits from a panel)
+            # default to `auto`. Mismatched modes silently drop the
+            # stream after the Reality handshake, which is what we
+            # saw in beta.7 testing.
+            "mode": "auto",
         },
     }
     return {
@@ -247,8 +302,11 @@ def _build_vless_ws(
     uuid: str,
     domain: str,
 ) -> Dict[str, Any]:
-    port = int(values.get("port") or 443)
-    ws_path = values.get("ws_path") or f"/{secrets.token_hex(4)}"
+    # xui-pro convention: inbound on a random high port; nginx
+    # fronts :443 + TLS and reverse-proxies based on URL prefix.
+    # The inbound itself runs plain WS (TLS is terminated upstream).
+    port = _random_xui_pro_port()
+    ws_path = _xui_pro_path(port, values.get("ws_path") or "")
     remark = values.get("remark") or "vless-ws"
     settings = {
         "clients": [
@@ -263,14 +321,8 @@ def _build_vless_ws(
     }
     stream = {
         "network": "ws",
-        "security": "tls",
-        "tlsSettings": {
-            "serverName": domain,
-            "alpn": ["http/1.1"],
-            "certificates": [],
-            "minVersion": "1.2",
-            "rejectUnknownSni": False,
-        },
+        "security": "none",
+        "externalProxy": _xui_pro_external_proxy(domain),
         "wsSettings": {
             "path": ws_path,
             "headers": {"Host": domain},
@@ -296,8 +348,9 @@ def _build_vless_xhttp(
     uuid: str,
     domain: str,
 ) -> Dict[str, Any]:
-    port = int(values.get("port") or 443)
-    xhttp_path = values.get("xhttp_path") or "/api/v1"
+    # Reverse-proxied through xui-pro's nginx — see _build_vless_ws.
+    port = _random_xui_pro_port()
+    xhttp_path = _xui_pro_path(port, values.get("xhttp_path") or "")
     remark = values.get("remark") or "vless-xhttp"
     settings = {
         "clients": [
@@ -312,14 +365,8 @@ def _build_vless_xhttp(
     }
     stream = {
         "network": "xhttp",
-        "security": "tls",
-        "tlsSettings": {
-            "serverName": domain,
-            "alpn": ["h2", "http/1.1"],
-            "certificates": [],
-            "minVersion": "1.2",
-            "rejectUnknownSni": False,
-        },
+        "security": "none",
+        "externalProxy": _xui_pro_external_proxy(domain),
         "xhttpSettings": {
             "path": xhttp_path,
             "mode": "packet-up",
@@ -345,10 +392,22 @@ def _build_trojan_grpc(
     *,
     domain: str,
 ) -> Dict[str, Any]:
-    port = int(values.get("port") or 443)
+    # Reverse-proxied through xui-pro's nginx — see _build_vless_ws.
+    # serviceName carries the port-prefixed path *with* a leading
+    # slash (matches the working hand-rolled config example: nginx's
+    # location block routes `/<port>/<tail>/Tun` into the local
+    # gRPC inbound). Some xray builds tolerate the slash being
+    # stripped, but keeping it matches what the panel UI shows for
+    # known-good setups.
+    port = _random_xui_pro_port()
+    user_svc = values.get("service_name") or ""
+    service_name = _xui_pro_path(port, user_svc)
     password = values.get("password") or secrets.token_urlsafe(20)
-    service_name = values.get("service_name") or f"grpc{secrets.token_hex(3)}"
     remark = values.get("remark") or "trojan-grpc"
+    # User can override the :authority header (default = panel
+    # domain). Empty input falls back to the domain to keep nginx
+    # routing predictable.
+    authority = (values.get("authority") or "").strip() or domain
     settings = {
         "clients": [
             {
@@ -362,17 +421,21 @@ def _build_trojan_grpc(
     }
     stream = {
         "network": "grpc",
-        "security": "tls",
-        "tlsSettings": {
-            "serverName": domain,
-            "alpn": ["h2"],
-            "certificates": [],
-            "minVersion": "1.2",
-            "rejectUnknownSni": False,
-        },
+        "security": "none",
+        "externalProxy": _xui_pro_external_proxy(domain),
         "grpcSettings": {
             "serviceName": service_name,
-            "multiMode": False,
+            # `multiMode: true` enables H2 multi-stream — every
+            # client connection multiplexes over one TCP stream.
+            # Recommended by xui-pro / 3x-ui upstream for gRPC
+            # inbounds; matches the working reference config.
+            "multiMode": True,
+            # `authority` is the :authority HTTP/2 header xray sends
+            # on the gRPC handshake; nginx routes by this. Default
+            # to the panel domain so client → nginx → inbound
+            # works without manual tweaking. Operator can override
+            # via the form field if they need a different routing key.
+            "authority": authority,
             "idle_timeout": 60,
         },
     }
@@ -498,21 +561,22 @@ PRESETS: Dict[str, InboundPreset] = {
         id="vless-ws",
         label="VLESS + WS over TLS",
         description=(
-            "VLESS over WebSocket inside a TLS connection. Domain "
-            "required (Let's Encrypt cert via x-ui-pro's nginx). "
-            "Plays nicely behind Cloudflare CDN."
+            "VLESS over WebSocket fronted by xui-pro's nginx on :443 "
+            "(Let's Encrypt cert). The inbound itself listens on a "
+            "random high port and gets a `/<port>/<tail>` path that "
+            "nginx routes to. Plays nicely behind Cloudflare CDN."
         ),
         needs_domain=True,
         supports_reality=False,
         protocol="vless",
         fields=[
-            PresetField(name="port", label="Port", type="int", default="443"),
             PresetField(
-                name="ws_path", label="WebSocket path", type="string",
+                name="ws_path", label="Path tail", type="string",
                 required=False,
-                placeholder="auto-generated (e.g. /a3b9f1c4)",
-                help="The URL path the WS upgrade hits. Keep secret-ish "
-                     "— acts as a soft ID.",
+                placeholder="auto-generated (8-hex)",
+                help="Appended to `/<random_port>/` to form the full "
+                     "WS URL path. Empty → random 8-hex. Keep "
+                     "secret-ish — acts as a soft ID.",
             ),
             PresetField(
                 name="remark", label="Remark (optional)", type="string",
@@ -526,18 +590,20 @@ PRESETS: Dict[str, InboundPreset] = {
         id="vless-xhttp",
         label="VLESS + xhttp over TLS",
         description=(
-            "VLESS over xhttp inside a TLS connection (no Reality). "
-            "Domain required. Behaves like a plain HTTPS endpoint to "
-            "DPI; nginx in front can serve a fakesite on the same port."
+            "VLESS over xhttp fronted by xui-pro's nginx on :443. "
+            "Behaves like a plain HTTPS endpoint to DPI; nginx in "
+            "front can serve a fakesite on the same port."
         ),
         needs_domain=True,
         supports_reality=False,
         protocol="vless",
         fields=[
-            PresetField(name="port", label="Port", type="int", default="443"),
             PresetField(
-                name="xhttp_path", label="xhttp path", type="string",
-                default="/api/v1", required=False,
+                name="xhttp_path", label="Path tail", type="string",
+                required=False,
+                placeholder="auto-generated (8-hex)",
+                help="Appended to `/<random_port>/` to form the full "
+                     "xhttp URL path.",
             ),
             PresetField(
                 name="remark", label="Remark (optional)", type="string",
@@ -551,16 +617,15 @@ PRESETS: Dict[str, InboundPreset] = {
         id="trojan-grpc",
         label="Trojan + gRPC over TLS",
         description=(
-            "Trojan over gRPC (multi-stream HTTP/2). Domain required. "
-            "Same fakesite-on-443 pattern as the xhttp-TLS preset, "
-            "but with the password-auth Trojan threat model instead "
-            "of UUID-based VLESS."
+            "Trojan over gRPC fronted by xui-pro's nginx on :443. "
+            "Same reverse-proxy pattern as the xhttp/WS presets but "
+            "with the password-auth Trojan threat model instead of "
+            "UUID-based VLESS."
         ),
         needs_domain=True,
         supports_reality=False,
         protocol="trojan",
         fields=[
-            PresetField(name="port", label="Port", type="int", default="443"),
             PresetField(
                 name="password", label="Password (optional)",
                 type="string", required=False,
@@ -569,10 +634,22 @@ PRESETS: Dict[str, InboundPreset] = {
                      "URL-safe.",
             ),
             PresetField(
-                name="service_name", label="gRPC service name",
+                name="service_name", label="gRPC service-name tail",
                 type="string", required=False,
-                placeholder="auto-generated (e.g. grpcabc)",
-                help="The gRPC service path. Keep secret-ish.",
+                placeholder="auto-generated",
+                help="Appended to `<random_port>/` to form the gRPC "
+                     "service name nginx routes on.",
+            ),
+            PresetField(
+                name="authority", label="Authority",
+                type="domain", required=False,
+                default_from="panel_domain",
+                help="`:authority` HTTP/2 header sent on the gRPC "
+                     "handshake. nginx routes by this — leave at the "
+                     "panel domain unless you've manually configured "
+                     "an alternative server_name block. Changing it "
+                     "to a value nginx doesn't expect will break the "
+                     "inbound.",
             ),
             PresetField(
                 name="remark", label="Remark (optional)",

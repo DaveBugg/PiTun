@@ -229,9 +229,16 @@ if [[ "$INSTALL_MODE" == "xui-pro" ]]; then
 else
     # ── 3b. Bare upstream 3x-ui mode ────────────────────────────────────────
     log "Running upstream 3x-ui installer ($XUI_VERSION)..."
-    # `printf 'n\n'` skips the upstream installer's "use default creds?"
-    # prompt — we set our own creds in step 4.
-    printf 'n\n' | bash <(wget -qO- \
+    # Upstream v3.0.1 install.sh prompts for SSL setup (options 1-4)
+    # right after auto-rotating creds. Pick `4` (skip SSL) — bare mode
+    # serves the panel over plain HTTP and our step 4 below clears
+    # any cert paths the installer might have written. Without an
+    # explicit `4`, blank stdin gets read as "default → option 2"
+    # (LE for IP address) which then 404/rate-limits on a fresh VPS
+    # and dumps a "Failed to issue IP certificate" red herring into
+    # the log. The trailing `n\n` covers any older revisions that
+    # still ask "use default creds?" before the SSL prompt.
+    printf '4\nn\n' | bash <(wget -qO- \
         "https://raw.githubusercontent.com/MHSanaei/3x-ui/${XUI_VERSION}/install.sh") \
         "$XUI_VERSION" \
         || err "3x-ui installer exited non-zero"
@@ -792,6 +799,32 @@ else
     info "OPTIMIZE=no — skipping VPS tuning profile."
 fi
 
+# ── 7.5 Post-install Go cleanup ─────────────────────────────────────────────
+# x-ui-pro.sh / older revisions bootstrap a Go toolchain (~2.5 GB:
+# ~/go ≈ 1.6 GB, ~/.cache/go-build ≈ 600 MB, /usr/local/go ≈ 250 MB)
+# that's only needed at build time. Scrub once x-ui is confirmed
+# running; re-installing the panel re-downloads Go on demand.
+#
+# Inlined (was sourced from `scripts/cleanup-go.sh` in an earlier
+# revision, but PiTun deploys setup-*.sh via single-file SFTP — the
+# sibling helper never made it to the VPS and `set -e` aborted the
+# whole script before the final URL summary printed).
+if systemctl is-active --quiet x-ui 2>/dev/null; then
+    if [ -e /root/go ] || [ -e /root/.cache/go-build ] || [ -e /usr/local/go ]; then
+        log "Freeing ~2.5 GB by removing Go SDK / build cache (runtime not affected)..."
+        rm -rf /root/go /root/.cache/go-build /usr/local/go 2>/dev/null || true
+        # /usr/local/bin/go points into the deleted SDK — drop the
+        # dangling symlink so `command -v go` honestly reports missing.
+        [ -L /usr/local/bin/go ] && rm -f /usr/local/bin/go
+        info "Go tooling removed (re-installs on next reinstall if needed)."
+    fi
+    # Drop the master.zip the x-ui-pro installer leaves around. The
+    # extracted /root/randomfakehtml-master folder stays — fakesite
+    # rotation needs it.
+    [ -f /root/randomfakehtml-master.zip ] && rm -f /root/randomfakehtml-master.zip
+fi
+
+
 # ── 8. Emit URI for PiTun's URI parser ──────────────────────────────────────
 # Format: xui://<api_token>@<host>:<panel_port><basepath>?user=<e>&pass=<e>&domain=<e>
 # url-encode user/pass/domain — the script already restricts each to URL-safe
@@ -800,7 +833,23 @@ urlenc() {
     python3 -c 'import sys,urllib.parse;print(urllib.parse.quote(sys.argv[1],safe=""))' "$1"
 }
 
-HOST_FOR_URI="${DOMAIN:-$(curl -s --max-time 5 ifconfig.me || curl -s --max-time 5 api.ipify.org || echo "UNKNOWN")}"
+# Public-IP detection. Force IPv4 (`-4`) — without it ifconfig.me /
+# ipify happily return the dual-stacked host's IPv6 (e.g.
+# `2a00:bd80:a176:10:47c::1`) which then breaks the URI we emit:
+# vless / xui-style URLs need bracket-wrapped IPv6 (`[…]:port`) and
+# PiTun's URI parser sees the trailing `:port` as part of the IPv6
+# address. Pinning to v4 is also what every existing client URL
+# the operator has assumes; if they really want v6 they can supply
+# DOMAIN explicitly. Falls through ifconfig.me → ipify (v4) → ifconfig.co.
+HOST_FOR_URI="${DOMAIN:-}"
+if [[ -z "$HOST_FOR_URI" ]]; then
+    HOST_FOR_URI="$(
+        curl -4s --max-time 5 ifconfig.me \
+        || curl -4s --max-time 5 api.ipify.org \
+        || curl -4s --max-time 5 ifconfig.co \
+        || echo "UNKNOWN"
+    )"
+fi
 ENC_USER="$(urlenc "$PANEL_USER")"
 ENC_PASS="$(urlenc "$PANEL_PASS")"
 ENC_DOMAIN="$(urlenc "${DOMAIN:-}")"

@@ -768,7 +768,12 @@ export function Routing() {
       {/* Add / Edit Modal */}
       {(modal === 'add' || modal === 'edit') && (
         <ModalShell onClose={() => setModal('none')} labelledBy="rule-modal-title">
-          <div className="w-full max-w-xl max-h-[90vh] overflow-y-auto rounded-2xl bg-gray-950 border border-gray-800 p-6">
+          {/* `w-full` collapses under ModalShell's stopPropagation
+              wrapper (flex shrinks to natural width), giving a
+              skinny ~360px dialog. `w-[min(92vw,48rem)]` keeps a
+              sane desktop max (768px) but always at least 92% of
+              the viewport on phones. */}
+          <div className="w-[min(92vw,48rem)] max-h-[90vh] overflow-y-auto rounded-2xl bg-gray-950 border border-gray-800 p-6">
             <h2 id="rule-modal-title" className="text-base font-semibold text-gray-100 mb-5">
               {modal === 'add' ? 'Add Routing Rule' : 'Edit Routing Rule'}
             </h2>

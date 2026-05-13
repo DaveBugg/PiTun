@@ -98,6 +98,25 @@ export const nodesApi = {
   speedtestAll: () =>
     http.post<SpeedTestResult[]>('/nodes/speedtest-all').then(r => r.data),
 
+  /** Plain-text URI export. Sister to the JSON bundle but emits a
+   *  shareable `.txt` file with one `vless://` / `trojan://` / `ss://`
+   *  / `vmess://` / `hysteria2://` / `socks://` per line. WireGuard
+   *  nodes are skipped (no canonical URI form). */
+  exportURIs: async (): Promise<void> => {
+    const r = await http.get('/nodes/export-uris', { responseType: 'text' })
+    const text = typeof r.data === 'string' ? r.data : String(r.data ?? '')
+    const blob = new Blob([text], { type: 'text/plain' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')
+    a.download = `pitun-nodes-${stamp}.txt`
+    document.body.appendChild(a)
+    a.click()
+    a.remove()
+    URL.revokeObjectURL(url)
+  },
+
   // Full-fidelity JSON backup/restore. Distinct from `import` which
   // parses VPN URIs — these handle the "back up everything" use case.
   exportJSON: async (): Promise<void> => {
@@ -734,6 +753,58 @@ export const xuiApi = {
     return r.data
   },
 
+  /** POST /api/xui/servers/{id}/sync — reconcile the local
+   *  `XuiClient` cache with what's actually on the panel right now.
+   *  Counts what was added / updated / removed; cascade-cleans Node
+   *  rows whose backing client vanished from the panel. */
+  syncServer: async (id: number): Promise<{
+    xui_server_id: number
+    added: number
+    updated: number
+    removed: number
+    chain_skipped: number
+    orphan_nodes_removed: number
+  }> => {
+    const r = await http.post(`/xui/servers/${id}/sync`)
+    return r.data
+  },
+
+  /** POST /api/xui/servers/{id}/healthcheck — multi-layer probe
+   *  (panel API, xray state, SSH-checked nginx / ufw / cert / disk).
+   *  Returns the same `{ok, checks}` shape as the chain healthcheck. */
+  healthcheckServer: async (id: number): Promise<{
+    xui_server_id: number
+    ok: boolean
+    checks: Array<{ name: string; status: 'ok' | 'warn' | 'fail'; detail?: string | null }>
+  }> => {
+    const r = await http.post(`/xui/servers/${id}/healthcheck`)
+    return r.data
+  },
+
+  /** POST /api/xui/servers/{id}/fakesite/rotate — pick a random
+   *  template from /root/randomfakehtml-master and swap into nginx
+   *  /var/www/html. Only valid for xui-pro panels. */
+  rotateFakesite: async (id: number): Promise<{
+    ok: boolean; name?: string | null; detail?: string | null
+  }> => {
+    const r = await http.post(`/xui/servers/${id}/fakesite/rotate`)
+    return r.data
+  },
+
+  /** POST /api/xui/servers/{id}/fakesite/upload — multipart .zip
+   *  archive that replaces the served fakesite root. Zip must
+   *  contain an index.html within the first two levels. ≤100 MB. */
+  uploadFakesite: async (id: number, zip: File): Promise<{
+    ok: boolean; name?: string | null; detail?: string | null
+  }> => {
+    const fd = new FormData()
+    fd.append('file', zip)
+    const r = await http.post(`/xui/servers/${id}/fakesite/upload`, fd, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    })
+    return r.data
+  },
+
   // ── Inbounds ────────────────────────────────────────────────────────────
   listInbounds: async (serverId: number): Promise<XuiInbound[]> => {
     const r = await http.get(`/xui/servers/${serverId}/inbounds`)
@@ -816,6 +887,16 @@ export const xuiApi = {
 
   deleteChain: async (id: number): Promise<void> => {
     await http.delete(`/xui/chains/${id}`)
+  },
+
+  /** DELETE /api/xui/chains/{id}/channels/{cid} — remove one channel.
+   *  Cleans inbounds on both panels + UFW + relay template + any
+   *  Nodes exported from this channel. If it was the last channel,
+   *  the whole chain is dropped. */
+  deleteChainChannel: async (
+    chainId: number, channelId: number,
+  ): Promise<void> => {
+    await http.delete(`/xui/chains/${chainId}/channels/${channelId}`)
   },
 
   /** Run a read-only diagnostic sweep over both panels + the live

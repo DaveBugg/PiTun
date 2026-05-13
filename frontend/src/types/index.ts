@@ -42,6 +42,7 @@ export interface Node {
   ws_headers?: string
   grpc_service?: string
   grpc_mode: string
+  grpc_authority?: string
   http_path: string
   http_host?: string
   kcp_seed?: string
@@ -799,6 +800,10 @@ export interface InboundPresetField {
   help: string
   choices?: string[] | null
   placeholder: string
+  // Runtime-resolved default. Currently the only supported value is
+  // "panel_domain" — frontend pre-fills the input from the selected
+  // XuiServer's `domain` attribute when the user picks the preset.
+  default_from?: string | null
 }
 
 export interface InboundPreset {
