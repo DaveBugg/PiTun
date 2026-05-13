@@ -66,15 +66,62 @@ PiTun превращает небольшую Linux-машину в **прозр
   <img src="docs/screenshots/dashboard.jpg" alt="Dashboard" width="800">
 </a>
 
+### Provisioning VPS и оркестрация x-ui (с v1.3.0)
+
+<table>
+  <tr>
+    <td width="50%">
+      <a href="docs/screenshots/servers.jpg"><img src="docs/screenshots/servers.jpg" alt="Servers"></a>
+      <p align="center"><sub><b>Servers</b> — инвентарь VPS, бэйджи развёртываний (NaiveProxy / WireGuard / x-ui), one-click auto-install по SSH</sub></p>
+    </td>
+    <td width="50%">
+      <a href="docs/screenshots/servers_tasks.jpg"><img src="docs/screenshots/servers_tasks.jpg" alt="Server tasks"></a>
+      <p align="center"><sub><b>Server tasks</b> — live-лог установки через WebSocket, фильтры по статусу, сохранённый tail для завершённых задач</sub></p>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%">
+      <a href="docs/screenshots/xui.jpg"><img src="docs/screenshots/xui.jpg" alt="Панели X-ui"></a>
+      <p align="center"><sub><b>Панели X-ui</b> — управление inbounds + клиентами на 3x-ui / x-ui-pro, healthcheck, sync, ротация фейк-сайта</sub></p>
+    </td>
+    <td width="50%">
+      <a href="docs/screenshots/chains.jpg"><img src="docs/screenshots/chains.jpg" alt="Proxy Chains"></a>
+      <p align="center"><sub><b>Proxy Chains</b> — двухзвенный VLESS+Reality через две x-ui панели, независимые каналы со своими SNI / Reality-ключами</sub></p>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%">
+      <a href="docs/screenshots/deploy_modal.jpg"><img src="docs/screenshots/deploy_modal.jpg" alt="Deploy modal"></a>
+      <p align="center"><sub><b>Deploy modal</b> — выбор протокола (Naive / x-ui / WG), домен + LE email если нужно, live-стрим установки</sub></p>
+    </td>
+    <td width="50%">
+      <a href="docs/screenshots/chain_healthcheck.jpg"><img src="docs/screenshots/chain_healthcheck.jpg" alt="Chain healthcheck"></a>
+      <p align="center"><sub><b>Chain healthcheck</b> — API панелей, состояние xray, наличие inbounds, routing на relay плюс live <code>testOutbound</code> для хопа relay→exit</sub></p>
+    </td>
+  </tr>
+</table>
+
+### Маршрутизация и ноды
+
 <table>
   <tr>
     <td width="50%">
       <a href="docs/screenshots/nodes.jpg"><img src="docs/screenshots/nodes.jpg" alt="Ноды"></a>
-      <p align="center"><sub><b>Ноды</b> — протоколы, транспорты, латентность, статус sidecar</sub></p>
+      <p align="center"><sub><b>Ноды</b> — протоколы, транспорты, латентность, унифицированная палитра пилюль (protocol blue / transport green / reality purple / tls orange)</sub></p>
     </td>
     <td width="50%">
       <a href="docs/screenshots/routing.jpg"><img src="docs/screenshots/routing.jpg" alt="Маршрутизация"></a>
-      <p align="center"><sub><b>Маршрутизация</b> — drag-приоритеты, массовый импорт, round-trip V2RayN/Shadowrocket</sub></p>
+      <p align="center"><sub><b>Маршрутизация</b> — drag-приоритеты, массовый импорт, round-trip V2RayN/Shadowrocket, multi-tag редактор match-value</sub></p>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%">
+      <a href="docs/screenshots/balancers.jpg"><img src="docs/screenshots/balancers.jpg" alt="Balancers"></a>
+      <p align="center"><sub><b>Balancers</b> — группировка нод по стратегии xray <code>leastPing</code> / <code>random</code></sub></p>
+    </td>
+    <td width="50%">
+      <a href="docs/screenshots/circles.jpg"><img src="docs/screenshots/circles.jpg" alt="Node Circles"></a>
+      <p align="center"><sub><b>Node Circles</b> — бесшовная ротация через xray gRPC API, TCP pre-ping с retry, двухуровневый auto-failover</sub></p>
     </td>
   </tr>
   <tr>
@@ -83,10 +130,15 @@ PiTun превращает небольшую Linux-машину в **прозр
       <p align="center"><sub><b>Подписки</b> — авто-обновление, per-OS Happ-пресеты, custom UA</sub></p>
     </td>
     <td width="50%">
-      <a href="docs/screenshots/circles.jpg"><img src="docs/screenshots/circles.jpg" alt="Node Circles"></a>
-      <p align="center"><sub><b>Node Circles</b> — бесшовная ротация через xray gRPC API</sub></p>
+      <a href="docs/screenshots/geodata.jpg"><img src="docs/screenshots/geodata.jpg" alt="Geo-профили"></a>
+      <p align="center"><sub><b>Geo-данные</b> — три переключаемых upstream-профиля (Loyalsoldier / runetfreedom / v2fly) + scheduled refresh</sub></p>
     </td>
   </tr>
+</table>
+
+### Устройства, DNS и диагностика
+
+<table>
   <tr>
     <td width="50%">
       <a href="docs/screenshots/dns.jpg"><img src="docs/screenshots/dns.jpg" alt="DNS"></a>
@@ -95,6 +147,12 @@ PiTun превращает небольшую Linux-машину в **прозр
     <td width="50%">
       <a href="docs/screenshots/devices.jpg"><img src="docs/screenshots/devices.jpg" alt="Устройства"></a>
       <p align="center"><sub><b>Устройства</b> — сканирование LAN, OUI vendor lookup, политики per-device</sub></p>
+    </td>
+  </tr>
+  <tr>
+    <td colspan="2" width="100%">
+      <a href="docs/screenshots/diagnostics.jpg"><img src="docs/screenshots/diagnostics.jpg" alt="Диагностика"></a>
+      <p align="center"><sub><b>Диагностика</b> — доступность DNS, состояние шлюза, здоровье xray, снимок ресурсов, экспорт диагностики для багрепортов</sub></p>
     </td>
   </tr>
   <tr>
@@ -140,6 +198,9 @@ xray-core, набором правил nftables и SQLite-базой со все
 - Блокировка QUIC (UDP/443) — принудительный fallback на TCP, который
   TPROXY умеет перехватывать
 - Цепочки туннелей — VLESS внутри WireGuard и т.д.
+- **Proxy Chains** (multi-panel, двухзвенный VLESS+Reality через две
+  x-ui панели с независимыми каналами; управляемые клиенты,
+  per-channel delete, live healthcheck)
 - Kill switch — отключение всего форвард-трафика при падении xray
 
 **Маршрутизация**
@@ -189,6 +250,14 @@ xray-core, набором правил nftables и SQLite-базой со все
   протокол/порт настроен на какой машине, опционально — manual
   provisioning скрипты (Caddy + naive, xray, харднинг SSH) по тому же
   SSH-каналу
+- One-click auto-deploy по SSH для **NaiveProxy**, **WireGuard**,
+  **x-ui** (3x-ui / x-ui-pro) — live-стриминг лога, статус-бэйджи,
+  cascade-cleanup при удалении
+- Отдельная страница **Панели X-ui** — полное управление инбаундами
+  и клиентами панели (6 готовых пресетов: Reality / TLS / domain),
+  live healthcheck (API панели, xray, nginx, UFW, TLS-сертификат,
+  диск, память), синхронизация cache↔panel для добавленных вручную
+  клиентов, ротация рандомного / своего фейк-сайта
 
 **Эксплуатация**
 - One-click обновление GeoIP / GeoSite — три переключаемых upstream-
@@ -198,6 +267,9 @@ xray-core, набором правил nftables и SQLite-базой со все
   конверт, режимы append/replace, опциональная редактирование секретов
   (отдельно от URI/subscription импорта, который работает только на
   одну ноду)
+- Plain-text URI экспорт (`.txt`, по одному `vless://…` на строку) —
+  расшарить список нод в любой v2rayN-совместимый клиент; единая
+  кнопка `Import` авто-определяет формат URI vs JSON-бандл
 - Встроенная страница диагностики (DNS, шлюз, статус xray, ресурсы)
 - Стриминг логов xray
 - Многоязычный UI (English / Русский)
@@ -256,22 +328,22 @@ curl -fsSL https://raw.githubusercontent.com/DaveBugg/PiTun/master/install.sh | 
 > ```bash
 > curl -fsSL https://raw.githubusercontent.com/DaveBugg/PiTun/master/install.sh \
 >      -o /tmp/pitun-install.sh
-> sudo bash /tmp/pitun-install.sh --version v1.2.7
+> sudo bash /tmp/pitun-install.sh --version v1.3.0-beta.8
 > ```
 >
 > **(B) Pipe с разделителем `bash -s --`** (`-s --` **обязателен**):
 > ```bash
 > curl -fsSL https://raw.githubusercontent.com/DaveBugg/PiTun/master/install.sh \
->      | sudo bash -s -- --version v1.2.7
+>      | sudo bash -s -- --version v1.3.0-beta.8
 > ```
 >
 > **(C) Через переменную окружения** (без `-s --` шаманства):
 > ```bash
 > curl -fsSL https://raw.githubusercontent.com/DaveBugg/PiTun/master/install.sh \
->      | sudo PITUN_VERSION=v1.2.7 bash
+>      | sudo PITUN_VERSION=v1.3.0-beta.8 bash
 > ```
 >
-> ❌ **Так делать НЕ нужно:** `curl ... | sudo bash --version v1.2.7` —
+> ❌ **Так делать НЕ нужно:** `curl ... | sudo bash --version v1.3.0-beta.8` —
 > bash съедает `--version` как свой собственный флаг (печатает версию
 > bash и выходит) до того как наш installer вообще запустится. Частая
 > ловушка копипаста.
@@ -279,17 +351,21 @@ curl -fsSL https://raw.githubusercontent.com/DaveBugg/PiTun/master/install.sh | 
 Полезные флаги (работают через любую из трёх форм выше; примеры в форме B):
 
 ```bash
-# Конкретная версия
-... | sudo bash -s -- --version v1.2.7
+# Конкретная версия (текущая: v1.3.0-beta.8)
+... | sudo bash -s -- --version v1.3.0-beta.8
 
 # Принудительная сборка из исходников (если релиза ещё нет или
 # тестируешь локальные изменения). Медленнее, нужен стабильный
 # интернет на время docker build.
 ... | sudo bash -s -- --build
 
-# Офлайн-установка — указать директорию с заранее скачанными
-# артефактами (pitun-{backend,naive,frontend}-vX.Y.Z-<arch>.tar.gz +
-# pitun-src.tar.gz + xray.zip + geoip.dat + geosite.dat).
+# Гибридный offline-режим — указать директорию с заранее скачанными
+# артефактами. ЛЮБОЙ файл из директории используется как есть;
+# отсутствующие — докачиваются обычным образом.
+# Также авто-определяется при запуске install.sh из директории, в
+# которой уже лежат любые из шести ожидаемых файлов — флаг
+# `--offline` в этом случае не нужен. Подробности и список файлов:
+# docs/INSTALL_OFFLINE.md.
 ... | sudo bash -s -- --offline /tmp/pitun-artifacts
 
 # Своя директория установки (по умолчанию: /opt/pitun)

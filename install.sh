@@ -47,9 +47,24 @@
 #                          Slower (~25 min on RPi) but doesn't need a
 #                          published release. Selected automatically if
 #                          no GitHub Release is found.
-#   --offline DIR          Use pre-downloaded artifacts from DIR instead
-#                          of fetching from the network. Useful for
-#                          air-gapped installs.
+#   --offline DIR          Use pre-downloaded artifacts from DIR. The
+#                          script picks them up in HYBRID mode — any
+#                          file present in DIR is used as-is, anything
+#                          missing is downloaded as usual. Useful for
+#                          air-gapped installs (drop all six artefacts
+#                          + run with `--offline .`) and for "I already
+#                          have the geo files" rerun cases.
+#                          Auto-detected when install.sh is launched
+#                          from a directory that already contains any
+#                          of the six expected filenames — explicit
+#                          `--offline` overrides the auto-detect.
+#                          Expected filenames:
+#                            pitun-src.tar.gz
+#                            pitun-backend.tar.gz
+#                            pitun-naive.tar.gz
+#                            pitun-frontend.tar.gz
+#                            geoip.dat
+#                            geosite.dat
 #   --skip-host-prep       Skip avahi disable / sysctl / modprobe / Docker
 #                          install. Use only if you've already prepared
 #                          the host yourself.
@@ -375,6 +390,31 @@ asset_url() {
 STAGING_DIR="${TMPDIR:-/tmp}/pitun-install"
 mkdir -p "$STAGING_DIR"
 
+# Auto-discovery of pre-downloaded artefacts. When install.sh launches
+# out of a directory that already has the six expected filenames sitting
+# next to it (the "scp these files + install.sh to /tmp on the air-
+# gapped box" workflow), treat that directory as OFFLINE_DIR without
+# requiring the explicit `--offline` flag. Skipped when the script is
+# piped from `curl | bash` (BASH_SOURCE[0] is `-bash` or empty) or when
+# the operator passed `--offline` already.
+if [[ -z "$OFFLINE_DIR" ]]; then
+    _script_path="${BASH_SOURCE[0]:-}"
+    if [[ -n "$_script_path" && -f "$_script_path" ]]; then
+        _script_dir="$(cd "$(dirname "$_script_path")" 2>/dev/null && pwd)"
+        if [[ -n "$_script_dir" ]]; then
+            for _f in pitun-src.tar.gz pitun-backend.tar.gz \
+                      pitun-naive.tar.gz pitun-frontend.tar.gz \
+                      geoip.dat geosite.dat; do
+                if [[ -f "$_script_dir/$_f" ]]; then
+                    OFFLINE_DIR="$_script_dir"
+                    info "Auto-detected pre-downloaded artefacts in $OFFLINE_DIR"
+                    break
+                fi
+            done
+        fi
+    fi
+fi
+
 # Cache invalidation (since v1.2.9). Every artifact in STAGING_DIR has a
 # version-agnostic filename (release.json, pitun-src.tar.gz,
 # pitun-backend.tar.gz, ...). Without this guard, re-running with a
@@ -410,7 +450,27 @@ echo "$VERSION" > "$STAMP_FILE"
 if [[ -n "$OFFLINE_DIR" ]]; then
     info "Offline mode: using artifacts from $OFFLINE_DIR"
     [[ -d "$OFFLINE_DIR" ]] || error "Offline dir does not exist: $OFFLINE_DIR"
-elif [[ "$USE_BUILD" != "1" ]]; then
+fi
+# Decide whether we need release metadata. Skip in three cases:
+#   1. `--build` was explicitly requested (no release assets used).
+#   2. Truly air-gapped install — OFFLINE_DIR has all the image
+#      artefacts (`pitun-backend.tar.gz` + `pitun-naive.tar.gz` +
+#      `pitun-frontend.tar.gz`) so we never need to look up their
+#      URLs from release.json.
+# Otherwise fetch — even in hybrid offline mode where some images
+# are local and some aren't (the operator dropped just the source
+# and geo files, say). A failing fetch falls back to build-from-
+# source so a truly disconnected box still installs successfully.
+_need_release_json=0
+if [[ "$USE_BUILD" != "1" ]]; then
+    if [[ -z "$OFFLINE_DIR" ]] \
+        || [[ ! -e "$OFFLINE_DIR/pitun-backend.tar.gz" ]] \
+        || [[ ! -e "$OFFLINE_DIR/pitun-naive.tar.gz" ]] \
+        || [[ ! -e "$OFFLINE_DIR/pitun-frontend.tar.gz" ]]; then
+        _need_release_json=1
+    fi
+fi
+if [[ "$_need_release_json" == "1" ]]; then
     # Online release-mode: fetch release metadata.
     if [[ "$VERSION" == "latest" ]]; then
         api_url="https://api.github.com/repos/${GITHUB_REPO}/releases/latest"
@@ -566,16 +626,24 @@ GEOIP_DAT="$STAGING_DIR/geoip.dat"
 GEOSITE_DAT="$STAGING_DIR/geosite.dat"
 
 if [[ -n "$OFFLINE_DIR" ]]; then
-    # Map offline files into staging via symlink so the rest of the script
-    # can treat them uniformly. Missing files fall through to "did you
-    # download them?" errors at use time.
+    # Hybrid mode — symlink in any file the operator pre-staged, then
+    # fall through to download for the rest. Previously a partial
+    # offline-dir silently broke the install at use-time when a
+    # missing file was first referenced; the message used to come
+    # out as "cannot extract" or "docker load: no such file" three
+    # phases later, which made the underlying "you forgot one of
+    # the six artefacts" cause hard to spot.
+    info "Offline-dir mode: $OFFLINE_DIR (will download anything not present)"
     for f in pitun-src.tar.gz pitun-backend.tar.gz pitun-naive.tar.gz \
              pitun-frontend.tar.gz geoip.dat geosite.dat; do
         if [[ -e "$OFFLINE_DIR/$f" ]]; then
             ln -sf "$OFFLINE_DIR/$f" "$STAGING_DIR/$f"
+            info "  using local: $f"
         fi
     done
-else
+fi
+
+if [[ -z "$OFFLINE_DIR" ]] || [[ ! -e "$SRC_TARBALL" ]] || [[ "$USE_BUILD" != "1" && ( ! -e "$BACKEND_IMG" || ! -e "$NAIVE_IMG" || ! -e "$FRONTEND_DIST" ) ]] || [[ ! -e "$GEOIP_DAT" ]] || [[ ! -e "$GEOSITE_DAT" ]]; then
     # Source tarball — always needed (we read docker-compose.yml + scripts/
     # from it). Three cases:
     #   - VERSION resolved to a real tag → archive of that tag
@@ -592,26 +660,36 @@ else
         src_url="https://codeload.github.com/${GITHUB_REPO}/tar.gz/refs/tags/${VERSION}"
         SRC_DESC="PiTun source ($VERSION)"
     fi
-    download "$src_url" "$SRC_TARBALL" "$SRC_DESC"
+    # Per-file guard: each `download` call skipped when the artefact
+    # is already on disk (offline-dir symlink or a previous run
+    # leftover). Keeps the staging dir as the single source of truth
+    # — `$SRC_TARBALL` etc. resolve identically regardless of how
+    # they got there.
+    [[ -e "$SRC_TARBALL" ]] \
+        || download "$src_url" "$SRC_TARBALL" "$SRC_DESC"
 
     if [[ "$USE_BUILD" != "1" ]]; then
-        # Pre-built images and dist from the release. Asset names follow
-        # the convention enforced by .github/workflows/release.yml.
-        be_url=$(asset_url "$STAGING_DIR/release.json" "pitun-backend-.*-${ARCH}\.tar\.gz$") || true
-        nv_url=$(asset_url "$STAGING_DIR/release.json" "pitun-naive-.*-${ARCH}\.tar\.gz$") || true
-        fe_url=$(asset_url "$STAGING_DIR/release.json" "pitun-frontend-.*\.tar\.gz$") || true
-
-        if [[ -z "$be_url" || -z "$nv_url" || -z "$fe_url" ]]; then
-            warn "Release $VERSION is missing one or more arch-specific assets ($ARCH)."
-            warn "  backend:  ${be_url:-MISSING}"
-            warn "  naive:    ${nv_url:-MISSING}"
-            warn "  frontend: ${fe_url:-MISSING}"
-            warn "Falling back to build-from-source."
-            USE_BUILD=1
+        if [[ -e "$BACKEND_IMG" && -e "$NAIVE_IMG" && -e "$FRONTEND_DIST" ]]; then
+            info "All Docker image / frontend artefacts present locally — skipping release-asset lookup."
         else
-            download "$be_url" "$BACKEND_IMG" "backend image (linux/$ARCH)"
-            download "$nv_url" "$NAIVE_IMG"   "naive image (linux/$ARCH)"
-            download "$fe_url" "$FRONTEND_DIST" "frontend dist"
+            # Pre-built images and dist from the release. Asset names follow
+            # the convention enforced by .github/workflows/release.yml.
+            be_url=$(asset_url "$STAGING_DIR/release.json" "pitun-backend-.*-${ARCH}\.tar\.gz$") || true
+            nv_url=$(asset_url "$STAGING_DIR/release.json" "pitun-naive-.*-${ARCH}\.tar\.gz$") || true
+            fe_url=$(asset_url "$STAGING_DIR/release.json" "pitun-frontend-.*\.tar\.gz$") || true
+
+            if [[ -z "$be_url" || -z "$nv_url" || -z "$fe_url" ]]; then
+                warn "Release $VERSION is missing one or more arch-specific assets ($ARCH)."
+                warn "  backend:  ${be_url:-MISSING}"
+                warn "  naive:    ${nv_url:-MISSING}"
+                warn "  frontend: ${fe_url:-MISSING}"
+                warn "Falling back to build-from-source."
+                USE_BUILD=1
+            else
+                [[ -e "$BACKEND_IMG"  ]] || download "$be_url" "$BACKEND_IMG" "backend image (linux/$ARCH)"
+                [[ -e "$NAIVE_IMG"    ]] || download "$nv_url" "$NAIVE_IMG"   "naive image (linux/$ARCH)"
+                [[ -e "$FRONTEND_DIST" ]] || download "$fe_url" "$FRONTEND_DIST" "frontend dist"
+            fi
         fi
     fi
 
@@ -619,10 +697,12 @@ else
     # for on-demand refresh from the UI). The xray binary itself is
     # bundled inside the backend image as of v1.2.0 — no separate
     # download for it here.
-    download "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geoip.dat" \
-             "$GEOIP_DAT" "geoip.dat"
-    download "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geosite.dat" \
-             "$GEOSITE_DAT" "geosite.dat"
+    [[ -e "$GEOIP_DAT" ]] \
+        || download "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geoip.dat" \
+                    "$GEOIP_DAT" "geoip.dat"
+    [[ -e "$GEOSITE_DAT" ]] \
+        || download "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geosite.dat" \
+                    "$GEOSITE_DAT" "geosite.dat"
 fi
 
 info "All downloads complete. Internet may go down now — install continues offline."

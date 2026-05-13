@@ -621,10 +621,11 @@ nftables TPROXY -> xray-core -> правила маршрутизации
   /* 9. Chain Tunnel */
   {
     id: 'chain-tunnel',
-    title: { en: 'Chain Tunnel (Double VPN)', ru: 'Chain Tunnel (Двойной VPN)' },
+    title: { en: 'Chain Tunnel — single Node', ru: 'Chain Tunnel — одиночная нода' },
     content: {
       en: (
         <>
+          <P><em>For the multi-channel chain orchestrator that wires two x-ui panels together (added in v1.3.0-beta.7), see the next section "Proxy Chains (two x-ui panels)".</em></P>
           <P>Chain tunneling nests one protocol inside another using xray's <code className="text-gray-400">proxySettings.transportLayer</code>.</P>
           <P><B>Example:</B> WireGuard wrapped inside VLESS+Reality</P>
           <Code>{`Your device -> RPi (xray)
@@ -643,6 +644,7 @@ nftables TPROXY -> xray-core -> правила маршрутизации
       ),
       ru: (
         <>
+          <P><em>Multi-channel chain orchestrator на двух x-ui панелях (добавлен в v1.3.0-beta.7) описан в следующем разделе «Proxy Chains (две x-ui панели)».</em></P>
           <P>Chain tunnel вкладывает один протокол в другой через <code className="text-gray-400">proxySettings.transportLayer</code> xray.</P>
           <P><B>Пример:</B> WireGuard внутри VLESS+Reality</P>
           <Code>{`Устройство -> RPi (xray)
@@ -657,6 +659,78 @@ nftables TPROXY -> xray-core -> правила маршрутизации
             <li>Используйте внутреннюю ноду как активную или в правилах</li>
           </Ul>
           <P><B>Случаи:</B> обход DPI, блокирующего WireGuard; дополнительный слой шифрования; маскировка VPN через Reality.</P>
+        </>
+      ),
+    },
+  },
+
+  /* 8b. Proxy Chains (two x-ui panels — beta.7+) */
+  {
+    id: 'proxy-chains',
+    title: { en: 'Proxy Chains (two x-ui panels)', ru: 'Proxy Chains (две x-ui панели)' },
+    content: {
+      en: (
+        <>
+          <P>Since <B>v1.3.0-beta.7</B> PiTun can orchestrate a two-hop VLESS+Reality chain across two x-ui panels — the <B>relay</B> (what the client connects to) and the <B>exit</B> (what reaches the internet). Each chain can carry multiple independent <B>channels</B> with their own SNI cover and Reality keys; one client gets one URL per channel.</P>
+          <P><B>Pre-requisites:</B></P>
+          <Ul>
+            <li>Two x-ui panels registered on the <em>Servers</em> tab (deploy via "Install x-ui" or import via <code className="text-gray-400">xui://</code> URI).</li>
+            <li>At least one panel is in <em>xui-pro</em> mode (with domain + LE cert). Bare-mode panels work for the relay side too if the cover SNI is reachable.</li>
+            <li>An "Exit SNI" — a domain the relay→exit hop pretends to dial (usually <code className="text-gray-400">www.google.com</code> / a CDN edge). Universal-reachability matters more than specific brand.</li>
+          </Ul>
+          <P><B>Create flow (Chains page → "Создать цепочку"):</B></P>
+          <Ul>
+            <li>Pick the exit panel and the relay panel.</li>
+            <li>Add one or more channels. Each channel: name, Client SNI (cover the client→relay handshake hides behind), relay/exit port (leave empty → auto-pick non-conflicting), optional xhttp path.</li>
+            <li>Backend orchestrator (`orchestrate_create`) creates per-channel exit + relay inbounds via the panel API, generates per-channel Reality keypair, opens UFW ports on both VPSes, pushes a combined <code className="text-gray-400">xrayTemplateConfig</code> to the relay so traffic from each relay-inbound routes to the matching exit-outbound, restarts Xray on the relay.</li>
+          </Ul>
+          <P><B>Channels and clients:</B></P>
+          <Ul>
+            <li>Each <em>channel</em> = one independent VLESS+Reality slot end-to-end (its own keys, port, SNI).</li>
+            <li>Each <em>chain client</em> = a user with one UUID per channel. Adding a client adds N panel-side clients in lock-step (one per channel) so all the user's URLs share an identity but route over different cover SNIs.</li>
+            <li>Export to Nodes: each chain-client URL becomes a separate routable Node row that the rest of PiTun (routing rules, balancer, circle, speedtest) treats like any other VLESS outbound.</li>
+          </Ul>
+          <P><B>Healthcheck (Chains tab → "Проверка"):</B> multi-layer probe — both panels reachable, xray running, inbound presence, relay's running xray actually has the chain outbound + matching routing rule (the silent-blackhole case we hit several times in beta.7), plus a live <code className="text-gray-400">testOutbound</code> probe of the relay→exit hop.</P>
+          <P><B>Per-channel delete:</B> trash icon on each channel card removes just that channel (inbounds on both panels + UFW close + relay template rebuild + cascade-delete exported Node rows). Deleting the last channel folds the chain row away too.</P>
+          <P><B>Gotchas baked into the orchestrator:</B></P>
+          <Ul>
+            <li>Two channels in one chain can't claim the same relay or exit port — pre-check refuses the draft. Auto-pick (port=0) lands in safe ranges.</li>
+            <li>x-ui-pro panels reserve <code className="text-gray-400">:443</code> + <code className="text-gray-400">:80</code> for nginx — the port allocator skips them automatically; user-supplied 443 on an xui-pro relay is rejected with a clear error.</li>
+            <li>Last chain on a relay = full <code className="text-gray-400">xrayTemplateConfig</code> wipe over SSH so the panel falls back to its auto-routing (pushing an empty template via API doesn't actually reset Xray's running config).</li>
+            <li>Chain-tagged inbounds are <em>read-only</em> on the X-ui Panels page (delete + add-client buttons disabled, export-to-Node replaced with a "via Chains" hint) — chain clients are managed exclusively from the Chains tab so cascade-delete + sync stay consistent.</li>
+          </Ul>
+        </>
+      ),
+      ru: (
+        <>
+          <P>С <B>v1.3.0-beta.7</B> PiTun умеет собирать двухзвенную VLESS+Reality цепочку из двух x-ui панелей: <B>relay</B> (куда подключается клиент) и <B>exit</B> (что выходит в интернет). Каждая цепочка может содержать несколько независимых <B>каналов</B> со своими SNI-обложками и Reality-ключами; один клиент получает по одной ссылке на канал.</P>
+          <P><B>Что нужно:</B></P>
+          <Ul>
+            <li>Две x-ui панели зарегистрированы на вкладке <em>Servers</em> (через «Install x-ui» или импорт по <code className="text-gray-400">xui://</code>).</li>
+            <li>Хотя бы одна панель — в режиме <em>xui-pro</em> (с доменом и LE-сертом). Bare-режим тоже годится для relay, если SNI-обложка достижима.</li>
+            <li>«Exit SNI» — домен, куда relay делает вид, что соединяется (обычно <code className="text-gray-400">www.google.com</code> или CDN edge). Универсальная доступность важнее конкретного бренда.</li>
+          </Ul>
+          <P><B>Создание (Chains → «Создать цепочку»):</B></P>
+          <Ul>
+            <li>Выберите exit-панель и relay-панель.</li>
+            <li>Добавьте один или больше каналов. У каждого: имя, Client SNI (обложка handshake клиент→relay), relay/exit порт (пусто → авто-выбор без коллизий), опциональный xhttp path.</li>
+            <li>Backend (`orchestrate_create`) создаёт exit + relay inbounds через панельный API, генерит Reality-ключи на канал, открывает UFW-порты на обоих VPS, пушит общий <code className="text-gray-400">xrayTemplateConfig</code> на relay так, чтобы трафик с каждого relay-inbound уходил в свой exit-outbound, перезапускает Xray на relay.</li>
+          </Ul>
+          <P><B>Каналы и клиенты:</B></P>
+          <Ul>
+            <li>Канал = один независимый VLESS+Reality слот end-to-end (свои ключи, порт, SNI).</li>
+            <li>Chain client = пользователь с одним UUID на канал. Добавление клиента кладёт N панельных клиентов в lock-step — все URL'ы юзера разделяют identity, но идут по разным SNI-обложкам.</li>
+            <li>Export to Nodes: каждый URL chain-клиента становится отдельной маршрутизируемой Node-строкой, которую остальной PiTun (правила, balancer, circle, speedtest) видит как обычный VLESS-outbound.</li>
+          </Ul>
+          <P><B>Healthcheck (Chains → «Проверка»):</B> многослойная проверка — обе панели достижимы, xray работает, inbounds на месте, у relay в running xray реально есть chain-outbound + routing rule (silent-blackhole кейс мы ловили несколько раз в beta.7), плюс живая <code className="text-gray-400">testOutbound</code> проверка relay→exit.</P>
+          <P><B>Per-channel delete:</B> иконка корзины на карточке канала удаляет только этот канал (inbounds на обеих панелях + UFW close + перепуш relay-template + cascade-delete экспортированных Node-строк). Удаление последнего канала сворачивает всю цепочку.</P>
+          <P><B>Gotchas, защищённые оркестратором:</B></P>
+          <Ul>
+            <li>Два канала в одной цепочке не могут забрать один и тот же relay/exit порт — pre-check отклоняет draft. Авто-выбор (port=0) попадает в безопасные диапазоны.</li>
+            <li>xui-pro панели резервируют <code className="text-gray-400">:443</code> + <code className="text-gray-400">:80</code> под nginx — аллокатор их пропускает; пользовательский 443 на xui-pro relay отклоняется явной ошибкой.</li>
+            <li>Последняя цепочка на relay → полный wipe <code className="text-gray-400">xrayTemplateConfig</code> по SSH, чтобы панель вернулась к auto-routing (пуш пустого шаблона через API не сбрасывает running config Xray).</li>
+            <li>Chain-инбаунды <em>read-only</em> на странице X-ui Panels (кнопки delete + add-client дисейблены, export-to-Node заменён подсказкой «через Цепочки») — клиенты цепочки управляются только со вкладки Chains, чтобы cascade-delete и sync оставались консистентными.</li>
+          </Ul>
         </>
       ),
     },
@@ -885,8 +959,11 @@ nftables TPROXY -> xray-core -> правила маршрутизации
           <P>
             Since <B>v1.3.0-beta.1</B>, PiTun can run an install script on a registered{' '}
             <B>Server</B> over SSH and automatically create a Node from the
-            resulting URI. NaiveProxy is the only protocol shipped in beta.1;
-            VLESS+Reality / Hysteria2 / WireGuard arrive in beta.2 / beta.3.
+            resulting URI. Supported protocols by beta.8:{' '}
+            <B>NaiveProxy</B> (Caddy+forwardproxy on :443),{' '}
+            <B>WireGuard</B> (multi-client; manage from the Servers tab),{' '}
+            <B>x-ui</B> (full 3x-ui / x-ui-pro panel, manages many VLESS / Trojan / SOCKS
+            inbounds — see <em>X-ui Panels</em> + <em>Proxy Chains</em> sections).
           </P>
 
           <P><B>Prerequisites:</B></P>
@@ -947,9 +1024,10 @@ nftables TPROXY -> xray-core -> правила маршрутизации
         <>
           <P>
             Начиная с <B>v1.3.0-beta.1</B>, PiTun умеет запускать установочный скрипт на зарегистрированном{' '}
-            <B>Server</B> по SSH и автоматически создавать Node из полученного URI.
-            В beta.1 поддержан только протокол <em>NaiveProxy</em>; VLESS+Reality / Hysteria2 / WireGuard
-            — в beta.2 / beta.3.
+            <B>Server</B> по SSH и автоматически создавать Node из полученного URI. К beta.8 поддерживаются:{' '}
+            <B>NaiveProxy</B> (Caddy+forwardproxy на :443), <B>WireGuard</B> (мульти-клиент; управление с
+            вкладки Servers), <B>x-ui</B> (полная панель 3x-ui / x-ui-pro для управления множеством VLESS /
+            Trojan / SOCKS инбаундов — см. разделы <em>X-ui Panels</em> + <em>Proxy Chains</em>).
           </P>
 
           <P><B>Что нужно заранее:</B></P>
@@ -1009,6 +1087,46 @@ nftables TPROXY -> xray-core -> правила маршрутизации
     },
   },
 
+  /* 11b-3. X-ui Panels (manage VLESS / Trojan / SOCKS inbounds, since v1.3.0-beta.7) */
+  {
+    id: 'xui-panels',
+    title: { en: 'X-ui Panels', ru: 'Панели X-ui' },
+    content: {
+      en: (
+        <>
+          <P>Once an x-ui panel is registered (via "Install x-ui" on a Server, or by pasting an <code className="text-gray-400">xui://</code> URI), it shows up on the dedicated <B>Панели X-ui</B> page. From there you can manage every inbound and client on the panel without leaving PiTun.</P>
+          <P><B>Panel modes:</B></P>
+          <Ul>
+            <li><B>xui-pro</B> — full stack: nginx on :443 with Let's Encrypt + fakesite + the panel + xray inbounds fronted via <code className="text-gray-400">externalProxy</code>. Recommended for production / domain-mode flows.</li>
+            <li><B>bare</B> — vanilla 3x-ui only. Panel on a random high port, self-signed cert (or HTTP for the localhost-bound API path). Coexists with NaiveProxy on the same VPS — only xui-pro shares :443.</li>
+          </Ul>
+          <P><B>Inbound presets:</B> the <em>Add inbound</em> dialog ships 6 wired-in templates: VLESS+TCP+Reality+xtls-rprx-vision, VLESS+xhttp+Reality, VLESS+WS over TLS, VLESS+xhttp over TLS, Trojan+gRPC over TLS, SOCKS5 (user/pass). Domain-mode presets require an xui-pro panel; Reality presets work on bare too.</P>
+          <P><B>Per-inbound clients:</B> expand any inbound card to see its client list. Each client row shows email/UUID, flow, and either a green <em>Node #N</em> badge (if already exported) or an <em>Экспорт в Nodes</em> button. Export creates a Node row idempotently — re-exporting the same client reuses the existing Node and refreshes its fields if the inbound was edited on the panel side.</P>
+          <P><B>Chain-managed inbounds:</B> inbounds whose tag starts with <code className="text-gray-400">chain-</code> are read-only on this page — Add Client / Delete + per-client Export are replaced with a "via Chains" hint. Manage them from the <em>Chains</em> tab so the chain orchestrator's bookkeeping stays consistent.</P>
+          <P><B>Healthcheck (since v1.3.0-beta.8):</B> the «Проверить» button opens a modal that runs a multi-layer probe — panel API reachable, xray running, system snapshot (cpu / mem / uptime / disk), and over SSH: nginx state (xui-pro only), <code className="text-gray-400">ufw</code> active, TLS cert expiry, free disk %, free memory %, unzip availability. Each check is ok / warn / fail with a one-line detail.</P>
+          <P><B>Sync (since v1.3.0-beta.8):</B> the «Синхронизация» button reconciles PiTun's local <code className="text-gray-400">XuiClient</code> cache with the panel's live state. Detects clients added/removed via the panel UI directly, inserts missing cache rows, drops vanished ones, and cascade-cleans Node rows whose backing client is gone. Result toast shows the counts (added / updated / removed / chain inbounds skipped / orphan Nodes cleaned). Chain-tagged inbounds are skipped — PiTun is the source of truth there.</P>
+          <P><B>Fakesite rotation (xui-pro only, since v1.3.0-beta.8):</B> the «Ротация фейк-сайта» button picks a random template from the bundled <code className="text-gray-400">/root/randomfakehtml-master/</code> archive and copies it into <code className="text-gray-400">/var/www/html</code>; «Загрузить ZIP» lets you upload a custom site (≤100 MB, must contain index.html). Both fire <code className="text-gray-400">chmod</code> / <code className="text-gray-400">chown</code> + <code className="text-gray-400">nginx -s reload</code> automatically.</P>
+        </>
+      ),
+      ru: (
+        <>
+          <P>Зарегистрированная x-ui панель (через «Install x-ui» на Server или импорт <code className="text-gray-400">xui://</code>) отображается на отдельной странице <B>Панели X-ui</B>. Оттуда можно управлять всеми инбаундами и клиентами панели не покидая PiTun.</P>
+          <P><B>Режимы панели:</B></P>
+          <Ul>
+            <li><B>xui-pro</B> — полный стек: nginx на :443 с Let's Encrypt + fakesite + панель + xray-инбаунды через <code className="text-gray-400">externalProxy</code>. Рекомендуется для production / domain-flow.</li>
+            <li><B>bare</B> — голый 3x-ui. Панель на случайном порту, self-signed cert (или HTTP на localhost-API). Сосуществует с NaiveProxy на одном VPS — :443 делит только xui-pro.</li>
+          </Ul>
+          <P><B>Пресеты инбаунда:</B> диалог <em>Добавить инбаунд</em> содержит 6 шаблонов: VLESS+TCP+Reality+xtls-rprx-vision, VLESS+xhttp+Reality, VLESS+WS over TLS, VLESS+xhttp over TLS, Trojan+gRPC over TLS, SOCKS5 (user/pass). Domain-пресеты требуют xui-pro; Reality-пресеты работают и на bare.</P>
+          <P><B>Клиенты в инбаунде:</B> разверните карточку инбаунда чтобы увидеть список клиентов. Каждая строка: email/UUID, flow, и либо зелёный <em>Node #N</em> бэйдж (если экспортирован), либо кнопка <em>Экспорт в Nodes</em>. Экспорт создаёт Node идемпотентно — повторный экспорт того же клиента переиспользует существующую Node и обновляет её поля.</P>
+          <P><B>Chain-инбаунды:</B> инбаунды с тегом, начинающимся на <code className="text-gray-400">chain-</code>, на этой странице read-only — Add Client / Delete + per-client Export заменены на подсказку «через Цепочки». Управляйте ими через вкладку <em>Chains</em>, чтобы bookkeeping chain-оркестратора оставался консистентным.</P>
+          <P><B>Healthcheck (с v1.3.0-beta.8):</B> кнопка «Проверить» открывает модалку с многослойной проверкой — API панели достижим, xray работает, системный снапшот (cpu / mem / uptime / disk), плюс по SSH: nginx (только для xui-pro), <code className="text-gray-400">ufw</code> активный, срок TLS-сертификата, % свободного диска, % свободной памяти, наличие unzip. Каждая проверка — ok / warn / fail с однострочным detail.</P>
+          <P><B>Sync (с v1.3.0-beta.8):</B> кнопка «Синхронизация» сверяет локальный кеш <code className="text-gray-400">XuiClient</code> с реальным состоянием панели. Замечает клиентов добавленных/удалённых прямо через UI панели, вставляет недостающие cache-строки, удаляет исчезнувшие, каскадно чистит Node-строки чей клиент исчез. Тост-результат: добавлено / обновлено / удалено / пропущено chain-инбаундов / убрано осиротевших Node. Chain-инбаунды пропускаются — PiTun для них source of truth.</P>
+          <P><B>Ротация фейк-сайта (только xui-pro, с v1.3.0-beta.8):</B> кнопка «Ротация фейк-сайта» выбирает случайный шаблон из встроенного архива <code className="text-gray-400">/root/randomfakehtml-master/</code> и копирует в <code className="text-gray-400">/var/www/html</code>; «Загрузить ZIP» позволяет залить свой сайт (≤100 MB, нужен index.html). Обе операции делают <code className="text-gray-400">chmod</code> / <code className="text-gray-400">chown</code> + <code className="text-gray-400">nginx -s reload</code> автоматически.</P>
+        </>
+      ),
+    },
+  },
+
   /* 11c. Backup & Restore (JSON Export/Import) */
   {
     id: 'backup-restore',
@@ -1038,6 +1156,8 @@ nftables TPROXY -> xray-core -> правила маршрутизации
             <li><B>Replace</B> — passing <code className="text-gray-400">replace=true</code> wipes the existing collection first, then inserts the bundle. Use only for migrations between fresh instances.</li>
           </Ul>
           <P><B>Distinct from URI/subscription import:</B> URI-based import (<code className="text-gray-400">vless://</code>, Clash YAML, etc.) only carries protocol details for one node at a time. JSON Export/Import is a true backup format that preserves PiTun-specific metadata such as ordering, enabled flags, chain links, and friendly names.</P>
+          <P><B>Plain-text URI export (since v1.3.0-beta.8):</B> a sibling endpoint <code className="text-gray-400">GET /api/nodes/export-uris</code> emits a <code className="text-gray-400">.txt</code> file with one VPN URI per line (<code className="text-gray-400">vless://</code>, <code className="text-gray-400">vmess://</code>, <code className="text-gray-400">trojan://</code>, <code className="text-gray-400">ss://</code>, <code className="text-gray-400">hysteria2://</code>, <code className="text-gray-400">socks://</code>). WireGuard nodes are skipped (no canonical URI form). Useful for sharing your node list with another v2rayN-compatible client or for a quick offline copy.</P>
+          <P><B>Unified Import dialog (since v1.3.0-beta.8):</B> the Nodes-page toolbar collapses three buttons into one <em>Import</em> (paste OR drop a file — format auto-detected as JSON bundle vs URI list) and one <em>Export ▾</em> dropdown that lets you pick between URI list (.txt) and JSON bundle (.json).</P>
         </>
       ),
       ru: (
@@ -1064,6 +1184,8 @@ nftables TPROXY -> xray-core -> правила маршрутизации
             <li><B>Replace</B> — параметр <code className="text-gray-400">replace=true</code> сначала очищает коллекцию, затем вставляет пакет. Для миграций между чистыми инстансами.</li>
           </Ul>
           <P><B>Отличие от URI/подписок:</B> URI-импорт (<code className="text-gray-400">vless://</code>, Clash YAML и т.п.) переносит только протокольные поля одной ноды. JSON Export/Import — настоящий формат бэкапа: сохраняет PiTun-специфичные данные (порядок, флаг enabled, chain-связки, читаемые имена).</P>
+          <P><B>Plain-text URI экспорт (с v1.3.0-beta.8):</B> соседний endpoint <code className="text-gray-400">GET /api/nodes/export-uris</code> отдаёт <code className="text-gray-400">.txt</code>-файл с одним VPN URI на строку (<code className="text-gray-400">vless://</code>, <code className="text-gray-400">vmess://</code>, <code className="text-gray-400">trojan://</code>, <code className="text-gray-400">ss://</code>, <code className="text-gray-400">hysteria2://</code>, <code className="text-gray-400">socks://</code>). WireGuard ноды пропускаются (нет канонической URI-формы). Удобно расшарить список нод в другой v2rayN-совместимый клиент или быстро взять offline-копию.</P>
+          <P><B>Унифицированный Import-диалог (с v1.3.0-beta.8):</B> тулбар Nodes-страницы объединил три кнопки в две: одна <em>Import</em> (вставить или загрузить файл — формат определяется автоматически: JSON-bundle vs URI-список) и одна <em>Export ▾</em> с dropdown-выбором URI-список (.txt) или JSON-bundle (.json).</P>
         </>
       ),
     },

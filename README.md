@@ -70,15 +70,62 @@ routing rule set:**
   <img src="docs/screenshots/dashboard.jpg" alt="Dashboard" width="800">
 </a>
 
+### VPS provisioning & x-ui orchestration (since v1.3.0)
+
+<table>
+  <tr>
+    <td width="50%">
+      <a href="docs/screenshots/servers.jpg"><img src="docs/screenshots/servers.jpg" alt="Servers"></a>
+      <p align="center"><sub><b>Servers</b> — VPS inventory, deployment badges (NaiveProxy / WireGuard / x-ui), one-click auto-install via SSH</sub></p>
+    </td>
+    <td width="50%">
+      <a href="docs/screenshots/servers_tasks.jpg"><img src="docs/screenshots/servers_tasks.jpg" alt="Server tasks"></a>
+      <p align="center"><sub><b>Server tasks</b> — live install logs streamed over WebSocket, status filters, captured tail for finalised jobs</sub></p>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%">
+      <a href="docs/screenshots/xui.jpg"><img src="docs/screenshots/xui.jpg" alt="X-ui Panels"></a>
+      <p align="center"><sub><b>X-ui Panels</b> — manage inbounds + clients on registered 3x-ui / x-ui-pro panels, healthcheck, sync, fakesite rotation</sub></p>
+    </td>
+    <td width="50%">
+      <a href="docs/screenshots/chains.jpg"><img src="docs/screenshots/chains.jpg" alt="Proxy Chains"></a>
+      <p align="center"><sub><b>Proxy Chains</b> — two-hop VLESS+Reality across two x-ui panels, independent channels with their own SNI / Reality keys</sub></p>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%">
+      <a href="docs/screenshots/deploy_modal.jpg"><img src="docs/screenshots/deploy_modal.jpg" alt="Deploy modal"></a>
+      <p align="center"><sub><b>Deploy modal</b> — pick protocol (Naive / x-ui / WG), domain + LE email if needed, watch the install stream live</sub></p>
+    </td>
+    <td width="50%">
+      <a href="docs/screenshots/chain_healthcheck.jpg"><img src="docs/screenshots/chain_healthcheck.jpg" alt="Chain healthcheck"></a>
+      <p align="center"><sub><b>Chain healthcheck</b> — panel API, xray state, inbound presence, relay routing, plus a live <code>testOutbound</code> probe of the relay→exit hop</sub></p>
+    </td>
+  </tr>
+</table>
+
+### Routing engine & nodes
+
 <table>
   <tr>
     <td width="50%">
       <a href="docs/screenshots/nodes.jpg"><img src="docs/screenshots/nodes.jpg" alt="Nodes"></a>
-      <p align="center"><sub><b>Nodes</b> — protocols, transports, latency, sidecar status</sub></p>
+      <p align="center"><sub><b>Nodes</b> — protocols, transports, latency, unified palette pills (protocol blue / transport green / reality purple / tls orange)</sub></p>
     </td>
     <td width="50%">
       <a href="docs/screenshots/routing.jpg"><img src="docs/screenshots/routing.jpg" alt="Routing"></a>
-      <p align="center"><sub><b>Routing</b> — drag-priority rules, bulk import, V2RayN/Shadowrocket round-trip</sub></p>
+      <p align="center"><sub><b>Routing</b> — drag-priority rules, bulk import, V2RayN/Shadowrocket round-trip, multi-tag match-value editor</sub></p>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%">
+      <a href="docs/screenshots/balancers.jpg"><img src="docs/screenshots/balancers.jpg" alt="Balancers"></a>
+      <p align="center"><sub><b>Balancers</b> — group nodes with xray's <code>leastPing</code> / <code>random</code> strategy</sub></p>
+    </td>
+    <td width="50%">
+      <a href="docs/screenshots/circles.jpg"><img src="docs/screenshots/circles.jpg" alt="Node Circles"></a>
+      <p align="center"><sub><b>Node Circles</b> — seamless rotation via xray gRPC API, TCP pre-ping with retry, two-tier auto-failover</sub></p>
     </td>
   </tr>
   <tr>
@@ -87,10 +134,15 @@ routing rule set:**
       <p align="center"><sub><b>Subscriptions</b> — auto-update, per-OS Happ presets, custom UA override</sub></p>
     </td>
     <td width="50%">
-      <a href="docs/screenshots/circles.jpg"><img src="docs/screenshots/circles.jpg" alt="Node Circles"></a>
-      <p align="center"><sub><b>Node Circles</b> — seamless rotation via xray gRPC API</sub></p>
+      <a href="docs/screenshots/geodata.jpg"><img src="docs/screenshots/geodata.jpg" alt="Geo data profiles"></a>
+      <p align="center"><sub><b>Geo data</b> — three switchable upstream profiles (Loyalsoldier / runetfreedom / v2fly) + scheduled refresh</sub></p>
     </td>
   </tr>
+</table>
+
+### Devices, DNS & diagnostics
+
+<table>
   <tr>
     <td width="50%">
       <a href="docs/screenshots/dns.jpg"><img src="docs/screenshots/dns.jpg" alt="DNS"></a>
@@ -99,6 +151,12 @@ routing rule set:**
     <td width="50%">
       <a href="docs/screenshots/devices.jpg"><img src="docs/screenshots/devices.jpg" alt="Devices"></a>
       <p align="center"><sub><b>Devices</b> — LAN discovery, OUI vendors, per-device routing policy</sub></p>
+    </td>
+  </tr>
+  <tr>
+    <td colspan="2" width="100%">
+      <a href="docs/screenshots/diagnostics.jpg"><img src="docs/screenshots/diagnostics.jpg" alt="Diagnostics"></a>
+      <p align="center"><sub><b>Diagnostics</b> — DNS reachability, gateway state, xray health, resource snapshot, exportable bundle for bug reports</sub></p>
     </td>
   </tr>
   <tr>
@@ -144,6 +202,9 @@ Frontend is a single-page React app served by nginx.
 - QUIC (UDP/443) blocking — forces TCP fallback for protocols TPROXY
   can intercept
 - Tunnel chaining — VLESS-inside-WireGuard, etc.
+- **Proxy Chains** (multi-panel, two-hop VLESS+Reality across two
+  x-ui panels with independent channels per chain; managed clients
+  + per-channel delete + live healthcheck)
 - Kill switch — drop all forwarded traffic if xray crashes
 
 **Routing**
@@ -191,6 +252,14 @@ Frontend is a single-page React app served by nginx.
   from runtime nodes — async-SSH probe, deployment records track which
   protocol/port is set up on which box, optional manual provisioning
   scripts (Caddy + naive, xray, SSH hardening) over the same SSH link
+- One-click auto-deploy over SSH for **NaiveProxy**, **WireGuard**,
+  **x-ui** (3x-ui / x-ui-pro) — live log streaming, status badges,
+  cascade-clean on uninstall
+- Dedicated **X-ui Panels** page — full inbound + client management
+  (6 wired presets covering Reality / TLS / domain modes), live
+  healthcheck (panel API, xray, nginx, UFW, TLS cert, disk, mem),
+  cache↔panel sync for hand-added clients, random / custom
+  fakesite rotation
 
 **Operations**
 - One-click GeoIP / GeoSite refresh — three switchable upstream
@@ -199,6 +268,9 @@ Frontend is a single-page React app served by nginx.
 - Full-fidelity JSON Export/Import for Nodes and Servers — versioned
   bundle envelope, append/replace modes, optional secret redaction
   (separate from URI/subscription import which is single-node only)
+- Plain-text URI export (`.txt`, one `vless://…` per line) — share
+  your node list with any v2rayN-compatible client; symmetric
+  `Import` button auto-detects URI list vs JSON bundle
 - Built-in diagnostics page (DNS reachability, gateway, xray status,
   resource usage)
 - Streaming xray log viewer
@@ -258,39 +330,43 @@ curl -fsSL https://raw.githubusercontent.com/DaveBugg/PiTun/master/install.sh | 
 > ```bash
 > curl -fsSL https://raw.githubusercontent.com/DaveBugg/PiTun/master/install.sh \
 >      -o /tmp/pitun-install.sh
-> sudo bash /tmp/pitun-install.sh --version v1.2.7
+> sudo bash /tmp/pitun-install.sh --version v1.3.0-beta.8
 > ```
 >
 > **(B) Pipe with `bash -s --` separator** (the `-s --` is **required**):
 > ```bash
 > curl -fsSL https://raw.githubusercontent.com/DaveBugg/PiTun/master/install.sh \
->      | sudo bash -s -- --version v1.2.7
+>      | sudo bash -s -- --version v1.3.0-beta.8
 > ```
 >
 > **(C) Environment variable** (no `-s --` voodoo needed):
 > ```bash
 > curl -fsSL https://raw.githubusercontent.com/DaveBugg/PiTun/master/install.sh \
->      | sudo PITUN_VERSION=v1.2.7 bash
+>      | sudo PITUN_VERSION=v1.3.0-beta.8 bash
 > ```
 >
-> ❌ **Do NOT do this:** `curl ... | sudo bash --version v1.2.7` — bash
+> ❌ **Do NOT do this:** `curl ... | sudo bash --version v1.3.0-beta.8` — bash
 > swallows `--version` as its own flag (prints bash's version + exits)
 > before our installer ever runs. Common copy-paste trap.
 
 Useful flags (work via any of the three forms above; examples use form B):
 
 ```bash
-# Pin a specific version
-... | sudo bash -s -- --version v1.2.7
+# Pin a specific version (current: v1.3.0-beta.8)
+... | sudo bash -s -- --version v1.3.0-beta.8
 
 # Force rebuilding from source (no published release available, or
 # you're testing local changes). Slower, needs reliable internet
 # during the docker build.
 ... | sudo bash -s -- --build
 
-# Air-gapped install — point at a directory containing pre-downloaded
-# artifacts (pitun-{backend,naive,frontend}-vX.Y.Z-<arch>.tar.gz +
-# pitun-src.tar.gz + xray.zip + geoip.dat + geosite.dat).
+# Air-gapped / hybrid offline install — point at a directory containing
+# pre-downloaded artifacts. ANY file present in the directory is used
+# as-is; missing ones fall back to a normal download (hybrid mode).
+# Also auto-detected when install.sh is launched from a directory that
+# already has any of the six expected filenames sitting next to it —
+# no --offline flag needed in that case. Full instructions and the
+# exact file list: docs/INSTALL_OFFLINE.md.
 ... | sudo bash -s -- --offline /tmp/pitun-artifacts
 
 # Custom install path (default: /opt/pitun)
@@ -439,12 +515,18 @@ config) `scripts/` ships with helpers — see [scripts/README.md](scripts/README
 Once your PiTun box is up and you've added a VPS under **Servers**, the
 **Install** button (rocket icon) lets you provision the upstream proxy
 *on the VPS itself* over SSH, with the install log streamed live in the
-modal. Two protocols are supported:
+modal. Three protocols are supported:
 
 | Protocol | Topology | Where the credentials live |
 |---|---|---|
 | **NaiveProxy** | Single TLS tunnel per server | One `Node` row per deploy |
 | **WireGuard** | Multi-client (one server, N peers) | One `DeploymentClient` row per peer; export selected peers to `Node` rows on demand |
+| **x-ui** | Full 3x-ui / x-ui-pro panel (many inbounds + many clients per inbound) | Panel rows under `XuiServer`; each inbound's clients live on the panel itself, surfaced + cached by PiTun |
+
+> The 443 slot — NaiveProxy and **x-ui-pro** can't coexist on one VPS
+> (both want :443 with Let's Encrypt). Bare-mode x-ui (no domain →
+> panel on a random high port) IS compatible with NaiveProxy. PiTun
+> enforces this slot rule at deploy time with a clear error message.
 
 ### NaiveProxy
 
@@ -496,6 +578,38 @@ icon next to any server with a WG deployment — that opens the
 
 One VPS can host clients used by multiple PiTun instances — each PiTun
 sees the peers it added itself + any it imported via Sync.
+
+### x-ui
+
+Form: optional domain (empty → bare-mode panel on a random high port,
+self-signed cert; non-empty → xui-pro stack with nginx + Let's Encrypt
+on :443) and optional LE registration email (defaults to
+`admin@<apex-domain>`). Behind the scenes
+(`scripts/setup-xui-server.sh`):
+
+1. Installs upstream **3x-ui v3.0.1** in `--non-interactive` mode.
+2. For xui-pro: also installs nginx + certbot + the
+   [`GFW4Fun/randomfakehtml`](https://github.com/GFW4Fun/randomfakehtml)
+   archive of fakesite templates, picks one at random, and wires the
+   reverse-proxy `externalProxy: 443` block.
+3. Generates fresh admin user/password + a Bearer API token + panel
+   basepath + sub-port, then emits `URI=xui://…` so PiTun creates the
+   `XuiServer` row + sets up the Bearer-authenticated client.
+4. Runs `cleanup-go.sh` to remove the Go SDK / build cache the
+   installer left behind (~2.5 GB on a 10 GB VPS).
+5. Applies the VPS optimisation profile (BBR + sysctl + swap +
+   ulimits + logrotate).
+
+Once registered, every inbound + client on the panel becomes
+manageable from the dedicated **Панели X-ui** page in the UI:
+6 wired-in inbound presets (VLESS+Reality / VLESS+xhttp+Reality /
+VLESS+WS+TLS / VLESS+xhttp+TLS / Trojan+gRPC / SOCKS5), per-client
+export to `Node` rows (cache-backed, idempotent on re-export),
+multi-layer healthcheck, cache↔panel sync that picks up clients
+added directly via the panel UI, and (xui-pro only) fakesite
+rotation — random pick from the bundled archive or upload a custom
+`.zip`. Chain orchestration (see **Proxy Chains** below) glues two
+registered panels into a two-hop VLESS+Reality tunnel.
 
 ## Configuration
 

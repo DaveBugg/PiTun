@@ -5,7 +5,7 @@ from typing import List
 # OpenAPI metadata, `/health` response, and `/system/status` so the
 # frontend can display it next to the xray version. Bump this on each
 # release — frontend keeps its own version in `frontend/package.json`.
-APP_VERSION = "1.3.0-beta.8"
+APP_VERSION = "1.3.0"
 
 
 class Settings(BaseSettings):
