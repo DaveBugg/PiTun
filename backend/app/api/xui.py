@@ -54,6 +54,7 @@ from app.core.xui_chain import (
     orchestrate_delete_channel,
     orchestrate_delete_client,
 )
+from app.core.uri_formatter import inbound_client_to_uri
 from app.core.xui_presets import PRESETS, InboundPreset, get_preset, list_presets
 from app.core.xui_uri import parse_xui_uri
 from app.models import (
@@ -1616,6 +1617,79 @@ class XuiClientExportNodeBody(BaseModel):
     """Optional override for the export name; defaults to
     `<inbound-remark>-<client-email or short-uuid>`."""
     name: Optional[str] = None
+
+
+@router.get(
+    "/servers/{xui_server_id}/inbounds/{inbound_id}/clients/{client_id}/share-uri",
+)
+async def get_inbound_client_share_uri(
+    xui_server_id: int, inbound_id: int, client_id: str,
+    session: AsyncSession = Depends(get_session),
+):
+    """Build a pasteable share URI for one inbound-side client.
+
+    Used by the X-ui Panels page to render a QR code without
+    persisting a Node first. Mirrors the inbound→Node parsing logic
+    from `export_inbound_client_to_node` via
+    `core.uri_formatter.inbound_client_to_uri`.
+
+    Returns `{ uri: str | null, reason: str | null }`. `reason`
+    explains why the URI is unavailable (unknown protocol, client
+    missing UUID/password, etc.) so the frontend can render a
+    sensible tooltip instead of just hiding the QR button silently.
+    """
+    xs, srv = await _get_xs_or_404(xui_server_id, session)
+    base_url = _api_base_url(xs, srv)
+    async with XuiClient(
+        base_url=base_url, api_token=xs.api_token, verify_tls=False,
+    ) as client:
+        try:
+            inbound = await client.get_inbound(inbound_id)
+        except XuiAPIError as exc:
+            raise HTTPException(
+                404 if exc.kind == "not_found" else 502,
+                detail=f"Inbound lookup failed ({exc.kind}): {exc}",
+            )
+
+    settings_raw = inbound.get("settings") or "{}"
+    if isinstance(settings_raw, str):
+        try:
+            settings = json.loads(settings_raw)
+        except ValueError:
+            settings = {}
+    else:
+        settings = settings_raw
+
+    clients = (settings or {}).get("clients") or []
+    target = None
+    for c in clients:
+        if c.get("id") == client_id or c.get("email") == client_id:
+            target = c
+            break
+    # SOCKS5 inbound has no per-client list — accounts live in
+    # settings.accounts[0]. Treat the inbound itself as a "client"
+    # so the share URI builder can pull user/pass out of accounts.
+    if target is None and (inbound.get("protocol") or "").lower() == "socks":
+        target = {}
+
+    if target is None:
+        raise HTTPException(
+            404,
+            detail=f"Client {client_id!r} not found on inbound {inbound_id}",
+        )
+
+    uri = inbound_client_to_uri(inbound, target, srv.host)
+    if uri is None:
+        proto = (inbound.get("protocol") or "?").lower()
+        return {
+            "uri": None,
+            "reason": (
+                f"Protocol {proto!r} doesn't have a canonical share URI "
+                "(e.g. WireGuard configs need the private key + full peer "
+                "block, which doesn't fit into a single line)."
+            ),
+        }
+    return {"uri": uri, "reason": None}
 
 
 @router.post(

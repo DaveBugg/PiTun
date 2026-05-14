@@ -2,13 +2,14 @@ import { useEffect, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   GitBranch, Loader2, AlertTriangle, RefreshCw, Plus, Trash2, X, Copy, Check,
-  Users, Upload, ChevronRight, Activity, CheckCircle2, XCircle,
+  Users, Upload, ChevronRight, Activity, CheckCircle2, XCircle, QrCode,
 } from 'lucide-react'
 
 import { xuiApi } from '@/api/client'
 import { useT } from '@/hooks/useT'
 import { useConfirm } from '@/components/ConfirmModal'
 import { ModalShell } from '@/components/ModalShell'
+import { ClientQrModal } from '@/components/ClientQrModal'
 import type {
   ChainClientRead,
   ChainCreateChannelInput,
@@ -556,6 +557,11 @@ function ChainClientCard({
   const confirm = useConfirm()
   const [expanded, setExpanded] = useState(false)
   const [copiedFor, setCopiedFor] = useState<number | null>(null)
+  const [qrTarget, setQrTarget] = useState<{
+    uri: string
+    title: string
+    subtitle: string
+  } | null>(null)
 
   const delMut = useMutation({
     mutationFn: () => xuiApi.deleteChainClient(chainId, client.id),
@@ -621,6 +627,18 @@ function ChainClientCard({
                 </code>
                 <button
                   type="button"
+                  onClick={() => setQrTarget({
+                    uri: cch.vless_uri,
+                    title: `${client.label} · ${cch.channel_name}`,
+                    subtitle: t('Chain client config', 'Конфиг цепочки'),
+                  })}
+                  className="rounded-md border border-gray-700 hover:bg-brand-900/30 hover:border-brand-700/50 hover:text-brand-300 p-1.5 text-gray-400 shrink-0"
+                  title={t('Show QR code', 'Показать QR-код')}
+                >
+                  <QrCode className="h-3.5 w-3.5" />
+                </button>
+                <button
+                  type="button"
                   onClick={() => copy(cch.vless_uri, cch.id)}
                   className="rounded-md border border-gray-700 hover:bg-gray-800 p-1.5 text-gray-400 hover:text-gray-200 shrink-0"
                   title={t('Copy VLESS URI', 'Копировать VLESS URI')}
@@ -673,6 +691,13 @@ function ChainClientCard({
           </div>
         </div>
       )}
+      <ClientQrModal
+        open={qrTarget !== null}
+        onClose={() => setQrTarget(null)}
+        title={qrTarget?.title || ''}
+        subtitle={qrTarget?.subtitle}
+        uri={qrTarget?.uri ?? null}
+      />
     </div>
   )
 }

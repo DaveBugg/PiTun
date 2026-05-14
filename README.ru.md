@@ -580,6 +580,15 @@ PiTun — это glue-код поверх зрелых проектов, без 
 - **[Caddy](https://caddyserver.com/)** + **[caddyserver/forwardproxy](https://github.com/caddyserver/forwardproxy)**
   (форк klzgrad) — рекомендуемый сервер для NaiveProxy. Скрипт
   `scripts/setup-naive-server.sh` собирает его через [`xcaddy`](https://github.com/caddyserver/xcaddy).
+- **[MHSanaei/3x-ui](https://github.com/MHSanaei/3x-ui)** — upstream
+  x-ui панель (v3.0.1). В режиме «bare» PiTun автоматически
+  устанавливает её и управляет inbounds/клиентами через API панели.
+- **[GFW4Fun/x-ui-pro](https://github.com/GFW4Fun/x-ui-pro)** — форк
+  3x-ui с доменом + nginx + LE, используется в режиме «xui-pro»
+  и как relay/exit-узлы в Proxy Chains.
+- **[GFW4Fun/randomfakehtml](https://github.com/GFW4Fun/randomfakehtml)**
+  — фейк-сайт шаблоны, бандлятся при установке xui-pro и используются
+  встроенной функцией «ротация fakesite».
 - **[Loyalsoldier/v2ray-rules-dat](https://github.com/Loyalsoldier/v2ray-rules-dat)**
   — базы GeoIP / GeoSite, которые xray использует в матчерах
   `geoip:` / `geosite:`. PiTun тянет последние `geoip.dat` и
@@ -599,6 +608,8 @@ PiTun — это glue-код поверх зрелых проектов, без 
 - **[Alembic](https://github.com/sqlalchemy/alembic)** — миграции
 - **[Uvicorn](https://github.com/encode/uvicorn)** — ASGI-сервер
 - **[httpx](https://github.com/encode/httpx)** + **[aiohttp](https://github.com/aio-libs/aiohttp)** — HTTP-клиенты
+- **[asyncssh](https://github.com/ronf/asyncssh)** — async SSH-клиент для auto-deploy на VPS и удалённой диагностики
+- **[websockets](https://github.com/python-websockets/websockets)** — стриминг логов установки
 - **[aiosqlite](https://github.com/omnilib/aiosqlite)** — async SQLite
 - **[python-jose](https://github.com/mpdavis/python-jose)** + **[bcrypt](https://github.com/pyca/bcrypt/)** — auth
 - **[psutil](https://github.com/giampaolo/psutil)** — метрики хоста

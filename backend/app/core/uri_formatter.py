@@ -4,6 +4,10 @@ Symmetric to `uri_parser.py`. Plain-text export of nodes (since
 v1.3.0-beta.7) emits a `vless://`-style file per line so the operator
 can paste the list into another tool, share with a colleague, etc.
 
+Since v1.3.1 we also build URIs straight from an x-ui inbound + client
+dict (without persisting a Node) so the X-ui Panels page can show a
+QR code for any panel-side client. See `inbound_client_to_uri`.
+
 Coverage matches the parser:
   * vless     → `vless://<uuid>@<host>:<port>?…#<remark>`
   * vmess     → `vmess://<base64-json>` (legacy quirk: vmess URIs are
@@ -210,3 +214,168 @@ def node_to_uri(node: Node) -> Optional[str]:
     if fn is None:
         return None
     return fn(node)
+
+
+def inbound_client_to_uri(
+    inbound: dict,
+    client: dict,
+    server_host: str,
+) -> Optional[str]:
+    """Build a pasteable share URI from an x-ui panel inbound + client.
+
+    Mirrors the inbound/stream parsing logic in `export_inbound_client
+    _to_node` (api/xui.py) but skips DB persistence — produces a
+    transient `Node` and feeds it through `node_to_uri`. Keep the two
+    in sync if the panel ever introduces a new transport/security
+    knob.
+
+    Returns `None` if the protocol isn't shareable (e.g. unknown
+    proto, or vless/trojan client missing its UUID/password).
+    """
+    # Lazy import to keep `Node` model loading out of import-time —
+    # uri_formatter is imported by uri_parser, which loads at startup
+    # before SQLModel is fully wired in some test contexts.
+    from app.models import Node as _Node
+
+    settings = inbound.get("settings") or "{}"
+    if isinstance(settings, str):
+        try:
+            settings = json.loads(settings)
+        except ValueError:
+            settings = {}
+
+    stream = inbound.get("streamSettings") or "{}"
+    if isinstance(stream, str):
+        try:
+            stream = json.loads(stream)
+        except ValueError:
+            stream = {}
+
+    address = server_host
+    port = int(inbound.get("port") or 0)
+    protocol = (inbound.get("protocol") or "").lower()
+
+    network = stream.get("network") or "tcp"
+    security = stream.get("security") or "none"
+
+    # externalProxy ↣ xui-pro reverse-proxy convention (same as the
+    # export-to-node endpoint).
+    sni_from_ep = ""
+    ep_list = stream.get("externalProxy") or []
+    if isinstance(ep_list, list) and ep_list:
+        ep = ep_list[0] if isinstance(ep_list[0], dict) else {}
+        ep_dest = ep.get("dest") or ""
+        ep_port = int(ep.get("port") or 0)
+        ep_force_tls = (ep.get("forceTls") or "").lower()
+        if ep_dest:
+            address = ep_dest
+            sni_from_ep = ep_dest
+        if ep_port:
+            port = ep_port
+        if ep_force_tls == "tls":
+            security = "tls"
+
+    sni = sni_from_ep
+    fingerprint = "chrome"
+    alpn = ""
+    reality_pbk = ""
+    reality_sid = ""
+    reality_spx = ""
+    ws_path = "/"
+    ws_host = ""
+    grpc_service = ""
+    grpc_mode = "gun"
+    http_path = "/"
+    http_host = ""
+
+    tls_settings = stream.get("tlsSettings") or {}
+    if tls_settings:
+        sni = tls_settings.get("serverName") or sni
+        fingerprint = tls_settings.get("fingerprint") or fingerprint
+        alpn_val = tls_settings.get("alpn") or []
+        alpn = ",".join(alpn_val) if isinstance(alpn_val, list) else str(alpn_val)
+
+    reality_settings = stream.get("realitySettings") or {}
+    if reality_settings:
+        sni = reality_settings.get("serverName") or (
+            (reality_settings.get("serverNames") or [""])[0]
+        ) or sni
+        fingerprint = (
+            (reality_settings.get("settings") or {}).get("fingerprint")
+            or fingerprint
+        )
+        reality_pbk = (
+            (reality_settings.get("settings") or {}).get("publicKey") or ""
+        )
+        reality_sid = (reality_settings.get("shortIds") or [""])[0]
+        reality_spx = (
+            (reality_settings.get("settings") or {}).get("spiderX") or ""
+        )
+        if security == "none" and reality_pbk:
+            security = "reality"
+
+    ws_settings = stream.get("wsSettings") or {}
+    if ws_settings:
+        ws_path = ws_settings.get("path") or "/"
+        ws_host = ws_settings.get("host") or ""
+        if not ws_host:
+            ws_host = (ws_settings.get("headers") or {}).get("Host") or ""
+
+    grpc_settings = stream.get("grpcSettings") or {}
+    if grpc_settings:
+        grpc_service = grpc_settings.get("serviceName") or ""
+        if grpc_settings.get("multiMode") is True:
+            grpc_mode = "multi"
+
+    http_settings = (
+        stream.get("httpSettings")
+        or stream.get("xhttpSettings")
+        or {}
+    )
+    if http_settings:
+        http_path = http_settings.get("path") or "/"
+        host = http_settings.get("host")
+        if isinstance(host, list) and host:
+            http_host = host[0]
+        elif isinstance(host, str):
+            http_host = host
+
+    uuid_val = client.get("id") or ""
+    password_val = client.get("password") or ""
+    flow_val = client.get("flow") or None
+    label = client.get("email") or (uuid_val[:8] if uuid_val else "client")
+    name = f"{inbound.get('remark') or 'inbound'}-{label}"
+
+    # SOCKS auth lives in inbound.settings.accounts[0] for the panel,
+    # not on the per-client object — special-case it here. The plain
+    # x-ui SOCKS5 inbound has one account regardless of "client" list.
+    if protocol == "socks":
+        accounts = (settings or {}).get("accounts") or []
+        if accounts and isinstance(accounts[0], dict):
+            uuid_val = accounts[0].get("user") or uuid_val
+            password_val = accounts[0].get("pass") or password_val
+
+    transient = _Node(
+        name=name,
+        protocol=protocol or "vless",
+        address=address,
+        port=port,
+        uuid=uuid_val or None,
+        password=password_val or None,
+        transport=network,
+        tls=security,
+        sni=sni or address,
+        fingerprint=fingerprint,
+        alpn=alpn,
+        ws_path=ws_path,
+        ws_host=ws_host,
+        grpc_service=grpc_service,
+        grpc_mode=grpc_mode,
+        http_path=http_path,
+        http_host=http_host,
+        reality_pbk=reality_pbk,
+        reality_sid=reality_sid,
+        reality_spx=reality_spx,
+        flow=flow_val,
+    )
+    return node_to_uri(transient)

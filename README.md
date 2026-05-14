@@ -912,6 +912,15 @@ projects. Without them, none of this would exist:
 - **[Caddy](https://caddyserver.com/)** with **[caddyserver/forwardproxy](https://github.com/caddyserver/forwardproxy)**
   (klzgrad's fork) — recommended NaiveProxy server. `scripts/setup-naive-server.sh`
   builds it via [`xcaddy`](https://github.com/caddyserver/xcaddy).
+- **[MHSanaei/3x-ui](https://github.com/MHSanaei/3x-ui)** — the upstream
+  x-ui panel (v3.0.1). PiTun's "bare" x-ui mode auto-installs it and
+  manages its inbounds/clients via the panel API.
+- **[GFW4Fun/x-ui-pro](https://github.com/GFW4Fun/x-ui-pro)** — domain
+  + nginx + LE fork of 3x-ui used in PiTun's "xui-pro" mode and as
+  relay/exit nodes in Proxy Chains.
+- **[GFW4Fun/randomfakehtml](https://github.com/GFW4Fun/randomfakehtml)**
+  — fakesite templates bundled into xui-pro installs, also driven by
+  the in-app "rotate fakesite" feature.
 - **[Loyalsoldier/v2ray-rules-dat](https://github.com/Loyalsoldier/v2ray-rules-dat)**
   — GeoIP / GeoSite rule databases used by xray's `geoip:` / `geosite:`
   matchers. PiTun pulls the latest `geoip.dat` and `geosite.dat` from
@@ -931,6 +940,8 @@ projects. Without them, none of this would exist:
 - **[Alembic](https://github.com/sqlalchemy/alembic)** — migrations
 - **[Uvicorn](https://github.com/encode/uvicorn)** — ASGI server
 - **[httpx](https://github.com/encode/httpx)** + **[aiohttp](https://github.com/aio-libs/aiohttp)** — HTTP clients
+- **[asyncssh](https://github.com/ronf/asyncssh)** — async SSH client used for VPS auto-deploy and remote diagnostics
+- **[websockets](https://github.com/python-websockets/websockets)** — install-log streaming
 - **[aiosqlite](https://github.com/omnilib/aiosqlite)** — async SQLite
 - **[python-jose](https://github.com/mpdavis/python-jose)** + **[bcrypt](https://github.com/pyca/bcrypt/)** — auth
 - **[psutil](https://github.com/giampaolo/psutil)** — host metrics

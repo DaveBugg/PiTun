@@ -859,6 +859,21 @@ export const xuiApi = {
     return r.data
   },
 
+  /**
+   * Fetch a pasteable share URI for one x-ui inbound client — used to
+   * render a QR code without persisting a Node. Returns `{ uri, reason }`:
+   * `reason` is non-null when the protocol/inbound doesn't yield a URI
+   * (e.g. WireGuard or a malformed client).
+   */
+  getInboundClientShareUri: async (
+    serverId: number, inboundId: number, clientId: string,
+  ): Promise<{ uri: string | null; reason: string | null }> => {
+    const r = await http.get(
+      `/xui/servers/${serverId}/inbounds/${inboundId}/clients/${encodeURIComponent(clientId)}/share-uri`,
+    )
+    return r.data
+  },
+
   // ── Chains (since v1.3.0-beta.7) ───────────────────────────────────────
   listChains: async (): Promise<ChainRead[]> => {
     const r = await http.get('/xui/chains')

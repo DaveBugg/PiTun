@@ -3,13 +3,14 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   Layers, Loader2, AlertTriangle, ExternalLink, Trash2, Plus, RefreshCw,
   ShieldCheck, ShieldAlert, Server as ServerIcon, KeyRound, Copy, Check,
-  ChevronRight, ChevronDown, Upload, Shuffle, UploadCloud,
+  ChevronRight, ChevronDown, Upload, Shuffle, UploadCloud, QrCode,
 } from 'lucide-react'
 
 import { xuiApi } from '@/api/client'
 import { useT } from '@/hooks/useT'
 import { useConfirm } from '@/components/ConfirmModal'
 import { ModalShell } from '@/components/ModalShell'
+import { ClientQrModal } from '@/components/ClientQrModal'
 import type { InboundPreset, XuiClient, XuiInbound, XuiServer } from '@/types'
 
 /**
@@ -662,6 +663,15 @@ function InboundCard({
   const confirm = useConfirm()
   const [expanded, setExpanded] = useState(false)
 
+  // Per-client QR modal. Holding the client identity + label here
+  // keeps each row's fetch lazy — we only hit `GET .../share-uri`
+  // when the user actually clicks the QR button.
+  const [qrTarget, setQrTarget] = useState<{
+    clientId: string
+    title: string
+    subtitle: string
+  } | null>(null)
+
   // Parse the panel's JSON-in-JSON settings into a typed client list.
   // Each protocol stores its identity field slightly differently
   // (vless/vmess → id, trojan → password, ss → password, socks → user)
@@ -870,6 +880,23 @@ function InboundCard({
                   </div>
                 </div>
                 <div className="flex items-center gap-1 shrink-0">
+                  {naturalId && (
+                    <button
+                      type="button"
+                      onClick={() => setQrTarget({
+                        clientId: naturalId,
+                        title: c.email || naturalId.slice(0, 8),
+                        subtitle: inbound.remark || `inbound #${inbound.id}`,
+                      })}
+                      title={t(
+                        'Show QR code (scan into mobile client)',
+                        'Показать QR-код (для сканирования в мобильный клиент)',
+                      )}
+                      className="rounded-md border border-gray-700 hover:bg-brand-900/30 hover:border-brand-700/50 hover:text-brand-300 p-1 text-gray-400"
+                    >
+                      <QrCode className="h-3 w-3" />
+                    </button>
+                  )}
                   {(() => {
                     // Fresh export from the local mutation wins over
                     // the cached badge from the inbound payload.
@@ -966,6 +993,15 @@ function InboundCard({
           )}
         </div>
       )}
+      <ClientQrModal
+        open={qrTarget !== null}
+        onClose={() => setQrTarget(null)}
+        title={qrTarget?.title || ''}
+        subtitle={qrTarget?.subtitle}
+        fetchUri={qrTarget
+          ? () => xuiApi.getInboundClientShareUri(serverId, inbound.id, qrTarget.clientId)
+          : undefined}
+      />
     </div>
   )
 }
