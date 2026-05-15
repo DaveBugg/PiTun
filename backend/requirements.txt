@@ -5,7 +5,7 @@ pydantic==2.13.4
 pydantic-settings==2.14.0
 httpx[socks]==0.28.1
 aiofiles==25.1.0
-python-multipart==0.0.27
+python-multipart==0.0.28
 websockets==16.0
 PyYAML==6.0.3
 aiohttp==3.13.5
