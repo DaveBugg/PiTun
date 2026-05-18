@@ -318,8 +318,12 @@ async def remove_client(
     if not _REMOVED_LINE_RE.search(result.stdout):
         # Script ran ok=true (exit 0) but didn't print our marker —
         # treat as soft fail; we still proceed to local cleanup.
+        # `%r` for `name` (user-controlled path param) — CWE-117: the
+        # root logger's `_NoNewlineFilter` already strips \n/\r, but
+        # `%r` calls repr() which CodeQL recognises as a log sanitiser,
+        # so the warning lands without an open finding.
         logger.warning(
-            "remove-client on server_id=%s name=%s did not print REMOVED= "
+            "remove-client on server_id=%s name=%r did not print REMOVED= "
             "marker — script may be from an older release. Cleaning up "
             "local state anyway.",
             server_id, name,

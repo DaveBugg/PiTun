@@ -212,7 +212,11 @@ async def stream_server_task(websocket: WebSocket, job_id: str, token: str = Que
         return
 
     await websocket.accept()
-    logger.debug("Server-tasks stream client connected: job=%s", job_id)
+    # `%r` on user-controlled `job_id` — CWE-117 hardening. See the
+    # matching note in `api/nodes.py`: root logger's `_NoNewlineFilter`
+    # already neutralises \n/\r, the `%r` adds repr()-quoting that
+    # CodeQL recognises as a log sanitiser.
+    logger.debug("Server-tasks stream client connected: job=%r", job_id)
 
     try:
         # If the job's RAM buffer is gone (already drained past grace
@@ -243,12 +247,12 @@ async def stream_server_task(websocket: WebSocket, job_id: str, token: str = Que
         except Exception:  # noqa: BLE001
             pass
     except WebSocketDisconnect:
-        logger.debug("Server-tasks stream client disconnected: job=%s", job_id)
+        logger.debug("Server-tasks stream client disconnected: job=%r", job_id)
     except Exception as exc:  # noqa: BLE001
-        logger.warning("Server-tasks stream error for job=%s: %s", job_id, exc)
+        logger.warning("Server-tasks stream error for job=%r: %s", job_id, exc)
     finally:
         try:
             await websocket.close()
         except Exception:  # noqa: BLE001
             pass
-        logger.debug("Server-tasks stream closed: job=%s", job_id)
+        logger.debug("Server-tasks stream closed: job=%r", job_id)

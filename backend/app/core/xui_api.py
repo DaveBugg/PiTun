@@ -120,6 +120,23 @@ class XuiClient:
     _http: Optional[httpx.AsyncClient] = None
     _csrf_token: Optional[str] = None
 
+    def __post_init__(self) -> None:
+        # Hard scheme allowlist — `base_url` comes from a XuiServer DB
+        # row written at admin-controlled `xui://` import time, but
+        # treat it as defense-in-depth: reject anything that isn't a
+        # plain `http://` / `https://` URL up front so a future code
+        # path that pipes user input into `base_url` can't reach the
+        # HTTP layer with `file://` / `gopher://` / etc. Also closes
+        # CodeQL's `py/full-ssrf` finding on `_request` (the rule
+        # treats this kind of explicit scheme check as a sanitiser).
+        if not isinstance(self.base_url, str):
+            raise ValueError("XuiClient.base_url must be a string")
+        scheme = self.base_url.split("://", 1)[0].lower() if "://" in self.base_url else ""
+        if scheme not in ("http", "https"):
+            raise ValueError(
+                f"XuiClient.base_url scheme must be http(s), got {scheme!r}",
+            )
+
     async def __aenter__(self) -> "XuiClient":
         self._ensure_client()
         return self

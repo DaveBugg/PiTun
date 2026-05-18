@@ -42,33 +42,50 @@ export function ClientQrModal({ open, onClose, title, uri, fetchUri, subtitle }:
   const [copied, setCopied] = useState(false)
   const svgRef = useRef<SVGSVGElement | null>(null)
 
+  // Pin the latest fetcher in a ref so the resolve-effect can call it
+  // without listing `fetchUri` as a dep. The parent re-creates the
+  // arrow function on every render (`qrTarget ? () => api(…) : undef`),
+  // and depending on that ref makes the effect refire each render →
+  // setResolved → render → loop. The `open` flag + the eager `uri`
+  // value are the *real* triggers; everything else just needs to be
+  // current when those flip.
+  const fetchRef = useRef(fetchUri)
+  useEffect(() => { fetchRef.current = fetchUri }, [fetchUri])
+
   // Resolve on open. Eager `uri` short-circuits the fetcher.
+  // Deps intentionally limited to [open, uri] — see fetchRef comment.
   useEffect(() => {
     if (!open) return
     setReveal(false)
     setCopied(false)
     setError(null)
     if (uri !== undefined) {
-      setResolved({ uri: uri ?? null, reason: uri ? null : t(
-        'No share URI available for this client.',
-        'Для этого клиента URI недоступен.',
-      ) })
+      // Reason text is rendered from a sentinel ('no_uri') at render
+      // time so we don't have to depend on `t` here (the translator
+      // is a fresh closure each render too).
+      setResolved({ uri: uri ?? null, reason: uri ? null : 'no_uri' })
       return
     }
-    if (!fetchUri) {
+    const fn = fetchRef.current
+    if (!fn) {
       setResolved({ uri: null, reason: 'No URI source provided.' })
       return
     }
     let cancelled = false
     setLoading(true)
-    fetchUri()
+    fn()
       .then((r) => { if (!cancelled) setResolved(r) })
       .catch((e: Error) => { if (!cancelled) setError(String(e?.message || e)) })
       .finally(() => { if (!cancelled) setLoading(false) })
     return () => { cancelled = true }
-  }, [open, uri, fetchUri, t])
+  }, [open, uri])
 
   const finalUri = resolved?.uri ?? null
+  // Localize the 'no_uri' sentinel at render time — keeps the resolve
+  // effect free of `t` as a dependency.
+  const displayReason = resolved?.reason === 'no_uri'
+    ? t('No share URI available for this client.', 'Для этого клиента URI недоступен.')
+    : resolved?.reason ?? null
 
   const handleCopy = async () => {
     if (!finalUri) return
@@ -216,14 +233,14 @@ export function ClientQrModal({ open, onClose, title, uri, fetchUri, subtitle }:
             </>
           )}
 
-          {!loading && !error && !finalUri && resolved?.reason && (
+          {!loading && !error && !finalUri && displayReason && (
             <div className="flex items-start gap-2 rounded-md border border-amber-900/60 bg-amber-900/20 p-3 text-[12px] text-amber-200">
               <AlertTriangle className="h-4 w-4 shrink-0 mt-0.5" />
               <div>
                 <div className="font-medium">
                   {t('No QR available', 'QR недоступен')}
                 </div>
-                <div className="text-amber-300/80 mt-1">{resolved.reason}</div>
+                <div className="text-amber-300/80 mt-1">{displayReason}</div>
               </div>
             </div>
           )}

@@ -103,6 +103,29 @@ PHP_EXTENSIONS = frozenset({".php"})
 # Slug allowed chars for the user-supplied label → id derivation.
 _SLUG_RE = re.compile(r"[^a-z0-9]+")
 
+# Pattern enforced on every `template_id` that touches the filesystem.
+# `_slugify` already produces ids matching `^[a-z0-9-]+$` (lowercased
+# alnum joined by `-`), so this is a tight superset for existing data.
+# Validating before any path concat makes path-traversal attempts
+# (`../../etc/passwd`) impossible regardless of how the id reached us —
+# CodeQL flagged the four public functions below for exactly this risk.
+_TEMPLATE_ID_RE = re.compile(r"\A[a-z0-9-]{1,64}\Z")
+
+
+def _validate_template_id(template_id: str) -> str:
+    """Reject anything that isn't a `_slugify`-shaped id.
+
+    Returns the id back on success so call sites can do
+    ``tid = _validate_template_id(tid)`` and continue. Raises
+    ``TemplateValidationError`` on rejection so the API layer turns
+    it into a clean 400 (the FastAPI exception handler already maps
+    this error class)."""
+    if not isinstance(template_id, str) or not _TEMPLATE_ID_RE.fullmatch(template_id):
+        raise TemplateValidationError(
+            f"Invalid template id: {template_id!r}"
+        )
+    return template_id
+
 
 # ── Errors ────────────────────────────────────────────────────────────────────
 
@@ -295,6 +318,12 @@ def list_custom() -> List[CustomTemplateMeta]:
 
 
 def get_custom(template_id: str) -> Optional[CustomTemplateMeta]:
+    # Reject malformed ids before composing a filesystem path — see
+    # `_validate_template_id` docstring for the path-traversal context.
+    try:
+        template_id = _validate_template_id(template_id)
+    except TemplateValidationError:
+        return None
     meta_path = _custom_dir() / template_id / "meta.json"
     if not meta_path.exists():
         return None
@@ -309,6 +338,10 @@ def get_custom(template_id: str) -> Optional[CustomTemplateMeta]:
 def get_archive_bytes(template_id: str) -> Optional[bytes]:
     """Return the raw archive bytes for SFTP'ing to a VPS. Used by
     the deploy runner when the user picked a custom template."""
+    try:
+        template_id = _validate_template_id(template_id)
+    except TemplateValidationError:
+        return None
     archive_path = _custom_dir() / template_id / "archive.zip"
     if not archive_path.exists():
         return None
@@ -337,7 +370,11 @@ def create_custom(
 
     has_php = _validate_zip(archive_bytes)
 
-    template_id = _slugify(label)
+    # Defense in depth — `_slugify` already produces a safe id, but
+    # validate before using it as a path component anyway so a future
+    # refactor that loosens the slug rules can't silently re-open the
+    # path-traversal hole CodeQL flagged on the other public funcs.
+    template_id = _validate_template_id(_slugify(label))
     digest = hashlib.sha256(archive_bytes).hexdigest()
     target_dir = _custom_dir() / template_id
     target_dir.mkdir(parents=True, exist_ok=False)
@@ -366,7 +403,15 @@ def create_custom(
 
 def delete_custom(template_id: str) -> bool:
     """Remove a custom template directory. Returns True if anything
-    was deleted, False if the id wasn't there. Idempotent."""
+    was deleted, False if the id wasn't there. Idempotent.
+
+    Malformed ids (anything not matching `_TEMPLATE_ID_RE`) return
+    False as if the row didn't exist — same UX as a normal miss, and
+    blocks `shutil.rmtree(../../etc)` cold."""
+    try:
+        template_id = _validate_template_id(template_id)
+    except TemplateValidationError:
+        return False
     target_dir = _custom_dir() / template_id
     if not target_dir.exists():
         return False
