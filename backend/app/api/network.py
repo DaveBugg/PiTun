@@ -137,15 +137,22 @@ def apply_changes(body: ApplyBody) -> dict:
 
 
 @router.post("/rollback")
-def rollback(body: RollbackBody) -> dict:
+def rollback(body: Optional[RollbackBody] = None) -> dict:
     """Restore a backup.
 
     Default (no body or empty backup_id) → newest backup. Explicit
     id rolls back to that specific snapshot — useful for going
     further back than the immediately preceding state.
+
+    `body` is Optional at the FastAPI signature level too — `POST`
+    with no body was returning 422 ("Field required") until v1.3.5
+    even though the docstring promised it would work. The "Rollback"
+    button in the UI sends a body-less POST, so this 422 was a real
+    UX paper cut.
     """
+    backup_id = body.backup_id if body is not None else None
     try:
-        backup = network_apply.rollback(body.backup_id)
+        backup = network_apply.rollback(backup_id)
     except network_apply.NetworkApplyError as e:
         raise HTTPException(400, detail=str(e))
     except Exception as e:  # noqa: BLE001
