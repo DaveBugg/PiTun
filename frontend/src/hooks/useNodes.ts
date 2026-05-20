@@ -1,6 +1,6 @@
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { keepPreviousData, useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { nodesApi } from '@/api/client'
-import type { NodeCreate, NodeUpdate } from '@/types'
+import type { NodeCreate, NodePageParams, NodeUpdate } from '@/types'
 
 export function useNodes(params?: { enabled?: boolean; group?: string }) {
   return useQuery({
@@ -10,11 +10,48 @@ export function useNodes(params?: { enabled?: boolean; group?: string }) {
   })
 }
 
+/**
+ * Paginated Nodes listing (since v1.3.3). Used by the Nodes page so
+ * a subscription with 1000+ entries doesn't tank the UI. Separate from
+ * `useNodes()` because that one is still needed by reorder / export /
+ * circle-scheduler call sites that need the unbounded list.
+ *
+ * `placeholderData: keepPreviousData` keeps the previous page visible
+ * while flipping pages — avoids the table collapsing to "Loading…"
+ * mid-paginate, which looks especially janky with high latency.
+ */
+export function useNodesPage(params: NodePageParams) {
+  return useQuery({
+    queryKey: ['nodes', 'page', params],
+    queryFn: () => nodesApi.listPage(params),
+    refetchInterval: 60_000,
+    placeholderData: keepPreviousData,
+  })
+}
+
 export function useNode(id: number) {
   return useQuery({
     queryKey: ['nodes', id],
     queryFn: () => nodesApi.get(id),
     enabled: !!id,
+  })
+}
+
+/**
+ * Fetch the active Node row (or `undefined` when no active node is
+ * set). Used by the Nodes page to pin the active node at the top of
+ * the list, even when the current page/filter would hide it. Stable
+ * key keeps the result cached across page navigations.
+ */
+export function useActiveNode(activeId: number | null | undefined) {
+  return useQuery({
+    queryKey: ['nodes', 'active', activeId],
+    queryFn: () => nodesApi.get(activeId as number),
+    enabled: activeId != null && activeId > 0,
+    refetchInterval: 60_000,
+    // Stale rows can show briefly while the query refetches — that's
+    // better than blanking the pin between refreshes.
+    placeholderData: (prev) => prev,
   })
 }
 

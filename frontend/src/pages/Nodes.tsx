@@ -1,10 +1,12 @@
 import * as React from 'react'
-import { useState } from 'react'
-import { Plus, Activity, Search, Filter, GripVertical, Gauge, FileDown, FileUp } from 'lucide-react'
+import { useEffect, useMemo, useState } from 'react'
+import { Plus, Activity, Search, GripVertical, Gauge, FileDown, FileUp, Pin, ArrowDownNarrowWide, ArrowUpNarrowWide } from 'lucide-react'
 import { clsx } from 'clsx'
 import { useQueryClient, useMutation } from '@tanstack/react-query'
 import {
   useNodes,
+  useNodesPage,
+  useActiveNode,
   useCreateNode,
   useUpdateNode,
   useDeleteNode,
@@ -18,21 +20,132 @@ import { NodeCard } from '@/components/NodeCard'
 import { NodeForm } from '@/components/NodeForm'
 import { UriImport } from '@/components/UriImport'
 import { NaiveSidecarPanel } from '@/components/NaiveSidecarPanel'
+import { NodeFilterPopup, type NodeFilterState } from '@/components/NodeFilterPopup'
+import { Pagination } from '@/components/Pagination'
 import { useConfirm } from '@/components/ConfirmModal'
 import { ModalShell } from '@/components/ModalShell'
-import type { Node, NodeCreate } from '@/types'
+import type { Node, NodeCreate, NodePageParams } from '@/types'
 
 type Modal = 'none' | 'add' | 'edit' | 'import'
+
+// Canonical protocol set surfaced in the filter popup. Until we add a
+// proper facets endpoint (1.3.4-backlog), hardcoding this keeps the
+// chip strip stable regardless of which page the user is on.
+const KNOWN_PROTOCOLS = ['vless', 'vmess', 'trojan', 'ss', 'wireguard', 'socks', 'hy2', 'naive']
+
+// Page size persistence. localStorage so the choice survives reloads —
+// session storage would reset on browser restart, which annoys users
+// with a large subscription who picked 100/page for a reason.
+const PAGE_SIZE_KEY = 'pitun.nodesPageSize'
+const PAGE_SIZE_DEFAULT = 50
+const PAGE_SIZE_OPTIONS = [10, 50, 100]
+
+function loadPageSize(): number {
+  try {
+    const raw = localStorage.getItem(PAGE_SIZE_KEY)
+    if (!raw) return PAGE_SIZE_DEFAULT
+    const n = Number(raw)
+    return PAGE_SIZE_OPTIONS.includes(n) ? n : PAGE_SIZE_DEFAULT
+  } catch {
+    return PAGE_SIZE_DEFAULT
+  }
+}
+
+// Sort direction (tiebreaker on Node.id). Default 'desc' = newest
+// first, which matches what a user expects after a subscription
+// pulls 1k+ rows — see top of file rationale.
+const DIRECTION_KEY = 'pitun.nodesDirection'
+type SortDirection = 'asc' | 'desc'
+
+function loadDirection(): SortDirection {
+  try {
+    const raw = localStorage.getItem(DIRECTION_KEY)
+    return raw === 'asc' ? 'asc' : 'desc'
+  } catch {
+    return 'desc'
+  }
+}
 
 export function Nodes() {
   const confirm = useConfirm()
   const [modal, setModal] = useState<Modal>('none')
   const [editNode, setEditNode] = useState<Node | null>(null)
   const [search, setSearch] = useState('')
-  const [filterProtocol, setFilterProtocol] = useState('')
+  const [filters, setFilters] = useState<NodeFilterState>({})
+  const [page, setPage] = useState(1)
+  const [pageSize, setPageSize] = useState<number>(loadPageSize)
+  const [direction, setDirection] = useState<SortDirection>(loadDirection)
 
-  const { data: nodes = [], isLoading } = useNodes()
+  // Reset to first page whenever the result set changes shape — any
+  // filter / search / page-size flip can invalidate the current
+  // offset (e.g. were on page 12 of 24, then filter brings total down
+  // to 3 → page 12 is empty).
+  useEffect(() => {
+    setPage(1)
+  }, [
+    search,
+    filters.subscription_id, filters.local, filters.protocol,
+    filters.online, filters.group, pageSize,
+  ])
+
+  // Persist page-size choice. Storage write fires only on actual change
+  // (the loader pulls on mount, the setter writes on flip).
+  useEffect(() => {
+    try { localStorage.setItem(PAGE_SIZE_KEY, String(pageSize)) } catch { /* quota / private mode */ }
+  }, [pageSize])
+
+  // Sort direction also persisted across reloads.
+  useEffect(() => {
+    try { localStorage.setItem(DIRECTION_KEY, direction) } catch { /* same */ }
+  }, [direction])
+
+  const pageParams: NodePageParams = useMemo(() => ({
+    limit: pageSize,
+    offset: (page - 1) * pageSize,
+    search: search || undefined,
+    subscription_id: filters.subscription_id,
+    local: filters.local,
+    protocol: filters.protocol,
+    online: filters.online,
+    group: filters.group,
+    direction,
+  }), [page, pageSize, search, filters, direction])
+
+  const { data: pageData, isLoading } = useNodesPage(pageParams)
+  const nodes = pageData?.items ?? []
+  const total = pageData?.total ?? 0
+
+  // Drag-to-reorder gate. Reorder runs **within the currently visible
+  // subset** — the user drags nodes they can see, and the backend
+  // updates the `order` field on those rows only. Nodes outside the
+  // view keep their existing order (interleaving may shift slightly
+  // but the relative ordering of the dragged set is preserved).
+  //
+  // Conditions:
+  //   * At least 2 visible nodes (1 row has nothing to reorder against).
+  //   * Visible count ≤ 100 — scrolling 100 cards trying to drag is
+  //     already painful UX; beyond that we point users at the Edit
+  //     modal's explicit `order` field.
+  //
+  // We DON'T gate on filters or pagination anymore — `total <= 100`
+  // was an overly conservative rule that made a 1256-node subscription
+  // un-reorderable even when the user had narrowed the view to 20 of
+  // them via filters.
+  const canDrag = nodes.length >= 2 && nodes.length <= 100
+  // Keep the unbounded list around for the chain-via dropdown in
+  // NodeForm — that needs to reference Nodes on other pages. The
+  // reorder handler no longer relies on it (uses visible subset).
+  const { data: allNodesForReorder = [] } = useNodes()
+
   const { data: status } = useSystemStatus()
+  // Active node — fetched independently so it survives pagination
+  // and filtering. If the operator filters out the subscription that
+  // owns the active node, we still want it pinned at the top so they
+  // never lose sight of which Node traffic is flowing through.
+  const { data: activeNode } = useActiveNode(status?.active_node_id ?? null)
+  const showActivePin =
+    activeNode != null && !nodes.some((n) => n.id === activeNode.id)
+
   const createNode = useCreateNode()
   const updateNode = useUpdateNode()
   const deleteNode = useDeleteNode()
@@ -65,17 +178,6 @@ export function Nodes() {
     onSuccess: () => qc.invalidateQueries({ queryKey: ['nodes'] }),
   })
 
-  const canDrag = !search && !filterProtocol
-
-  const filtered = nodes.filter((n) => {
-    const matchSearch = !search || n.name.toLowerCase().includes(search.toLowerCase()) ||
-      n.address.toLowerCase().includes(search.toLowerCase())
-    const matchProto = !filterProtocol || n.protocol === filterProtocol
-    return matchSearch && matchProto
-  })
-
-  const protocols = [...new Set(nodes.map((n) => n.protocol))]
-
   const handleSave = (data: NodeCreate) => {
     if (editNode) {
       updateNode.mutate({ id: editNode.id, data }, { onSuccess: () => setModal('none') })
@@ -101,8 +203,13 @@ export function Nodes() {
 
   const handleDrop = (targetId: number) => {
     if (dragId === null || dragId === targetId) return
-    // Use full node list for reorder, not filtered subset
-    const ids = (nodes ?? []).map((n) => n.id)
+    // Reorder runs on the **visible subset** — we send only the IDs
+    // currently rendered, in their new order. The backend rewrites
+    // `order` (steps of 10) on those rows; other rows keep their
+    // existing values. Relative ordering of the dragged set is what
+    // the user actually wants — minor interleaving with non-visible
+    // rows is acceptable. See note on `canDrag` above.
+    const ids = nodes.map((n) => n.id)
     const fromIndex = ids.indexOf(dragId)
     const toIndex = ids.indexOf(targetId)
     if (fromIndex === -1 || toIndex === -1) return
@@ -110,6 +217,40 @@ export function Nodes() {
     ids.splice(toIndex, 0, dragId)
     setDragId(null)
     reorderNodes.mutate(ids)
+  }
+
+  // Guard rail: Test-All / Speed-All operate on every ENABLED Node
+  // in the database — with 1k+ subscription rows that's hours of
+  // sequential xray spawns. Threshold of 50 mirrors the default page
+  // size; above that we ask the operator to confirm with the actual
+  // count surfaced. Backend tracks "enabled" so `total` from the
+  // current paginated view is a close enough proxy without firing a
+  // second query.
+  const BULK_CONFIRM_THRESHOLD = 50
+
+  const runTestAll = async () => {
+    if (total > BULK_CONFIRM_THRESHOLD) {
+      const ok = await confirm({
+        title: `Test all ${total} nodes?`,
+        body: `Health-check fires sequentially through every enabled node. With ${total} nodes this can take ${Math.ceil(total * 2 / 60)}+ minutes. Active traffic isn't affected.`,
+        confirmLabel: 'Run health check',
+      })
+      if (!ok) return
+    }
+    checkAll.mutate()
+  }
+
+  const runSpeedAll = async () => {
+    if (total > BULK_CONFIRM_THRESHOLD) {
+      const ok = await confirm({
+        title: `Speed-test all ${total} nodes?`,
+        body: `Each speed test spawns its own xray and runs ~10–30s. With ${total} nodes the whole sweep can take several hours and saturate uplink. There's no abort button — once started the only way to stop is restarting the backend container.`,
+        confirmLabel: 'Run speed test',
+        danger: true,
+      })
+      if (!ok) return
+    }
+    speedAll.mutate()
   }
 
   return (
@@ -124,7 +265,7 @@ export function Nodes() {
         <h1 className="text-xl font-bold text-gray-100">Nodes</h1>
         <div className="flex items-center gap-2 flex-wrap">
           <button
-            onClick={() => checkAll.mutate()}
+            onClick={runTestAll}
             disabled={checkAll.isPending}
             className="flex items-center gap-1.5 rounded-lg bg-gray-800 px-3 py-2 text-sm text-gray-300 hover:bg-gray-700 transition-colors disabled:opacity-50"
           >
@@ -132,7 +273,7 @@ export function Nodes() {
             Test All
           </button>
           <button
-            onClick={() => speedAll.mutate()}
+            onClick={runSpeedAll}
             disabled={speedAll.isPending}
             className="flex items-center gap-1.5 rounded-lg bg-gray-800 px-3 py-2 text-sm text-gray-300 hover:bg-gray-700 transition-colors disabled:opacity-50"
           >
@@ -162,10 +303,9 @@ export function Nodes() {
         </div>
       </div>
 
-      {/* Filters — search input takes its own row on phones; protocol
-          chips wrap to multiple rows below it instead of sliding off
-          screen. Tablet+ collapses to single row via flex-wrap's
-          fit-on-one-line behaviour when there's room. */}
+      {/* Filters row — search input + FilterPopup (covers subscription /
+          protocol / status / group). The protocol-chips-strip we used
+          to have here is folded into the popup. */}
       <div className="flex items-center gap-3 flex-wrap">
         <div className="relative flex-1 min-w-0 sm:min-w-48 w-full sm:w-auto">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-500" />
@@ -176,37 +316,86 @@ export function Nodes() {
             className="w-full rounded-lg bg-gray-900 border border-gray-800 pl-9 pr-3 py-2 text-sm text-gray-100 focus:border-brand-500 focus:outline-none"
           />
         </div>
-        <div className="flex items-center gap-1 flex-wrap">
-          <Filter className="h-4 w-4 text-gray-500 flex-shrink-0" />
-          {['', ...protocols].map((p) => (
-            <button
-              key={p || 'all'}
-              onClick={() => setFilterProtocol(p)}
-              className={clsx(
-                'rounded px-2 py-1 text-xs font-medium transition-colors',
-                filterProtocol === p
-                  ? 'bg-brand-600 text-white'
-                  : 'bg-gray-800 text-gray-400 hover:bg-gray-700',
-              )}
-            >
-              {p || 'All'}
-            </button>
-          ))}
-        </div>
+        <NodeFilterPopup
+          value={filters}
+          onChange={setFilters}
+          protocols={KNOWN_PROTOCOLS}
+        />
+        {/* Sort-direction toggle. Single button that flips between
+            'newest first' (default — natural for subscription pulls)
+            and 'oldest first'. The `Node.order` column stays primary
+            so drag-to-reorder placement still wins regardless of
+            which direction is selected. Choice persists to
+            localStorage. */}
+        <button
+          type="button"
+          onClick={() => setDirection((d) => (d === 'desc' ? 'asc' : 'desc'))}
+          className="flex items-center gap-1.5 rounded-lg border border-gray-800 bg-gray-900 px-2.5 py-2 text-sm text-gray-400 hover:text-gray-200 hover:border-gray-700 transition-colors"
+          title={direction === 'desc' ? 'Newest IDs first — click to reverse' : 'Oldest IDs first — click to reverse'}
+          aria-label={direction === 'desc' ? 'Sort newest first' : 'Sort oldest first'}
+        >
+          {direction === 'desc'
+            ? <ArrowDownNarrowWide className="h-4 w-4" />
+            : <ArrowUpNarrowWide className="h-4 w-4" />}
+          <span className="hidden sm:inline text-xs">
+            {direction === 'desc' ? 'Newest' : 'Oldest'}
+          </span>
+        </button>
       </div>
 
+      {/* Pinned active node — shown only when the active node is NOT
+          already in the current page (filters/pagination would hide
+          it). Surfaces "which Node am I currently routing through"
+          regardless of how the operator narrowed the list. */}
+      {showActivePin && activeNode && (
+        <div className="space-y-1.5">
+          <div className="flex items-center gap-1.5 text-[11px] uppercase tracking-wider text-brand-400">
+            <Pin className="h-3 w-3" />
+            <span>Active node (pinned)</span>
+          </div>
+          <div className="rounded-lg ring-1 ring-brand-700/40 bg-brand-900/10 p-0.5">
+            <div className="flex items-start gap-2">
+              {/* No drag handle — pinned card sits outside the
+                  reorderable list semantically. */}
+              <div className="mt-3 shrink-0 hidden sm:block w-4" />
+              <div className="flex-1 min-w-0">
+                <NodeCard
+                  node={activeNode}
+                  isActive={true}
+                  onEdit={() => { setEditNode(activeNode); setModal('edit') }}
+                  onDelete={async () => {
+                    const ok = await confirm({
+                      title: `Delete "${activeNode.name}"?`,
+                      body: 'This node is currently active. Routing rules pointing at it will be left dangling.',
+                      confirmLabel: 'Delete',
+                      danger: true,
+                    })
+                    if (ok) deleteNode.mutate(activeNode.id)
+                  }}
+                  onCheck={() => checkHealth.mutate(activeNode.id)}
+                  onSpeedtest={() => handleSpeedtest(activeNode)}
+                  onSelect={() => setActive.mutate(activeNode.id)}
+                  checkLoading={checkHealth.isPending && checkHealth.variables === activeNode.id}
+                  speedLoading={speedtest.isPending && speedtest.variables === activeNode.id}
+                />
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Node list */}
-      {isLoading ? (
+      {isLoading && !pageData ? (
         <div className="text-center py-12 text-gray-500">Loading…</div>
-      ) : filtered.length === 0 ? (
+      ) : nodes.length === 0 ? (
         <div className="text-center py-12 text-gray-500">
-          {nodes.length === 0
+          {total === 0 && !search && Object.values(filters).every((v) => v == null || v === '')
             ? 'No nodes yet. Add or import nodes to get started.'
             : 'No nodes match the current filter.'}
         </div>
       ) : (
         <div className="grid gap-3">
-          {filtered.map((node) => (
+          {nodes.map((node) => (
             <div
               key={node.id}
               draggable={canDrag}
@@ -226,8 +415,20 @@ export function Nodes() {
                   touch events, so showing the grip on mobile would
                   imply broken functionality. Mobile users reorder
                   via the Edit modal's `order` field for now;
-                  full touch DnD is on the post-1.3.0 backlog. */}
-              <div className={clsx('mt-3 shrink-0 hidden sm:block', canDrag ? 'cursor-grab text-gray-600 hover:text-gray-400' : 'text-gray-800 cursor-not-allowed')}>
+                  full touch DnD is on the post-1.3.0 backlog.
+
+                  Drag is also gated by filters/pagination state since
+                  v1.3.3 — reordering a paginated subset would scramble
+                  off-page rows. The tooltip below tells the user why
+                  the handle is muted when those conditions aren't met. */}
+              <div
+                className={clsx('mt-3 shrink-0 hidden sm:block', canDrag ? 'cursor-grab text-gray-600 hover:text-gray-400' : 'text-gray-800 cursor-not-allowed')}
+                title={canDrag
+                  ? 'Drag to reorder (within visible set)'
+                  : nodes.length > 100
+                    ? 'Reorder disabled: 100+ visible nodes. Filter or use the Edit modal order field.'
+                    : 'Reorder needs at least 2 visible nodes.'}
+              >
                 <GripVertical className="h-4 w-4" />
               </div>
               <div className="flex-1 min-w-0">
@@ -264,6 +465,21 @@ export function Nodes() {
         </div>
       )}
 
+      {/* Pagination — always rendered when there's any result so the
+          page-size picker stays accessible even on a 5-node install.
+          The strip + prev/next collapse when there's only one page. */}
+      {(total > 0) && (
+        <Pagination
+          page={page}
+          pageSize={pageSize}
+          total={total}
+          pageSizeOptions={PAGE_SIZE_OPTIONS}
+          onPageChange={setPage}
+          onPageSizeChange={setPageSize}
+          itemLabel="nodes"
+        />
+      )}
+
       {/* Add / Edit modal */}
       {(modal === 'add' || modal === 'edit') && (
         <Modal title={modal === 'add' ? 'Add Node' : 'Edit Node'} onClose={() => setModal('none')}>
@@ -272,7 +488,10 @@ export function Nodes() {
             onSave={handleSave}
             onCancel={() => setModal('none')}
             loading={createNode.isPending || updateNode.isPending}
-            nodes={nodes}
+            // Pass the unbounded list so the chain-via dropdown can
+            // reference Nodes on other pages. The 1k-row query is
+            // cached at the page level (refetched once per minute).
+            nodes={allNodesForReorder}
           />
         </Modal>
       )}

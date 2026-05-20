@@ -391,26 +391,38 @@ STAGING_DIR="${TMPDIR:-/tmp}/pitun-install"
 mkdir -p "$STAGING_DIR"
 
 # Auto-discovery of pre-downloaded artefacts. When install.sh launches
-# out of a directory that already has the six expected filenames sitting
+# out of a directory that already has the expected filenames sitting
 # next to it (the "scp these files + install.sh to /tmp on the air-
 # gapped box" workflow), treat that directory as OFFLINE_DIR without
 # requiring the explicit `--offline` flag. Skipped when the script is
 # piped from `curl | bash` (BASH_SOURCE[0] is `-bash` or empty) or when
 # the operator passed `--offline` already.
+#
+# Filename matching tolerates the version/arch suffix used by GitHub
+# Releases (e.g. `pitun-backend-v1.3.2-amd64.tar.gz`) in addition to the
+# canonical short names (`pitun-backend.tar.gz`). The actual asset → canonical
+# mapping happens in the staging-symlink loop below — here we only need
+# to flag the dir as offline-mode if *any* match shows up.
 if [[ -z "$OFFLINE_DIR" ]]; then
     _script_path="${BASH_SOURCE[0]:-}"
     if [[ -n "$_script_path" && -f "$_script_path" ]]; then
         _script_dir="$(cd "$(dirname "$_script_path")" 2>/dev/null && pwd)"
         if [[ -n "$_script_dir" ]]; then
-            for _f in pitun-src.tar.gz pitun-backend.tar.gz \
-                      pitun-naive.tar.gz pitun-frontend.tar.gz \
-                      geoip.dat geosite.dat; do
-                if [[ -f "$_script_dir/$_f" ]]; then
+            shopt -s nullglob
+            for _pattern in \
+                "$_script_dir"/pitun-src.tar.gz       "$_script_dir"/pitun-src-*.tar.gz \
+                "$_script_dir"/pitun-backend.tar.gz   "$_script_dir"/pitun-backend-*.tar.gz \
+                "$_script_dir"/pitun-naive.tar.gz     "$_script_dir"/pitun-naive-*.tar.gz \
+                "$_script_dir"/pitun-frontend.tar.gz  "$_script_dir"/pitun-frontend-*.tar.gz \
+                "$_script_dir"/geoip.dat              "$_script_dir"/geosite.dat
+            do
+                if [[ -f "$_pattern" ]]; then
                     OFFLINE_DIR="$_script_dir"
                     info "Auto-detected pre-downloaded artefacts in $OFFLINE_DIR"
                     break
                 fi
             done
+            shopt -u nullglob
         fi
     fi
 fi
@@ -634,11 +646,65 @@ if [[ -n "$OFFLINE_DIR" ]]; then
     # phases later, which made the underlying "you forgot one of
     # the six artefacts" cause hard to spot.
     info "Offline-dir mode: $OFFLINE_DIR (will download anything not present)"
+    # `_pick_offline` resolves a canonical name (e.g. `pitun-backend.tar.gz`)
+    # to whatever actually sits in OFFLINE_DIR — either the canonical
+    # filename itself, or a Release-style suffixed one such as
+    # `pitun-backend-v1.3.2-amd64.tar.gz`. For backend/naive we prefer
+    # an arch-matched suffix when present, falling back to any version
+    # suffix; for frontend/src the suffix is version-only.
+    #
+    # Outputs nothing on stdout — sets `_pick_offline_result` instead.
+    # Empty result = no local file, downstream will download as usual.
+    _pick_offline() {
+        local canonical="$1" base ext glob_arch glob_any
+        _pick_offline_result=""
+        # Exact-name match wins (cheapest, no glob)
+        if [[ -e "$OFFLINE_DIR/$canonical" ]]; then
+            _pick_offline_result="$OFFLINE_DIR/$canonical"
+            return 0
+        fi
+        # Suffix-tolerant fallback. Geo files are intentionally NOT
+        # suffix-tolerant — Loyalsoldier ships them flat, no version,
+        # so a "geoip-something.dat" file is operator error.
+        case "$canonical" in
+            *.tar.gz)
+                base="${canonical%.tar.gz}"; ext=".tar.gz" ;;
+            *)
+                return 0 ;;
+        esac
+        shopt -s nullglob
+        # Prefer arch-matched suffix for arch-specific assets.
+        local matches=()
+        case "$canonical" in
+            pitun-backend.tar.gz|pitun-naive.tar.gz)
+                matches=("$OFFLINE_DIR"/"${base}-"*-"${ARCH}${ext}")
+                # Fall back to any-suffix match (older release naming, or operator
+                # manually built without arch suffix).
+                (( ${#matches[@]} > 0 )) || matches=("$OFFLINE_DIR"/"${base}-"*"${ext}")
+                ;;
+            *)
+                matches=("$OFFLINE_DIR"/"${base}-"*"${ext}")
+                ;;
+        esac
+        shopt -u nullglob
+        if (( ${#matches[@]} > 0 )); then
+            if (( ${#matches[@]} > 1 )); then
+                warn "  multiple ${base}-* candidates in OFFLINE_DIR — using $(basename "${matches[0]}")"
+            fi
+            _pick_offline_result="${matches[0]}"
+        fi
+    }
     for f in pitun-src.tar.gz pitun-backend.tar.gz pitun-naive.tar.gz \
              pitun-frontend.tar.gz geoip.dat geosite.dat; do
-        if [[ -e "$OFFLINE_DIR/$f" ]]; then
-            ln -sf "$OFFLINE_DIR/$f" "$STAGING_DIR/$f"
-            info "  using local: $f"
+        _pick_offline "$f"
+        if [[ -n "$_pick_offline_result" ]]; then
+            ln -sf "$_pick_offline_result" "$STAGING_DIR/$f"
+            local_basename="$(basename "$_pick_offline_result")"
+            if [[ "$local_basename" == "$f" ]]; then
+                info "  using local: $f"
+            else
+                info "  using local: $local_basename → $f"
+            fi
         fi
     done
 fi

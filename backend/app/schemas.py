@@ -164,6 +164,21 @@ class NodeRead(NodeBase):
         from_attributes = True
 
 
+class NodePage(BaseModel):
+    """Envelope returned by `GET /api/nodes/page` (since v1.3.3).
+
+    The legacy `GET /api/nodes` endpoint stays as-is (returns
+    `List[NodeRead]`) because reorder / export / circle-scheduler etc.
+    all need the full unfiltered set. The paginated endpoint is for
+    the Nodes UI page which now supports 1000+ rows from subscriptions.
+    """
+
+    items: List[NodeRead]
+    total: int
+    limit: int
+    offset: int
+
+
 class NaiveSidecarStatus(BaseModel):
     """Docker container status for a NaiveProxy node's sidecar."""
     exists: bool

@@ -27,10 +27,23 @@ const MODES_BASE: { value: ProxyMode; label: string; icon: React.ElementType }[]
   { value: 'bypass', icon: Slash,     label: 'Bypass'  },
 ]
 
-const INBOUND_MODES_BASE: { value: InboundMode; label: string }[] = [
+// `disabled` flag here mirrors a runtime reality, not a UI preference:
+// vanilla XTLS/Xray-core (the binary we ship) doesn't implement the
+// `tun` inbound protocol — that's a sing-box feature. Selecting TUN
+// or Both in older builds triggered `xray -test` validation failure,
+// the new config was rejected, and the UI kept showing the chosen
+// mode while xray actually ran the previous TPROXY config (the "UI
+// lies" footgun documented in notes.md backlog). Until we ship a
+// sing-box-aware build, the two buttons stay disabled with a clear
+// tooltip rather than being silently broken.
+//
+// Re-enable by flipping `disabled: false` once the backend actually
+// supports the protocol — config_gen.py `_build_tun_inbound` still
+// emits the JSON, we just need the runtime to accept it.
+const INBOUND_MODES_BASE: { value: InboundMode; label: string; disabled?: boolean }[] = [
   { value: 'tproxy', label: 'TPROXY' },
-  { value: 'tun',    label: 'TUN'    },
-  { value: 'both',   label: 'Both'   },
+  { value: 'tun',    label: 'TUN',  disabled: true },
+  { value: 'both',   label: 'Both', disabled: true },
 ]
 
 function formatUptime(seconds?: number | null): string {
@@ -360,10 +373,12 @@ export function Dashboard() {
 
   const INBOUND_MODES = INBOUND_MODES_BASE.map((m) => ({
     ...m,
-    desc: t(
-      { tproxy: 'nftables + dokodemo-door (default)', tun: 'Virtual TUN interface, no nftables', both: 'TPROXY + TUN simultaneously' }[m.value],
-      { tproxy: 'nftables + dokodemo-door (по умолчанию)', tun: 'Виртуальный TUN, без nftables', both: 'TPROXY + TUN одновременно' }[m.value],
-    ),
+    desc: m.disabled
+      ? t('Requires sing-box core — not supported in this build', 'Требует sing-box core — не поддерживается в этой сборке')
+      : t(
+          { tproxy: 'nftables + dokodemo-door (default)', tun: 'Virtual TUN interface, no nftables', both: 'TPROXY + TUN simultaneously' }[m.value],
+          { tproxy: 'nftables + dokodemo-door (по умолчанию)', tun: 'Виртуальный TUN, без nftables', both: 'TPROXY + TUN одновременно' }[m.value],
+        ),
     tip: t(
       { tproxy: 'Recommended mode. Uses Linux kernel TPROXY + nftables to intercept packets. Devices only need to set gateway=RPi IP. No client configuration required.', tun: 'Creates a virtual tun0 interface. xray routes all traffic through it. Useful when TPROXY is unavailable or for specific compatibility scenarios. Requires xray-core ≥ 1.8.', both: '' }[m.value],
       { tproxy: 'Рекомендуемый режим. Использует TPROXY ядра Linux + nftables для перехвата пакетов. Устройствам нужно только установить gateway=RPi IP. Настройка клиента не требуется.', tun: 'Создаёт виртуальный интерфейс tun0. xray направляет через него весь трафик. Полезен когда TPROXY недоступен. Требует xray-core ≥ 1.8.', both: '' }[m.value],
@@ -559,25 +574,42 @@ export function Dashboard() {
           {/* Same rationale as Proxy Mode above — 3 columns squashed
               on mobile, stack vertically below sm. */}
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-            {INBOUND_MODES.map(({ value, label, desc, tip }) => (
-              <button
-                key={value}
-                onClick={() => updateSettings.mutate({ inbound_mode: value })}
-                disabled={updateSettings.isPending}
-                className={clsx(
-                  'rounded-lg border p-3 text-left text-xs transition-all',
-                  sysSettings?.inbound_mode === value
-                    ? 'border-brand-600 bg-brand-900/20 text-brand-300'
-                    : 'border-gray-700 bg-gray-800 text-gray-400 hover:border-gray-600 hover:text-gray-200',
-                )}
-              >
-                <div className="font-medium text-sm mb-0.5 flex items-center gap-1">
-                  {label}
-                  {tip && <InfoTip className="ml-0.5" text={tip} />}
-                </div>
-                <div className="opacity-70">{desc}</div>
-              </button>
-            ))}
+            {INBOUND_MODES.map(({ value, label, desc, tip, disabled }) => {
+              const isModeUnsupported = !!disabled
+              const isCurrent = sysSettings?.inbound_mode === value
+              return (
+                <button
+                  key={value}
+                  onClick={() => updateSettings.mutate({ inbound_mode: value })}
+                  disabled={updateSettings.isPending || isModeUnsupported}
+                  title={isModeUnsupported
+                    ? t(
+                        'TUN inbound requires sing-box core. The vanilla XTLS/Xray-core shipped with PiTun does not implement it. Selecting this mode would silently break TPROXY until reverted. Stay on TPROXY for now.',
+                        'TUN inbound требует sing-box core. Ванильный XTLS/Xray-core в составе PiTun его не поддерживает. Выбор этого режима тихо сломает TPROXY до возврата. Оставайтесь на TPROXY.',
+                      )
+                    : undefined}
+                  className={clsx(
+                    'rounded-lg border p-3 text-left text-xs transition-all',
+                    isCurrent
+                      ? 'border-brand-600 bg-brand-900/20 text-brand-300'
+                      : isModeUnsupported
+                        ? 'border-gray-800 bg-gray-900/40 text-gray-600 cursor-not-allowed opacity-60'
+                        : 'border-gray-700 bg-gray-800 text-gray-400 hover:border-gray-600 hover:text-gray-200',
+                  )}
+                >
+                  <div className="font-medium text-sm mb-0.5 flex items-center gap-1">
+                    {label}
+                    {isModeUnsupported && (
+                      <span className="rounded bg-gray-800 border border-gray-700 px-1 py-0.5 text-[9px] uppercase tracking-wider text-gray-500 ml-1">
+                        N/A
+                      </span>
+                    )}
+                    {tip && !isModeUnsupported && <InfoTip className="ml-0.5" text={tip} />}
+                  </div>
+                  <div className="opacity-70">{desc}</div>
+                </button>
+              )
+            })}
           </div>
 
           {/* QUIC block toggle */}

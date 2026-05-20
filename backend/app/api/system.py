@@ -734,6 +734,20 @@ async def update_settings(body: SettingsUpdate, session: AsyncSession = Depends(
                 ),
             )
 
+    # Snapshot `inbound_mode` BEFORE the patch so we can roll back if
+    # the new value generates an invalid xray config. Without this, the
+    # PATCH would persist e.g. `inbound_mode=tun` even though xray
+    # rejects the resulting config — the UI then shows "TUN" selected
+    # but the runtime keeps the old mode. See backlog item 1 in
+    # notes.md ("TUN/Both silently bricks proxy"). The snapshot is
+    # cheap: a single Settings row read.
+    inbound_mode_was = None
+    if "inbound_mode" in patches and patches["inbound_mode"] is not None:
+        existing_row = (await session.exec(
+            select(DBSettings).where(DBSettings.key == "inbound_mode")
+        )).first()
+        inbound_mode_was = existing_row.value if existing_row else "tproxy"
+
     for key, value in patches.items():
         if value is None:
             continue
@@ -746,6 +760,102 @@ async def update_settings(body: SettingsUpdate, session: AsyncSession = Depends(
         else:
             await _set_setting(session, key, str(value))
     await session.commit()
+
+    # Post-commit pre-flight for inbound_mode changes. We commit first
+    # (so the helper that loads settings_map sees the new value), then
+    # generate + validate. On failure, rewrite the row back to its old
+    # value and raise 400 — the UI's mutation will surface the error
+    # and stay on the previous mode. xray-side state is untouched
+    # because we never restarted it (writing config.json is harmless
+    # if xray isn't reloaded).
+    if (
+        inbound_mode_was is not None
+        and str(patches.get("inbound_mode")) != inbound_mode_was
+    ):
+        from app.core.config_gen import (
+            generate_config, write_config,
+            _diagnose_empty_stderr, _xray_version,
+        )
+        from pathlib import Path
+        from app.config import settings as app_settings
+        import asyncio
+
+        # Generate a candidate config under the new mode. We can't
+        # simply call _regenerate_and_write because that path triggers
+        # self-healing of geo rules — orthogonal to mode validation
+        # and would mask the real "this mode is unsupported" error.
+        settings_map = await _load_settings_map(session)
+        active_id_str = settings_map.get("active_node_id", "")
+        active_node = None
+        if active_id_str:
+            try:
+                active_node = await session.get(Node, int(active_id_str))
+            except ValueError:
+                pass
+        all_nodes = list((await session.exec(select(Node).where(Node.enabled == True))).all())
+        rules = list((await session.exec(select(RoutingRule).where(RoutingRule.enabled == True))).all())
+        dns_rules = list((await session.exec(select(DNSRule).where(DNSRule.enabled == True))).all())
+        balancer_groups = list((await session.exec(select(BalancerGroup))).all())
+        candidate = generate_config(
+            active_node, all_nodes, rules,
+            settings_map.get("mode", "rules"),
+            settings_map, dns_rules, balancer_groups,
+        )
+
+        # In-process pre-flight: write to a tmp path and run xray -test
+        # there. NOT the real config.json — we don't want a successful
+        # write that gets overridden on rollback.
+        ok = True
+        diag = "unknown error"
+        try:
+            if Path(app_settings.xray_binary).exists():
+                tmp_path = f"{app_settings.xray_config_path}.candidate"
+                import json as _json
+                Path(tmp_path).parent.mkdir(parents=True, exist_ok=True)
+                with open(tmp_path, "w") as f:
+                    _json.dump(candidate, f, indent=2)
+                proc = await asyncio.create_subprocess_exec(
+                    app_settings.xray_binary, "run", "-test", "-config", tmp_path,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                _, stderr = await asyncio.wait_for(proc.communicate(), timeout=10)
+                Path(tmp_path).unlink(missing_ok=True)
+                if proc.returncode != 0:
+                    ok = False
+                    stderr_text = stderr.decode(errors="replace").strip()
+                    if not stderr_text:
+                        ver = await _xray_version()
+                        diag = _diagnose_empty_stderr(
+                            xray_version=ver,
+                            inbound_mode=patches.get("inbound_mode"),
+                            config=candidate,
+                        )
+                    else:
+                        diag = stderr_text.splitlines()[-1][:300]
+        except Exception as exc:  # noqa: BLE001
+            # Pre-flight failure due to binary missing / hung etc is
+            # advisory only — let the value through. Same policy as
+            # `write_config` (advisory pre-flight).
+            import logging
+            logging.getLogger(__name__).debug(
+                "inbound_mode pre-flight skipped: %s", exc,
+            )
+
+        if not ok:
+            # Roll back the inbound_mode row + commit so DB reflects
+            # reality. Other patched keys stay applied (they didn't
+            # cause the failure).
+            await _set_setting(session, "inbound_mode", inbound_mode_was)
+            await session.commit()
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Inbound mode '{patches['inbound_mode']}' produces an "
+                    f"invalid xray config — change reverted. "
+                    f"Details: {diag}"
+                ),
+            )
 
     # Apply IPv6 toggle via bind-mounted host /proc/sys
     if "disable_ipv6" in patches:

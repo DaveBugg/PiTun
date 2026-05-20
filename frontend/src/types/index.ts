@@ -91,6 +91,37 @@ export interface NodeImportRequest {
   uris: string
 }
 
+/**
+ * Paginated + filtered Node listing returned by `GET /api/nodes/page`
+ * (since v1.3.3). `total` is the row count BEFORE pagination so the UI
+ * can render "Showing 51–100 of 1256". Used by the Nodes page; other
+ * call sites (reorder, export, NodeCircle) keep using `GET /api/nodes`
+ * which returns the unbounded full list.
+ */
+export interface NodePage {
+  items: Node[]
+  total: number
+  limit: number
+  offset: number
+}
+
+/** Filter/pagination params for `GET /api/nodes/page`. */
+export interface NodePageParams {
+  limit?: number          // 0 = no limit (escape hatch for bulk-export)
+  offset?: number
+  subscription_id?: number
+  /** When true: match only nodes with no subscription (`subscription_id IS NULL`). */
+  local?: boolean
+  protocol?: string
+  enabled?: boolean
+  online?: boolean
+  group?: string
+  search?: string
+  /** Tiebreaker direction for the `id` column. Default `desc` shows
+   *  newest-added Nodes first (natural for subscription imports). */
+  direction?: 'asc' | 'desc'
+}
+
 export interface NodeImportResponse {
   imported: number
   skipped: number

@@ -2,6 +2,7 @@ import axios from 'axios'
 import type {
   LoginRequest, TokenResponse, ChangePasswordRequest, UserInfo,
   Node, NodeCreate, NodeUpdate, NodeImportRequest, NodeImportResponse,
+  NodePage, NodePageParams,
   RoutingRule, RoutingRuleCreate, RoutingRuleUpdate, ArpDevice,
   BulkRuleCreate, BulkRuleResult,
   Subscription, SubscriptionCreate, SubscriptionUpdate,
@@ -68,6 +69,15 @@ export const authApi = {
 export const nodesApi = {
   list: (params?: { enabled?: boolean; group?: string }) =>
     http.get<Node[]>('/nodes', { params }).then(r => r.data),
+
+  /**
+   * Paginated + filtered Node listing (since v1.3.3). Used by the
+   * Nodes page when subscriptions can pull 1000+ rows. The legacy
+   * `list()` above is kept for callers that need the full set
+   * (reorder, JSON export, NodeCircle scheduler).
+   */
+  listPage: (params: NodePageParams = {}) =>
+    http.get<NodePage>('/nodes/page', { params }).then(r => r.data),
 
   get: (id: number) =>
     http.get<Node>(`/nodes/${id}`).then(r => r.data),
@@ -957,6 +967,101 @@ export const xuiApi = {
       `/xui/chains/${chainId}/clients/${chainClientId}/export-nodes`,
       body,
     )
+    return r.data
+  },
+}
+
+// ── Host network configuration (since v1.3.3) ─────────────────────────────────
+//
+// Read current network state (interface / manager / mode / IP / gateway / DNS)
+// from the backend. Used by Settings → Network. Apply/confirm/rollback come
+// in sub-tasks 2-3.
+
+export interface NetworkState {
+  interface: string
+  manager: 'networkmanager' | 'networkd' | 'ifupdown' | 'dhcpcd' | 'unknown'
+  mode: 'dhcp' | 'static' | 'manual' | 'unknown'
+  ip: string | null
+  cidr: number | null
+  gateway: string | null
+  dns: string[]
+  /** Operator-visible diagnostics. E.g. "upstream gateway is another PiTun".
+   *  Frontend renders these as banners on the Network page. */
+  warnings: string[]
+}
+
+export interface NetworkBackup {
+  id: string
+  created_at: string
+  manager: string
+  interface: string
+  live_state: {
+    ip: string | null
+    cidr: number | null
+    gateway: string | null
+    dns: string[]
+    mode: string
+  }
+}
+
+export interface NetworkProbeResult {
+  reachable: boolean
+  detail: string
+}
+
+export interface NetworkApplyResult {
+  ok: boolean
+  backup: {
+    id: string
+    created_at: string
+    manager: string
+    live_state: NetworkBackup['live_state']
+  }
+  new_state: NetworkState
+}
+
+export const networkApi = {
+  getState: async (): Promise<NetworkState> => {
+    const r = await http.get('/network/state')
+    return r.data
+  },
+
+  /** Pre-flight reachability check on a candidate gateway. Frontend
+   *  calls this before submitting `apply` so the operator gets an
+   *  early "this IP doesn't ping" warning instead of a half-applied
+   *  config that leaves them without internet. */
+  probe: async (ip: string): Promise<NetworkProbeResult> => {
+    const r = await http.get('/network/probe', { params: { ip } })
+    return r.data
+  },
+
+  /** Persist + apply gateway/DNS changes. Backend snapshots the
+   *  current state first; the returned `backup.id` is what `rollback`
+   *  defaults to (newest), but specific ids work too. */
+  apply: async (body: { gateway?: string; dns?: string[] }): Promise<NetworkApplyResult> => {
+    const r = await http.post('/network/apply', body)
+    return r.data
+  },
+
+  /** Restore a previous configuration. Empty body = newest backup. */
+  rollback: async (backup_id?: string): Promise<NetworkApplyResult> => {
+    const r = await http.post('/network/rollback', { backup_id })
+    return r.data
+  },
+
+  listBackups: async (): Promise<{ items: NetworkBackup[]; count: number }> => {
+    const r = await http.get('/network/backups')
+    return r.data
+  },
+
+  /** Delete one backup by id. Idempotent. */
+  deleteBackup: async (id: string): Promise<void> => {
+    await http.delete(`/network/backups/${encodeURIComponent(id)}`)
+  },
+
+  /** Wipe all backups. UI is expected to confirm first. */
+  clearBackups: async (): Promise<{ ok: boolean; removed: number }> => {
+    const r = await http.delete('/network/backups')
     return r.data
   },
 }

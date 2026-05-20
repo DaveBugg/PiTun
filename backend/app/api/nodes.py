@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy import func
 from sqlmodel import select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
@@ -18,6 +19,7 @@ from app.schemas import (
     NodeCreate,
     NodeImportRequest,
     NodeImportResponse,
+    NodePage,
     NodeRead,
     NodeUpdate,
     SpeedTestResult,
@@ -103,6 +105,111 @@ async def list_nodes(
     if group is not None:
         stmt = stmt.where(Node.group == group)
     return list((await session.exec(stmt)).all())
+
+
+@router.get("/page", response_model=NodePage)
+async def list_nodes_paginated(
+    # Pagination. `limit=0` is a deliberate escape hatch for "give me
+    # the whole filtered set" — used by bulk-export and tests. The UI
+    # always sends a positive limit.
+    limit: int = Query(50, ge=0, le=500),
+    offset: int = Query(0, ge=0),
+    # Filters
+    subscription_id: Optional[int] = Query(
+        None, description="Match nodes belonging to this subscription"
+    ),
+    local: Optional[bool] = Query(
+        None,
+        description=(
+            "When True, match only nodes WITHOUT a subscription "
+            "(`subscription_id IS NULL`). Mutually exclusive with "
+            "`subscription_id` — if both are provided, `subscription_id` "
+            "wins (more specific). Used by the UI to show 'local nodes "
+            "only' separately from any registered subscription."
+        ),
+    ),
+    protocol: Optional[str] = Query(
+        None, description="Filter by protocol (vless/vmess/trojan/ss/wg/...)"
+    ),
+    enabled: Optional[bool] = Query(None),
+    online: Optional[bool] = Query(
+        None, description="Match `is_online` flag from last healthcheck"
+    ),
+    group: Optional[str] = Query(None),
+    search: Optional[str] = Query(
+        None, description="Substring match on node.name (case-insensitive)"
+    ),
+    direction: str = Query(
+        "desc",
+        pattern="^(asc|desc)$",
+        description=(
+            "Sort direction for the `id` tiebreaker. `desc` (default) "
+            "shows newest-added nodes first — natural for subscription "
+            "imports where the operator wants to see what just landed. "
+            "`asc` reverses to oldest-first. `Node.order` stays the "
+            "primary sort key either way so drag-to-reorder still wins."
+        ),
+    ),
+    session: AsyncSession = Depends(get_session),
+) -> NodePage:
+    """Paginated + filtered Node listing (since v1.3.3).
+
+    Needed because a single subscription can pull 1000+ nodes — the
+    legacy unbounded endpoint left the UI rendering 1000 cards in one
+    pass, which was unusable on a Raspberry Pi-served UI.
+
+    Filters compose via AND. `total` is the count BEFORE pagination so
+    the UI can render "Showing 51–100 of 1256". The stable sort order
+    (`Node.order` then `Node.id`) is preserved so paging through a
+    reorderable list works without jumping.
+    """
+    base_filters = []
+    if subscription_id is not None:
+        base_filters.append(Node.subscription_id == subscription_id)
+    elif local is True:
+        # Only applied when `subscription_id` wasn't passed — they
+        # describe overlapping axes and the explicit subscription id
+        # always wins.
+        base_filters.append(Node.subscription_id.is_(None))  # type: ignore[union-attr]
+    if protocol is not None:
+        base_filters.append(Node.protocol == protocol)
+    if enabled is not None:
+        base_filters.append(Node.enabled == enabled)
+    if online is not None:
+        base_filters.append(Node.is_online == online)
+    if group is not None:
+        base_filters.append(Node.group == group)
+    if search:
+        # Case-insensitive substring match on `name`. SQLite's LIKE is
+        # case-insensitive by default for ASCII; for the small chance
+        # the operator named a node in Cyrillic we explicitly LOWER both
+        # sides so the filter still matches in practice.
+        pattern = f"%{search.lower()}%"
+        base_filters.append(func.lower(Node.name).like(pattern))
+
+    # Total count (unpaginated). Using a count(*) keyed on id avoids
+    # pulling every Node row into memory just to size the result.
+    count_stmt = select(func.count(Node.id))
+    for f in base_filters:
+        count_stmt = count_stmt.where(f)
+    total = (await session.exec(count_stmt)).one() or 0
+
+    # Paged result. Limit=0 = no LIMIT clause (escape hatch — see
+    # docstring); otherwise the normal limit/offset combo. The `order`
+    # column is always the primary sort axis so manual drag-to-reorder
+    # placement wins; `id` is just the tiebreaker for rows with equal
+    # `order` values (subscription imports leave that field at 0).
+    id_axis = Node.id.desc() if direction == "desc" else Node.id.asc()  # type: ignore[union-attr]
+    stmt = select(Node).order_by(Node.order, id_axis)
+    for f in base_filters:
+        stmt = stmt.where(f)
+    if limit > 0:
+        stmt = stmt.limit(limit).offset(offset)
+    elif offset > 0:
+        stmt = stmt.offset(offset)
+    items = list((await session.exec(stmt)).all())
+
+    return NodePage(items=items, total=int(total), limit=limit, offset=offset)
 
 
 @router.post("", response_model=NodeRead, status_code=201)

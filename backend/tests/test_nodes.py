@@ -125,6 +125,175 @@ class TestNodeReorder:
         assert result_ids == reversed_ids
 
 
+class TestNodePagination:
+    """Tests for `GET /api/nodes/page` (since v1.3.3) — pagination +
+    multi-filter endpoint used by the Nodes UI when subscriptions pull
+    1000+ nodes."""
+
+    def _seed(self, session, count: int, subscription_id=None, protocol="vless"):
+        """Helper: insert `count` nodes with a stable name pattern."""
+        from app.models import Node
+        for i in range(count):
+            session.add(Node(
+                name=f"n-{protocol}-{i}", protocol=protocol,
+                address=f"10.0.0.{i + 1}", port=443,
+                uuid=f"uuid-{protocol}-{i}", transport="tcp",
+                enabled=True, order=i * 10,
+                subscription_id=subscription_id,
+            ))
+        session.commit()
+
+    def test_empty(self, client, admin_user, auth_headers):
+        resp = client.get("/api/nodes/page", headers=auth_headers)
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["items"] == []
+        assert body["total"] == 0
+        assert body["limit"] == 50
+        assert body["offset"] == 0
+
+    def test_pagination(self, client, admin_user, auth_headers, session):
+        self._seed(session, 25)
+        # First page
+        r1 = client.get("/api/nodes/page?limit=10&offset=0", headers=auth_headers)
+        b1 = r1.json()
+        assert b1["total"] == 25
+        assert len(b1["items"]) == 10
+        # Last (partial) page
+        r3 = client.get("/api/nodes/page?limit=10&offset=20", headers=auth_headers)
+        b3 = r3.json()
+        assert b3["total"] == 25
+        assert len(b3["items"]) == 5
+
+    def test_limit_zero_returns_all(self, client, admin_user, auth_headers, session):
+        # Escape hatch used by bulk-export and tests.
+        self._seed(session, 25)
+        r = client.get("/api/nodes/page?limit=0", headers=auth_headers)
+        b = r.json()
+        assert b["total"] == 25
+        assert len(b["items"]) == 25
+
+    def test_filter_by_subscription(self, client, admin_user, auth_headers, session):
+        from app.models import Subscription
+        sub_a = Subscription(name="A", url="http://a")
+        sub_b = Subscription(name="B", url="http://b")
+        session.add(sub_a); session.add(sub_b); session.commit()
+        session.refresh(sub_a); session.refresh(sub_b)
+        self._seed(session, 7, subscription_id=sub_a.id)
+        self._seed(session, 3, subscription_id=sub_b.id, protocol="trojan")
+        r = client.get(f"/api/nodes/page?subscription_id={sub_a.id}", headers=auth_headers)
+        b = r.json()
+        assert b["total"] == 7
+        assert all(n["protocol"] == "vless" for n in b["items"])
+
+    def test_filter_local_only(self, client, admin_user, auth_headers, session):
+        """`local=true` should match nodes with subscription_id IS NULL."""
+        from app.models import Subscription
+        sub = Subscription(name="S", url="http://s")
+        session.add(sub); session.commit(); session.refresh(sub)
+        self._seed(session, 4, subscription_id=sub.id)  # subscription
+        self._seed(session, 3, subscription_id=None, protocol="trojan")  # local
+        r = client.get("/api/nodes/page?local=true", headers=auth_headers)
+        b = r.json()
+        assert b["total"] == 3
+        assert all(n.get("subscription_id") in (None, 0) for n in b["items"])
+
+    def test_filter_by_protocol(self, client, admin_user, auth_headers, session):
+        self._seed(session, 4, protocol="vless")
+        self._seed(session, 2, protocol="trojan")
+        r = client.get("/api/nodes/page?protocol=trojan", headers=auth_headers)
+        b = r.json()
+        assert b["total"] == 2
+        assert all(n["protocol"] == "trojan" for n in b["items"])
+
+    def test_search_by_name(self, client, admin_user, auth_headers, session):
+        from app.models import Node
+        for name in ["alpha-east", "beta-east", "alpha-west"]:
+            session.add(Node(
+                name=name, protocol="vless", address="1.1.1.1", port=443,
+                uuid=name, transport="tcp",
+            ))
+        session.commit()
+        r = client.get("/api/nodes/page?search=alpha", headers=auth_headers)
+        b = r.json()
+        assert b["total"] == 2
+        assert {n["name"] for n in b["items"]} == {"alpha-east", "alpha-west"}
+
+    def test_filters_compose_AND(self, client, admin_user, auth_headers, session):
+        self._seed(session, 5, protocol="vless")
+        self._seed(session, 5, protocol="trojan")
+        # both filters together → only vless nodes whose name contains '-1'
+        r = client.get(
+            "/api/nodes/page?protocol=vless&search=-1", headers=auth_headers,
+        )
+        b = r.json()
+        assert b["total"] == 1  # only 'n-vless-1' matches both
+        assert b["items"][0]["name"] == "n-vless-1"
+
+    def test_direction_desc_default_newest_first(self, client, admin_user, auth_headers, session):
+        """Default direction (desc) shows newest IDs first — fixes the
+        UX issue where subscription imports buried the freshly-added
+        nodes on the last page."""
+        from app.models import Node
+        for i in range(5):
+            session.add(Node(
+                name=f"sub-{i}", protocol="vless", address=f"3.3.3.{i}",
+                port=443, uuid=f"sub-u-{i}", transport="tcp", order=0,
+            ))
+        session.commit()
+        r = client.get("/api/nodes/page?limit=3", headers=auth_headers)
+        ids = [n["id"] for n in r.json()["items"]]
+        # Default direction=desc → newest (largest id) first
+        assert ids == sorted(ids, reverse=True)
+
+    def test_direction_asc(self, client, admin_user, auth_headers, session):
+        from app.models import Node
+        for i in range(5):
+            session.add(Node(
+                name=f"a-{i}", protocol="vless", address=f"4.4.4.{i}",
+                port=443, uuid=f"a-u-{i}", transport="tcp", order=0,
+            ))
+        session.commit()
+        r = client.get("/api/nodes/page?direction=asc&limit=3", headers=auth_headers)
+        ids = [n["id"] for n in r.json()["items"]]
+        assert ids == sorted(ids)  # ascending
+
+    def test_direction_respects_order_column(self, client, admin_user, auth_headers, session):
+        """Manual reorder (non-zero `order`) wins over id direction —
+        ensures drag-to-reorder isn't undone by the new direction param."""
+        from app.models import Node
+        # Insert in id order [1,2,3] but set explicit order [20,10,30]:
+        # expected sort by (order ASC, id DESC) = id 2 (order=10),
+        # id 1 (order=20), id 3 (order=30).
+        n1 = Node(name="r1", protocol="vless", address="5.0.0.1", port=443, uuid="r1", transport="tcp", order=20)
+        n2 = Node(name="r2", protocol="vless", address="5.0.0.2", port=443, uuid="r2", transport="tcp", order=10)
+        n3 = Node(name="r3", protocol="vless", address="5.0.0.3", port=443, uuid="r3", transport="tcp", order=30)
+        for n in (n1, n2, n3):
+            session.add(n)
+        session.commit()
+        r = client.get("/api/nodes/page?direction=desc", headers=auth_headers)
+        names = [n["name"] for n in r.json()["items"]]
+        assert names == ["r2", "r1", "r3"]
+
+    def test_stable_order(self, client, admin_user, auth_headers, session):
+        # Same `order` value → tiebreak on `id` so paging doesn't reshuffle.
+        from app.models import Node
+        for i in range(5):
+            session.add(Node(
+                name=f"x-{i}", protocol="vless", address=f"2.2.2.{i}",
+                port=443, uuid=f"u-{i}", transport="tcp", order=0,
+            ))
+        session.commit()
+        ids_p1 = [n["id"] for n in client.get(
+            "/api/nodes/page?limit=2&offset=0", headers=auth_headers,
+        ).json()["items"]]
+        ids_p2 = [n["id"] for n in client.get(
+            "/api/nodes/page?limit=2&offset=2", headers=auth_headers,
+        ).json()["items"]]
+        # Pages don't overlap
+        assert set(ids_p1).isdisjoint(set(ids_p2))
+
+
 # ── JSON export / import (full-fidelity backup) ──────────────────────────────
 
 class TestNodeExportImportJSON:

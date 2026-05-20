@@ -895,7 +895,96 @@ _VALIDATION_HINTS: list[tuple[str, str]] = [
         "Configuration references unknown protocol '{0}'. Likely a Node row "
         "with a typo in `protocol` — verify in the Nodes table.",
     ),
+    # TUN inbound is a sing-box feature — vanilla XTLS/Xray rejects it.
+    # Multiple stderr shapes observed depending on xray version: some
+    # print "no protocol named tun" on stdout (caught by line above for
+    # the "unknown protocol" path), others bail before logging anything
+    # at all (empty stderr — exactly the symptom the user hit during
+    # the 1.3.2 burn-in). The empty-stderr case is handled below in
+    # `_diagnose_empty_stderr` rather than via pattern match.
+    (
+        r"(?:tun.*not.*supported|protocol\s+tun|inbound\s+tun.*unknown)",
+        "TUN inbound is not supported by this xray build. PiTun ships "
+        "vanilla XTLS/Xray-core which doesn't implement `protocol: tun` "
+        "(that's a sing-box feature). Switch Inbound Mode back to "
+        "TPROXY in the Dashboard.",
+    ),
 ]
+
+
+def _diagnose_empty_stderr(
+    *, xray_version: str | None, inbound_mode: str | None,
+    config: Dict[str, Any] | None,
+) -> str:
+    """Build a fallback diagnostic when xray bails with no stderr at all.
+
+    The "(empty stderr)" case is silent-failure hell — `xray run -test`
+    returns non-zero exit code but writes nothing, leaving the operator
+    with no clue what's wrong. We assemble what we can from PiTun's own
+    knowledge: which xray version we have, which inbound mode was just
+    selected (TUN is the known footgun), and the inbound protocols in
+    the generated config so a reader can spot a non-vanilla one.
+    """
+    bits: list[str] = ["xray returned non-zero exit code with empty stderr."]
+    if inbound_mode and inbound_mode != "tproxy":
+        bits.append(
+            f"Inbound Mode is '{inbound_mode}'. "
+            f"Note: TUN/Both modes require sing-box core and silently "
+            f"fail on vanilla XTLS/Xray (this build). "
+            f"Revert to TPROXY in Dashboard → Network Mode."
+        )
+    if xray_version:
+        bits.append(f"xray version: {xray_version}")
+    if config:
+        try:
+            inbound_protos = [
+                ib.get("protocol", "?") for ib in (config.get("inbounds") or [])
+            ]
+            if inbound_protos:
+                bits.append(f"Generated inbound protocols: {inbound_protos}")
+        except Exception:  # noqa: BLE001 — best-effort diagnostic
+            pass
+    return " | ".join(bits)
+
+
+async def _xray_version() -> str | None:
+    """Best-effort `xray version` capture for error context. Returns
+    None if the binary is missing or hangs."""
+    import asyncio
+
+    try:
+        if not Path(settings.xray_binary).exists():
+            return None
+        proc = await asyncio.create_subprocess_exec(
+            settings.xray_binary, "version",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=3)
+        # Output typically starts with `Xray 26.3.27 (...) (go1.x linux/...)`
+        # — take just the first line to keep error messages compact.
+        line = stdout.decode(errors="replace").strip().splitlines()
+        return line[0] if line else None
+    except Exception:  # noqa: BLE001
+        return None
+
+
+async def _current_inbound_mode() -> str | None:
+    """Read the most recent `inbound_mode` setting from DB. Used only
+    by the empty-stderr diagnostic — best-effort, swallows all errors."""
+    try:
+        from sqlmodel import select
+        from sqlmodel.ext.asyncio.session import AsyncSession
+        from app.database import get_async_engine
+        from app.models import Settings as DBSettings
+
+        async with AsyncSession(get_async_engine()) as s:
+            row = (await s.exec(
+                select(DBSettings).where(DBSettings.key == "inbound_mode")
+            )).first()
+            return row.value if row else None
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def _explain_xray_stderr(stderr: str) -> str | None:
@@ -960,7 +1049,8 @@ def _parse_geo_heal_target(stderr: str) -> Optional[tuple[str, str]]:
 
 
 async def write_config(
-    config: Dict[str, Any], *, validate: bool = True
+    config: Dict[str, Any], *, validate: bool = True,
+    settings_map: Optional[Dict[str, str]] = None,
 ) -> Optional[tuple[str, str]]:
     """Serialize config to JSON, write to disk, then (when `validate`)
     run a pre-flight `xray run -test` to catch obviously-invalid configs
@@ -1030,6 +1120,24 @@ async def write_config(
                 "xray config validation FAILED — %s | xray says: %s", hint, tail,
             )
             await _persist_validation_error(hint)
+        elif not stderr_text.strip():
+            # Empty-stderr case — xray bailed without any message.
+            # Assemble a fallback diagnostic from what we know on our
+            # side (xray version + inbound_mode + generated inbound
+            # protocols). This is the path the TUN footgun hit before
+            # we added explicit pattern matching — leaving the operator
+            # with "(empty stderr)" was actively misleading.
+            xray_ver = await _xray_version()
+            mode = (
+                (settings_map or {}).get("inbound_mode")
+                if settings_map
+                else await _current_inbound_mode()
+            )
+            diagnostic = _diagnose_empty_stderr(
+                xray_version=xray_ver, inbound_mode=mode, config=config,
+            )
+            logger.error("xray config validation FAILED: %s", diagnostic)
+            await _persist_validation_error(diagnostic)
         else:
             # Unrecognised failure mode — log the last line of stderr so the
             # admin has something concrete to grep for.

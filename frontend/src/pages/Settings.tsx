@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { systemApi } from '@/api/client'
+import HostNetworkSection from '@/components/HostNetworkSection'
 import {
   Settings as SettingsIcon,
   Network,
@@ -274,21 +275,32 @@ export function Settings() {
 
       {/* Network */}
       {section(Network, 'Network', t('Interface, gateway and LAN configuration', 'Интерфейс, шлюз и настройки LAN'), (
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
-          {field('Interface', textInput('interface', 'eth0', t('Network interface for transparent proxy', 'Сетевой интерфейс для прозрачного прокси')))}
-          {field('PiTun IP', (
-            <div>
-              <input
-                type="text"
-                value={val('gateway_ip')}
-                readOnly
-                className="w-full rounded-lg bg-gray-950/60 border border-gray-800 px-3 py-2 text-sm text-gray-400 cursor-not-allowed"
-              />
-              <p className="text-[11px] text-gray-600 mt-1">{t('Auto-detected from interface — used as gateway by clients', 'Определяется автоматически — используется клиентами как шлюз')}</p>
-            </div>
-          ))}
-          {field('LAN CIDR', textInput('lan_cidr', '192.168.1.0/24', t('Local network subnet', 'Подсеть локальной сети')))}
-          {field('Router IP', textInput('router_ip', '192.168.1.1', t('Main router (auto-detected if empty)', 'Основной роутер (автоопределение если пусто)')))}
+        <div className="space-y-5">
+          {/* xray-config knobs (DB-backed settings consumed by config_gen) */}
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+            {field('Interface', textInput('interface', 'eth0', t('Network interface for transparent proxy', 'Сетевой интерфейс для прозрачного прокси')))}
+            {field('PiTun IP', (
+              <div>
+                <input
+                  type="text"
+                  value={val('gateway_ip')}
+                  readOnly
+                  className="w-full rounded-lg bg-gray-950/60 border border-gray-800 px-3 py-2 text-sm text-gray-400 cursor-not-allowed"
+                />
+                <p className="text-[11px] text-gray-600 mt-1">{t('Auto-detected from interface — used as gateway by clients', 'Определяется автоматически — используется клиентами как шлюз')}</p>
+              </div>
+            ))}
+            {field('LAN CIDR', textInput('lan_cidr', '192.168.1.0/24', t('Local network subnet', 'Подсеть локальной сети')))}
+            {field('Router IP', textInput('router_ip', '192.168.1.1', t('Main router (auto-detected if empty)', 'Основной роутер (автоопределение если пусто)')))}
+          </div>
+
+          {/* Visual divider then the live host-network block (since
+             v1.3.3). Same logical "Network" topic, different layer:
+             the fields above feed xray, the block below mutates
+             /etc/network/interfaces + ip route on the host itself. */}
+          <div className="border-t border-gray-800 pt-4">
+            <HostNetworkSection />
+          </div>
         </div>
       ))}
 

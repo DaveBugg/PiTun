@@ -1,0 +1,684 @@
+"""Host network mutations: change gateway / DNS, backup, rollback.
+
+Sister to ``network_config.py`` (which reads). This one writes.
+
+Scope decision (recorded for the next maintainer)
+-------------------------------------------------
+v1.3.3 ships ONLY gateway + DNS changes. IP/CIDR and interface
+selection are intentionally out of scope:
+
+  * Changing the gateway does not interrupt LAN-side TCP sessions —
+    SSH from a LAN client to PiTun stays alive even with a broken
+    gateway, because TCP between LAN devices doesn't traverse it.
+    Worst case after a bad apply: this box loses outbound internet,
+    operator SSHs in and either calls /api/network/rollback or runs
+    ``ip route replace default via <good-ip>`` by hand.
+  * Changing the IP, on the other hand, IS disruptive — every active
+    TCP session dies, the operator has to discover the new IP. That
+    needs a different safety mechanism (auto-rollback timer with
+    heartbeats from the UI), which is a bigger feature. Postponed
+    until/unless PiTun grows into a full router replacement.
+
+Apply strategy per manager
+--------------------------
+ifupdown:
+  * Find the iface block for the default-route interface in
+    /etc/network/interfaces and /etc/network/interfaces.d/*.
+  * If currently ``inet dhcp``, convert to ``inet static`` with the
+    SAME ip/cidr (read from live state) plus the requested gateway
+    and DNS. Required because DHCP lease renewal would otherwise
+    clobber our hand-set gateway on the next renew.
+  * If already ``inet static``, edit the gateway / dns-nameservers
+    lines in place.
+  * Apply at runtime with ``ip route replace default via <gw>`` and
+    overwrite /etc/resolv.conf. No ifdown/ifup — those drop the link
+    and could kill SSH.
+
+NetworkManager:
+  * ``nmcli con mod <name> ipv4.gateway <gw> ipv4.dns "<...>" \
+     ipv4.ignore-auto-dns yes ipv4.ignore-auto-routes yes``
+  * ``nmcli con up <name>``
+  * NM keeps the connection alive across the apply, so SSH survives.
+
+Backups
+-------
+Each apply snapshots the affected files BEFORE mutating them into
+``/var/lib/pitun/network-backups/<utc-iso>.json``. The blob holds:
+
+  {
+    "id": "<utc-iso>",
+    "created_at": "<utc-iso>",
+    "manager": "ifupdown" | "networkmanager",
+    "interface": "enp1s0",
+    "live_state": { ip, cidr, gateway, dns },
+    "files": [ { "path": "/etc/network/interfaces", "content": "..." }, ... ]
+  }
+
+The 'live_state' field is what runtime restore reads from — file
+restore alone wouldn't bring back the old gateway if DHCP isn't
+running (e.g. we'd switched DHCP→static).
+
+Last 10 backups are kept; older ones pruned on every new apply.
+"""
+from __future__ import annotations
+
+import ipaddress
+import json
+import logging
+import os
+import re
+import subprocess
+from datetime import datetime, timezone
+from dataclasses import dataclass, asdict
+from typing import List, Optional
+
+from app.core import network_config as nc
+
+logger = logging.getLogger(__name__)
+
+# Backup root lives under /var/lib/pitun on the HOST (via nsenter) since
+# the container's /var/lib isn't persisted across image upgrades. For
+# read-back convenience we also use nsenter — no bind-mount needed.
+HOST_BACKUP_DIR = "/var/lib/pitun/network-backups"
+
+MAX_BACKUPS = 10
+
+
+# ── Errors ────────────────────────────────────────────────────────────────
+
+class NetworkApplyError(Exception):
+    """Raised on any failure during apply / rollback. Carries a
+    human-readable message that the API layer turns into a 400."""
+
+
+# ── Validation ────────────────────────────────────────────────────────────
+
+def _validate_ipv4(ip: str, field: str) -> str:
+    """Strict IPv4 parse — raises with a useful field name on bad input.
+
+    Why so picky: an empty string slipping through here would later be
+    interpolated into shell + config files, producing impossible-to-
+    debug "default via " entries. Better to reject loudly."""
+    try:
+        addr = ipaddress.ip_address(ip)
+    except ValueError as e:
+        raise NetworkApplyError(f"{field}: not a valid IP address: {ip!r}") from e
+    if not isinstance(addr, ipaddress.IPv4Address):
+        raise NetworkApplyError(f"{field}: IPv6 is not supported yet ({ip!r})")
+    return str(addr)
+
+
+def _validate_dns_list(dns: List[str]) -> List[str]:
+    """Each DNS server must be an IPv4 address. Empty list is OK
+    (means 'don't touch DNS')."""
+    out = []
+    for i, d in enumerate(dns):
+        out.append(_validate_ipv4(d, f"dns[{i}]"))
+    return out
+
+
+# ── Backup ────────────────────────────────────────────────────────────────
+
+@dataclass
+class Backup:
+    id: str
+    created_at: str
+    manager: str
+    interface: str
+    live_state: dict
+    files: List[dict]   # [ {path, content}, ... ]
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+
+def _backup_id() -> str:
+    """ISO timestamp without colons (filesystem-safe). Also doubles as
+    a sort key — lexical sort = chronological sort."""
+    return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+
+
+def _mkdir_host(path: str) -> None:
+    r = nc.host_run(["mkdir", "-p", path], timeout=5)
+    if r.returncode != 0:
+        raise NetworkApplyError(f"Could not create {path}: {r.stderr.strip()}")
+
+
+def _list_backup_filenames() -> List[str]:
+    r = nc.host_run(["sh", "-c", f"ls {HOST_BACKUP_DIR}/*.json 2>/dev/null || true"], timeout=5)
+    if r.returncode != 0:
+        return []
+    return [p.strip() for p in r.stdout.split() if p.strip()]
+
+
+def _prune_backups() -> None:
+    """Keep the most recent ``MAX_BACKUPS`` only. Sort by filename
+    (== ISO timestamp prefix). Pruning failures are non-fatal —
+    operator can clean up manually."""
+    files = sorted(_list_backup_filenames())
+    extras = files[:-MAX_BACKUPS]
+    for f in extras:
+        nc.host_run(["rm", "-f", f], timeout=3)
+        logger.info("Pruned old network backup: %s", os.path.basename(f))
+
+
+def _capture_files(manager: str) -> List[dict]:
+    """Snapshot every file we might mutate, regardless of whether we
+    actually end up touching it. Storage cost is trivial (~few KB) and
+    rollback is simpler with a complete picture."""
+    paths: List[str] = []
+    if manager == "ifupdown":
+        paths.append("/etc/network/interfaces")
+        ls = nc.host_run(
+            ["sh", "-c", "ls /etc/network/interfaces.d/ 2>/dev/null"],
+            timeout=3,
+        )
+        if ls.returncode == 0:
+            for name in ls.stdout.split():
+                if name:
+                    paths.append(f"/etc/network/interfaces.d/{name}")
+        paths.append("/etc/resolv.conf")
+    elif manager == "networkmanager":
+        # NM keyfile format under system-connections — capture all so
+        # rollback works even when the user has multiple connection
+        # profiles, only one of which is touched.
+        ls = nc.host_run(
+            ["sh", "-c", "ls /etc/NetworkManager/system-connections/*.nmconnection 2>/dev/null"],
+            timeout=3,
+        )
+        if ls.returncode == 0:
+            for path in ls.stdout.split():
+                if path.strip():
+                    paths.append(path.strip())
+        paths.append("/etc/resolv.conf")
+    else:
+        # Sub-task 6 territory — we don't apply for these managers yet.
+        raise NetworkApplyError(
+            f"Manager {manager!r} is not supported for apply in this PiTun version. "
+            "Edit network config files manually."
+        )
+
+    files = []
+    for p in paths:
+        content = nc.host_read_file(p)
+        if content is not None:
+            files.append({"path": p, "content": content})
+    return files
+
+
+def create_backup(state: nc.NetworkState) -> Backup:
+    """Snapshot current network config + live state.
+
+    Called immediately before apply. Returns the persisted Backup so
+    the caller can reference it (and the API can return its id)."""
+    _mkdir_host(HOST_BACKUP_DIR)
+
+    files = _capture_files(state.manager)
+    backup = Backup(
+        id=_backup_id(),
+        created_at=datetime.now(timezone.utc).isoformat(),
+        manager=state.manager,
+        interface=state.interface,
+        live_state={
+            "ip": state.ip,
+            "cidr": state.cidr,
+            "gateway": state.gateway,
+            "dns": list(state.dns),
+            "mode": state.mode,
+        },
+        files=files,
+    )
+
+    target = f"{HOST_BACKUP_DIR}/{backup.id}.json"
+    payload = json.dumps(backup.to_dict(), indent=2)
+    # `tee` instead of sh redirect — atomicity is best-effort here
+    # since we don't need crash-safety for a backup file.
+    r = nc.host_run(["tee", target], input_data=payload, timeout=5)
+    if r.returncode != 0:
+        raise NetworkApplyError(f"Could not write backup {target}: {r.stderr.strip()}")
+    logger.info("Network backup created: id=%s, %d files captured", backup.id, len(files))
+
+    _prune_backups()
+    return backup
+
+
+def list_backups() -> List[dict]:
+    """Return all stored backups, newest first. The full ``files``
+    blob is omitted from the listing — only metadata, so the API
+    can show "Backup #5 from 2026-05-20 14:22, manager: ifupdown,
+    iface enp1s0, gateway 192.168.1.3" without dumping kilobytes."""
+    out: List[dict] = []
+    for path in sorted(_list_backup_filenames(), reverse=True):
+        content = nc.host_read_file(path)
+        if content is None:
+            continue
+        try:
+            data = json.loads(content)
+        except ValueError:
+            continue
+        out.append({
+            "id": data.get("id"),
+            "created_at": data.get("created_at"),
+            "manager": data.get("manager"),
+            "interface": data.get("interface"),
+            "live_state": data.get("live_state"),
+        })
+    return out
+
+
+def _load_backup(backup_id: str) -> Backup:
+    """Load a backup by id. Caller-friendly errors — backup ids are
+    user-facing so we don't want a stack trace if they typo one."""
+    if not re.fullmatch(r"[0-9TZ]+", backup_id):
+        raise NetworkApplyError(f"Invalid backup id: {backup_id!r}")
+    path = f"{HOST_BACKUP_DIR}/{backup_id}.json"
+    content = nc.host_read_file(path)
+    if content is None:
+        raise NetworkApplyError(f"Backup not found: {backup_id}")
+    try:
+        data = json.loads(content)
+    except ValueError as e:
+        raise NetworkApplyError(f"Backup {backup_id} is corrupt: {e}")
+    return Backup(
+        id=data["id"],
+        created_at=data["created_at"],
+        manager=data["manager"],
+        interface=data["interface"],
+        live_state=data["live_state"],
+        files=data["files"],
+    )
+
+
+def delete_backup(backup_id: str) -> None:
+    """Remove a single backup by id.
+
+    Strict id validation (same regex as _load_backup) means ``rm`` can
+    never get a path-traversal argument like ``../../etc/passwd``.
+    Idempotent — already-gone files return success rather than 404 so
+    a double-click in the UI doesn't surface as an error.
+    """
+    if not re.fullmatch(r"[0-9TZ]+", backup_id):
+        raise NetworkApplyError(f"Invalid backup id: {backup_id!r}")
+    path = f"{HOST_BACKUP_DIR}/{backup_id}.json"
+    r = nc.host_run(["rm", "-f", path], timeout=3)
+    if r.returncode != 0:
+        raise NetworkApplyError(f"Could not delete {path}: {r.stderr.strip()}")
+    logger.info("Network backup deleted: id=%s", backup_id)
+
+
+def delete_all_backups() -> int:
+    """Wipe every backup. Returns the count deleted (best-effort —
+    counts what we matched before the rm, since the rm itself is
+    atomic per-file).
+
+    Operator-facing "Clear all" button uses this. Confirmation is
+    the UI's job, not ours.
+    """
+    files = _list_backup_filenames()
+    if not files:
+        return 0
+    # Pass all paths in one rm call — bash quoting handled by host_run
+    # via shell. We've already validated the dir prefix is constant,
+    # so building "rm -f path1 path2 ..." is safe.
+    r = nc.host_run(["sh", "-c", f"rm -f {HOST_BACKUP_DIR}/*.json"], timeout=5)
+    if r.returncode != 0:
+        raise NetworkApplyError(f"Could not clear backups: {r.stderr.strip()}")
+    logger.info("Network backups cleared: %d removed", len(files))
+    return len(files)
+
+
+# ── ifupdown apply ────────────────────────────────────────────────────────
+
+def _find_iface_block(content: str, ifname: str) -> Optional[tuple]:
+    """Locate the `iface <ifname> inet ...` block in interfaces(5) text.
+
+    Returns (start_line_idx, end_line_idx, method) where end_line_idx
+    is exclusive. The block ends at the next top-level directive
+    (`iface`, `auto`, `allow-hotplug`, `source`, `mapping`) or EOF.
+
+    Returns None if no such block exists."""
+    lines = content.splitlines()
+    head_re = re.compile(rf"^\s*iface\s+{re.escape(ifname)}\s+inet\s+(\w+)")
+    block_terminators = ("iface", "auto", "allow-", "source", "mapping")
+
+    for i, line in enumerate(lines):
+        m = head_re.match(line)
+        if not m:
+            continue
+        method = m.group(1)
+        # Find end
+        end = len(lines)
+        for j in range(i + 1, len(lines)):
+            s = lines[j].lstrip()
+            if not s:
+                continue
+            first = s.split(maxsplit=1)[0] if s else ""
+            if any(first.startswith(t) for t in block_terminators):
+                end = j
+                break
+        return (i, end, method)
+    return None
+
+
+def _rewrite_ifupdown_block(
+    *,
+    content: str,
+    ifname: str,
+    new_ip: str,
+    new_cidr: int,
+    new_gateway: str,
+    new_dns: List[str],
+) -> str:
+    """Rewrite the iface block (or append a new one) to set static
+    config with the requested gateway/DNS, preserving the current IP.
+
+    The address is written as ``A.B.C.D/N`` (the modern ifupdown
+    syntax that doesn't require a separate `netmask` line). dns-
+    nameservers needs the `resolvconf` package to actually populate
+    /etc/resolv.conf — we ALSO write /etc/resolv.conf directly in
+    the apply step so it works on systems without resolvconf.
+    """
+    block_text = (
+        f"# Managed by PiTun (Network UI) — last modified {datetime.now(timezone.utc).isoformat()}\n"
+        f"iface {ifname} inet static\n"
+        f"    address {new_ip}/{new_cidr}\n"
+        f"    gateway {new_gateway}\n"
+    )
+    if new_dns:
+        block_text += f"    dns-nameservers {' '.join(new_dns)}\n"
+
+    found = _find_iface_block(content, ifname)
+    if found:
+        start, end, _method = found
+        lines = content.splitlines()
+        # Preserve the `auto`/`allow-hotplug` line that usually sits
+        # one line above — don't touch it. Insert new block where the
+        # old one was.
+        new_lines = lines[:start] + block_text.rstrip().split("\n") + lines[end:]
+        return "\n".join(new_lines) + ("\n" if content.endswith("\n") else "")
+
+    # No existing block — append at end with an `auto` directive too,
+    # otherwise ifupdown won't bring the interface up at boot.
+    suffix = "" if content.endswith("\n") else "\n"
+    return content + suffix + f"\nauto {ifname}\n" + block_text
+
+
+def _apply_ifupdown(
+    *, state: nc.NetworkState, new_gateway: Optional[str], new_dns: Optional[List[str]],
+) -> None:
+    """Apply via ifupdown: edit /etc/network/interfaces + runtime
+    apply via `ip route` / /etc/resolv.conf."""
+    if not state.ip or state.cidr is None:
+        raise NetworkApplyError(
+            "Cannot apply: current IP/CIDR not detected on the interface. "
+            "Run with a working network configuration first.",
+        )
+
+    final_gateway = new_gateway if new_gateway is not None else state.gateway
+    final_dns = list(new_dns) if new_dns is not None else list(state.dns)
+
+    if not final_gateway:
+        raise NetworkApplyError("Gateway must be set in either the request or current state.")
+
+    # Rewrite /etc/network/interfaces (or interfaces.d/ entry if found there)
+    content = nc.host_read_file("/etc/network/interfaces") or ""
+    write_path = "/etc/network/interfaces"
+    block = _find_iface_block(content, state.interface)
+    if not block:
+        # The iface block might live in interfaces.d/ instead. Search
+        # those files and rewrite there if found.
+        ls = nc.host_run(["sh", "-c", "ls /etc/network/interfaces.d/ 2>/dev/null"], timeout=3)
+        if ls.returncode == 0:
+            for name in ls.stdout.split():
+                if not name:
+                    continue
+                p = f"/etc/network/interfaces.d/{name}"
+                c = nc.host_read_file(p)
+                if c is not None and _find_iface_block(c, state.interface):
+                    content = c
+                    write_path = p
+                    break
+
+    new_content = _rewrite_ifupdown_block(
+        content=content,
+        ifname=state.interface,
+        new_ip=state.ip,
+        new_cidr=state.cidr,
+        new_gateway=final_gateway,
+        new_dns=final_dns,
+    )
+    r = nc.host_run(["tee", write_path], input_data=new_content, timeout=5)
+    if r.returncode != 0:
+        raise NetworkApplyError(f"Could not write {write_path}: {r.stderr.strip()}")
+    logger.info("ifupdown: rewrote %s for iface=%s", write_path, state.interface)
+
+    # Runtime apply: replace default route + DNS without bringing the
+    # interface down (would kill SSH).
+    r = nc.host_run(["ip", "route", "replace", "default", "via", final_gateway, "dev", state.interface], timeout=5)
+    if r.returncode != 0:
+        raise NetworkApplyError(f"ip route replace failed: {r.stderr.strip()}")
+    logger.info("ifupdown: default route -> %s dev %s", final_gateway, state.interface)
+
+    if final_dns:
+        resolv = "# Managed by PiTun (Network UI)\n"
+        for d in final_dns:
+            resolv += f"nameserver {d}\n"
+        r = nc.host_run(["tee", "/etc/resolv.conf"], input_data=resolv, timeout=5)
+        if r.returncode != 0:
+            raise NetworkApplyError(f"Could not write /etc/resolv.conf: {r.stderr.strip()}")
+        logger.info("ifupdown: resolv.conf -> %s", final_dns)
+
+
+# ── NetworkManager apply ──────────────────────────────────────────────────
+
+def _nm_connection_for_iface(ifname: str) -> Optional[str]:
+    r = nc.host_run(
+        ["nmcli", "-t", "-f", "NAME,DEVICE,STATE", "connection", "show", "--active"],
+        timeout=5,
+    )
+    if r.returncode != 0:
+        return None
+    for line in r.stdout.splitlines():
+        parts = line.split(":")
+        if len(parts) >= 3 and parts[1] == ifname and parts[2] == "activated":
+            return parts[0]
+    return None
+
+
+def _apply_networkmanager(
+    *, state: nc.NetworkState, new_gateway: Optional[str], new_dns: Optional[List[str]],
+) -> None:
+    conn = _nm_connection_for_iface(state.interface)
+    if not conn:
+        raise NetworkApplyError(
+            f"No active NetworkManager connection found for {state.interface}.",
+        )
+
+    final_gateway = new_gateway if new_gateway is not None else state.gateway
+    final_dns = list(new_dns) if new_dns is not None else list(state.dns)
+    if not final_gateway:
+        raise NetworkApplyError("Gateway must be set in either the request or current state.")
+
+    # We need the IP/CIDR on the connection if we're keeping DHCP off.
+    # Easiest: switch to manual with the current address. nmcli requires
+    # ipv4.addresses when ipv4.method=manual.
+    if not state.ip or state.cidr is None:
+        raise NetworkApplyError("Cannot apply: current IP/CIDR not detected.")
+
+    cmd = [
+        "nmcli", "connection", "modify", conn,
+        "ipv4.method", "manual",
+        "ipv4.addresses", f"{state.ip}/{state.cidr}",
+        "ipv4.gateway", final_gateway,
+        "ipv4.ignore-auto-dns", "yes",
+        "ipv4.ignore-auto-routes", "yes",
+    ]
+    if final_dns:
+        cmd += ["ipv4.dns", " ".join(final_dns)]
+    else:
+        cmd += ["ipv4.dns", ""]
+
+    r = nc.host_run(cmd, timeout=15)
+    if r.returncode != 0:
+        raise NetworkApplyError(f"nmcli modify failed: {r.stderr.strip() or r.stdout.strip()}")
+
+    # `nmcli con up` re-applies the connection live. It does cycle the
+    # connection but NM keeps the L2 link up — typically SSH survives
+    # for the same IP.
+    r = nc.host_run(["nmcli", "connection", "up", conn], timeout=15)
+    if r.returncode != 0:
+        raise NetworkApplyError(f"nmcli up failed: {r.stderr.strip() or r.stdout.strip()}")
+    logger.info("NetworkManager: applied gateway=%s dns=%s on %s", final_gateway, final_dns, conn)
+
+
+# ── Public apply / rollback ──────────────────────────────────────────────
+
+@dataclass
+class ApplyRequest:
+    gateway: Optional[str] = None
+    dns: Optional[List[str]] = None
+
+
+def apply(req: ApplyRequest) -> Backup:
+    """Validate, snapshot, then mutate. Returns the Backup the caller
+    can quote back in the UI as 'rollback target'."""
+    # Validate inputs FIRST — empty apply (no gateway, no dns) is a
+    # no-op and surfaces as a 400 instead of silently doing nothing.
+    if req.gateway is None and req.dns is None:
+        raise NetworkApplyError("Empty apply — provide gateway and/or dns.")
+
+    gw = _validate_ipv4(req.gateway, "gateway") if req.gateway is not None else None
+    dns = _validate_dns_list(req.dns) if req.dns is not None else None
+
+    state = nc.read_state()
+    if state.manager not in ("ifupdown", "networkmanager"):
+        raise NetworkApplyError(
+            f"Apply not supported on manager {state.manager!r} yet. "
+            "Edit network config manually."
+        )
+
+    # Backup BEFORE mutation. If create_backup fails, we abort —
+    # better to leave things untouched than to mutate with no rollback.
+    backup = create_backup(state)
+
+    try:
+        if state.manager == "ifupdown":
+            _apply_ifupdown(state=state, new_gateway=gw, new_dns=dns)
+        else:
+            _apply_networkmanager(state=state, new_gateway=gw, new_dns=dns)
+    except Exception as e:
+        logger.error("Apply failed mid-mutation: %s — backup %s available", e, backup.id)
+        raise
+
+    return backup
+
+
+def rollback(backup_id: Optional[str] = None) -> Backup:
+    """Restore from a backup. If id omitted, use the most recent.
+
+    Restores BOTH the config files (so the change survives reboot)
+    AND the runtime state via ``ip route replace`` + /etc/resolv.conf
+    rewrite (so the rollback takes effect immediately)."""
+    backups = sorted(_list_backup_filenames(), reverse=True)
+    if not backups:
+        raise NetworkApplyError("No backups available to roll back to.")
+
+    if backup_id is None:
+        # Take the newest
+        backup_id = os.path.basename(backups[0]).rsplit(".", 1)[0]
+
+    backup = _load_backup(backup_id)
+
+    # Restore files
+    for entry in backup.files:
+        path = entry["path"]
+        content = entry["content"]
+        r = nc.host_run(["tee", path], input_data=content, timeout=5)
+        if r.returncode != 0:
+            raise NetworkApplyError(f"Could not restore {path}: {r.stderr.strip()}")
+        logger.info("Restored file: %s (from backup %s)", path, backup.id)
+
+    # Restore runtime: re-apply old gateway + DNS
+    old_gw = backup.live_state.get("gateway")
+    old_dns = backup.live_state.get("dns") or []
+    iface = backup.interface
+
+    if old_gw and iface:
+        r = nc.host_run(["ip", "route", "replace", "default", "via", old_gw, "dev", iface], timeout=5)
+        if r.returncode != 0:
+            logger.warning(
+                "rollback: ip route replace failed (%s) — files restored "
+                "but runtime may need a reboot to take full effect",
+                r.stderr.strip(),
+            )
+        else:
+            logger.info("rollback: runtime default route -> %s dev %s", old_gw, iface)
+
+    if old_dns:
+        resolv = "".join(f"nameserver {d}\n" for d in old_dns)
+        nc.host_run(["tee", "/etc/resolv.conf"], input_data=resolv, timeout=5)
+
+    return backup
+
+
+# ── Pre-flight probe ──────────────────────────────────────────────────────
+
+def probe_gateway(ip: str) -> dict:
+    """Quick reachability check on a candidate gateway. Returns a dict
+    with `reachable` (bool) and a `detail` (string explaining how the
+    answer was determined). Frontend uses this BEFORE apply to warn
+    the operator if the candidate looks dead.
+
+    Uses ARP-level reachability (`ip neigh` after `arping`) rather
+    than ICMP — some ISP routers block ping but answer ARP. ARP is
+    also LAN-only so it can't be fooled by a public-IP-that-pings."""
+    _validate_ipv4(ip, "ip")
+
+    # First: is the IP even in the same subnet as our interface?
+    state = nc.read_state()
+    if not state.ip or state.cidr is None:
+        return {
+            "reachable": False,
+            "detail": "Cannot validate — current host IP/CIDR not detected.",
+        }
+    try:
+        candidate_net = ipaddress.ip_network(f"{state.ip}/{state.cidr}", strict=False)
+        if ipaddress.ip_address(ip) not in candidate_net:
+            return {
+                "reachable": False,
+                "detail": (
+                    f"{ip} is not in this host's subnet "
+                    f"{candidate_net}. A gateway must be on the same LAN."
+                ),
+            }
+    except ValueError:
+        pass
+
+    # ping(8) lives on the host but isn't in our slimmed-down backend
+    # image — go through nsenter so we use the host's binary. Same
+    # reasoning for arping below. This also exercises the proper
+    # interface (the container's own routing is just host-shared so
+    # source-IP picking would still work, but staying on the host
+    # binary keeps any future PiTun container changes (e.g. extra
+    # routes inside the netns) from breaking probe semantics.
+    r = nc.host_run(["ping", "-c", "1", "-W", "2", ip], timeout=5)
+    if r.returncode == 0:
+        return {"reachable": True, "detail": f"{ip} responds to ICMP ping."}
+
+    # ICMP failed — fall back to ARP. arping comes from iputils-arping
+    # and isn't on every Debian server install. If absent, return
+    # inconclusive rather than pretending the gateway is dead.
+    has_arping = nc.host_run(["sh", "-c", "command -v arping"], timeout=3).returncode == 0
+    if has_arping:
+        r2 = nc.host_run(
+            ["arping", "-c", "1", "-w", "2", "-I", state.interface, ip],
+            timeout=5,
+        )
+        if r2.returncode == 0:
+            return {"reachable": True, "detail": f"{ip} answers ARP (ping blocked but reachable)."}
+
+    return {
+        "reachable": False,
+        "detail": f"{ip} does not respond to ICMP" + (" or ARP" if has_arping else "")
+                  + ". Either the host is offline or you're behind a firewall.",
+    }
