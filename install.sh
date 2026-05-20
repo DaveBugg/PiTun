@@ -95,6 +95,18 @@
 #
 #   PITUN_VERSION, PITUN_DIR, PITUN_BUILD, PITUN_OFFLINE, PITUN_SKIP_HOST_PREP,
 #   PITUN_NON_INTERACTIVE, PITUN_FORCE_IPV6, PITUN_FIX_BLOCKERS.
+#
+# Uninstall:
+#
+#   To remove PiTun, run the bundled uninstaller:
+#
+#     sudo bash /opt/pitun/scripts/uninstall.sh           # interactive
+#     sudo bash /opt/pitun/scripts/uninstall.sh --dry-run # preview
+#     sudo bash /opt/pitun/scripts/uninstall.sh --purge   # nuke everything
+#
+#   Handles containers, images, volumes, install dirs, nftables, sysctl,
+#   DNS, swap, and host-network config. Idempotent + safe by default —
+#   see `scripts/README.md` (section "Uninstall") for the full flag list.
 
 set -euo pipefail
 

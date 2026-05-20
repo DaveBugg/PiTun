@@ -111,3 +111,38 @@ mount in `/tmp/pitun-install-*`), so the auto-detect logic re-scans
 the offline directory every time. Safe to leave a populated offline
 dir as your default install path — pulling in newer images is just
 a matter of replacing the four image tarballs and re-running.
+
+## Uninstall (air-gapped or otherwise)
+
+The bundled `uninstall.sh` runs entirely off the local filesystem —
+no network needed. After an offline install:
+
+```bash
+# Preview what would be removed:
+sudo bash /opt/pitun/scripts/uninstall.sh --dry-run
+
+# Standard removal (asks before host-level changes):
+sudo bash /opt/pitun/scripts/uninstall.sh
+
+# Full re-image prep, no prompts:
+sudo bash /opt/pitun/scripts/uninstall.sh --purge
+```
+
+The script handles the offline install path identically to a
+registry-pulled one: it finds containers / images / volumes by
+name pattern (`pitun-backend`, `pitun-frontend`, `pitun-naive`,
+`docker-socket-proxy`, plus any `pitun-naive-<node-id>` sidecars)
+regardless of whether they were `docker load`ed from a tarball or
+pulled from a registry.
+
+Useful flags for air-gapped boxes:
+
+| Flag | Why it matters offline |
+|---|---|
+| `--keep-data` | Survives `data/` (DB + configs) so a re-install from the same offline bundle picks up where the previous one left off. |
+| `--keep-network` | If the host's static IP / DNS was set via PiTun's UI, this prevents the uninstaller from touching the network manager — safer when there's no console fallback. |
+| `--keep-xray` | If the same xray binary is used by another tool on the host. |
+| `--prefix PATH` | Use when the offline install lived outside `/opt/pitun`. |
+
+See the [main scripts/README.md](../scripts/README.md#uninstall)
+for the full flag list and removal-phase breakdown.

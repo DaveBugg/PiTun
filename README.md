@@ -27,6 +27,7 @@
 - [Server-side proxy install](#server-side-proxy-install)
 - [Configuration](#configuration)
 - [Troubleshooting](#troubleshooting)
+- [Uninstall](#uninstall)
 - [Development](#development)
 - [Tech stack](#tech-stack)
 - [Acknowledgements](#acknowledgements)
@@ -852,6 +853,48 @@ want the speed back), restore `/boot/firmware/cmdline.txt.bak` over
 > The quirk only disables UAS for the matching VID:PID; other USB
 > mass-storage devices on the same Pi (USB stick, second drive)
 > are unaffected.
+
+## Uninstall
+
+To completely remove PiTun from the host:
+
+```bash
+# Interactive — asks before host-level operations:
+sudo bash /opt/pitun/scripts/uninstall.sh
+
+# Headless re-image prep — wipes everything including host tweaks:
+sudo bash /opt/pitun/scripts/uninstall.sh --purge
+
+# Preview what would be removed, change nothing:
+sudo bash /opt/pitun/scripts/uninstall.sh --dry-run
+
+# Preserve DB + configs for a future reinstall:
+sudo bash /opt/pitun/scripts/uninstall.sh --yes --keep-data
+```
+
+The uninstaller handles every installer permutation we ship —
+registry-pulled images, locally-built (`--build`), offline bundles,
+the dev compose stack, dynamic naive sidecars, hot-deploy backup
+dirs. It's idempotent (re-running on a cleaned host downgrades
+missing artefacts to "skip") and safe by default (asks before
+nftables / sysctl / DNS / swap / host network changes).
+
+Notable flags:
+
+| Flag | Effect |
+|---|---|
+| `--dry-run` | Preview only — no changes. |
+| `-y` / `--yes` | Skip prompts on standard removals. |
+| `--purge` | Everything, including host network config. |
+| `--keep-data` | Preserve DB + configs (`data/` survives). |
+| `--keep-network` | Never touch network manager files. |
+| `--keep-xray` | Leave `/usr/local/bin/xray` + geo data alone. |
+
+See [`scripts/README.md`](scripts/README.md#uninstall) for the
+full list and per-flag rationale. **Phase 7 (host network)** is
+the only HIGH-RISK step — it can break SSH if PiTun's IP was set
+via the Settings UI. Open a second SSH session before confirming
+when remote.
 
 ## Development
 

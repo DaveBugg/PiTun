@@ -1,441 +1,262 @@
-# PiTun — Установка и настройка / Installation Guide
+# PiTun — Scripts reference
 
-## Структура скриптов / Scripts Overview
+🇬🇧 English · [🇷🇺 На русском](README.ru.md)
 
+> Reference for everything under `scripts/`. For project overview see
+> the [main README](../README.md). For the recommended install path —
+> the **one-shot `install.sh` in the repo root** — see the
+> [Quick install](../README.md#quick-install) section.
+> Air-gapped install bundle workflow is in
+> [`docs/INSTALL_OFFLINE.md`](../docs/INSTALL_OFFLINE.md).
+
+## TL;DR
+
+Everyday flow on a fresh Raspberry Pi 4/5:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/DaveBugg/PiTun/master/install.sh \
+     | sudo bash -s -- --version v1.3.3
 ```
-scripts/
-├── 01-first-boot.sh     # Шаг 1: Первая настройка RPi (SSH, IP, hostname)
-├── 02-install-stack.sh   # Шаг 2: Docker, xray, nftables, системные пакеты
-├── 03-deploy.sh          # Шаг 3: Деплой PiTun (env, docker compose up)
-├── 04-migrate.sh         # Шаг 4: Миграция БД (apply / fresh / status)
-├── setup.sh              # Всё-в-одном (альтернатива шагам 2+3 для опытных)
-├── setup-vm.sh           # Для развёртывания на VM (Debian/Ubuntu)
-├── cleanup.sh            # Ежедневная очистка (cron)
-├── update_geo.sh         # Обновление GeoIP/GeoSite данных
-├── reset-password.sh     # Сброс пароля admin
-├── nftables.sh           # Ручное управление nftables
-└── e2e-test.sh           # E2E интеграционные тесты
-```
+
+That's it — the one-shot installer (in the repo root, not in `scripts/`)
+handles everything. The scripts in this folder are for **specialised
+flows**: manual multi-step installs, remote VPS provisioning, offline
+bundle building, maintenance, uninstall.
 
 ---
 
-## Пошаговая установка на Raspberry Pi 4/5
+## Script inventory
 
-### Требования
+### Host install (the "everything" path lives one level up)
 
-- Raspberry Pi 4B / 5 (2GB+ RAM, рекомендуется 4GB)
-- MicroSD 16GB+ или USB SSD (рекомендуется)
-- Raspberry Pi OS Lite (Bookworm) или Debian 12
-- Ethernet подключение к роутеру
-- SSH доступ (или монитор + клавиатура для первой настройки)
-
-### Шаг 0: Подготовка SD карты
-
-1. Скачать [Raspberry Pi Imager](https://www.raspberrypi.com/software/)
-2. Записать **Raspberry Pi OS Lite (64-bit)** на SD карту
-3. В настройках Imager:
-   - Включить SSH
-   - Задать имя пользователя и пароль
-   - Опционально: задать hostname `pitun`
-4. Вставить SD карту, подключить Ethernet, включить RPi
-
-### Шаг 1: Первая настройка (`01-first-boot.sh`)
-
-```bash
-# Подключиться по SSH (IP можно найти в роутере)
-ssh username@<ip-адрес-rpi>
-
-# Скопировать проект на RPi (один из вариантов):
-# Вариант A: git clone (если есть доступ к репозиторию)
-git clone <repo-url> ~/pitun
-
-# Вариант B: SCP с вашего ПК
-# scp -r ./pitun username@<ip>:~/pitun
-
-# Запустить первую настройку
-sudo bash ~/pitun/scripts/01-first-boot.sh 192.168.1.100 192.168.1.1
-```
-
-**Что делает скрипт:**
-- Включает SSH (пароль + ключи)
-- Устанавливает статический IP (`192.168.1.100/24`)
-- Задаёт hostname `pitun`
-- Включает IP forwarding
-- Отключает GUI (экономит ~200MB RAM)
-- Обновляет систему
-
-**После скрипта:** перезагрузить (`sudo reboot`) и переподключиться по новому IP.
-
-### Шаг 2: Установка стека (`02-install-stack.sh`)
-
-```bash
-ssh username@192.168.1.100
-sudo bash ~/pitun/scripts/02-install-stack.sh
-```
-
-**Что устанавливает:**
-
-| Компонент | Описание |
+| Script | Purpose |
 |---|---|
-| Docker CE | Контейнеризация |
-| Docker Compose v2 | Оркестрация контейнеров |
-| xray-core v26.x | Прокси-движок |
-| nftables | Firewall + TPROXY |
-| arp-scan | Обнаружение устройств в сети |
-| cron | Планировщик задач (cleanup) |
-| dnsutils, jq | Утилиты для отладки |
+| [`../install.sh`](../install.sh) | **Recommended.** One-shot host installer. Handles deps, Docker, xray, geo data, image pulls / build, compose up, host network config (since 1.3.3). Supports `--version`, `--build`, `--offline DIR`, `--fix-blockers`. |
+| `setup.sh` | Lightweight all-in-one (older path). Use when you already cloned the repo and want a minimal install without the network/offline features of `install.sh`. |
+| `setup-vm.sh` | Full integration setup on a clean Debian 12 / Ubuntu 22.04 VM. Differs from RPi flow: uses `docker.io`, disables avahi (frees UDP/5353), clones from git. |
 
-**Также настраивает:**
-- Docker log rotation (10MB × 3 файла)
-- TPROXY kernel модули (`nft_tproxy`)
-- GeoIP/GeoSite данные для маршрутизации
+### Multi-step manual flow (advanced)
 
-**После скрипта:** выйти и войти заново (для применения группы `docker`).
+Use these when you need to inspect each phase separately. `install.sh`
+automates the same steps; reach for these only if something's wrong or
+you want maximum control.
 
-### Шаг 3: Деплой PiTun (`03-deploy.sh`)
+| Script | Stage |
+|---|---|
+| `01-first-boot.sh` | First-boot config on a fresh RPi: SSH keys, static IP, hostname, IP forwarding, disable desktop. |
+| `02-install-stack.sh` | Docker, Compose v2, xray-core, nftables, system deps. |
+| `03-deploy.sh` | Generate `.env`, build/load images, `docker compose up -d`. |
+| `04-migrate.sh` | Alembic migrations: `--status` / apply pending / `--fresh` (reset DB). |
 
-```bash
-ssh username@192.168.1.100
-bash ~/pitun/scripts/03-deploy.sh
-```
+### Remote VPS provisioning (called by the backend over SSH)
 
-**Что делает:**
-- Проверяет наличие Docker, Compose, xray
-- Генерирует `.env` с `SECRET_KEY` и IP адресом
-- Создаёт директорию `data/` для БД
-- Устанавливает cron-задачу ежедневной очистки (04:00)
-- Запускает `docker compose up -d --build`
-- Ждёт готовности backend (`/health`)
+These run on the **VPS** that hosts a proxy server, not on the PiTun
+gateway itself. The backend's "Deploy" button on the Servers page
+fires them over SSH. You can run them by hand for testing or recovery.
 
-**Результат:**
-- Web UI: `http://192.168.1.100`
-- API Docs: `http://192.168.1.100/api/docs`
-- Логин: `admin` / `password`
+| Pair | Protocol |
+|---|---|
+| `setup-naive-server.sh` / `uninstall-naive-server.sh` | NaiveProxy (Caddy + forwardproxy, Let's Encrypt cert, systemd unit). |
+| `setup-wireguard-server.sh` / `uninstall-wireguard-server.sh` | WireGuard (multi-client, sub-command dispatcher: `install` / `add-client` / `remove-client` / `list-clients`). |
+| `setup-xui-server.sh` / `uninstall-xui-server.sh` | 3x-ui or x-ui-pro (mode auto-selected by whether `DOMAIN=` is set). |
+| `cleanup-go.sh` | Helper sweep of the Go toolchain + build cache that the two heavyweight installers (xui-pro and naive) pull in. Called automatically; safe to source from any post-install context. |
 
----
+### Offline / air-gapped install
 
-## Что копируется и куда
+| Script | Purpose |
+|---|---|
+| `build-offline-bundle.sh` | Build pitun-backend / -frontend / -naive images **and** re-export 3rd-party bases (nginx, docker-socket-proxy) as `.tar.gz` under `docker/offline/`. ARM64 and AMD64 supported via `ARCH=`. |
+| `deploy-offline.sh` | rsync source + scp tarballs + `docker load` + retag + migrate + `compose up` on a target host. |
+| `make-offline-bundle.sh` | Assembles the **single-directory drop** that `install.sh` auto-detects (`pitun-src.tar.gz`, `pitun-backend.tar.gz`, etc.). See [`docs/INSTALL_OFFLINE.md`](../docs/INSTALL_OFFLINE.md). |
 
-```
-~/pitun/                  ← Весь проект
-├── backend/              ← Python FastAPI (→ контейнер pitun-backend)
-│   ├── app/              ← Исходный код приложения
-│   ├── alembic/          ← Миграции БД
-│   ├── tests/            ← Тесты (только dev stage)
-│   ├── requirements.txt  ← Python зависимости (production)
-│   ├── requirements-dev.txt ← Python зависимости (dev + тесты)
-│   └── Dockerfile        ← Сборка образа
-├── frontend/             ← React TypeScript (→ контейнер pitun-frontend)
-│   ├── src/              ← Исходный код UI
-│   ├── dist/             ← Собранный билд (генерируется)
-│   └── Dockerfile        ← Nginx + статика
-├── data/                 ← Данные (SQLite БД, монтируется в контейнер)
-│   └── pitun.db          ← База данных (создаётся автоматически)
-├── docker-compose.yml    ← Конфигурация контейнеров
-├── nginx.conf            ← Reverse proxy (монтируется в pitun-nginx)
-├── .env                  ← Конфигурация (генерируется 03-deploy.sh)
-└── scripts/              ← Скрипты установки и обслуживания
+### Maintenance
 
-/usr/local/bin/xray       ← xray-core бинарник (хост)
-/usr/local/share/xray/    ← GeoIP/GeoSite данные (хост, ro mount в контейнер)
-/tmp/pitun/               ← Временные файлы xray (config.json)
-/etc/docker/daemon.json   ← Docker log rotation
-/etc/cron.d/pitun-cleanup ← Ежедневная очистка
-```
+| Script | Purpose |
+|---|---|
+| `cleanup.sh` | Daily cron — prunes dangling Docker images / build cache + restarts xray (it slowly leaks ~500 MB if left running). Installed by `install.sh`. |
+| `update_geo.sh` | Refresh `geoip.dat` + `geosite.dat` from the configured upstream profile. Standalone or via cron. |
+| `change-network.sh` | Change host IP / gateway when moving PiTun to a different LAN. Updates network manager + PiTun DB + restarts services. Pre-1.3.3 path; the Settings page now exposes the same thing. |
+| `nftables.sh` | Manual `apply` / `flush` / `status` / `bypass-mac <mac>`. PiTun's backend manages nftables automatically — use this only for troubleshooting. |
+| `reset-password.sh` | Reset `admin` password (no arg → `password`). |
+| `e2e-test.sh` | E2E API smoke test for VM environments. |
 
-### Docker контейнеры
+### Uninstall
 
-| Контейнер | Образ | Сеть | Порты | Функция |
-|---|---|---|---|---|
-| `pitun-backend` | Python 3.11 | host | 8000 | FastAPI + xray управление |
-| `pitun-frontend` | Nginx Alpine | bridge | 80 (internal) | React SPA |
-| `pitun-nginx` | Nginx 1.25 | bridge | 80 → 80 | Reverse proxy |
-
-**Backend использует `network_mode: host`** — нужен доступ к nftables и xray.
-Nginx разрешает имя `backend` через `extra_hosts: ["backend:host-gateway"]`.
-
-### Шаг 4: Миграция БД (`04-migrate.sh`)
-
-```bash
-# Проверить текущую версию БД и список таблиц
-bash ~/pitun/scripts/04-migrate.sh --status
-
-# Применить новые миграции (после обновления кода)
-bash ~/pitun/scripts/04-migrate.sh
-
-# Пересоздать БД с нуля (удаляет все данные!)
-bash ~/pitun/scripts/04-migrate.sh --fresh
-```
-
-**Когда использовать:**
-- После `git pull` если добавлены новые миграции
-- При ошибках `no such table: ...` — запустить `--fresh`
-- При обновлении версии PiTun
-
-**`--fresh` удалит:** все ноды, правила, настройки и пользователей.
-После пересоздания логин: `admin` / `password`.
+| Script | Purpose |
+|---|---|
+| [`uninstall.sh`](uninstall.sh) | **Recommended.** Remove the full PiTun stack: containers + images + volumes + install dirs, with `--dry-run`, `--purge`, `--keep-data`, `--keep-network`, etc. Safe by default — asks before touching host-level state. See [section below](#uninstall). |
+| `uninstall-naive-server.sh` | VPS-side: undo what `setup-naive-server.sh` did. |
+| `uninstall-wireguard-server.sh` | VPS-side: undo what `setup-wireguard-server.sh install` did. |
+| `uninstall-xui-server.sh` | VPS-side: undo both x-ui modes (full xui-pro stack + bare 3x-ui). |
 
 ---
 
-## Альтернативные варианты установки
+## What gets created where
 
-### Всё-в-одном для RPi (`setup.sh`)
+Standard host install via `install.sh` puts:
 
-```bash
-# Если RPi уже настроен (IP, SSH), можно сразу:
-sudo PITUN_DIR=/home/user/pitun bash setup.sh
+```
+/opt/pitun/                ← Main install dir
+├── backend/app/           ← Python sources (bind-mounted into pitun-backend)
+├── backend/alembic/       ← DB migrations
+├── frontend/dist/         ← Built React SPA (served by pitun-frontend nginx)
+├── data/                  ← SQLite DB + persistent state
+│   └── pitun.db
+├── docker-compose.yml     ← Stack definition (4 services)
+└── .env                   ← SECRET_KEY + LAN settings
+
+/etc/pitun/                ← Naive sidecar configs
+/var/lib/pitun/            ← Reserved for future persistent state
+/tmp/pitun/                ← xray runtime (config.json, logs)
+/usr/local/bin/xray        ← Standalone xray binary (host)
+/usr/local/share/xray/     ← geoip.dat / geosite.dat / GeoLite2-Country.mmdb
+/etc/cron.d/pitun-cleanup  ← Daily maintenance trigger
+/swapfile                  ← 2 GB swap (created on hosts without swap)
 ```
 
-Объединяет шаги 2 и 3 + Docker log rotation + cron cleanup.
-
-### Для VM (VirtualBox, Proxmox)
-
-```bash
-sudo PITUN_REPO_URL=https://github.com/... bash setup-vm.sh
-```
-
-Отличия от RPi установки:
-- Использует `docker.io` вместо Docker CE
-- Отключает avahi-daemon (порт 5353)
-- Клонирует проект из git
+The `uninstall.sh` script knows all of these — see below for cleanup.
 
 ---
 
-## Обслуживание
+## Docker services
 
-### Обновление
+| Container | Network mode | Function |
+|---|---|---|
+| `pitun-backend` | host | FastAPI + xray + nftables manager |
+| `pitun-frontend` | bridge | nginx serving the React SPA bundle |
+| `pitun-nginx` | bridge → host:80 | Reverse proxy (UI + WebSocket fan-in) |
+| `docker-socket-proxy` | bridge | Locked-down Docker API for naive sidecar lifecycle |
+
+`pitun-backend` uses `network_mode: host` because it needs raw nftables
++ TPROXY access. The other services live on a Docker bridge and reach
+the backend via `extra_hosts: ["backend:host-gateway"]`.
+
+When the backend deploys naive nodes from the UI, additional containers
+appear with names like `pitun-naive-<node-id>`.
+
+---
+
+## Common maintenance recipes
+
+### Apply migrations after a code update
 
 ```bash
-cd ~/pitun
+cd /opt/pitun
 git pull
 docker compose up -d --build
-bash scripts/04-migrate.sh          # применить новые миграции
-bash scripts/04-migrate.sh --status  # убедиться что всё ок
+bash scripts/04-migrate.sh
+bash scripts/04-migrate.sh --status
 ```
 
-### Сброс пароля
+### Reset admin password
 
 ```bash
-docker exec pitun-backend python -c "
-import bcrypt, sqlite3
-h = bcrypt.hashpw(b'newpassword', bcrypt.gensalt()).decode()
-c = sqlite3.connect('/app/data/pitun.db')
-c.execute(\"UPDATE user SET password_hash=? WHERE username='admin'\", (h,))
-c.commit()
-print('Password reset to: newpassword')
-"
+docker exec pitun-backend bash /app/scripts/reset-password.sh myNewPass
 ```
 
-Или через скрипт:
+### Refresh GeoData by hand
+
 ```bash
-docker exec pitun-backend bash /app/scripts/reset-password.sh newpassword
+sudo bash /opt/pitun/scripts/update_geo.sh
+# Reload xray to pick up the new tag tables:
+curl -X POST -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8000/api/system/restart-xray
 ```
 
-### Обновление GeoData
+### Inspect logs
 
 ```bash
-sudo bash ~/pitun/scripts/update_geo.sh
-docker exec pitun-backend curl -s -X POST http://127.0.0.1:8000/api/system/reload-config
-```
-
-### Запуск тестов
-
-```bash
-# Внутри контейнера (dev stage с pytest)
-docker exec pitun-backend python -m pytest tests/ -v
-
-# Или E2E тесты через API
-sudo bash ~/pitun/scripts/e2e-test.sh
-```
-
-### Ручное управление nftables
-
-```bash
-sudo bash ~/pitun/scripts/nftables.sh status
-sudo bash ~/pitun/scripts/nftables.sh apply
-sudo bash ~/pitun/scripts/nftables.sh flush
-sudo bash ~/pitun/scripts/nftables.sh bypass-mac AA:BB:CC:DD:EE:FF
-```
-
-### Логи
-
-```bash
-docker compose logs -f                    # Все контейнеры
-docker compose logs -f backend            # Только backend
-docker logs pitun-backend --tail 50       # Последние 50 строк
-docker logs pitun-nginx --tail 50         # Nginx access/error logs
+docker compose logs -f                  # all containers
+docker logs pitun-backend --tail 50     # just the API
+docker logs pitun-nginx --tail 50       # access / error logs
 ```
 
 ---
 
-## Зависимости
+## Uninstall
 
-### Хост (RPi/VM) — устанавливаются скриптами
+To completely remove PiTun from the host:
 
-| Пакет | Назначение | Скрипт |
-|---|---|---|
-| docker-ce / docker.io | Контейнеризация | 02 / setup |
-| docker-compose-plugin | Оркестрация | 02 / setup |
-| nftables | TPROXY firewall | 02 / setup |
-| iproute2 | ip rule/route | 02 / setup |
-| arp-scan | Обнаружение LAN устройств | 02 / setup |
-| cron | Планировщик очистки | 02 / setup |
-| curl, wget | Загрузка файлов | 01 / 02 |
-| unzip | Распаковка xray | 02 / setup |
-| jq, dnsutils | Отладка DNS и JSON | 02 / setup |
-| xray-core | Прокси-движок (бинарник) | 02 / setup |
+```bash
+# Interactive — asks before host-level operations:
+sudo bash /opt/pitun/scripts/uninstall.sh
 
-### Docker контейнер (backend) — requirements.txt
+# Headless re-image prep — wipes everything including host tweaks:
+sudo bash /opt/pitun/scripts/uninstall.sh --purge
 
-| Пакет | Назначение |
+# Preview without changing anything:
+sudo bash /opt/pitun/scripts/uninstall.sh --dry-run
+
+# Preserve DB + configs for a future reinstall:
+sudo bash /opt/pitun/scripts/uninstall.sh --yes --keep-data
+```
+
+The script handles every installer permutation (registry-pulled,
+locally-built, offline-bundled, dev stack, naive sidecars,
+hot-deploy backup dirs) and is idempotent — re-running on a
+cleaned host downgrades missing artefacts to "skip" rather than
+erroring.
+
+Flags overview:
+
+| Flag | Effect |
 |---|---|
-| fastapi, uvicorn | Web framework + ASGI сервер |
-| sqlmodel, aiosqlite | ORM + async SQLite |
-| alembic | Миграции БД |
-| psutil | Системные метрики (CPU, RAM, disk, net) |
-| bcrypt, python-jose | Аутентификация (JWT + хэширование) |
-| httpx | HTTP клиент (подписки) |
-| pydantic, pydantic-settings | Валидация данных |
-| aiohttp, aiofiles | Async HTTP + файлы |
-| websockets | WebSocket для стриминга логов |
-| PyYAML | Парсинг YAML |
+| `--dry-run` | Preview only. |
+| `-y` / `--yes` | No prompts on standard removals. |
+| `--purge` | Everything, including host network config (5 s warning before that step). |
+| `--keep-data` | Preserve DB + configs. |
+| `--keep-network` | Never touch host network manager files. |
+| `--keep-xray` | Leave `/usr/local/bin/xray` + geo data. |
+| `--keep-swap` | Leave `/swapfile`. |
+| `--prefix PATH` | Override install-dir detection. |
 
-### Docker контейнер (dev) — requirements-dev.txt
+Run `sudo bash scripts/uninstall.sh --help` for the full list.
 
-| Пакет | Назначение |
-|---|---|
-| pytest | Тест фреймворк |
-| pytest-asyncio | Поддержка async тестов |
-
----
-
-## Порядок действий при проблемах
-
-### Docker build не скачивает пакеты (timeout)
-
-Если RPi за прокси и Docker не может скачать pip packages:
-```bash
-# Собрать на ПК и скопировать образ
-docker build -t pitun-backend ./backend
-docker save pitun-backend | gzip > pitun-backend.tar.gz
-scp pitun-backend.tar.gz user@rpi:/tmp/
-ssh user@rpi "docker load < /tmp/pitun-backend.tar.gz"
-```
-
-### Frontend не собирается на RPi (Segfault)
-
-RPi 4 (2-4GB) может не хватить памяти для `tsc` + `vite build`:
-```bash
-# Собрать на ПК
-cd frontend && npm install && npx vite build
-# Скопировать dist на RPi
-scp -r dist/ user@rpi:~/pitun/frontend/dist/
-# Скопировать в контейнер
-ssh user@rpi "docker cp ~/pitun/frontend/dist/. pitun-frontend:/usr/share/nginx/html/"
-```
+**Phase 7 (host network config) is the only HIGH-RISK step** — it
+can break SSH if the operator changed PiTun's IP via the Settings
+UI. The script warns about this and refuses to silently proceed
+under `--yes` alone (`--purge` adds a 5 s Ctrl-C window). Always
+open a second SSH session before confirming if you're not on a
+local console.
 
 ---
 
-## Offline build — упаковка всех образов в tarball-ы
+## Building images yourself
 
-Для airgapped-деплоя (RPi без интернета во время `compose up`) или чтобы зафиксировать точные версии образов под релиз, используется `build-offline-bundle.sh`. Складывает все 5 образов под `docker/offline/` как `.tar.gz`.
-
-### Предпосылки на билд-машине
-
-- Docker Desktop (Windows/macOS) или Docker Engine (Linux) с `docker buildx`
-- Буилдер который умеет кросс-арх сборку (создаётся автоматически при первом запуске)
-- ~2 GB свободного места под кэш + ~300 MB на tarball-ы
-
-### Обычный путь — оба arch через скрипт
+`install.sh --build` builds images on the target host (slow on RPi).
+The recommended path is to build on a beefier box and ship tarballs:
 
 ```bash
-# arm64 бандл (Raspberry Pi 4/5)
+# Build amd64 + arm64 bundles on a build host with `docker buildx`:
 ARCH=arm64 BUILDER=pitun-arm bash scripts/build-offline-bundle.sh
-
-# amd64 бандл (Intel/AMD мини-PC)
 ARCH=amd64 BUILDER=pitun-arm bash scripts/build-offline-bundle.sh
-```
 
-Env-переменные:
-- `ARCH` — `arm64` (default) или `amd64`
-- `VERSION` — переопределяет версию релиза. По умолчанию читается `APP_VERSION` из `backend/app/config.py` (тот же что `/system/versions` возвращает в рантайме). Бампается в `config.py` и `frontend/package.json` вместе — см. `.claude`-память `pitun_versioning`.
-- `BUILDER` — имя buildx-builder-а. Default `pitun-builder`.
-- `MIRROR` — Docker Hub зеркало для base-образов. Default `mirror.gcr.io`. Только для `library/*`; `tecnativa/docker-socket-proxy` тянется через `huecker.io`.
-
-На выходе:
-
-```
-docker/offline/pitun-backend-<arch>-<version>.tar.gz
-docker/offline/pitun-naive-<arch>-<version>.tar.gz
-docker/offline/pitun-frontend-<arch>-<version>.tar.gz
-docker/offline/nginx-<arch>-<version>.tar.gz
-docker/offline/docker-socket-proxy-<arch>-<version>.tar.gz
-```
-
-На таргете `03-deploy.sh` автоматически подхватывает все `*.tar.gz` в этой папке, делает `docker load`, и переtag-ит `<image>:latest-<arch>` → `<image>:latest` чтоб docker-compose нашёл. Те же файлы читает `deploy-offline.sh`.
-
-### Ручная цепочка — когда нужно собрать один образ или посмотреть каждый шаг
-
-Если скрипт делает что-то неожиданное или надо собрать только один из образов, вот сырая команды как есть:
-
-```bash
-# 0. Создать buildx-builder (разово на машину)
-docker buildx create --name pitun-arm --platform linux/arm64 --use
-
-# 1. pitun-backend (arm64)
-docker buildx build --platform linux/arm64 \
-  --build-arg "PYTHON_IMAGE=mirror.gcr.io/library/python:3.11-slim" \
-  -f backend/Dockerfile --target production \
-  -t pitun-backend:1.0.2-arm64 \
-  -t pitun-backend:latest-arm64 \
-  --load backend/
-
-# 2. pitun-naive (arm64) — base = debian:bookworm-slim (glibc, а не Alpine/musl!)
-docker buildx build --platform linux/arm64 \
-  --build-arg "BASE_IMAGE=mirror.gcr.io/library/debian:bookworm-slim" \
-  -f docker/naive/Dockerfile \
-  -t pitun-naive:1.0.2-arm64 \
-  -t pitun-naive:latest-arm64 \
-  --load docker/naive/
-
-# 3. pitun-frontend (arm64)
-docker buildx build --platform linux/arm64 \
-  --build-arg "NODE_IMAGE=mirror.gcr.io/library/node:20-alpine" \
-  --build-arg "NGINX_IMAGE=mirror.gcr.io/library/nginx:1.25-alpine" \
-  -f frontend/Dockerfile \
-  -t pitun-frontend:1.0.2-arm64 \
-  -t pitun-frontend:latest-arm64 \
-  --load frontend/
-
-# 4. Re-export 3rd-party base-образов с правильной архитектурой.
-#    Через одно-строчный Dockerfile заставляем buildx выбрать верный manifest
-#    (без этого он может подхватить native-arch образ из кэша).
-tmp=$(mktemp -d) && echo "FROM mirror.gcr.io/library/nginx:1.25-alpine" > "$tmp/Dockerfile"
-docker buildx build --platform linux/arm64 -f "$tmp/Dockerfile" \
-  -t nginx-arm64:1.25-alpine --load "$tmp" && rm -rf "$tmp"
-
-tmp=$(mktemp -d) && echo "FROM huecker.io/tecnativa/docker-socket-proxy:0.3" > "$tmp/Dockerfile"
-docker buildx build --platform linux/arm64 -f "$tmp/Dockerfile" \
-  -t docker-socket-proxy-arm64:0.3 --load "$tmp" && rm -rf "$tmp"
-
-# 5. Сохранить tarball-ы. gzip -1 — быстрее, образы уже сжатые внутри.
-mkdir -p docker/offline
-docker save pitun-backend:1.0.2-arm64      | gzip -1 > docker/offline/pitun-backend-arm64-1.0.2.tar.gz
-docker save pitun-naive:1.0.2-arm64        | gzip -1 > docker/offline/pitun-naive-arm64-1.0.2.tar.gz
-docker save pitun-frontend:1.0.2-arm64     | gzip -1 > docker/offline/pitun-frontend-arm64-1.0.2.tar.gz
-docker save nginx-arm64:1.25-alpine        | gzip -1 > docker/offline/nginx-arm64-1.0.2.tar.gz
-docker save docker-socket-proxy-arm64:0.3  | gzip -1 > docker/offline/docker-socket-proxy-arm64-1.0.2.tar.gz
-
-# Для amd64-бандла: повторить шаги 1-5 с --platform linux/amd64 и -arm64 → -amd64 в тегах.
-```
-
-### Отправить собранный бандл на устройство
-
-```bash
-# deploy-offline.sh берёт на себя rsync источников + scp tarball-ов + loadи + compose up
+# Ship to a target RPi:
 ARCH=arm64 bash scripts/deploy-offline.sh user@pitun.local ~/.ssh/id_ed25519
-
-# Ручной путь — если хочешь пошагово:
-scp -i ~/.ssh/id_ed25519 docker/offline/*-arm64-1.0.2.tar.gz user@pitun.local:~/pitun/docker/offline/
-ssh -i ~/.ssh/id_ed25519 user@pitun.local 'cd ~/pitun && bash scripts/03-deploy.sh'
 ```
+
+Output lands under `docker/offline/`:
+
+```
+pitun-backend-arm64-<version>.tar.gz
+pitun-frontend-arm64-<version>.tar.gz
+pitun-naive-arm64-<version>.tar.gz
+nginx-arm64-<version>.tar.gz
+docker-socket-proxy-arm64-<version>.tar.gz
+```
+
+Environment knobs (`build-offline-bundle.sh`):
+
+| Variable | Default | Notes |
+|---|---|---|
+| `ARCH` | `arm64` | `arm64` for Raspberry Pi 4/5; `amd64` for mini-PCs. |
+| `VERSION` | from `backend/app/config.py` (`APP_VERSION`) | Override only when explicitly preparing an out-of-sync release. |
+| `BUILDER` | `pitun-builder` | `docker buildx` builder name. |
+| `MIRROR` | `mirror.gcr.io` | Hub mirror for `library/*` bases. |
+
+---
+
+## See also
+
+- [Main README](../README.md) — project overview, features, screenshots
+- [`../docs/INSTALL_OFFLINE.md`](../docs/INSTALL_OFFLINE.md) — air-gapped install workflow
+- [Russian version of this page](README.ru.md)
