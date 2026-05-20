@@ -33,10 +33,40 @@ export function GeoData() {
   const updateGeo = useMutation({
     mutationFn: (payload: { geoip_url?: string; geosite_url?: string; mmdb_url?: string; type?: string }) =>
       geodataApi.update(payload),
+    onMutate: () => {
+      // Pessimistic UI lock — flip our local "submitting" flag the
+      // moment the user clicks. Without this, there's a tiny gap
+      // between the POST landing 202 and the next progress-poll
+      // tick (the poll fires at most 2 Hz and only AFTER the
+      // previous response showed `active=true`) where the button
+      // looks idle and the user can double-click. The backend
+      // mutex would 409 the duplicate anyway since 1.3.5+, but
+      // the UI confusion (two "100% · FAILED" rows on screen)
+      // looked broken to operators. Locking on click + invalidate-
+      // progress on success closes the gap on the UI side too.
+      setLocalSubmitting(true)
+    },
     onSuccess: () => {
+      // Force an immediate progress fetch so `progress.active`
+      // flips true right after the 202 — keeps the button visibly
+      // disabled while the background job runs.
+      qc.invalidateQueries({ queryKey: ['geodata', 'progress'] })
       setTimeout(() => qc.invalidateQueries({ queryKey: ['geodata'] }), 3000)
     },
+    onSettled: () => {
+      // Release the local lock once the POST resolves. By this
+      // point either `progress.active` is true (success path) or
+      // the error is surfaced (409/network). Either way the
+      // button's `disabled` keys onto the right signal.
+      setLocalSubmitting(false)
+    },
   })
+  // Local "I just clicked, request still in flight" gate. Mirrors
+  // mutation.isPending but flips ON via onMutate (BEFORE the POST
+  // is even sent) so the button responds the same paint frame as
+  // the click. Without this, a fast double-click can land a second
+  // mutate() before React paints the disabled state.
+  const [localSubmitting, setLocalSubmitting] = useState(false)
 
   // Live progress poll. `useGeoUpdateProgress` polls 2 Hz while
   // active and stops automatically once `active` flips to false (one
@@ -110,10 +140,10 @@ export function GeoData() {
             </div>
             <button
               onClick={() => handleUpdateSingle(type)}
-              disabled={updateGeo.isPending}
-              className="mt-3 flex items-center gap-1 rounded px-2 py-1 text-xs bg-gray-700 text-gray-300 hover:bg-gray-600 disabled:opacity-50 transition-colors"
+              disabled={localSubmitting || updateGeo.isPending || progress?.active}
+              className="mt-3 flex items-center gap-1 rounded px-2 py-1 text-xs bg-gray-700 text-gray-300 hover:bg-gray-600 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
             >
-              <RefreshCw className={updateGeo.isPending ? 'h-3 w-3 animate-spin' : 'h-3 w-3'} />
+              <RefreshCw className={(updateGeo.isPending || progress?.active) ? 'h-3 w-3 animate-spin' : 'h-3 w-3'} />
               Update
             </button>
           </div>
@@ -179,16 +209,32 @@ export function GeoData() {
 
         <button
           onClick={handleUpdateAll}
-          disabled={updateGeo.isPending || progress?.active}
-          className="flex items-center gap-2 rounded-lg bg-brand-600 px-4 py-2 text-sm font-medium text-white hover:bg-brand-500 disabled:opacity-50 transition-colors"
+          disabled={localSubmitting || updateGeo.isPending || progress?.active}
+          className="flex items-center gap-2 rounded-lg bg-brand-600 px-4 py-2 text-sm font-medium text-white hover:bg-brand-500 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
         >
-          <RefreshCw className={progress?.active ? 'h-4 w-4 animate-spin' : 'h-4 w-4'} />
-          {progress?.active ? 'Downloading…' : 'Download All'}
+          <RefreshCw className={(localSubmitting || progress?.active) ? 'h-4 w-4 animate-spin' : 'h-4 w-4'} />
+          {(localSubmitting || progress?.active) ? 'Downloading…' : 'Download All'}
         </button>
 
-        {updateGeo.isError && (
-          <p className="text-xs text-red-400">Error: {String(updateGeo.error)}</p>
-        )}
+        {updateGeo.isError && (() => {
+          // The backend mutex (since 1.3.5) returns 409 with a
+          // structured payload when a job is already running. Render
+          // that as an informational note rather than a red error —
+          // it's exactly the "your previous click is still running"
+          // case the user expects.
+          const err = updateGeo.error as { response?: { status?: number; data?: { detail?: { error?: string; job_id?: string } } } }
+          if (err?.response?.status === 409) {
+            const detail = err.response.data?.detail
+            return (
+              <p className="text-xs text-amber-300">
+                {detail?.error ?? 'A geodata update is already in progress'}
+                {detail?.job_id ? ` (job ${detail.job_id})` : ''}.
+                Wait for it to finish — progress is shown below.
+              </p>
+            )
+          }
+          return <p className="text-xs text-red-400">Error: {String(updateGeo.error)}</p>
+        })()}
 
         {/* Live progress — visible from the moment a job is in flight
             until ~1s after it finishes (so the user sees the green
