@@ -5,6 +5,7 @@ per-file error containment (one file failing doesn't abort the others).
 """
 from __future__ import annotations
 
+import asyncio
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -131,3 +132,48 @@ class TestGeoProgressEndpoint:
             assert prog["files"]["geoip"]["stage"] in (
                 "queued", "downloading", "verifying", "applying", "done",
             )
+
+    def test_concurrent_update_returns_409(
+        self, client, admin_user, auth_headers,
+    ):
+        """A second `POST /api/geodata/update` while a previous job is
+        still active must return 409 with the existing job_id, NOT
+        start a second background task. Without this guard, double-
+        clicking the UI's "Update" button raced two downloads on the
+        same `.tmp` path → first one renamed → second tried to rename
+        a now-gone file → `FileNotFoundError`.
+
+        TestClient runs FastAPI's BackgroundTasks synchronously after
+        each response, so we can't realistically time two POSTs to
+        overlap. Instead we manually drive `geo_progress` into the
+        active state and verify the endpoint refuses entry. That's
+        what the real "second click while first is running" scenario
+        looks like at the geo_progress layer."""
+        from app.core import geo_progress
+
+        # Simulate "first job already kicked off and downloading"
+        job_id = geo_progress.start_job(["geoip"])
+        geo_progress.set_stage("geoip", "downloading")
+        assert geo_progress.get_state().active, "test setup invariant failed"
+
+        try:
+            r = client.post(
+                "/api/geodata/update",
+                json={"type": "geoip"},
+                headers=auth_headers,
+            )
+            assert r.status_code == 409, (
+                f"expected 409 Conflict on concurrent update, got "
+                f"{r.status_code}: {r.text!r}"
+            )
+            body = r.json()
+            detail = body.get("detail")
+            # The error body is a dict — assert job_id is reported back
+            # so the UI can poll the existing job's progress instead of
+            # spinning up a duplicate.
+            assert isinstance(detail, dict), f"detail not dict: {detail!r}"
+            assert detail.get("job_id") == job_id
+            assert "in progress" in detail.get("error", "").lower()
+        finally:
+            # Clean up so we don't leak active state into other tests
+            geo_progress.finish()

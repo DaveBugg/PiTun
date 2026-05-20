@@ -66,8 +66,27 @@ async def update_geodata(
     poll. The state singleton resets on each call to this endpoint;
     don't fire multiple concurrent updates expecting independent
     progress views.
+
+    Concurrent calls are refused (409 Conflict). Without this guard
+    a double-click on the UI's "Update" button used to spawn two
+    overlapping download tasks racing on the `.tmp` write path —
+    first one renamed `.tmp` → `geoip.dat`, second one then tried
+    to rename a now-missing `.tmp` and surfaced as `FileNotFoundError`.
+    The per-call tmp filename in `_download_file` is the second line
+    of defence; this 409 is the first.
     """
     from app.core import geo_progress
+
+    if geo_progress.get_state().active:
+        existing = geo_progress.get_state()
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "geodata update already in progress",
+                "job_id": existing.job_id,
+                "hint": "Poll GET /api/geodata/update/progress; wait for it to finish before retrying.",
+            },
+        )
 
     update_type = body.type or "all"
 

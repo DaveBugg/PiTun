@@ -2,6 +2,7 @@
 import asyncio
 import logging
 import os
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -33,36 +34,56 @@ async def _download_file(
 
     dest_path = Path(dest)
     dest_path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = str(dest_path) + ".tmp"
+    # Per-call unique tmp filename so two concurrent downloads to the
+    # same destination don't race on the same temp file (observed in
+    # the wild: double-click on the "Update geo data" button → two
+    # downloads to `geoip.dat.tmp`; first finishes and renames →
+    # second finishes but `.tmp` is gone → `FileNotFoundError`).
+    # Defense-in-depth alongside the endpoint-level mutex in
+    # `api/geodata.py` — even if the mutex is somehow bypassed, the
+    # two writers no longer collide.
+    tmp_path = f"{dest_path}.tmp.{uuid.uuid4().hex[:8]}"
 
     if progress_name:
         geo_progress.set_stage(progress_name, "downloading", source_url=url)
 
-    async with httpx.AsyncClient(follow_redirects=True, timeout=120) as client:
-        async with client.stream("GET", url) as resp:
-            resp.raise_for_status()
-            cl = resp.headers.get("content-length")
-            total: Optional[int] = int(cl) if cl else None
-            downloaded = 0
-            with open(tmp_path, "wb") as f:
-                async for chunk in resp.aiter_bytes(chunk_size=65536):
-                    f.write(chunk)
-                    downloaded += len(chunk)
-                    if progress_name:
-                        # Push every chunk — the state is in-process
-                        # and the poll endpoint just reads the latest
-                        # snapshot, so there's no I/O cost per push.
-                        geo_progress.update_bytes(progress_name, downloaded, total)
-                    if total:
-                        pct = downloaded * 100 // total
-                        if pct % 20 == 0:
-                            logger.debug("Download %s: %d%%", dest_path.name, pct)
+    try:
+        async with httpx.AsyncClient(follow_redirects=True, timeout=120) as client:
+            async with client.stream("GET", url) as resp:
+                resp.raise_for_status()
+                cl = resp.headers.get("content-length")
+                total: Optional[int] = int(cl) if cl else None
+                downloaded = 0
+                with open(tmp_path, "wb") as f:
+                    async for chunk in resp.aiter_bytes(chunk_size=65536):
+                        f.write(chunk)
+                        downloaded += len(chunk)
+                        if progress_name:
+                            # Push every chunk — the state is in-process
+                            # and the poll endpoint just reads the latest
+                            # snapshot, so there's no I/O cost per push.
+                            geo_progress.update_bytes(progress_name, downloaded, total)
+                        if total:
+                            pct = downloaded * 100 // total
+                            if pct % 20 == 0:
+                                logger.debug("Download %s: %d%%", dest_path.name, pct)
 
-    if progress_name:
-        geo_progress.set_stage(progress_name, "verifying")
+        if progress_name:
+            geo_progress.set_stage(progress_name, "verifying")
 
-    os.replace(tmp_path, dest)
-    logger.info("Downloaded %s (%d bytes) to %s", url, downloaded, dest)
+        os.replace(tmp_path, dest)
+        logger.info("Downloaded %s (%d bytes) to %s", url, downloaded, dest)
+    except BaseException:
+        # Clean up the partial tmp file so we don't litter
+        # `/usr/local/share/xray/` with `*.tmp.<random>` on every
+        # failed download / cancel. `BaseException` catches asyncio
+        # task cancellation too (the `_do_update` task can be GC'd
+        # if the backend reloads mid-update).
+        try:
+            os.unlink(tmp_path)
+        except FileNotFoundError:
+            pass
+        raise
 
 
 async def update_geoip(url: Optional[str] = None) -> None:
