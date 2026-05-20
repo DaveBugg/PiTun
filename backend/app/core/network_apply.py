@@ -303,7 +303,10 @@ def delete_backup(backup_id: str) -> None:
     r = nc.host_run(["rm", "-f", path], timeout=3)
     if r.returncode != 0:
         raise NetworkApplyError(f"Could not delete {path}: {r.stderr.strip()}")
-    logger.info("Network backup deleted: id=%s", backup_id)
+    # `%r` on user-controlled `backup_id` (CWE-117 hardening). Regex
+    # validation above already prevents \n/\r/path-traversal chars,
+    # but `repr()` is the pattern CodeQL recognises as a log sanitiser.
+    logger.info("Network backup deleted: id=%r", backup_id)
 
 
 def delete_all_backups() -> int:
@@ -450,14 +453,14 @@ def _apply_ifupdown(
     r = nc.host_run(["tee", write_path], input_data=new_content, timeout=5)
     if r.returncode != 0:
         raise NetworkApplyError(f"Could not write {write_path}: {r.stderr.strip()}")
-    logger.info("ifupdown: rewrote %s for iface=%s", write_path, state.interface)
+    logger.info("ifupdown: rewrote %s for iface=%r", write_path, state.interface)
 
     # Runtime apply: replace default route + DNS without bringing the
     # interface down (would kill SSH).
     r = nc.host_run(["ip", "route", "replace", "default", "via", final_gateway, "dev", state.interface], timeout=5)
     if r.returncode != 0:
         raise NetworkApplyError(f"ip route replace failed: {r.stderr.strip()}")
-    logger.info("ifupdown: default route -> %s dev %s", final_gateway, state.interface)
+    logger.info("ifupdown: default route -> %r dev %r", final_gateway, state.interface)
 
     if final_dns:
         resolv = "# Managed by PiTun (Network UI)\n"
@@ -466,7 +469,7 @@ def _apply_ifupdown(
         r = nc.host_run(["tee", "/etc/resolv.conf"], input_data=resolv, timeout=5)
         if r.returncode != 0:
             raise NetworkApplyError(f"Could not write /etc/resolv.conf: {r.stderr.strip()}")
-        logger.info("ifupdown: resolv.conf -> %s", final_dns)
+        logger.info("ifupdown: resolv.conf -> %r", final_dns)
 
 
 # ── NetworkManager apply ──────────────────────────────────────────────────
@@ -528,7 +531,7 @@ def _apply_networkmanager(
     r = nc.host_run(["nmcli", "connection", "up", conn], timeout=15)
     if r.returncode != 0:
         raise NetworkApplyError(f"nmcli up failed: {r.stderr.strip() or r.stdout.strip()}")
-    logger.info("NetworkManager: applied gateway=%s dns=%s on %s", final_gateway, final_dns, conn)
+    logger.info("NetworkManager: applied gateway=%r dns=%r on %r", final_gateway, final_dns, conn)
 
 
 # ── Public apply / rollback ──────────────────────────────────────────────
@@ -612,7 +615,7 @@ def rollback(backup_id: Optional[str] = None) -> Backup:
                 r.stderr.strip(),
             )
         else:
-            logger.info("rollback: runtime default route -> %s dev %s", old_gw, iface)
+            logger.info("rollback: runtime default route -> %r dev %r", old_gw, iface)
 
     if old_dns:
         resolv = "".join(f"nameserver {d}\n" for d in old_dns)

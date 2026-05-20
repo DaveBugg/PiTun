@@ -80,6 +80,51 @@ _NSENTER_BASE = [
     "--",
 ]
 
+# Allowlist of program names `host_run` will execute. Defense-in-depth
+# against the (current) all-internal callers ever growing a path where
+# user input flows into `argv[0]`. List-form subprocess.run() already
+# means there's no shell interpretation of metacharacters, so this is
+# strictly belt-and-suspenders — but it's also the pattern CodeQL
+# recognises as a sanitiser for the `py/command-line-injection` query
+# (we picked up two Critical findings on the bare subprocess.run calls
+# below until this guard landed).
+#
+# Add new programs here when callers need them. Never relax this to
+# accept user input.
+_ALLOWED_PROGRAMS = frozenset({
+    "arping", "cat", "chmod", "chown", "command", "dhcpcd", "ifdown",
+    "ifup", "ip", "mkdir", "mv", "netplan", "networkctl", "nmcli",
+    "nsenter", "ping", "resolvectl", "rm", "sh", "stat", "systemctl",
+    "tee", "test",
+})
+
+
+def _validate_argv(argv: List[str]) -> None:
+    """Raise ValueError unless `argv[0]` (the program) is in the
+    allowlist. Element shape — string, non-empty — is asserted too so
+    a stray `None`/int can't sneak through into subprocess.
+
+    Why argv[0] only: with list-form subprocess.run, the remaining
+    elements are passed as-is to execve() — no shell, no metacharacter
+    interpretation. The program name is the only thing that *can*
+    redirect execution. Callers still need their own input validation
+    for the semantic shape of arguments (e.g. interface names match a
+    regex) — this is just the last-line gate.
+    """
+    if not argv:
+        raise ValueError("host_run: argv is empty")
+    program = argv[0]
+    if not isinstance(program, str) or not program:
+        raise ValueError(f"host_run: invalid program name: {program!r}")
+    if program not in _ALLOWED_PROGRAMS:
+        raise ValueError(
+            f"host_run: program {program!r} not in allowlist — "
+            f"add to _ALLOWED_PROGRAMS in network_config.py if intentional."
+        )
+    for i, arg in enumerate(argv):
+        if not isinstance(arg, str):
+            raise ValueError(f"host_run: argv[{i}] not a string: {arg!r}")
+
 
 def host_run(
     argv: List[str],
@@ -95,6 +140,7 @@ def host_run(
     effort and will likely fail on host-side mutation, but lets the
     read-only paths work for local iteration.
     """
+    _validate_argv(argv)
     # When `pid: host` isn't set (e.g. dev), nsenter `--target 1` will
     # error with "permission denied" or "No such process". Detect the
     # container-vs-host case here so callers don't have to.
