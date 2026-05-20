@@ -153,6 +153,129 @@ class TestModes:
         assert last_rule["outboundTag"] == "direct"
         assert "0.0.0.0/0" in last_rule.get("ip", [])
 
+    # ── Private-CIDR bypass (the LAN-leak prevention check) ────────────
+    #
+    # In `global` mode every connection is force-routed through the
+    # active node — UNLESS the `bypass_private` toggle is on, in which
+    # case RFC 1918 + loopback + link-local + multicast + IPv6 ULA stay
+    # direct (otherwise LAN-internal connections would tunnel out the
+    # WAN, which is both surprising and breaks LAN services).
+    # These tests pin the contract so a future config_gen refactor
+    # can't silently drop the LAN-bypass rule.
+
+    def test_global_mode_with_bypass_private_keeps_lan_direct(self):
+        """`global + bypass_private=true` must emit a direct rule for
+        the private CIDR set BEFORE the catch-all → active-node rule."""
+        node = _make_node(id=42)
+        cfg = generate_config(
+            node, [node], [], "global",
+            _default_settings(bypass_private="true"),
+        )
+        ip_rules = [r for r in cfg["routing"]["rules"]
+                    if r.get("type") == "field" and "ip" in r]
+        # Find the private-CIDR rule by looking for one whose ip list
+        # contains 192.168.0.0/16 (the most user-visible LAN range).
+        private_rule = next(
+            (r for r in ip_rules if "192.168.0.0/16" in r["ip"]),
+            None,
+        )
+        assert private_rule is not None, (
+            "global+bypass_private should emit a direct rule for the "
+            "private CIDR set; got rules: " + str(ip_rules)
+        )
+        assert private_rule["outboundTag"] == "direct"
+        # Sanity — RFC 1918 + loopback + link-local + IPv6 LL all present
+        for cidr in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16",
+                     "127.0.0.0/8", "169.254.0.0/16", "::1/128",
+                     "fc00::/7", "fe80::/10"):
+            assert cidr in private_rule["ip"], f"missing CIDR: {cidr}"
+        # The private rule must appear BEFORE the catch-all (otherwise
+        # the catch-all eats LAN packets first).
+        private_idx = cfg["routing"]["rules"].index(private_rule)
+        catchall_idx = next(
+            i for i, r in enumerate(cfg["routing"]["rules"])
+            if r.get("ip") == ["0.0.0.0/0", "::/0"]
+        )
+        assert private_idx < catchall_idx, (
+            "private CIDR rule must come BEFORE the catch-all"
+        )
+        # Catch-all goes to the active node
+        assert cfg["routing"]["rules"][catchall_idx]["outboundTag"] == "node-42"
+
+    def test_global_mode_without_bypass_private_leaks_lan(self):
+        """`bypass_private=false` in global mode: NO private rule;
+        every connection (including LAN) hits the catch-all. This is
+        the user's choice — we document the trade-off but don't add
+        a guard. The test pins the behaviour so the choice stays
+        meaningful."""
+        node = _make_node(id=42)
+        cfg = generate_config(
+            node, [node], [], "global",
+            _default_settings(bypass_private="false"),
+        )
+        ip_rules = [r for r in cfg["routing"]["rules"]
+                    if r.get("type") == "field" and "ip" in r]
+        # No private rule
+        for r in ip_rules:
+            if r.get("outboundTag") == "direct":
+                assert "192.168.0.0/16" not in r.get("ip", []), (
+                    "bypass_private=false should NOT emit a direct rule "
+                    "for the LAN range"
+                )
+
+    def test_rules_mode_with_bypass_private(self):
+        """`rules` mode honours `bypass_private` too — the rule comes
+        BEFORE the user's own rules in the routing chain so a
+        misconfigured user rule can't accidentally tunnel LAN."""
+        node = _make_node(id=7)
+        cfg = generate_config(
+            node, [node], [], "rules",
+            _default_settings(bypass_private="true"),
+        )
+        ip_rules = [r for r in cfg["routing"]["rules"]
+                    if r.get("type") == "field" and "ip" in r]
+        private_rule = next(
+            (r for r in ip_rules if "192.168.0.0/16" in r["ip"]),
+            None,
+        )
+        assert private_rule is not None
+        assert private_rule["outboundTag"] == "direct"
+
+    def test_bypass_mode_ignores_bypass_private(self):
+        """`bypass` (direct) mode: everything goes direct anyway, so
+        the `bypass_private` toggle is a no-op. Pin it so the toggle's
+        irrelevance here is intentional and tested."""
+        node = _make_node()
+        cfg_on = generate_config(node, [node], [], "bypass",
+                                 _default_settings(bypass_private="true"))
+        cfg_off = generate_config(node, [node], [], "bypass",
+                                  _default_settings(bypass_private="false"))
+        # Both should produce the same `routing.rules` payload
+        assert cfg_on["routing"]["rules"] == cfg_off["routing"]["rules"]
+        # And the last rule is the catch-all to direct
+        assert cfg_on["routing"]["rules"][-1]["outboundTag"] == "direct"
+
+    def test_global_mode_skips_user_routing_rules(self):
+        """User-defined RoutingRule rows are IGNORED in global mode —
+        the routing chain consists only of (optional) private bypass +
+        catch-all to active node. This is the contract the new
+        Routing-page banner (frontend 1.3.5) tells the user about."""
+        node = _make_node(id=11)
+        # A user rule that would normally send vk.com direct
+        user_rule = RoutingRule(
+            id=99, name="bypass vk", rule_type="domain",
+            match_value="vk.com", action="direct", order=0, enabled=True,
+        )
+        cfg = generate_config(
+            node, [node], [user_rule], "global", _default_settings(),
+        )
+        # No rule mentions vk.com
+        for r in cfg["routing"]["rules"]:
+            assert "vk.com" not in str(r), (
+                "global mode must NOT emit user RoutingRule rows; "
+                f"found one referencing vk.com: {r}"
+            )
+
 
 # ============================================================================
 # Inbound tests

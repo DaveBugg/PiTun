@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
-import { Plus, Pencil, Trash2, ToggleLeft, ToggleRight, GripVertical, Upload, Zap, FileUp, FileDown, HelpCircle } from 'lucide-react'
+import { Plus, Pencil, Trash2, ToggleLeft, ToggleRight, GripVertical, Upload, Zap, FileUp, FileDown, HelpCircle, AlertTriangle } from 'lucide-react'
 import { clsx } from 'clsx'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { routingApi } from '@/api/client'
@@ -478,8 +478,34 @@ export function Routing() {
     </div>
   )
 
+  // Routing rules ONLY apply when proxy mode is `rules`. In `global`
+  // mode every connection is force-routed through the active node
+  // regardless of what the operator typed here; in `bypass` mode
+  // every connection goes direct. The audit on `config_gen.py:824` in
+  // 1.3.4 verified the rules-loop only runs in the `rules` branch —
+  // so on the other two modes the page renders an active edit
+  // surface that has no effect. Show a banner so the operator sees
+  // the gotcha before they save changes that won't take effect.
+  const proxyMode = sysSettings?.mode
+  const rulesIgnored = proxyMode != null && proxyMode !== 'rules'
+
   return (
     <div className="p-4 sm:p-6 space-y-5">
+      {rulesIgnored && tab === 'rules' && (
+        <div className="rounded-lg border border-amber-900/60 bg-amber-900/15 px-4 py-3 text-amber-200 text-sm flex items-start gap-3">
+          <AlertTriangle className="h-5 w-5 shrink-0 mt-0.5" />
+          <div>
+            <div className="font-semibold mb-0.5">
+              Routing rules are disabled in {proxyMode === 'global' ? '"Global"' : '"Bypass / Direct"'} mode
+            </div>
+            <div className="text-amber-300/80 text-[13px]">
+              {proxyMode === 'global'
+                ? 'All traffic is force-routed through the active node. Rules below are still saved but won\'t take effect until you switch Proxy Mode to "Rules" on the Dashboard. The `Bypass local networks` rule in particular has NO effect in Global — use the "Bypass private CIDRs" toggle on the Dashboard instead.'
+                : 'All traffic goes direct (no proxy). Rules below are still saved but won\'t take effect until you switch Proxy Mode to "Rules" on the Dashboard.'}
+            </div>
+          </div>
+        </div>
+      )}
       <div className="flex items-start justify-between flex-wrap gap-3">
         <h1 className="text-xl font-bold text-gray-100">Routing</h1>
         {tab === 'rules' && (
