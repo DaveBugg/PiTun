@@ -258,6 +258,35 @@ app = FastAPI(
     openapi_url="/api/openapi.json",
 )
 
+# ── Exception handlers ───────────────────────────────────────────────────────
+# Lock-busy on the xray manager → 503 Service Unavailable.
+# Without this, a stuck reload (e.g. broken /etc/resolv.conf wedging
+# a sync getaddrinfo while holding `xray_manager._lock`) used to
+# surface as a hung connection from the operator's perspective.
+# Returning a clean 503 lets the UI show "service busy, retry"
+# instead of a frozen spinner. The fix in 1.3.3+ also addresses the
+# underlying hang (de-blocked sync DNS) — this is the second line
+# of defense.
+from app.core.xray import XrayManager  # noqa: E402 — needs `app` defined first
+
+
+@app.exception_handler(XrayManager.LockBusyError)
+async def _xray_lock_busy_handler(request, exc):  # noqa: ARG001
+    from fastapi.responses import JSONResponse
+    return JSONResponse(
+        status_code=503,
+        content={
+            "detail": str(exc),
+            "hint": (
+                "Another xray operation is still running. "
+                "Wait a few seconds and retry. If this persists, "
+                "check the backend logs for the last xray-related "
+                "error line."
+            ),
+        },
+    )
+
+
 # ── CORS ──────────────────────────────────────────────────────────────────────
 app.add_middleware(
     CORSMiddleware,

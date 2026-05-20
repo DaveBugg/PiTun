@@ -17,6 +17,21 @@ log_queue: asyncio.Queue = asyncio.Queue(maxsize=2000)
 
 
 class XrayManager:
+    # Default deadline for acquiring `_lock` before the API endpoint
+    # returns 503. Picked to be longer than the longest legitimate
+    # critical section (config write + `xray -test` + reload, ~15 s
+    # worst case) but short enough that one stuck reload doesn't wedge
+    # every API endpoint that touches xray forever.
+    #
+    # Observed in the wild on 192.168.1.4 during the 1.3.3 burn-in:
+    # a broken /etc/resolv.conf caused a sync getaddrinfo() inside
+    # _apply_nftables to hang while holding the lock; subsequent
+    # routing-rule POSTs and /system/restart calls then queued
+    # indefinitely. This timeout ensures the queue drains as 503
+    # within a bounded window so the operator gets a clear error
+    # instead of a frozen UI.
+    LOCK_ACQUIRE_TIMEOUT: float = 30.0
+
     def __init__(self) -> None:
         self._process: Optional[asyncio.subprocess.Process] = None
         self._start_time: Optional[float] = None
@@ -59,25 +74,65 @@ class XrayManager:
             logger.warning("Cannot get xray version: %s", exc)
             return None
 
+    class LockBusyError(RuntimeError):
+        """Raised when `_lock` is held past `LOCK_ACQUIRE_TIMEOUT`.
+
+        API handlers should catch this and surface it as 503 Service
+        Unavailable so the operator sees a clear "xray is busy" error
+        instead of a hung response. The earlier behavior (unbounded
+        `async with self._lock`) wedged every routing/system endpoint
+        when one critical section hung — see class-level docstring."""
+
+    async def _acquire_lock_or_raise(self, op_name: str) -> None:
+        """Acquire `_lock` with a deadline. Raises LockBusyError if
+        the lock is still held when the timeout elapses."""
+        try:
+            await asyncio.wait_for(
+                self._lock.acquire(),
+                timeout=self.LOCK_ACQUIRE_TIMEOUT,
+            )
+        except asyncio.TimeoutError as exc:
+            logger.error(
+                "xray_manager._lock busy >%.0fs while attempting %s — "
+                "previous operation may be stuck. Check `docker logs "
+                "pitun-backend` for the last 'xray' line.",
+                self.LOCK_ACQUIRE_TIMEOUT, op_name,
+            )
+            raise XrayManager.LockBusyError(
+                f"xray manager is busy (lock held >{self.LOCK_ACQUIRE_TIMEOUT:.0f}s)"
+            ) from exc
+
     async def start(self) -> None:
-        async with self._lock:
+        await self._acquire_lock_or_raise("start")
+        try:
             await self._start_unlocked()
+        finally:
+            self._lock.release()
 
     async def stop(self) -> None:
-        async with self._lock:
+        await self._acquire_lock_or_raise("stop")
+        try:
             await self._stop_unlocked()
+        finally:
+            self._lock.release()
 
     async def restart(self) -> None:
-        async with self._lock:
+        await self._acquire_lock_or_raise("restart")
+        try:
             await self._stop_unlocked()
             await self._start_unlocked()
+        finally:
+            self._lock.release()
 
     async def reload(self) -> None:
-        async with self._lock:
+        await self._acquire_lock_or_raise("reload")
+        try:
             if self.is_running:
                 await self._stop_unlocked()
             await self._start_unlocked()
             logger.info("xray reloaded (restart with new config)")
+        finally:
+            self._lock.release()
 
     async def _start_unlocked(self) -> None:
         if self.is_running:

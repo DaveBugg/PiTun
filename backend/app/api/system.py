@@ -1100,26 +1100,60 @@ async def _collect_naive_bypass_dsts(session: AsyncSession) -> List[str]:
     """
     Resolve IPs of all enabled naive upstream servers → /32 CIDRs.
     Used to prevent the tproxy output-chain loop for the sidecar's socket.
-    Domain names are resolved via socket.getaddrinfo (A records only).
+    Domain names are resolved via ``socket.getaddrinfo`` (A records only).
+
+    Resolution runs OFF the event loop thread (``asyncio.to_thread``)
+    and with a 2-second per-host budget. The earlier sync version
+    blocked the entire FastAPI event loop when /etc/resolv.conf was
+    misconfigured — observed in the wild on 192.168.1.4 during 1.3.3
+    burn-in: every API endpoint that touched ``_auto_reload_xray``
+    (routing-rule CRUD, ``/system/restart``) stalled forever because
+    the underlying ``getaddrinfo`` call wedged the loop while glibc
+    retried against zero nameservers.
+
+    DNS-broken or host-unreachable cases are absorbed silently
+    (worst case: loop prevention doesn't apply until the host
+    resolves again — non-fatal).
     """
+    import asyncio
     import socket as _sock
+
     nodes = list((await session.exec(
         select(Node).where(Node.protocol == "naive", Node.enabled == True)  # noqa: E712
     )).all())
     out: List[str] = []
+
+    def _resolve_one(host: str) -> List[str]:
+        try:
+            infos = _sock.getaddrinfo(host, None, _sock.AF_INET, _sock.SOCK_STREAM)
+        except Exception:
+            return []
+        results: List[str] = []
+        for fam, _, _, _, sa in infos:
+            if fam == _sock.AF_INET and sa and sa[0]:
+                results.append(f"{sa[0]}/32")
+        return results
+
     for n in nodes:
         host = (n.address or "").strip()
         if not host:
             continue
         try:
-            infos = _sock.getaddrinfo(host, None, _sock.AF_INET, _sock.SOCK_STREAM)
-            for fam, _, _, _, sa in infos:
-                if fam == _sock.AF_INET and sa and sa[0]:
-                    out.append(f"{sa[0]}/32")
-        except Exception:
-            # If resolution fails (e.g. node offline / DNS broken), skip it.
-            # Worst case the loop prevention doesn't apply until resolvable.
+            cidrs = await asyncio.wait_for(
+                asyncio.to_thread(_resolve_one, host),
+                timeout=2.0,
+            )
+        except asyncio.TimeoutError:
+            # Don't block reload pipelines on a slow / broken DNS path.
+            # Log once per host, not per-call to avoid spam.
+            logger.warning(
+                "naive bypass: DNS resolution of %r timed out — skipping. "
+                "Check /etc/resolv.conf if this persists.",
+                host,
+            )
             continue
+        out.extend(cidrs)
+
     # Dedup while preserving order
     seen = set()
     uniq = []

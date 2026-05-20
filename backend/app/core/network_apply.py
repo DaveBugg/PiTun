@@ -469,7 +469,18 @@ def _apply_ifupdown(
         r = nc.host_run(["tee", "/etc/resolv.conf"], input_data=resolv, timeout=5)
         if r.returncode != 0:
             raise NetworkApplyError(f"Could not write /etc/resolv.conf: {r.stderr.strip()}")
-        logger.info("ifupdown: resolv.conf -> %r", final_dns)
+        # Also write /etc/resolv.conf.head — dhcpcd's resolvconf hook
+        # prepends this file on every regen. Without it, the next time
+        # dhcpcd refreshes (lease renewal, daemon restart, reboot on
+        # systems where dhcpcd-base ships even when ifupdown owns the
+        # interface), the resolv.conf we just wrote gets clobbered to
+        # an empty header and the host loses DNS.
+        # Observed in production on 192.168.1.4 during 1.3.3 burn-in:
+        # static IP applied via PiTun → resolv.conf populated →
+        # subsequent reboot → dhcpcd regenerated empty resolv.conf →
+        # every API endpoint touching getaddrinfo wedged.
+        nc.host_run(["tee", "/etc/resolv.conf.head"], input_data=resolv, timeout=5)
+        logger.info("ifupdown: resolv.conf + .head -> %r", final_dns)
 
 
 # ── NetworkManager apply ──────────────────────────────────────────────────
@@ -620,6 +631,15 @@ def rollback(backup_id: Optional[str] = None) -> Backup:
     if old_dns:
         resolv = "".join(f"nameserver {d}\n" for d in old_dns)
         nc.host_run(["tee", "/etc/resolv.conf"], input_data=resolv, timeout=5)
+        # Also restore the dhcpcd `.head` pin we wrote on apply (or
+        # delete it when the pre-change state had no DNS pin). Mirror
+        # of the apply step in `_apply_ifupdown`.
+        nc.host_run(["tee", "/etc/resolv.conf.head"], input_data=resolv, timeout=5)
+    else:
+        # No DNS in the pre-change state → also strip any .head we
+        # wrote on the apply, so the system goes back to "let dhcpcd
+        # do whatever it wants" behaviour.
+        nc.host_run(["rm", "-f", "/etc/resolv.conf.head"], timeout=3)
 
     return backup
 
