@@ -546,9 +546,48 @@ def _build_dns_section(
             ip = m.group(1)
             dns_hosts[ip] = ip  # identity mapping — skip resolution
 
+    # Pin every DNS server entry to the `direct` outbound (since v1.3.5).
+    #
+    # xray-core treats DNS-upstream connections as regular outbound dials
+    # — meaning they pass through the user's routing rules. That's a
+    # footgun: a perfectly legitimate "everything-via-proxy" routing
+    # rule (e.g. `port: 0-65535 → proxy` or `geoip:!ru → proxy`) ALSO
+    # captures the DNS resolver's own connection to 8.8.8.8:53,
+    # tunnelling it through the active node. If the node is flaky or
+    # under handshake-failure, the whole DNS layer dies — and with
+    # broken DNS, nothing else resolves either. Observed in the wild on
+    # the 1256-node burn-in (192.168.1.4): user added "Port Range
+    # 0-65535 → proxy", node had a transient handshake failure, the
+    # whole API and proxy locked up.
+    #
+    # The `outboundTag` field on a DNS server config is exactly the
+    # escape hatch — xray short-circuits routing for THAT server's
+    # upstream connections and dials via the named outbound. Pinning
+    # to `direct` means DNS always resolves over the host's normal
+    # network path, regardless of what the user's routing rules say.
+    # Privacy-wise this is the standard pattern: DNS-over-TCP/53 is
+    # not encrypted anyway, and forcing it through the proxy adds a
+    # circular dependency (the proxy node's address itself needs to
+    # be resolved before the proxy can be used).
+    pinned_servers: List[Any] = []
+    for srv in dns_servers:
+        if srv == "fakedns":
+            pinned_servers.append(srv)  # sentinel — no outbound
+            continue
+        if isinstance(srv, str):
+            pinned_servers.append({"address": srv, "outboundTag": "direct"})
+        elif isinstance(srv, dict):
+            # Preserve any existing outboundTag (currently none, but
+            # defensive against future per-server overrides).
+            if "outboundTag" not in srv:
+                srv = {**srv, "outboundTag": "direct"}
+            pinned_servers.append(srv)
+        else:
+            pinned_servers.append(srv)  # unknown shape — leave alone
+
     dns_section: Dict[str, Any] = {
         "hosts": dns_hosts,
-        "servers": dns_servers,
+        "servers": pinned_servers,
         "disableFallback": disable_fallback,
     }
 
@@ -777,7 +816,25 @@ def generate_config(
     outbounds += [
         {"tag": "direct", "protocol": "freedom", "settings": {"domainStrategy": "UseIP"}, "streamSettings": {"sockopt": {"mark": 255}}},
         {"tag": "block", "protocol": "blackhole"},
-        {"tag": "dns-out", "protocol": "dns", "streamSettings": {"sockopt": {"mark": 255}}},
+        # `proxySettings.tag: direct` forces every DNS-upstream dial
+        # (the connection to 8.8.8.8:53 / 1.1.1.1:53 / etc) through
+        # the `direct` outbound, bypassing the user's routing rules
+        # entirely. Without this, a "catch-all → proxy" rule (e.g.
+        # `port: 0-65535 → proxy`, `geoip:!ru → proxy`) intercepts
+        # the DNS dial too and tunnels it through the active VPN
+        # node — if that node has any handshake issue, DNS dies and
+        # nothing else can resolve. Observed in the wild on
+        # 192.168.1.4 during 1.3.4 burn-in (1256-node subscription
+        # + Port Range 0-65535 → proxy rule). Pair with the
+        # `outboundTag: direct` per-DNS-server pin in `_build_dns_section`
+        # — that one wins for any internal xray query that goes
+        # through the routing engine BEFORE hitting the outbound.
+        {
+            "tag": "dns-out",
+            "protocol": "dns",
+            "streamSettings": {"sockopt": {"mark": 255}},
+            "proxySettings": {"tag": "direct"},
+        },
     ]
 
     # Build balancers list for xray routing
@@ -809,6 +866,28 @@ def generate_config(
         "type": "field",
         "inboundTag": ["dns-in", "dns-in-53"],
         "outboundTag": "dns-out",
+    })
+
+    # System-level DNS-upstream protection (since v1.3.5). Forces any
+    # destination port 53 to the `direct` outbound BEFORE user rules
+    # get a chance to match it. Necessary because xray's `dns` outbound
+    # uses the normal routing engine to dial the DNS server itself —
+    # so a user `port: 0-65535 → proxy` (or `geoip:!ru → proxy`) rule
+    # would otherwise capture the DNS dial and tunnel it through the
+    # active VPN node, breaking the resolver when that node has any
+    # handshake issue. Burn-in on 192.168.1.4 nailed the exact case:
+    # add the catch-all rule → kill DNS → kill everything.
+    #
+    # Why we don't pin via dns-out's `proxySettings.tag`: that field
+    # chains outbounds (dns-out's resolved data flows through direct)
+    # — it doesn't override routing rules for the dial destination.
+    # Why we don't strip dangerous user rules: surgical user-rule
+    # rewriting is brittle and user-surprising. A system rule that
+    # always wins is robust and stays explicit in the generated config.
+    routing_rules.append({
+        "type": "field",
+        "port": "53",
+        "outboundTag": "direct",
     })
 
     if mode == "bypass":

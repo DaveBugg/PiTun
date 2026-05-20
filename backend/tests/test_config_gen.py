@@ -480,22 +480,223 @@ class TestBalancers:
 # DNS tests
 # ============================================================================
 
+def _dns_addresses(cfg) -> list:
+    """Helper: extract the `address` field from every DNS server entry,
+    regardless of dict-vs-string shape. Since v1.3.5 every entry is a
+    dict (with `outboundTag: direct`) — pre-1.3.5 the primary upstream
+    was a bare string. This helper hides the form change so the tests
+    can assert on intent (the upstream address) rather than shape."""
+    out = []
+    for s in cfg["dns"]["servers"]:
+        if isinstance(s, str):
+            out.append(s)
+        elif isinstance(s, dict):
+            out.append(s.get("address", ""))
+    return out
+
+
 class TestDNS:
     def test_dot_uses_tcp_scheme(self):
         """xray-core doesn't support native DoT (PR #2042 never merged), so
         the `dot` mode falls back to plaintext DNS-over-TCP on port 53.
         UI surfaces this as "DNS over TCP (not encrypted)"."""
         cfg = generate_config(None, [], [], "rules", _default_settings(dns_mode="dot"))
-        servers = cfg["dns"]["servers"]
-        str_servers = [s for s in servers if isinstance(s, str)]
-        assert any(s.startswith("tcp://") and s.endswith(":53") for s in str_servers), \
-            f"No tcp://...:53 server found: {servers}"
+        addrs = _dns_addresses(cfg)
+        assert any(s.startswith("tcp://") and s.endswith(":53") for s in addrs), \
+            f"No tcp://...:53 server found: {addrs}"
 
     def test_doh_uses_https(self):
         cfg = generate_config(None, [], [], "rules", _default_settings(dns_mode="doh"))
+        addrs = _dns_addresses(cfg)
+        assert any(s.startswith("https://") for s in addrs), \
+            f"No https:// server found: {addrs}"
+
+    # ── DNS-upstream outboundTag pinning (since v1.3.5) ────────────────
+    #
+    # Pinning DNS servers to `outboundTag: direct` is the fix for the
+    # 192.168.1.4 burn-in lockup. The contract these tests pin: every
+    # DNS server entry must end up as a dict with outboundTag=direct,
+    # regardless of whether the operator configured it as a bare
+    # upstream, a per-domain object, or a fallback. The only exception
+    # is the `fakedns` sentinel which has no upstream to dial.
+
+    def test_primary_upstream_pinned_to_direct(self):
+        """The plain `dns_upstream=8.8.8.8` setting used to render as
+        a bare string. Now it must be a dict with outboundTag=direct
+        so user routing rules can't tunnel DNS upstream through the
+        proxy. Without this fix, a `port: 0-65535 → proxy` rule (or
+        `geoip:!ru → proxy` catch-all) would catch the DNS connection
+        and break the whole resolver when the proxy node hiccups."""
+        cfg = generate_config(None, [], [], "rules", _default_settings())
         servers = cfg["dns"]["servers"]
-        str_servers = [s for s in servers if isinstance(s, str)]
-        assert any(s.startswith("https://") for s in str_servers), f"No https:// server found: {servers}"
+        # Every entry must be a dict with outboundTag=direct
+        for s in servers:
+            assert isinstance(s, dict), (
+                f"Bare-string DNS server entry leaks back through "
+                f"user routing rules: {s!r}"
+            )
+            assert s.get("outboundTag") == "direct", (
+                f"DNS server missing outboundTag=direct: {s!r}"
+            )
+        # And the primary upstream is in there
+        addrs = [s["address"] for s in servers]
+        assert "8.8.8.8" in addrs, addrs
+
+    def test_secondary_upstream_pinned(self):
+        cfg = generate_config(
+            None, [], [], "rules",
+            _default_settings(
+                dns_upstream="8.8.8.8",
+                dns_upstream_secondary="1.1.1.1",
+            ),
+        )
+        secondary = next(
+            (s for s in cfg["dns"]["servers"]
+             if isinstance(s, dict) and s.get("address") == "1.1.1.1"),
+            None,
+        )
+        assert secondary is not None, cfg["dns"]["servers"]
+        assert secondary["outboundTag"] == "direct"
+
+    def test_fallback_upstream_pinned(self):
+        cfg = generate_config(
+            None, [], [], "rules",
+            _default_settings(
+                dns_upstream="8.8.8.8",
+                dns_fallback="9.9.9.9",
+            ),
+        )
+        fallback = next(
+            (s for s in cfg["dns"]["servers"]
+             if isinstance(s, dict) and s.get("address") == "9.9.9.9"),
+            None,
+        )
+        assert fallback is not None, cfg["dns"]["servers"]
+        assert fallback["outboundTag"] == "direct"
+
+    def test_per_rule_dns_pinned(self):
+        """Per-DNSRule entries (already dicts with `domains`) gain
+        outboundTag=direct without losing their existing fields."""
+        from app.models import DNSRule
+        rules = [DNSRule(
+            id=1, name="r", domain_match="vk.com",
+            dns_server="77.88.8.8", dns_type="plain",
+            enabled=True, order=10,
+        )]
+        cfg = generate_config(
+            None, [], [], "rules", _default_settings(), dns_rules=rules,
+        )
+        yandex = next(
+            (s for s in cfg["dns"]["servers"]
+             if isinstance(s, dict) and s.get("address") == "77.88.8.8"),
+            None,
+        )
+        assert yandex is not None, cfg["dns"]["servers"]
+        assert yandex["outboundTag"] == "direct"
+        # Existing fields preserved
+        assert "vk.com" in yandex.get("domains", [])
+
+    def test_ru_bypass_dns_pinned(self):
+        """`bypass_ru_dns=true` adds a Yandex-DNS server for RU domains.
+        That entry must also be pinned to direct — otherwise the RU
+        bypass becomes self-defeating (RU DNS query goes through the
+        VPN that's masquerading as a non-RU exit)."""
+        cfg = generate_config(
+            None, [], [], "rules",
+            _default_settings(bypass_ru_dns="true"),
+        )
+        ru = next(
+            (s for s in cfg["dns"]["servers"]
+             if isinstance(s, dict) and s.get("tag") == "ru-dns"),
+            None,
+        )
+        assert ru is not None, cfg["dns"]["servers"]
+        assert ru["outboundTag"] == "direct"
+
+    def test_system_dns_port_rule_precedes_user_rules(self):
+        """The system-level `port:53 → direct` rule must appear BEFORE
+        any user rule in the routing chain. xray evaluates rules
+        top-to-bottom and stops at the first match — so an immutable
+        system rule for port 53 catches DNS-upstream dials before a
+        user's `port: 0-65535 → proxy` catch-all can route them
+        through the broken VPN node. This is the real fix for the
+        burn-in lockup; the `proxySettings.tag: direct` on dns-out
+        only chains outbounds (doesn't override routing for the dial
+        destination).
+
+        Pin the rule's position: it must come after the dns-in
+        routing rule (so DNS QUERIES still reach dns-out) but BEFORE
+        any user RoutingRule. We test all three modes — the system
+        rule applies regardless of `mode`."""
+        from app.models import RoutingRule
+
+        # A nasty user rule that would otherwise catch DNS dials too.
+        bad_user_rule = RoutingRule(
+            id=99, name="port-catchall", rule_type="port",
+            match_value="0-65535", action="proxy", order=100, enabled=True,
+        )
+        node = _make_node(id=42)
+
+        for mode in ("rules", "global", "bypass"):
+            cfg = generate_config(
+                node, [node], [bad_user_rule], mode, _default_settings(),
+            )
+            rules = cfg["routing"]["rules"]
+            # Find the system port-53 rule
+            dns_port_rule_idx = next(
+                (i for i, r in enumerate(rules)
+                 if r.get("port") == "53" and r.get("outboundTag") == "direct"),
+                None,
+            )
+            assert dns_port_rule_idx is not None, (
+                f"missing system port:53 → direct rule in mode={mode!r}: {rules}"
+            )
+
+            # In `rules` mode the user rule should appear in the chain.
+            # In `global`/`bypass` user rules are dropped — so the
+            # presence-after check only applies to `rules` mode.
+            if mode == "rules":
+                user_rule_idx = next(
+                    (i for i, r in enumerate(rules)
+                     if r.get("port") == "0-65535"),
+                    None,
+                )
+                assert user_rule_idx is not None, "user rule missing in `rules` mode"
+                assert dns_port_rule_idx < user_rule_idx, (
+                    f"system port:53 rule (idx {dns_port_rule_idx}) "
+                    f"must come BEFORE user rule (idx {user_rule_idx})"
+                )
+
+    def test_dns_out_outbound_pinned_to_direct(self):
+        """The `dns-out` outbound must carry `proxySettings.tag: direct`
+        so its upstream-DNS dial (the TCP/UDP connection to the actual
+        DNS server) bypasses the user's routing rules. Belt-and-
+        suspenders with the per-server `outboundTag: direct` — that one
+        wins for queries that go through xray's routing engine; this
+        one wins for the dial that the dns-out outbound itself makes.
+        Without this, a port-range catch-all routing rule tunnels DNS
+        through the broken VPN node (real-world breakage on 1.3.4)."""
+        cfg = generate_config(None, [], [], "rules", _default_settings())
+        dns_out = next(
+            (o for o in cfg["outbounds"] if o.get("tag") == "dns-out"),
+            None,
+        )
+        assert dns_out is not None
+        assert dns_out.get("proxySettings", {}).get("tag") == "direct", (
+            f"dns-out missing proxySettings.tag=direct: {dns_out!r}"
+        )
+
+    def test_fakedns_sentinel_not_wrapped(self):
+        """The `fakedns` string is xray's sentinel for the FakeDNS
+        protocol — it has no upstream to dial, so wrapping it in an
+        outboundTag dict would either be a no-op or confuse xray's
+        config parser. Pin the "leave it alone" behaviour."""
+        cfg = generate_config(
+            None, [], [], "rules",
+            _default_settings(fakedns_enabled="true"),
+        )
+        servers = cfg["dns"]["servers"]
+        assert "fakedns" in servers, servers
 
     def test_per_rule_dns_formats_by_type(self):
         """Per-rule DNS server address is formatted according to `dns_type`
@@ -510,7 +711,11 @@ class TestDNS:
                     dns_server="9.9.9.9", dns_type="dot", enabled=True, order=30),
         ]
         cfg = generate_config(None, [], [], "rules", _default_settings(), dns_rules=rules)
-        obj_servers = [s for s in cfg["dns"]["servers"] if isinstance(s, dict)]
+        # Filter to per-rule entries (those carry a `domains` list).
+        # Since v1.3.5 the catch-all upstream is ALSO a dict, but
+        # without `domains` — exclude it from the per-rule mapping.
+        obj_servers = [s for s in cfg["dns"]["servers"]
+                       if isinstance(s, dict) and "domains" in s]
         addrs = {s["address"]: s["domains"] for s in obj_servers}
         assert "1.1.1.1" in addrs and "a.com" in addrs["1.1.1.1"]
         assert "https://1.0.0.1/dns-query" in addrs and "b.com" in addrs["https://1.0.0.1/dns-query"]
