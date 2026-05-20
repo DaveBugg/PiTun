@@ -144,6 +144,21 @@ async def lifespan(app: FastAPI):
         from app.models import Settings as DBSettings, Node
 
         async with AsyncSession(get_async_engine()) as session:
+            # Disable expire-on-commit so attribute reads after
+            # `session.commit()` (e.g. `enabled_nodes[0].name` on the
+            # log line below) don't trigger a sync lazy-load and the
+            # `MissingGreenlet: greenlet_spawn has not been called`
+            # error. Same systemic fix we applied to the orchestrate_*
+            # functions in 1.3.0-beta — kept the check working when
+            # SQLAlchemy upgraded its expire semantics. Without this,
+            # the integrity check was silently skipping every boot
+            # (logged as "integrity check skipped: greenlet_spawn..."
+            # — best-effort fallback).
+            try:
+                session.sync_session.expire_on_commit = False
+            except Exception:  # noqa: BLE001
+                pass
+
             row = (await session.exec(
                 select(DBSettings).where(DBSettings.key == "active_node_id")
             )).first()
@@ -163,7 +178,12 @@ async def lifespan(app: FastAPI):
                     enabled_nodes = (await session.exec(
                         select(Node).where(Node.enabled == True).order_by(Node.id)
                     )).all()
+                    # Snapshot fields we need AFTER commit before
+                    # invoking the commit — even with expire_on_commit
+                    # off, this is a belt-and-braces guarantee against
+                    # future SQLAlchemy default-behaviour drift.
                     new_id = enabled_nodes[0].id if enabled_nodes else None
+                    new_name = enabled_nodes[0].name if enabled_nodes else None
                     old_value = row.value
                     if new_id is not None:
                         row.value = str(new_id)
@@ -172,7 +192,7 @@ async def lifespan(app: FastAPI):
                         logger.warning(
                             "active_node_id healed on boot: %r -> %d (%r) "
                             "— previous value referenced a missing or disabled node",
-                            old_value, new_id, enabled_nodes[0].name,
+                            old_value, new_id, new_name,
                         )
                     else:
                         # No enabled nodes at all — clear the setting so
