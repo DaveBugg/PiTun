@@ -3,6 +3,7 @@ import { QRCodeSVG } from 'qrcode.react'
 import { Loader2, Copy, Check, Download, QrCode, X, AlertTriangle } from 'lucide-react'
 import { ModalShell } from '@/components/ModalShell'
 import { useT } from '@/hooks/useT'
+import { copyToClipboard } from '@/lib/clipboard'
 
 /**
  * Show a QR code for a single share URI. Used by the X-ui Panels and
@@ -89,13 +90,12 @@ export function ClientQrModal({ open, onClose, title, uri, fetchUri, subtitle }:
 
   const handleCopy = async () => {
     if (!finalUri) return
-    try {
-      await navigator.clipboard.writeText(finalUri)
+    // `copyToClipboard` handles the insecure-HTTP fallback. PiTun UI is
+    // typically served over plain HTTP on a LAN IP, where the secure-
+    // context-only `navigator.clipboard` API silently rejects.
+    if (await copyToClipboard(finalUri)) {
       setCopied(true)
       setTimeout(() => setCopied(false), 1500)
-    } catch {
-      // Clipboard API blocked (e.g. in some embedded webviews) — fall
-      // back to selecting the input so the user can copy manually.
     }
   }
 

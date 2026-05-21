@@ -14,6 +14,7 @@ import { createPortal } from 'react-dom'
 import { Info, Copy, Check } from 'lucide-react'
 import { clsx } from 'clsx'
 import { useSystemVersions } from '@/hooks/useSystem'
+import { copyToClipboard } from '@/lib/clipboard'
 import type { SystemVersions } from '@/types'
 
 interface Props {
@@ -66,22 +67,10 @@ export function VersionPopover({ shortVersion }: Props) {
 
   const copyAll = async () => {
     if (!data) return
-    const text = formatForClipboard(data)
-    try {
-      await navigator.clipboard.writeText(text)
-      setCopied(true)
-      setTimeout(() => setCopied(false), 1500)
-    } catch {
-      // clipboard API blocked (non-HTTPS origin on LAN) — fall back to select-all
-      // on the hidden textarea so Ctrl+C still works.
-      const ta = document.createElement('textarea')
-      ta.value = text
-      ta.style.position = 'fixed'
-      ta.style.left = '-9999px'
-      document.body.appendChild(ta)
-      ta.select()
-      document.execCommand('copy')
-      document.body.removeChild(ta)
+    // `copyToClipboard` handles the insecure-HTTP fallback so this
+    // works on plain LAN-IP origins where `navigator.clipboard` is
+    // gated behind a secure context.
+    if (await copyToClipboard(formatForClipboard(data))) {
       setCopied(true)
       setTimeout(() => setCopied(false), 1500)
     }

@@ -53,6 +53,12 @@ describe('<VersionPopover>', () => {
     vi.clearAllMocks()
     vi.mocked(systemApi.versions).mockResolvedValue(FIXTURE)
     clipboardWrite = vi.spyOn(navigator.clipboard, 'writeText').mockResolvedValue(undefined)
+    // `lib/clipboard.ts` gates the `navigator.clipboard` path behind
+    // `window.isSecureContext` (PiTun UI is typically served over HTTP
+    // on a LAN IP, where the modern API is silently blocked). jsdom
+    // defaults to `false` — stub it true so the test exercises the
+    // happy path. The execCommand fallback has its own coverage path.
+    Object.defineProperty(window, 'isSecureContext', { value: true, configurable: true })
   })
 
   it('renders a trigger showing the short version', () => {

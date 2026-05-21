@@ -11,6 +11,7 @@ import { useT } from '@/hooks/useT'
 import { useConfirm } from '@/components/ConfirmModal'
 import { ModalShell } from '@/components/ModalShell'
 import { ClientQrModal } from '@/components/ClientQrModal'
+import { copyToClipboard } from '@/lib/clipboard'
 import type { InboundPreset, XuiClient, XuiInbound, XuiServer } from '@/types'
 
 /**
@@ -1249,11 +1250,12 @@ function AddClientModal({
     addMut.mutate()
   }
 
-  const copy = (txt: string) => {
-    navigator.clipboard.writeText(txt).then(() => {
+  const copy = async (txt: string) => {
+    // Falls back to execCommand on insecure HTTP — see lib/clipboard.ts.
+    if (await copyToClipboard(txt)) {
       setCopied(true)
       setTimeout(() => setCopied(false), 1500)
-    })
+    }
   }
 
   return (

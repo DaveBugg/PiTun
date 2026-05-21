@@ -10,6 +10,7 @@ import { useT } from '@/hooks/useT'
 import { useConfirm } from '@/components/ConfirmModal'
 import { ModalShell } from '@/components/ModalShell'
 import { ClientQrModal } from '@/components/ClientQrModal'
+import { copyToClipboard } from '@/lib/clipboard'
 import type {
   ChainClientRead,
   ChainCreateChannelInput,
@@ -577,11 +578,13 @@ function ChainClientCard({
 
   const exportedCount = client.channels.filter((c) => c.exported_node_id != null).length
 
-  const copy = (uri: string, channelId: number) => {
-    navigator.clipboard.writeText(uri).then(() => {
+  const copy = async (uri: string, channelId: number) => {
+    // `copyToClipboard` falls back to execCommand for insecure HTTP
+    // contexts (PiTun UI is typically served over plain HTTP).
+    if (await copyToClipboard(uri)) {
       setCopiedFor(channelId)
       setTimeout(() => setCopiedFor(null), 1500)
-    })
+    }
   }
 
   return (
