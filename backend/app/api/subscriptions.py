@@ -10,7 +10,7 @@ from sqlmodel import select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.database import get_session, get_async_engine
-from app.models import Node, Subscription
+from app.models import Node, Settings as DBSettings, Subscription
 from app.schemas import SubscriptionCreate, SubscriptionRead, SubscriptionUpdate
 
 logger = logging.getLogger(__name__)
@@ -161,14 +161,113 @@ async def refresh_subscription(
     sub = await session.get(Subscription, sub_id)
     if not sub:
         raise HTTPException(404, "Subscription not found")
+    # Per-subscription mutex — concurrent calls return 409 instead of
+    # spawning duplicate fetch tasks. Without this, two clicks within
+    # a few hundred ms (UI double-click, scheduler tick overlapping a
+    # manual refresh, two browser tabs etc.) used to fire two
+    # background `_fetch_subscription` runs against the same row.
+    # Each one would `delete all old nodes → insert new`, so the
+    # second one racing the first could observe a half-deleted state
+    # and import a partial node set, or both could land near-
+    # simultaneously and corrupt `active_node_id` via duplicate
+    # delete-then-create. Observed in the wild on 192.168.1.4 —
+    # logs show 4 refreshes within 60s with one returning 57 nodes
+    # instead of the canonical 1256.
+    if _is_refresh_active(sub_id):
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "subscription refresh already in progress",
+                "subscription_id": sub_id,
+                "hint": "Wait for the previous refresh to finish before retrying.",
+            },
+        )
     background_tasks.add_task(_fetch_subscription, sub_id)
     return {"status": "refresh queued"}
 
 
+# ── Concurrent-refresh guard ──────────────────────────────────────────────────
+#
+# Module-level set of subscription ids that have an active refresh
+# in flight. `_fetch_subscription` adds on entry, removes in finally.
+# Cheap, in-process — fine for the single-uvicorn-worker deployment.
+# If we ever scale to multiple workers, this needs to move to a DB
+# advisory lock or a Redis SET.
+_REFRESH_IN_FLIGHT: set[int] = set()
+
+
+def _is_refresh_active(sub_id: int) -> bool:
+    return sub_id in _REFRESH_IN_FLIGHT
+
+
 # ── Fetch logic ───────────────────────────────────────────────────────────────
+
+def _node_fingerprint(node_dict: dict) -> str:
+    """Deterministic identity for a subscription Node.
+
+    Two refreshes of the same subscription should produce the SAME
+    fingerprint for the SAME server entry, so we can match new entries
+    back to existing DB rows and reuse the row id. Picking the right
+    fields: protocol + address + port is the core; uuid OR password
+    disambiguates same-host-multiple-accounts panels; transport + tls
+    catches the case where one server hosts multiple inbounds at the
+    same port (rare but real on some 3x-ui-pro setups using xhttp +
+    vless reality on the same :443).
+
+    SNI is deliberately NOT in the fingerprint — operators sometimes
+    rotate SNI per refresh (panels with random cover-domain pools)
+    and we don't want that to look like a "new node".
+    """
+    keys = (
+        node_dict.get("protocol", ""),
+        node_dict.get("address", ""),
+        node_dict.get("port", 0),
+        node_dict.get("uuid", "") or node_dict.get("password", "") or "",
+        node_dict.get("transport", "") or "tcp",
+        node_dict.get("tls", "") or "none",
+    )
+    return "|".join(str(k) for k in keys)
+
+
+def _node_row_fingerprint(node) -> str:
+    """Same fingerprint shape, but on a Node ORM row instead of the
+    parsed dict. Kept symmetric — change one, change the other."""
+    return "|".join(str(k) for k in (
+        node.protocol or "",
+        node.address or "",
+        node.port or 0,
+        node.uuid or node.password or "",
+        node.transport or "tcp",
+        node.tls or "none",
+    ))
+
 
 async def _fetch_subscription(sub_id: int) -> None:
     """Download subscription URL and import nodes. Runs in background."""
+    from app.core.uri_parser import parse_uri_list
+    from datetime import datetime, timezone
+
+    # Refresh mutex — see comment on `_REFRESH_IN_FLIGHT`. The endpoint
+    # already checks this before dispatching, but the scheduler path
+    # (sub_scheduler.py → `_fetch_subscription`) doesn't — so we guard
+    # the function itself too. If a manual refresh + scheduler tick
+    # race, the second one bails out cleanly.
+    if sub_id in _REFRESH_IN_FLIGHT:
+        logger.info(
+            "Subscription %d refresh skipped — another refresh in flight",
+            sub_id,
+        )
+        return
+    _REFRESH_IN_FLIGHT.add(sub_id)
+    try:
+        await _fetch_subscription_unlocked(sub_id)
+    finally:
+        _REFRESH_IN_FLIGHT.discard(sub_id)
+
+
+async def _fetch_subscription_unlocked(sub_id: int) -> None:
+    """The actual fetch — separate from the wrapper so the mutex
+    cleanup `finally:` block stays the only exit point."""
     from app.core.uri_parser import parse_uri_list
     from datetime import datetime, timezone
 
@@ -305,23 +404,141 @@ async def _fetch_subscription(sub_id: int) -> None:
             logger.warning("Subscription %d: 0 nodes parsed, keeping existing nodes", sub_id)
             return
 
-        old_nodes = (await session.exec(select(Node).where(Node.subscription_id == sub_id))).all()
+        # ── Stable-fingerprint upsert (since v1.3.6) ─────────────────
+        #
+        # Until 1.3.5 this was a brute "delete every old Node row for
+        # this subscription, then insert the parsed list as fresh
+        # rows". That had a UX-fatal side effect: every refresh
+        # invalidated `Settings.active_node_id` because the row it
+        # pointed at was gone and the "same" server came back with a
+        # new id. UI showed "No active node selected" after every
+        # auto-refresh; routing fell back to direct.
+        #
+        # New flow:
+        #   1. Snapshot active_node_id (we may need to remap).
+        #   2. Build fingerprint → old Node row map.
+        #   3. For each parsed entry: if fingerprint matches an old
+        #      row → UPDATE in place (preserves id, drag-order,
+        #      last_check, latency_ms). Else → INSERT new row.
+        #   4. Old rows that didn't match any parsed entry → DELETE.
+        #   5. If active_node_id pointed at one of the deleted rows,
+        #      try to remap to a same-fingerprint replacement; if no
+        #      remap is possible, pick the first remaining enabled +
+        #      online node from this subscription as a fallback so the
+        #      user doesn't lose proxy after a refresh.
+        old_nodes = (await session.exec(
+            select(Node).where(Node.subscription_id == sub_id)
+        )).all()
+        old_by_fp: dict = {}
+        old_by_id: dict = {}
         for n in old_nodes:
-            await session.delete(n)
+            old_by_fp[_node_row_fingerprint(n)] = n
+            old_by_id[n.id] = n
+
+        # Snapshot active node id (may live in this subscription or in
+        # another one — we only care if it's in THIS subscription's
+        # old set).
+        active_row = (await session.exec(
+            select(DBSettings).where(DBSettings.key == "active_node_id")
+        )).first()
+        active_id_before: int | None = None
+        if active_row and active_row.value:
+            try:
+                active_id_before = int(active_row.value)
+            except (TypeError, ValueError):
+                active_id_before = None
+        active_was_in_sub = (
+            active_id_before is not None and active_id_before in old_by_id
+        )
+
+        # Field copy list — keep in sync with Node ORM. We deliberately
+        # don't blow away `order` / `last_check` / `latency_ms` /
+        # `is_online` on update so reorder + healthcheck history
+        # survive the refresh.
+        _MUTABLE_FIELDS = (
+            "name", "protocol", "address", "port", "uuid", "password",
+            "transport", "tls", "sni", "fingerprint", "alpn",
+            "allow_insecure", "flow",
+            "ws_path", "ws_host", "grpc_service", "grpc_mode",
+            "grpc_authority", "http_path", "http_host",
+            "kcp_seed", "kcp_header",
+            "reality_pbk", "reality_sid", "reality_spx",
+            "wg_private_key", "wg_public_key", "wg_preshared_key",
+            "wg_endpoint", "wg_mtu", "wg_reserved", "wg_local_address",
+            "hy2_obfs", "hy2_obfs_password",
+            "group", "note",
+        )
 
         imported = 0
+        seen_fps: set[str] = set()
         for node_dict in parsed:
             node_dict["subscription_id"] = sub_id
+            fp = _node_fingerprint(node_dict)
+            seen_fps.add(fp)
+            existing = old_by_fp.get(fp)
             try:
-                node = Node(**{k: v for k, v in node_dict.items() if hasattr(Node, k)})
-                session.add(node)
+                if existing is not None:
+                    # UPDATE in place — preserves id, order, health.
+                    for k in _MUTABLE_FIELDS:
+                        if k in node_dict:
+                            setattr(existing, k, node_dict[k])
+                    session.add(existing)
+                else:
+                    # INSERT new.
+                    node = Node(**{
+                        k: v for k, v in node_dict.items() if hasattr(Node, k)
+                    })
+                    session.add(node)
                 imported += 1
             except Exception:
                 pass
+
+        # Delete old rows that didn't match any parsed entry (vanished
+        # from the panel). Active node remap below picks up the slack
+        # if the active one is in this set.
+        removed_ids: set[int] = set()
+        for fp_old, n in old_by_fp.items():
+            if fp_old not in seen_fps:
+                removed_ids.add(n.id)
+                await session.delete(n)
+
+        # Heal active_node_id if it pointed at a now-removed row.
+        # Prefer: a node that survived the refresh (same id still
+        # valid). Fallback: first enabled + online node from this
+        # subscription. Last resort: leave as-is (admin can manually
+        # repick — at least we don't fail silently).
+        healed_active: int | None = None
+        if active_was_in_sub and active_id_before in removed_ids:
+            # Try to find a replacement from the SAME subscription.
+            # Re-query because the in-memory `old_by_fp` map only knows
+            # about pre-update rows; we want post-update survivors.
+            survivors = (await session.exec(
+                select(Node)
+                .where(Node.subscription_id == sub_id)
+                .where(Node.enabled == True)  # noqa: E712
+                .order_by(Node.is_online.desc(), Node.id)  # type: ignore[union-attr]
+            )).all()
+            if survivors:
+                healed_active = survivors[0].id
+                active_row.value = str(healed_active)
+                session.add(active_row)
+                logger.warning(
+                    "Subscription %d refresh: active_node_id %d disappeared "
+                    "from panel — auto-picked %d (%r) from same subscription",
+                    sub_id, active_id_before, healed_active, survivors[0].name,
+                )
 
         sub.last_updated = datetime.now(tz=timezone.utc)
         sub.node_count = imported
         sub.last_error = None  # clear error on success
         session.add(sub)
         await session.commit()
-        logger.info("Subscription %d: imported %d nodes", sub_id, imported)
+        logger.info(
+            "Subscription %d: imported %d nodes (matched=%d new=%d removed=%d%s)",
+            sub_id, imported,
+            sum(1 for fp in seen_fps if fp in old_by_fp),
+            sum(1 for fp in seen_fps if fp not in old_by_fp),
+            len(removed_ids),
+            f", active_node healed: {active_id_before}→{healed_active}"
+            if healed_active is not None else "",
+        )
