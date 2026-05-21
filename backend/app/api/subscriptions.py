@@ -10,7 +10,7 @@ from sqlmodel import select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.database import get_session, get_async_engine
-from app.models import Node, Settings as DBSettings, Subscription
+from app.models import Node, NodeCircle, Settings as DBSettings, Subscription
 from app.schemas import SubscriptionCreate, SubscriptionRead, SubscriptionUpdate
 
 logger = logging.getLogger(__name__)
@@ -501,6 +501,55 @@ async def _fetch_subscription_unlocked(sub_id: int) -> None:
             if fp_old not in seen_fps:
                 removed_ids.add(n.id)
                 await session.delete(n)
+
+        # ── Heal NodeCircles that reference removed Node ids ─────────
+        #
+        # Same fingerprint-upsert rationale as for `active_node_id`:
+        # if a node still exists by fingerprint, its DB id survives
+        # the refresh and any NodeCircle referencing it keeps working
+        # untouched. If a node legitimately vanished from the panel
+        # (operator removed it), its id is left as an orphan inside
+        # every Circle's `node_ids` JSON list — prune it here so the
+        # UI doesn't keep showing dead ids.
+        #
+        # We DO NOT auto-disable circles that shrink below 2 members:
+        # circle_scheduler is already defensive (skips rotation when
+        # `len(node_ids) < 2`), and if every member dies the routing
+        # layer falls back to kill-switch / direct anyway. Leaving
+        # the circle enabled lets it spring back to life automatically
+        # if the operator re-adds nodes to the panel.
+        circles_pruned: list[int] = []
+        if removed_ids:
+            import json as _json
+            all_circles = (await session.exec(select(NodeCircle))).all()
+            for circle in all_circles:
+                try:
+                    ids = (
+                        _json.loads(circle.node_ids)
+                        if isinstance(circle.node_ids, str)
+                        else (circle.node_ids or [])
+                    )
+                except Exception:
+                    continue
+                surviving_ids = [i for i in ids if i not in removed_ids]
+                if surviving_ids == ids:
+                    continue  # no change for this circle
+                # Reset current_index if it fell out of bounds — the
+                # scheduler also does this lazily but doing it here
+                # keeps the persisted state honest and matches the
+                # circle's "next rotation starts from current_index"
+                # mental model.
+                if surviving_ids and circle.current_index >= len(surviving_ids):
+                    circle.current_index = 0
+                circle.node_ids = _json.dumps(surviving_ids)
+                session.add(circle)
+                circles_pruned.append(circle.id)
+            if circles_pruned:
+                logger.warning(
+                    "Subscription %d refresh: pruned dangling refs from "
+                    "%d NodeCircle(s) (%s)",
+                    sub_id, len(circles_pruned), circles_pruned,
+                )
 
         # Heal active_node_id if it pointed at a now-removed row.
         # Prefer: a node that survived the refresh (same id still

@@ -241,6 +241,187 @@ class TestSubscriptionRefreshUpsert:
         assert same_node.address == "1.2.3.4"
 
 
+class TestSubscriptionRefreshPreservesCircles:
+    """When refresh removes a Node, every NodeCircle that referenced
+    that Node id must have the dangling ref pruned. The circle stays
+    enabled regardless of how many members survive: circle_scheduler
+    is defensive (skips rotation when <2 members), and if all members
+    die the routing layer falls back to kill-switch / direct anyway.
+    Leaving the circle enabled lets it spring back to life if the
+    operator re-adds nodes."""
+
+    def test_circle_loses_dangling_id_after_node_removal(
+        self, client, admin_user, auth_headers, session,
+    ):
+        import asyncio, json
+        from app.api.subscriptions import _fetch_subscription_unlocked
+        from app.models import Subscription, Node, NodeCircle
+
+        # Subscription with 3 nodes
+        sub = Subscription(name="Test", url="http://example/sub", enabled=True)
+        session.add(sub)
+        session.commit()
+        session.refresh(sub)
+
+        a = Node(name="a", protocol="vless", address="1.1.1.1", port=443,
+                 uuid="a", transport="tcp", subscription_id=sub.id, enabled=True)
+        b = Node(name="b", protocol="vless", address="2.2.2.2", port=443,
+                 uuid="b", transport="tcp", subscription_id=sub.id, enabled=True)
+        c = Node(name="c", protocol="vless", address="3.3.3.3", port=443,
+                 uuid="c", transport="tcp", subscription_id=sub.id, enabled=True)
+        for n in (a, b, c):
+            session.add(n)
+        session.commit()
+        for n in (a, b, c):
+            session.refresh(n)
+
+        # Circle includes all 3
+        circle = NodeCircle(
+            name="rotate-all", node_ids=json.dumps([a.id, b.id, c.id]),
+            mode="sequential", interval_min=5, interval_max=10,
+            current_index=0, enabled=True,
+        )
+        session.add(circle)
+        session.commit()
+        session.refresh(circle)
+        circle_id = circle.id
+
+        # Refresh returns ONLY `a` and `b` — node `c` vanished
+        with mock.patch(
+            "app.api.subscriptions.httpx.AsyncClient"
+        ) as mock_client:
+            instance = mock_client.return_value.__aenter__.return_value
+            instance.get = AsyncMock(return_value=mock.Mock(
+                status_code=200,
+                text=(
+                    "vless://a@1.1.1.1:443?type=tcp#a\n"
+                    "vless://b@2.2.2.2:443?type=tcp#b\n"
+                ),
+                raise_for_status=lambda: None,
+            ))
+            asyncio.run(_fetch_subscription_unlocked(sub.id))
+
+        # Circle's node_ids should now be [a.id, b.id] — c.id pruned
+        session.expire_all()
+        circle_after = session.get(NodeCircle, circle_id)
+        ids_after = json.loads(circle_after.node_ids)
+        assert ids_after == [a.id, b.id], (
+            f"circle didn't prune dangling id: {ids_after!r}"
+        )
+        # Still enabled — has 2 members which is enough to rotate
+        assert circle_after.enabled is True
+
+    def test_circle_stays_enabled_when_drops_below_two_members(
+        self, client, admin_user, auth_headers, session,
+    ):
+        """Circle shrinking to 1 member is NOT auto-disabled. The
+        scheduler skips rotation defensively; operator-visible state
+        only changes if/when they re-edit the circle."""
+        import asyncio, json
+        from app.api.subscriptions import _fetch_subscription_unlocked
+        from app.models import Subscription, Node, NodeCircle
+
+        sub = Subscription(name="Test", url="http://example/sub", enabled=True)
+        session.add(sub)
+        session.commit()
+        session.refresh(sub)
+
+        a = Node(name="a", protocol="vless", address="1.1.1.1", port=443,
+                 uuid="a", transport="tcp", subscription_id=sub.id, enabled=True)
+        b = Node(name="b", protocol="vless", address="2.2.2.2", port=443,
+                 uuid="b", transport="tcp", subscription_id=sub.id, enabled=True)
+        for n in (a, b):
+            session.add(n)
+        session.commit()
+        for n in (a, b):
+            session.refresh(n)
+
+        circle = NodeCircle(
+            name="just-two", node_ids=json.dumps([a.id, b.id]),
+            mode="sequential", interval_min=5, interval_max=10,
+            current_index=0, enabled=True,
+        )
+        session.add(circle)
+        session.commit()
+        session.refresh(circle)
+        circle_id = circle.id
+
+        # Refresh keeps only `a` — `b` vanished, circle drops to 1 node
+        with mock.patch(
+            "app.api.subscriptions.httpx.AsyncClient"
+        ) as mock_client:
+            instance = mock_client.return_value.__aenter__.return_value
+            instance.get = AsyncMock(return_value=mock.Mock(
+                status_code=200,
+                text="vless://a@1.1.1.1:443?type=tcp#a\n",
+                raise_for_status=lambda: None,
+            ))
+            asyncio.run(_fetch_subscription_unlocked(sub.id))
+
+        session.expire_all()
+        circle_after = session.get(NodeCircle, circle_id)
+        # 1 surviving node, current_index reset to 0
+        assert json.loads(circle_after.node_ids) == [a.id]
+        assert circle_after.current_index == 0
+        # Stays enabled — scheduler will just skip it; if operator
+        # adds nodes back via panel + refresh, rotation resumes.
+        assert circle_after.enabled is True
+
+    def test_empty_subscription_response_does_not_touch_circle(
+        self, client, admin_user, auth_headers, session,
+    ):
+        """A flaky panel returning empty body must NOT cascade into
+        wiping circle membership. The refresh itself bails out on
+        '0 nodes parsed', so no nodes are removed, so no circle
+        pruning happens. Belt-and-suspenders check that the safety
+        net upstream still holds."""
+        import asyncio, json
+        from app.api.subscriptions import _fetch_subscription_unlocked
+        from app.models import Subscription, Node, NodeCircle
+
+        sub = Subscription(name="Test", url="http://example/sub", enabled=True)
+        session.add(sub)
+        session.commit()
+        session.refresh(sub)
+
+        a = Node(name="a", protocol="vless", address="1.1.1.1", port=443,
+                 uuid="a", transport="tcp", subscription_id=sub.id, enabled=True)
+        b = Node(name="b", protocol="vless", address="2.2.2.2", port=443,
+                 uuid="b", transport="tcp", subscription_id=sub.id, enabled=True)
+        for n in (a, b):
+            session.add(n)
+        session.commit()
+        for n in (a, b):
+            session.refresh(n)
+
+        circle = NodeCircle(
+            name="all-die", node_ids=json.dumps([a.id, b.id]),
+            mode="sequential", interval_min=5, interval_max=10,
+            current_index=1, enabled=True,
+        )
+        session.add(circle)
+        session.commit()
+        session.refresh(circle)
+        circle_id = circle.id
+
+        with mock.patch(
+            "app.api.subscriptions.httpx.AsyncClient"
+        ) as mock_client:
+            instance = mock_client.return_value.__aenter__.return_value
+            instance.get = AsyncMock(return_value=mock.Mock(
+                status_code=200,
+                text="",
+                raise_for_status=lambda: None,
+            ))
+            asyncio.run(_fetch_subscription_unlocked(sub.id))
+
+        session.expire_all()
+        circle_after = session.get(NodeCircle, circle_id)
+        # Both nodes still alive, circle untouched
+        assert json.loads(circle_after.node_ids) == [a.id, b.id]
+        assert circle_after.enabled is True
+
+
 class TestSubscriptionRefreshMutex:
     """The endpoint must refuse a second `/refresh` while a previous
     one is still in flight. Without this, two clicks within ~100ms
