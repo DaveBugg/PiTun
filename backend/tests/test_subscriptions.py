@@ -422,6 +422,190 @@ class TestSubscriptionRefreshPreservesCircles:
         assert circle_after.enabled is True
 
 
+class TestSubscriptionRefreshDedupsParsed:
+    """Panels (especially Happ JSON bundles) often return the SAME
+    (addr,port,uuid) server under multiple SNI/fingerprint variants.
+    Our Node model treats those as a single row (see
+    `_node_fingerprint`). The upsert must collapse parsed entries to
+    one-per-fingerprint, otherwise legacy duplicate rows accumulate
+    and never get cleaned up. Also: refs from active_node + circles
+    must remap from any deleted dup to the surviving sibling."""
+
+    def test_parsed_duplicates_collapse_to_unique_count(
+        self, client, admin_user, auth_headers, session,
+    ):
+        import asyncio, json
+        from app.api.subscriptions import _fetch_subscription_unlocked
+        from app.models import Subscription, Node
+
+        sub = Subscription(name="Test", url="http://example/sub", enabled=True)
+        session.add(sub)
+        session.commit()
+        session.refresh(sub)
+
+        # Panel returns 5 lines for the SAME (addr,port,uuid), differing
+        # only in SNI — these should collapse to 1 Node row.
+        body = "\n".join(
+            f"vless://uuid-A@server.example:443?type=tcp&sni=sni{i}.example#name{i}"
+            for i in range(5)
+        )
+
+        with mock.patch(
+            "app.api.subscriptions.httpx.AsyncClient"
+        ) as mock_client:
+            instance = mock_client.return_value.__aenter__.return_value
+            instance.get = AsyncMock(return_value=mock.Mock(
+                status_code=200, text=body,
+                raise_for_status=lambda: None,
+            ))
+            asyncio.run(_fetch_subscription_unlocked(sub.id))
+
+        session.expire_all()
+        nodes = session.query(Node).filter(
+            Node.subscription_id == sub.id
+        ).all()
+        assert len(nodes) == 1, (
+            f"5 SNI variants of one server should collapse to 1 Node, "
+            f"got {len(nodes)}"
+        )
+
+    def test_legacy_duplicates_in_db_collapse_on_refresh(
+        self, client, admin_user, auth_headers, session,
+    ):
+        """Inverse case: DB already carries 3 legacy duplicate rows
+        (same fingerprint) from pre-1.3.6 inserts; refresh must keep
+        the smallest-id row and delete the other two."""
+        import asyncio, json
+        from app.api.subscriptions import _fetch_subscription_unlocked
+        from app.models import Subscription, Node
+
+        sub = Subscription(name="Test", url="http://example/sub", enabled=True)
+        session.add(sub)
+        session.commit()
+        session.refresh(sub)
+
+        # 3 rows, all with same (protocol, addr, port, uuid) — only
+        # SNI varies. They're legacy dups that need collapsing.
+        rows = [
+            Node(name=f"dup{i}", protocol="vless", address="server.example",
+                 port=443, uuid="uuid-A", transport="tcp", sni=f"sni{i}",
+                 subscription_id=sub.id, enabled=True)
+            for i in range(3)
+        ]
+        for r in rows:
+            session.add(r)
+        session.commit()
+        for r in rows:
+            session.refresh(r)
+        ids_before = sorted(r.id for r in rows)
+        survivor_id = ids_before[0]
+
+        with mock.patch(
+            "app.api.subscriptions.httpx.AsyncClient"
+        ) as mock_client:
+            instance = mock_client.return_value.__aenter__.return_value
+            instance.get = AsyncMock(return_value=mock.Mock(
+                status_code=200,
+                text="vless://uuid-A@server.example:443?type=tcp&sni=fresh#name",
+                raise_for_status=lambda: None,
+            ))
+            asyncio.run(_fetch_subscription_unlocked(sub.id))
+
+        session.expire_all()
+        nodes = session.query(Node).filter(
+            Node.subscription_id == sub.id
+        ).all()
+        assert len(nodes) == 1, (
+            f"3 legacy dups should collapse to 1, got {len(nodes)}"
+        )
+        assert nodes[0].id == survivor_id, (
+            f"survivor should be smallest-id row {survivor_id}, "
+            f"got {nodes[0].id}"
+        )
+
+    def test_active_node_and_circle_remap_through_legacy_dup_collapse(
+        self, client, admin_user, auth_headers, session,
+    ):
+        """When the active node OR a circle member is one of the
+        deleted legacy dups, both must transparently remap to the
+        surviving sibling — user never notices."""
+        import asyncio, json
+        from app.api.subscriptions import _fetch_subscription_unlocked
+        from app.models import Subscription, Node, NodeCircle
+        from app.models import Settings as DBSettings
+
+        sub = Subscription(name="Test", url="http://example/sub", enabled=True)
+        session.add(sub)
+        session.commit()
+        session.refresh(sub)
+
+        # Two dup groups: group A (3 rows, same fingerprint) and
+        # group B (2 rows, same fingerprint).
+        a_rows = [
+            Node(name=f"A{i}", protocol="vless", address="srv-a",
+                 port=443, uuid="uuid-A", transport="tcp", sni=f"sni-a{i}",
+                 subscription_id=sub.id, enabled=True)
+            for i in range(3)
+        ]
+        b_rows = [
+            Node(name=f"B{i}", protocol="vless", address="srv-b",
+                 port=443, uuid="uuid-B", transport="tcp", sni=f"sni-b{i}",
+                 subscription_id=sub.id, enabled=True)
+            for i in range(2)
+        ]
+        for r in a_rows + b_rows:
+            session.add(r)
+        session.commit()
+        for r in a_rows + b_rows:
+            session.refresh(r)
+
+        a_survivor = sorted(r.id for r in a_rows)[0]
+        a_dup = sorted(r.id for r in a_rows)[2]  # one of the dups to die
+        b_survivor = sorted(r.id for r in b_rows)[0]
+        b_dup = sorted(r.id for r in b_rows)[1]
+
+        # Active node pinned at a dup that's about to die
+        session.add(DBSettings(key="active_node_id", value=str(a_dup)))
+        # Circle uses one dup of A and one dup of B (both must remap)
+        circle = NodeCircle(
+            name="cross-dup", node_ids=json.dumps([a_dup, b_dup]),
+            mode="sequential", interval_min=5, interval_max=10,
+            current_index=0, enabled=True,
+        )
+        session.add(circle)
+        session.commit()
+        session.refresh(circle)
+        circle_id = circle.id
+
+        body = (
+            "vless://uuid-A@srv-a:443?type=tcp&sni=fresh-a#A\n"
+            "vless://uuid-B@srv-b:443?type=tcp&sni=fresh-b#B\n"
+        )
+        with mock.patch(
+            "app.api.subscriptions.httpx.AsyncClient"
+        ) as mock_client:
+            instance = mock_client.return_value.__aenter__.return_value
+            instance.get = AsyncMock(return_value=mock.Mock(
+                status_code=200, text=body,
+                raise_for_status=lambda: None,
+            ))
+            asyncio.run(_fetch_subscription_unlocked(sub.id))
+
+        session.expire_all()
+        # Active remapped to A's survivor
+        active = session.query(DBSettings).filter(
+            DBSettings.key == "active_node_id"
+        ).first()
+        assert int(active.value) == a_survivor, (
+            f"active_node_id should remap from dup {a_dup} to "
+            f"survivor {a_survivor}, got {active.value}"
+        )
+        # Circle remapped both members
+        circle_after = session.get(NodeCircle, circle_id)
+        assert json.loads(circle_after.node_ids) == [a_survivor, b_survivor]
+        assert circle_after.enabled is True
+
+
 class TestSubscriptionRefreshMutex:
     """The endpoint must refuse a second `/refresh` while a previous
     one is still in flight. Without this, two clicks within ~100ms

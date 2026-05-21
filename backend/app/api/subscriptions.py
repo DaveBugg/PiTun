@@ -426,14 +426,98 @@ async def _fetch_subscription_unlocked(sub_id: int) -> None:
         #      remap is possible, pick the first remaining enabled +
         #      online node from this subscription as a fallback so the
         #      user doesn't lose proxy after a refresh.
+
+        # First: dedup `parsed` by fingerprint. Panels (especially Happ
+        # JSON bundles) often expose the SAME (addr, port, uuid) server
+        # under multiple SNI / fingerprint / sid combos for domain-
+        # fronting resilience — each is one outbound entry. Our Node
+        # model treats (protocol, addr, port, uuid, password) as the
+        # unit (see `_node_fingerprint`), so collapse variants to one
+        # row, last-wins. Without this, the upsert touches only one
+        # row per fingerprint and the other duplicates from the OLD
+        # delete-and-insert era stay forever as orphans (their fp is
+        # in `seen_fps` → not removed; never the matched `existing` →
+        # not updated). Seen in the wild on a Happ-macos subscription
+        # that returned 1256 outbounds for 303 unique servers; without
+        # this dedup the row count never collapsed back to 303.
+        deduped: dict[str, dict] = {}
+        for n in parsed:
+            fp = _node_fingerprint(n)
+            deduped[fp] = n  # last-wins
+        parsed_dedup_skipped = len(parsed) - len(deduped)
+        parsed = list(deduped.values())
+        if parsed_dedup_skipped > 0:
+            logger.info(
+                "Subscription %d: collapsed %d duplicate parsed entries "
+                "(same fingerprint, different SNI/fp variants)",
+                sub_id, parsed_dedup_skipped,
+            )
+
         old_nodes = (await session.exec(
             select(Node).where(Node.subscription_id == sub_id)
         )).all()
+        # `old_by_fp` keys by fingerprint; multiple old rows with the
+        # same fingerprint (legacy duplicates from pre-1.3.6 inserts)
+        # collapse here — we keep the survivor with the smallest id
+        # (so external references — active_node_id, NodeCircle,
+        # RoutingRule — that point at the lowest id of a fingerprint
+        # group keep working) and remap all references on the other
+        # rows to the survivor before deleting them.
         old_by_fp: dict = {}
         old_by_id: dict = {}
-        for n in old_nodes:
-            old_by_fp[_node_row_fingerprint(n)] = n
+        # Process in id-ascending order so the FIRST seen for each fp
+        # is the smallest id → "survivor" is stable.
+        for n in sorted(old_nodes, key=lambda r: r.id):
+            fp = _node_row_fingerprint(n)
+            if fp not in old_by_fp:
+                old_by_fp[fp] = n
             old_by_id[n.id] = n
+        # Build {legacy_dup_id → survivor_id} map for transparent remap.
+        legacy_dup_remap: dict[int, int] = {}
+        for n in old_nodes:
+            fp = _node_row_fingerprint(n)
+            survivor = old_by_fp[fp]
+            if survivor.id != n.id:
+                legacy_dup_remap[n.id] = survivor.id
+
+        if legacy_dup_remap:
+            # Rewrite NodeCircle.node_ids so legacy-dup ids are
+            # transparently swapped for their fingerprint survivor.
+            # Also dedup within the list (a circle that referenced
+            # both halves of a dup pair shouldn't end up with the
+            # same survivor id twice).
+            import json as _json
+            all_circles_pre = (await session.exec(select(NodeCircle))).all()
+            for circle in all_circles_pre:
+                try:
+                    ids = (
+                        _json.loads(circle.node_ids)
+                        if isinstance(circle.node_ids, str)
+                        else (circle.node_ids or [])
+                    )
+                except Exception:
+                    continue
+                remapped: list[int] = []
+                seen: set[int] = set()
+                for i in ids:
+                    new_i = legacy_dup_remap.get(i, i)
+                    if new_i not in seen:
+                        remapped.append(new_i)
+                        seen.add(new_i)
+                if remapped != ids:
+                    if circle.current_index >= len(remapped):
+                        circle.current_index = 0
+                    circle.node_ids = _json.dumps(remapped)
+                    session.add(circle)
+
+            # Delete the legacy dup rows now.
+            for dup_id in legacy_dup_remap:
+                await session.delete(old_by_id[dup_id])
+            logger.info(
+                "Subscription %d: removed %d legacy duplicate Node rows "
+                "(same fingerprint as another row, refs remapped to survivor)",
+                sub_id, len(legacy_dup_remap),
+            )
 
         # Snapshot active node id (may live in this subscription or in
         # another one — we only care if it's in THIS subscription's
@@ -450,6 +534,25 @@ async def _fetch_subscription_unlocked(sub_id: int) -> None:
         active_was_in_sub = (
             active_id_before is not None and active_id_before in old_by_id
         )
+        # If the active node was one of the legacy duplicates we just
+        # deleted, transparently remap to the surviving sibling with
+        # the same fingerprint and persist immediately. This keeps the
+        # user's "active" pin on the same logical server through the
+        # dedup pass, with no UI gap.
+        if (
+            active_id_before is not None
+            and active_id_before in legacy_dup_remap
+        ):
+            survivor_id = legacy_dup_remap[active_id_before]
+            logger.warning(
+                "Subscription %d: active_node_id %d was a legacy duplicate "
+                "of %d — remapping to survivor",
+                sub_id, active_id_before, survivor_id,
+            )
+            if active_row is not None:
+                active_row.value = str(survivor_id)
+                session.add(active_row)
+            active_id_before = survivor_id  # downstream heal sees survivor
 
         # Field copy list — keep in sync with Node ORM. We deliberately
         # don't blow away `order` / `last_check` / `latency_ms` /
