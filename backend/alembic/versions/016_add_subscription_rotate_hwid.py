@@ -34,6 +34,12 @@ def upgrade() -> None:
                 server_default=sa.false(),
             )
         )
+    # SQLite's batch_alter_table sometimes leaves the column NULL for
+    # pre-existing rows even with `server_default=false`. Belt-and-
+    # braces backfill keeps the column consistent (model treats NULL
+    # as False at the Python level anyway, but cleaner DB state means
+    # the UI never sees an indeterminate checkbox).
+    op.execute("UPDATE subscription SET rotate_hwid = 0 WHERE rotate_hwid IS NULL")
 
 
 def downgrade() -> None:
