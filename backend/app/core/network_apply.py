@@ -303,10 +303,16 @@ def delete_backup(backup_id: str) -> None:
     r = nc.host_run(["rm", "-f", path], timeout=3)
     if r.returncode != 0:
         raise NetworkApplyError(f"Could not delete {path}: {r.stderr.strip()}")
-    # `%r` on user-controlled `backup_id` (CWE-117 hardening). Regex
-    # validation above already prevents \n/\r/path-traversal chars,
-    # but `repr()` is the pattern CodeQL recognises as a log sanitiser.
-    logger.info("Network backup deleted: id=%r", backup_id)
+    # Belt-and-braces log sanitisation for CWE-117:
+    # 1. The regex above already restricts `backup_id` to `[0-9TZ]+` —
+    #    no newlines or control chars possible at runtime.
+    # 2. Explicit `.replace('\n','')`/`.replace('\r','')` is the
+    #    pattern CodeQL's `py/log-injection` query recognises as a
+    #    sanitiser (the regex-narrows-charset argument doesn't get
+    #    picked up by its taint tracker).
+    # 3. `%r` (repr) is logged anyway as a second layer.
+    safe_id = backup_id.replace("\n", "").replace("\r", "")
+    logger.info("Network backup deleted: id=%r", safe_id)
 
 
 def delete_all_backups() -> int:

@@ -141,11 +141,22 @@ def host_run(
     read-only paths work for local iteration.
     """
     _validate_argv(argv)
+    # Re-derive the program name from the literal allowlist instead of
+    # passing `argv[0]` directly into subprocess. At runtime this is a
+    # no-op — `_validate_argv` already guarantees `argv[0] in
+    # _ALLOWED_PROGRAMS`. The point is that CodeQL's `py/command-line-
+    # injection` taint tracker doesn't follow into `_validate_argv` and
+    # treats `argv` as user-tainted; rebuilding the head of the list
+    # from a frozenset literal severs the taint flow at a barrier
+    # CodeQL recognises (membership in a set of literal strings).
+    program = next(p for p in _ALLOWED_PROGRAMS if p == argv[0])
+    safe_argv = [program, *argv[1:]]
+
     # When `pid: host` isn't set (e.g. dev), nsenter `--target 1` will
     # error with "permission denied" or "No such process". Detect the
     # container-vs-host case here so callers don't have to.
     use_nsenter = os.path.exists("/proc/1/ns/mnt") and _can_use_nsenter()
-    cmd = (_NSENTER_BASE + argv) if use_nsenter else argv
+    cmd = (_NSENTER_BASE + safe_argv) if use_nsenter else safe_argv
     try:
         return subprocess.run(
             cmd,
@@ -154,17 +165,19 @@ def host_run(
             text=True,
             timeout=timeout,
             check=check,
+            shell=False,
         )
     except FileNotFoundError:
         # nsenter missing — try the raw command in container's own
         # namespace as a last resort. Useful in tests.
         return subprocess.run(
-            argv,
+            safe_argv,
             input=input_data,
             capture_output=True,
             text=True,
             timeout=timeout,
             check=check,
+            shell=False,
         )
 
 
