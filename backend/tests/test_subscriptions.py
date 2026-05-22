@@ -605,6 +605,86 @@ class TestSubscriptionRefreshDedupsParsed:
         assert json.loads(circle_after.node_ids) == [a_survivor, b_survivor]
         assert circle_after.enabled is True
 
+    def test_routing_rule_action_remaps_through_legacy_dup_collapse(
+        self, client, admin_user, auth_headers, session,
+    ):
+        """A RoutingRule with `action="node:<dup_id>"` must follow the
+        legacy-dup collapse to the survivor, otherwise the rule points
+        at a deleted row and silently fails to route (config_gen skips
+        unresolvable node-actions). User would see traffic falling
+        through to the catch-all rule with no warning."""
+        import asyncio, json
+        from app.api.subscriptions import _fetch_subscription_unlocked
+        from app.models import Subscription, Node, RoutingRule
+
+        sub = Subscription(name="Test", url="http://example/sub", enabled=True)
+        session.add(sub)
+        session.commit()
+        session.refresh(sub)
+
+        # 3 dup rows, all same fingerprint.
+        rows = [
+            Node(name=f"A{i}", protocol="vless", address="srv-a", port=443,
+                 uuid="uuid-A", transport="tcp", sni=f"sni{i}",
+                 subscription_id=sub.id, enabled=True)
+            for i in range(3)
+        ]
+        for r in rows:
+            session.add(r)
+        session.commit()
+        for r in rows:
+            session.refresh(r)
+        ids = sorted(r.id for r in rows)
+        survivor_id, dup_id, other_dup = ids[0], ids[1], ids[2]
+
+        # Three rules: one on a dup (should remap), one on the survivor
+        # (should NOT change), one on a non-dup id we leave untouched.
+        rule_on_dup = RoutingRule(
+            name="dup-rule", rule_type="domain", match_value="example.com",
+            action=f"node:{dup_id}", order=1, enabled=True,
+        )
+        rule_on_survivor = RoutingRule(
+            name="survivor-rule", rule_type="domain", match_value="other.example.com",
+            action=f"node:{survivor_id}", order=2, enabled=True,
+        )
+        rule_passthrough = RoutingRule(
+            name="passthrough", rule_type="domain", match_value="passthrough.example.com",
+            action="proxy", order=3, enabled=True,
+        )
+        for r in (rule_on_dup, rule_on_survivor, rule_passthrough):
+            session.add(r)
+        session.commit()
+        for r in (rule_on_dup, rule_on_survivor, rule_passthrough):
+            session.refresh(r)
+        rule_on_dup_id = rule_on_dup.id
+        rule_on_survivor_id = rule_on_survivor.id
+        rule_passthrough_id = rule_passthrough.id
+
+        body = "vless://uuid-A@srv-a:443?type=tcp&sni=fresh#A\n"
+        with mock.patch(
+            "app.api.subscriptions.httpx.AsyncClient"
+        ) as mock_client:
+            instance = mock_client.return_value.__aenter__.return_value
+            instance.get = AsyncMock(return_value=mock.Mock(
+                status_code=200, text=body,
+                raise_for_status=lambda: None,
+            ))
+            asyncio.run(_fetch_subscription_unlocked(sub.id))
+
+        session.expire_all()
+        # Rule pointing at the dup → remapped to survivor
+        rule_on_dup_after = session.get(RoutingRule, rule_on_dup_id)
+        assert rule_on_dup_after.action == f"node:{survivor_id}", (
+            f"rule on dup should remap to node:{survivor_id}, "
+            f"got {rule_on_dup_after.action!r}"
+        )
+        # Rule already pointing at the survivor → untouched
+        rule_on_survivor_after = session.get(RoutingRule, rule_on_survivor_id)
+        assert rule_on_survivor_after.action == f"node:{survivor_id}"
+        # Non-node rule → untouched
+        rule_passthrough_after = session.get(RoutingRule, rule_passthrough_id)
+        assert rule_passthrough_after.action == "proxy"
+
 
 class TestSubscriptionRefreshMutex:
     """The endpoint must refuse a second `/refresh` while a previous

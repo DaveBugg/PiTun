@@ -10,7 +10,7 @@ from sqlmodel import select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.database import get_session, get_async_engine
-from app.models import Node, NodeCircle, Settings as DBSettings, Subscription
+from app.models import Node, NodeCircle, RoutingRule, Settings as DBSettings, Subscription
 from app.schemas import SubscriptionCreate, SubscriptionRead, SubscriptionUpdate
 
 logger = logging.getLogger(__name__)
@@ -510,13 +510,35 @@ async def _fetch_subscription_unlocked(sub_id: int) -> None:
                     circle.node_ids = _json.dumps(remapped)
                     session.add(circle)
 
+            # Rewrite RoutingRule.action when it references a dup id
+            # (form `node:<id>`). The validator in routing.py rejects
+            # rules pointing at non-existent nodes, but the field is
+            # mutated by SQLModel directly — nothing prevents the id
+            # from going stale after we delete its row here. Remap to
+            # the survivor so the rule keeps working.
+            rules_remapped = 0
+            all_rules = (await session.exec(select(RoutingRule))).all()
+            for rule in all_rules:
+                action = rule.action or ""
+                if not action.startswith("node:"):
+                    continue
+                try:
+                    rule_node_id = int(action.split(":", 1)[1])
+                except (ValueError, IndexError):
+                    continue
+                if rule_node_id in legacy_dup_remap:
+                    rule.action = f"node:{legacy_dup_remap[rule_node_id]}"
+                    session.add(rule)
+                    rules_remapped += 1
+
             # Delete the legacy dup rows now.
             for dup_id in legacy_dup_remap:
                 await session.delete(old_by_id[dup_id])
             logger.info(
                 "Subscription %d: removed %d legacy duplicate Node rows "
-                "(same fingerprint as another row, refs remapped to survivor)",
-                sub_id, len(legacy_dup_remap),
+                "(same fingerprint as another row; refs remapped to survivor: "
+                "%d RoutingRule(s) updated)",
+                sub_id, len(legacy_dup_remap), rules_remapped,
             )
 
         # Snapshot active node id (may live in this subscription or in
