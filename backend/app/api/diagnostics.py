@@ -107,14 +107,115 @@ async def _check_dns_udp() -> Dict[str, Any]:
         }
 
 
-async def _check_internet() -> Dict[str, Any]:
-    """Check internet connectivity via HTTP."""
-    result = await _run("curl -sf --max-time 5 -o /dev/null -w '%{http_code}' https://www.google.com/generate_204")
+async def _http_probe_direct(host_ip: str, host_header: str, port: int = 80, timeout: float = 5.0) -> int | None:
+    """Open a raw TCP connection to `host_ip:port`, send a minimal
+    HTTP/1.0 request, and return the response status code.
+
+    Critically, the socket is opened with `SO_MARK=0xff` BEFORE
+    connecting. PiTun's nftables `output` chain has a `meta mark
+    0xff return` rule at the top (originally there so xray's own
+    outbound dials don't loop back through TPROXY), which means
+    packets with that mark bypass the TPROXY-to-xray hop and flow
+    out via the host's normal default route. So this probe tests
+    the host's underlying internet access *independently of whether
+    xray's tunnel works*.
+
+    Uses an IP literal so no DNS lookup is required — the DNS path
+    has its own check, and a degraded DNS shouldn't masquerade as
+    "no internet". Returns the HTTP status code, or `None` on any
+    connect/send/parse failure.
+    """
+    import socket
+    loop = asyncio.get_event_loop()
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        try:
+            # SO_MARK = 36 on Linux. Requires CAP_NET_ADMIN — the
+            # backend container is privileged so this works in prod;
+            # tests fall through to a plain socket (no mark applied)
+            # which is fine since they don't have the nftables rules.
+            sock.setsockopt(socket.SOL_SOCKET, 36, 0xff)
+        except (OSError, PermissionError):
+            pass
+        sock.setblocking(False)
+        await asyncio.wait_for(loop.sock_connect(sock, (host_ip, port)), timeout=timeout)
+        req = (
+            f"GET / HTTP/1.0\r\nHost: {host_header}\r\n"
+            f"User-Agent: pitun-diag/1.0\r\nConnection: close\r\n\r\n"
+        ).encode()
+        await asyncio.wait_for(loop.sock_sendall(sock, req), timeout=timeout)
+        data = await asyncio.wait_for(loop.sock_recv(sock, 4096), timeout=timeout)
+        first_line = data.split(b"\r\n", 1)[0]
+        parts = first_line.split(b" ", 2)
+        if len(parts) >= 2 and parts[1].isdigit():
+            return int(parts[1])
+    except Exception:
+        return None
+    finally:
+        try:
+            sock.close()
+        except Exception:
+            pass
+    return None
+
+
+async def _check_internet_direct() -> Dict[str, Any]:
+    """Internet check that BYPASSES xray/TPROXY (via SO_MARK=0xff).
+
+    Reports whether the host has a working underlying internet
+    connection regardless of VPN state. When this is green but
+    `internet_via_vpn` is red, the user knows the box is fine but
+    the VPN tunnel is broken (e.g. expired subscription, dead
+    node) — exactly the situation we hit on 1.4.
+    """
+    # Cloudflare 1.1.1.1 on port 80 returns 301 redirect to https.
+    # Any HTTP status response means we reached the server.
+    code = await _http_probe_direct("1.1.1.1", "1.1.1.1", port=80, timeout=5.0)
+    if code is None:
+        # Fallback: Google DNS doubles as an HTTP server (403 on /).
+        code = await _http_probe_direct("8.8.8.8", "8.8.8.8", port=80, timeout=5.0)
+    ok = code is not None and 100 <= code < 600
+    return {
+        "name": "internet_direct",
+        "ok": ok,
+        "detail": f"HTTP {code} from 1.1.1.1" if ok else "host has no internet",
+    }
+
+
+async def _check_internet_via_vpn() -> Dict[str, Any]:
+    """Internet check that goes THROUGH the xray/TPROXY pipe.
+
+    This is the legacy `_check_internet` curl probe — packets get
+    TPROXY-marked, hit xray on :7893, get routed via the user's
+    rules / active node. If the VPN is healthy it succeeds; if the
+    active node has a TLS handshake issue (Reality drift, expired
+    creds, etc.) it times out or gets EOF mid-handshake.
+
+    Uses `--resolve` to pin a literal IP for `cp.cloudflare.com`,
+    so a degraded DNS upstream doesn't masquerade as "no internet".
+    Tries the curl-default DNS path first; on failure retries with
+    the explicit resolve.
+    """
+    result = await _run(
+        "curl -sf --max-time 5 -o /dev/null -w '%{http_code}' "
+        "https://www.google.com/generate_204"
+    )
     ok = result in ("200", "204")
     if not ok:
-        result = await _run("curl -sf --max-time 5 -o /dev/null -w '%{http_code}' http://cp.cloudflare.com")
+        # Pin the IP so a broken xray-DNS (everything routed to a dead
+        # VPN node) can't manifest as a false "no internet" — the host
+        # may still have CDN reachability.
+        result = await _run(
+            "curl -sf --max-time 5 -o /dev/null -w '%{http_code}' "
+            "--resolve cp.cloudflare.com:80:104.16.132.229 "
+            "http://cp.cloudflare.com"
+        )
         ok = result in ("200", "204")
-    return {"name": "internet", "ok": ok, "detail": "connected" if ok else "no internet access"}
+    return {
+        "name": "internet_via_vpn",
+        "ok": ok,
+        "detail": "reached via tunnel" if ok else "no internet through VPN",
+    }
 
 
 async def _check_xray() -> Dict[str, Any]:
@@ -381,7 +482,8 @@ async def health_checks():
         _check_gateway(),
         _check_dns(),
         _check_dns_udp(),
-        _check_internet(),
+        _check_internet_direct(),
+        _check_internet_via_vpn(),
         _check_xray(),
         _check_nftables(),
         _check_tun(),

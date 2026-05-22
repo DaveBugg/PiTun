@@ -44,7 +44,11 @@ function HealthChecks() {
     gateway: Router,
     dns: Globe,
     dns_udp: Globe,
+    // Legacy single-row `internet` kept for back-compat with old
+    // installs running v1.3.6 backend — gone after v1.3.7 ships.
     internet: Wifi,
+    internet_direct: Wifi,
+    internet_via_vpn: Wifi,
     xray: Shield,
     nftables: Shield,
     tun: Network,
@@ -55,6 +59,8 @@ function HealthChecks() {
     dns: 'DNS Resolution',
     dns_udp: 'DNS over UDP',
     internet: 'Internet Access',
+    internet_direct: 'Internet (direct)',
+    internet_via_vpn: 'Internet (via VPN)',
     xray: 'Xray Process',
     nftables: 'nftables Rules',
     tun: 'TUN Interface',
