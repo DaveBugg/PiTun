@@ -63,23 +63,32 @@ _UA_MAP = {
 }
 
 
-def _get_happ_headers(ua_key: str = "happ") -> dict:
+def _get_happ_headers(ua_key: str = "happ", *, rotate_hwid: bool = False) -> dict:
     """Build the X-* header bundle that real Happ sends alongside its UA.
 
-    HWID is derived from `/etc/machine-id` (or a constant fallback on
-    non-Linux dev machines) — keeping it stable matters because some
-    panels rate-limit or device-bind on first observed HWID, and
-    rotating it would silently break the subscription. We mix the
-    profile into the seed so different OS choices yield different HWIDs
-    (real iOS vs Android Happ instances would never share one).
+    HWID is normally derived from `/etc/machine-id` (or a constant
+    fallback on non-Linux dev machines) and stable across refreshes —
+    most panels device-bind on first-seen HWID and rotating it would
+    silently break the subscription. We mix the profile into the seed
+    so different OS choices yield different HWIDs (real iOS vs Android
+    Happ instances would never share one).
+
+    When `rotate_hwid=True` (operator opt-in per subscription),
+    generate a fresh random UUID instead. Useful when a panel starts
+    HWID-throttling and returns degraded payloads to the stable
+    fingerprint — we've seen this on s.stun.su where the same HWID
+    started getting placeholder 'proxy' dummies after a while.
     """
     import uuid, hashlib
-    try:
-        with open("/etc/machine-id") as f:
-            seed = f.read().strip()
-    except FileNotFoundError:
-        seed = "pitun-default-seed"
-    hwid = str(uuid.UUID(hashlib.md5(f"pitun-happ-{seed}-{ua_key}".encode()).hexdigest()))
+    if rotate_hwid:
+        hwid = str(uuid.uuid4())
+    else:
+        try:
+            with open("/etc/machine-id") as f:
+                seed = f.read().strip()
+        except FileNotFoundError:
+            seed = "pitun-default-seed"
+        hwid = str(uuid.UUID(hashlib.md5(f"pitun-happ-{seed}-{ua_key}".encode()).hexdigest()))
     os_canonical, os_ver, model = _HAPP_PROFILES.get(ua_key, _HAPP_PROFILES["happ"])
     return {
         "X-App-Version": _HAPP_VERSION,
@@ -295,10 +304,15 @@ async def _fetch_subscription_unlocked(sub_id: int) -> None:
         # The profile key drives which OS the X-* describe so UA + headers
         # stay consistent.
         ua_lc = ua.lower()
+        # `rotate_hwid` is opt-in per subscription. When set, every
+        # refresh generates a fresh UUID for X-Hwid instead of the
+        # stable machine-id-derived one — for panels that throttle
+        # the same HWID over time.
+        rotate = bool(getattr(sub, "rotate_hwid", False))
         if sub.ua in _HAPP_PROFILES:
-            headers.update(_get_happ_headers(sub.ua))
+            headers.update(_get_happ_headers(sub.ua, rotate_hwid=rotate))
         elif ua_lc.startswith("happ/"):
-            headers.update(_get_happ_headers("happ"))
+            headers.update(_get_happ_headers("happ", rotate_hwid=rotate))
 
         content: str = ""
         err_msg: str = ""

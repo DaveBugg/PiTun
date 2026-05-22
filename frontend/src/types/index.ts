@@ -197,6 +197,12 @@ export interface Subscription {
   filter_regex?: string
   auto_update: boolean
   update_interval: number
+  // When true, the backend generates a fresh random X-Hwid for each
+  // refresh of this subscription. Off by default — most panels
+  // device-bind on first HWID and rotating breaks them. Enable when
+  // a panel starts HWID-throttling and returns degraded payloads to
+  // the stable HWID.
+  rotate_hwid?: boolean
   last_updated?: string
   node_count: number
   last_error?: string

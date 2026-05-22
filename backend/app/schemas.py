@@ -756,6 +756,7 @@ class SubscriptionBase(BaseModel):
     filter_regex: Optional[str] = None
     auto_update: bool = False
     update_interval: int = 86400
+    rotate_hwid: bool = False
 
     @field_validator("url")
     @classmethod

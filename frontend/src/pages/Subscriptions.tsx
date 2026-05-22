@@ -45,6 +45,7 @@ function SubForm({
     auto_update: initial?.auto_update ?? true,
     update_interval: initial?.update_interval ?? 86400,
     enabled: initial?.enabled ?? true,
+    rotate_hwid: initial?.rotate_hwid ?? false,
   })
   const set = <K extends keyof typeof form>(k: K, v: typeof form[K]) =>
     setForm((f) => ({ ...f, [k]: v }))
@@ -139,7 +140,7 @@ function SubForm({
           className="w-full rounded bg-gray-800 border border-gray-700 px-3 py-1.5 text-sm text-gray-100 font-mono focus:border-brand-500 focus:outline-none"
         />
       </div>
-      <div className="flex gap-4">
+      <div className="flex flex-wrap gap-4">
         <label className="flex items-center gap-2 text-sm text-gray-300 cursor-pointer">
           <input
             type="checkbox"
@@ -157,6 +158,16 @@ function SubForm({
             className="rounded border-gray-600 bg-gray-800 text-brand-500"
           />
           Enabled
+        </label>
+        <label className="flex items-center gap-2 text-sm text-gray-300 cursor-pointer">
+          <input
+            type="checkbox"
+            checked={form.rotate_hwid}
+            onChange={(e) => set('rotate_hwid', e.target.checked)}
+            className="rounded border-gray-600 bg-gray-800 text-brand-500"
+          />
+          Rotate HWID
+          <InfoTip className="ml-0.5" text="When enabled, each refresh generates a fresh random X-Hwid header instead of the stable machine-id-derived one. Most panels device-bind on first HWID, so leave OFF by default. Turn ON only if a panel starts returning degraded payloads (e.g. placeholder 'proxy' dummies) to the stable HWID — a fresh UUID often gets past the throttle." />
         </label>
       </div>
       <div className="flex justify-end gap-3 pt-2 border-t border-gray-800">

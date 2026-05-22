@@ -323,6 +323,13 @@ class Subscription(SQLModel, table=True):
     # for panels that gate on a fingerprint we don't ship a preset for
     # — most subscriptions should leave this empty and pick a preset.
     custom_ua: Optional[str] = None
+    # When True, generate a fresh random X-Hwid per refresh request for
+    # this subscription (only effective on Happ-style presets). Off by
+    # default because most panels device-bind on first-seen HWID — but
+    # when a panel starts throttling requests from the same HWID
+    # (we've seen this on s.stun.su returning degraded "proxy" dummies)
+    # rotating gets a clean response.
+    rotate_hwid: bool = False
 
 
 class DNSRule(SQLModel, table=True):
