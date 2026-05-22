@@ -30,12 +30,38 @@ export default defineConfig({
   build: {
     outDir: 'dist',
     sourcemap: false,
+    // 700 KB cap — the index chunk after vendor split should sit
+    // comfortably under this. Anything bigger means we accidentally
+    // pulled a heavyweight dep into the app code.
+    chunkSizeWarningLimit: 700,
     rollupOptions: {
       output: {
-        manualChunks: {
-          react: ['react', 'react-dom'],
-          router: ['react-router-dom'],
-          query: ['@tanstack/react-query'],
+        // Function form (vs. the object form) actually matches by
+        // resolved module id, so e.g. `react` from a transitive
+        // dependency lands in the `react` chunk too. The object form
+        // we used before only matched the literal entry points and
+        // left the actual react runtime in the main bundle, which is
+        // why `react.js` was only 30 bytes and `index.js` was 1.25MB.
+        manualChunks(id: string) {
+          if (!id.includes('node_modules')) return undefined
+          // Order matters — react-dom contains 'react' substring,
+          // so check the more-specific name first.
+          if (id.includes('node_modules/react-dom/') || id.includes('node_modules/react/') ||
+              id.includes('node_modules/scheduler/')) {
+            return 'react'
+          }
+          if (id.includes('node_modules/react-router')) return 'router'
+          if (id.includes('node_modules/@tanstack/')) return 'query'
+          if (id.includes('node_modules/qrcode.react/') ||
+              id.includes('node_modules/qr.js/')) {
+            return 'qrcode'
+          }
+          if (id.includes('node_modules/lucide-react/')) return 'icons'
+          if (id.includes('node_modules/axios/')) return 'axios'
+          // Everything else — Tailwind runtime helpers, clsx, polyfills —
+          // stays in a single `vendor` chunk so we don't end up with
+          // dozens of tiny files.
+          return 'vendor'
         },
       },
     },
