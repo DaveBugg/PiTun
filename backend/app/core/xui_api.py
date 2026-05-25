@@ -15,22 +15,32 @@ on a valid Bearer match). That means Bearer callers don't need:
   * a session cookie (no `/login` POST)
   * a CSRF token (no `GET /csrf-token` dance)
   * to track expiring sessions
-This module relies on that contract. If the panel is rolled back to a
-pre-v3.0.0 release the Bearer token won't be honoured at all (the
-endpoint just doesn't exist) — `setup-xui-server.sh` pins
-`XUI_VERSION=v3.0.0` to keep the contract stable.
+This module relies on that contract. `setup-xui-server.sh` pins
+`XUI_VERSION=v3.1.0` to keep the client/endpoint contract stable.
+PiTun cannot manage v3.0.x panels because the per-client endpoints
+moved to a separate `/panel/api/clients/*` controller in v3.1.0
+(see "Endpoint surface" below).
 
-Endpoint surface (subset — what PiTun needs in beta.7)
-------------------------------------------------------
+Endpoint surface (3x-ui v3.1.0+)
+--------------------------------
   GET    /panel/api/inbounds/list                  → list all
   GET    /panel/api/inbounds/get/<id>              → one inbound
   POST   /panel/api/inbounds/add                   → create
   POST   /panel/api/inbounds/del/<id>              → delete
   POST   /panel/api/inbounds/update/<id>           → update
-  POST   /panel/api/inbounds/addClient             → add client to inbound
-  POST   /panel/api/inbounds/<id>/delClient/<uuid> → delete client
-  POST   /panel/api/inbounds/updateClient/<uuid>   → update client
-  GET    /panel/api/inbounds/getClientTraffics/<email>
+
+  # NEW in v3.1.0 — clients moved to a first-class controller.
+  # The v3.0.x endpoints listed below were REMOVED:
+  #   POST /panel/api/inbounds/addClient
+  #   POST /panel/api/inbounds/<id>/delClient/<uuid>
+  #   POST /panel/api/inbounds/updateClient/<uuid>
+  #   GET  /panel/api/inbounds/getClientTraffics/<email>
+  # Lookup key shifted from UUID to **email** (globally unique).
+  POST   /panel/api/clients/add                    → create+attach
+  POST   /panel/api/clients/del/<email>            → delete by email
+  POST   /panel/api/clients/update/<email>         → update by email
+  GET    /panel/api/clients/traffic/<email>        → per-client stats
+
   GET    /panel/api/server/getNewUUID              → util
   GET    /panel/api/server/getNewX25519Cert        → util (Reality keypair)
 
@@ -462,45 +472,135 @@ class XuiClient:
     async def add_client(
         self, inbound_id: int, settings: Dict[str, Any],
     ) -> None:
-        """Add a client to an existing inbound.
+        """Create a client and attach it to the given inbound (v3.1.0+).
 
-        The panel expects `{id: <inbound>, settings: <stringified-json>}`
-        where `settings` is `{"clients": [<client-object>]}` re-encoded
-        as a string. The double-stringify is a quirk of how 3x-ui
-        stores settings (it parses settings as JSON-in-JSON internally).
+        Callers pass a v3.0.x-shaped client dict (`{id, email, flow,
+        password, limitIp, totalGB, expiryTime, enable, subId, tgId,
+        comment, reset, ...}`). We translate to v3.1.0's
+        `POST /panel/api/clients/add` shape:
+
+            {
+              "client": <ClientRecord — renamed id→uuid>,
+              "inboundIds": [<inbound_id>]
+            }
+
+        Email is globally unique on v3.1.0 (`uniqueIndex` in
+        `ClientRecord`), so callers that previously created the
+        "same email × N inbounds" pattern (chain orchestrator)
+        must suffix per-inbound or use `add_client_multi`.
         """
-        import json as _json
+        client_record = _to_client_record(settings)
         payload = {
-            "id": inbound_id,
-            "settings": _json.dumps({"clients": [settings]}),
+            "client": client_record,
+            "inboundIds": [inbound_id],
         }
-        await self._request("POST", "/panel/api/inbounds/addClient", json=payload)
+        await self._request("POST", "/panel/api/clients/add", json=payload)
+
+    async def add_client_multi(
+        self, inbound_ids: List[int], settings: Dict[str, Any],
+    ) -> None:
+        """v3.1.0-native: one client attached to N inbounds in one call.
+
+        Cheaper than N `add_client` round-trips and matches the new
+        panel UI shape (clients are first-class, inbound attachments
+        are a many-to-many join). PiTun's chain orchestrator currently
+        prefers per-channel suffix-emails (see `xui_chain.py`) so this
+        helper is reserved for future per-feature use.
+        """
+        client_record = _to_client_record(settings)
+        payload = {
+            "client": client_record,
+            "inboundIds": list(inbound_ids),
+        }
+        await self._request("POST", "/panel/api/clients/add", json=payload)
 
     async def del_client(self, inbound_id: int, client_uuid: str) -> None:
+        """Delete a client by uuid (v3.1.0 keys by email).
+
+        The v3.1.0 endpoint is `POST /panel/api/clients/del/<email>`
+        (no body), but every legacy caller hands us `(inbound_id,
+        uuid)`. We resolve uuid → email via the inbound's hydrated
+        `settings.clients[]` (still populated for back-compat on
+        `GET /panel/api/inbounds/get/<id>`).
+
+        Side effect: if a client is attached to multiple inbounds
+        (`add_client_multi`), this deletes the ClientRecord entirely
+        — all attachments go with it. Callers that need per-attachment
+        cleanup should use `detach_client` instead.
+        """
+        email = await self._resolve_client_email(inbound_id, client_uuid)
         await self._request(
-            "POST",
-            f"/panel/api/inbounds/{inbound_id}/delClient/{client_uuid}",
+            "POST", f"/panel/api/clients/del/{email}",
+        )
+
+    async def detach_client(
+        self, email: str, inbound_ids: List[int],
+    ) -> None:
+        """Detach an email from specific inbounds, keep the client.
+
+        Use when you want to remove a multi-attached client from one
+        of its inbounds without nuking the whole ClientRecord.
+        """
+        await self._request(
+            "POST", f"/panel/api/clients/{email}/detach",
+            json={"inboundIds": list(inbound_ids)},
         )
 
     async def update_client(
         self, client_uuid: str, inbound_id: int, settings: Dict[str, Any],
     ) -> None:
-        import json as _json
-        payload = {
-            "id": inbound_id,
-            "settings": _json.dumps({"clients": [settings]}),
-        }
+        """Update a client by uuid (v3.1.0 keys by email).
+
+        Same uuid → email resolution dance as `del_client`. The
+        payload is a flat ClientRecord (no inbound boundary).
+        """
+        email = await self._resolve_client_email(inbound_id, client_uuid)
+        client_record = _to_client_record(settings)
         await self._request(
-            "POST", f"/panel/api/inbounds/updateClient/{client_uuid}",
-            json=payload,
+            "POST", f"/panel/api/clients/update/{email}",
+            json=client_record,
         )
 
     async def get_client_traffics_by_email(self, email: str) -> Dict[str, Any]:
+        """Per-client traffic stats (v3.1.0 endpoint moved)."""
         body = await self._request(
-            "GET", f"/panel/api/inbounds/getClientTraffics/{email}",
+            "GET", f"/panel/api/clients/traffic/{email}",
         )
         obj = body.get("obj")
         return obj if isinstance(obj, dict) else {}
+
+    async def _resolve_client_email(
+        self, inbound_id: int, client_uuid: str,
+    ) -> str:
+        """Look up the email of a client by its uuid within an inbound.
+
+        `GET /panel/api/inbounds/get/<id>` still hydrates
+        `settings.clients[]` for back-compat in v3.1.0 — we scan that
+        list for the matching id and pull the email field. If not
+        found, raise `XuiAPIError` with a clear message so the API
+        layer can 502 the request instead of silently no-op'ing.
+        """
+        import json as _json
+        body = await self._request(
+            "GET", f"/panel/api/inbounds/get/{inbound_id}",
+        )
+        obj = body.get("obj") or {}
+        settings_raw = obj.get("settings") or "{}"
+        try:
+            settings = _json.loads(settings_raw) if isinstance(settings_raw, str) else settings_raw
+        except (ValueError, TypeError):
+            settings = {}
+        for client in (settings.get("clients") or []):
+            if str(client.get("id") or "").lower() == client_uuid.lower():
+                email = client.get("email")
+                if email:
+                    return str(email)
+                break
+        raise XuiAPIError(
+            f"client uuid={client_uuid!r} not found in inbound "
+            f"{inbound_id} (cannot resolve email for v3.1.0 endpoint)",
+            kind="not_found",
+        )
 
     # ── Server util endpoints ──────────────────────────────────────────
     async def get_new_uuid(self) -> str:
@@ -638,3 +738,36 @@ class XuiClient:
             "POST", "/panel/xray/update",
             form=form, timeout=_LARGE_PAYLOAD_TIMEOUT,
         )
+
+
+# Per-client field projection. v3.0.x callers ship a dict with `id` =
+# the UUID; v3.1.0's ClientRecord uses `uuid` instead. Keep this in
+# one place so every method that builds a v3.1.0 client payload (add,
+# update) emits the same shape.
+_CLIENT_RECORD_KEYS = (
+    "email", "uuid", "password", "auth", "flow", "security", "reverse",
+    "limitIp", "totalGB", "expiryTime", "enable", "subId", "tgId",
+    "comment", "reset",
+)
+
+
+def _to_client_record(settings: Dict[str, Any]) -> Dict[str, Any]:
+    """Translate a v3.0.x-style client dict into a v3.1.0 ClientRecord.
+
+    The only structural change is the `id` → `uuid` field rename;
+    every other field name carries over verbatim. Unknown keys are
+    dropped silently so callers that include legacy fields (e.g.
+    `subscription_url`) don't poison the request body.
+    """
+    out: Dict[str, Any] = {}
+    # Rename id → uuid if present (v3.0.x callers).
+    if "uuid" in settings and settings.get("uuid"):
+        out["uuid"] = settings["uuid"]
+    elif "id" in settings and settings.get("id"):
+        out["uuid"] = settings["id"]
+    for k in _CLIENT_RECORD_KEYS:
+        if k == "uuid":
+            continue  # already handled above
+        if k in settings:
+            out[k] = settings[k]
+    return out

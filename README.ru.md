@@ -625,7 +625,7 @@ PiTun — это glue-код поверх зрелых проектов, без 
   (форк klzgrad) — рекомендуемый сервер для NaiveProxy. Скрипт
   `scripts/setup-naive-server.sh` собирает его через [`xcaddy`](https://github.com/caddyserver/xcaddy).
 - **[MHSanaei/3x-ui](https://github.com/MHSanaei/3x-ui)** — upstream
-  x-ui панель (v3.0.1). В режиме «bare» PiTun автоматически
+  x-ui панель (v3.1.0). В режиме «bare» PiTun автоматически
   устанавливает её и управляет inbounds/клиентами через API панели.
 - **[GFW4Fun/x-ui-pro](https://github.com/GFW4Fun/x-ui-pro)** — форк
   3x-ui с доменом + nginx + LE, используется в режиме «xui-pro»

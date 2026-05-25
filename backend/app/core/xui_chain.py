@@ -1428,10 +1428,18 @@ async def orchestrate_add_client(
         ) as c:
             for ch in channels:
                 uuid = await c.get_new_uuid()
+                # v3.1.0: email is globally unique on ClientRecord
+                # (uniqueIndex). Same `effective_label` across N
+                # channels would collide on the 2nd add_client call.
+                # Suffix with the channel's stable name so each
+                # panel-side client is distinct ("alice-vk", "alice-mx",
+                # ...). The UI groups them logically by prefix, and
+                # PiTun's ChainClient → ChainClientChannel mapping
+                # still owns the per-channel UUID for Node export.
                 client_obj = {
                     "id": uuid,
                     "flow": "xtls-rprx-vision",
-                    "email": effective_label,
+                    "email": f"{effective_label}-{ch.name}",
                     "limitIp": 0, "totalGB": 0, "expiryTime": 0,
                     "enable": True, "tgId": "", "subId": "",
                 }

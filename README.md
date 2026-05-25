@@ -588,7 +588,7 @@ on :443) and optional LE registration email (defaults to
 `admin@<apex-domain>`). Behind the scenes
 (`scripts/setup-xui-server.sh`):
 
-1. Installs upstream **3x-ui v3.0.1** in `--non-interactive` mode.
+1. Installs upstream **3x-ui v3.1.0** in `--non-interactive` mode.
 2. For xui-pro: also installs nginx + certbot + the
    [`GFW4Fun/randomfakehtml`](https://github.com/GFW4Fun/randomfakehtml)
    archive of fakesite templates, picks one at random, and wires the
@@ -956,7 +956,7 @@ projects. Without them, none of this would exist:
   (klzgrad's fork) — recommended NaiveProxy server. `scripts/setup-naive-server.sh`
   builds it via [`xcaddy`](https://github.com/caddyserver/xcaddy).
 - **[MHSanaei/3x-ui](https://github.com/MHSanaei/3x-ui)** — the upstream
-  x-ui panel (v3.0.1). PiTun's "bare" x-ui mode auto-installs it and
+  x-ui panel (v3.1.0). PiTun's "bare" x-ui mode auto-installs it and
   manages its inbounds/clients via the panel API.
 - **[GFW4Fun/x-ui-pro](https://github.com/GFW4Fun/x-ui-pro)** — domain
   + nginx + LE fork of 3x-ui used in PiTun's "xui-pro" mode and as

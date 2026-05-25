@@ -34,7 +34,13 @@
 #   DOMAIN=<sub.domain.tld>   See above. Empty triggers bare-3x-ui mode.
 #   EMAIL=<addr>              Let's Encrypt registration email (DOMAIN mode
 #                             only). Defaults to admin@<DOMAIN> if missing.
-#   XUI_VERSION=v3.0.1        Pinned 3x-ui release tag. Both modes use this.
+#   XUI_VERSION=v3.1.0        Pinned 3x-ui release tag. Both modes use this.
+#                             Bumped from v3.0.1 in PiTun v1.3.8 because v3.1.0
+#                             moved per-client endpoints to a separate
+#                             /panel/api/clients/* controller. PiTun v1.3.7
+#                             and older cannot manage v3.1.x panels; PiTun
+#                             v1.3.8+ cannot manage v3.0.x panels (the new
+#                             client controller doesn't exist there).
 #                             Override at your own risk — the Bearer API
 #                             middleware exists since v3.0.0; anything older
 #                             requires cookie+CSRF auth which PiTun doesn't
@@ -84,7 +90,7 @@ info() { echo -e "${BLUE}[i]${NC} $*"; }
 # ── Defaults ────────────────────────────────────────────────────────────────
 DOMAIN="${DOMAIN:-}"
 EMAIL="${EMAIL:-}"
-XUI_VERSION="${XUI_VERSION:-v3.0.1}"
+XUI_VERSION="${XUI_VERSION:-v3.1.0}"
 PANEL_PORT="${PANEL_PORT:-}"
 PANEL_BASEPATH="${PANEL_BASEPATH:-}"
 PANEL_USER="${PANEL_USER:-}"

@@ -163,13 +163,17 @@ class TestXuiClient:
         assert res["id"] == 42
 
     @pytest.mark.asyncio
-    async def test_add_client_double_stringifies_settings(self):
-        # The 3x-ui panel stores `settings` as JSON-in-JSON: the outer
-        # body has `settings: "<stringified-json>"`. Make sure our
-        # client implements that quirk so addClient actually lands.
-        captured = {}
+    async def test_add_client_posts_v3_1_clients_endpoint(self):
+        # In v3.1.0 the legacy `POST /panel/api/inbounds/addClient`
+        # endpoint was removed. Clients are now first-class: PiTun
+        # POSTs to `/panel/api/clients/add` with a `ClientRecord`
+        # body + `inboundIds: [N]` for attachment. The `id` field
+        # from the caller's v3.0.x-shaped dict is renamed to `uuid`
+        # to match the new ClientRecord model.
+        captured: dict = {}
 
         def handler(req: httpx.Request) -> httpx.Response:
+            captured["path"] = req.url.path
             captured["body"] = json.loads(req.read())
             return _ok(None)
 
@@ -177,17 +181,115 @@ class TestXuiClient:
         try:
             await c.add_client(
                 inbound_id=7,
-                settings={"id": "uuid-here", "email": "pi-abc"},
+                settings={"id": "uuid-here", "email": "pi-abc", "flow": "xtls-rprx-vision"},
             )
         finally:
             await c.aclose()
 
+        assert captured["path"] == "/p/panel/api/clients/add"
         body = captured["body"]
-        assert body["id"] == 7
-        # `settings` is a STRING, not a dict — that's the quirk.
-        assert isinstance(body["settings"], str)
-        parsed = json.loads(body["settings"])
-        assert parsed == {"clients": [{"id": "uuid-here", "email": "pi-abc"}]}
+        assert body["inboundIds"] == [7]
+        # `client` is a flat ClientRecord — no nested settings string.
+        assert body["client"]["uuid"] == "uuid-here"
+        assert body["client"]["email"] == "pi-abc"
+        assert body["client"]["flow"] == "xtls-rprx-vision"
+        # Legacy `id` key must NOT pass through — only `uuid`.
+        assert "id" not in body["client"]
+
+    @pytest.mark.asyncio
+    async def test_add_client_multi_attaches_to_many_inbounds(self):
+        # v3.1.0-native: one ClientRecord, multiple inbound attachments
+        # in a single round-trip. PiTun's chain orchestrator currently
+        # prefers per-channel suffix-emails (so it uses `add_client`
+        # in a loop), but this helper exists for future per-feature use.
+        captured: dict = {}
+
+        def handler(req: httpx.Request) -> httpx.Response:
+            captured["body"] = json.loads(req.read())
+            return _ok(None)
+
+        c = _make_client(_mock(handler))
+        try:
+            await c.add_client_multi(
+                inbound_ids=[3, 7, 11],
+                settings={"id": "u-1", "email": "user1"},
+            )
+        finally:
+            await c.aclose()
+
+        assert captured["body"]["inboundIds"] == [3, 7, 11]
+        assert captured["body"]["client"]["uuid"] == "u-1"
+
+    @pytest.mark.asyncio
+    async def test_del_client_resolves_uuid_to_email(self):
+        # v3.1.0's delete endpoint keys by email, not uuid. PiTun's
+        # callers still hand us `(inbound_id, uuid)`, so the client
+        # fetches the inbound, finds the matching uuid in
+        # `settings.clients[]`, and POSTs to `/clients/del/<email>`.
+        captured: dict = {}
+
+        def handler(req: httpx.Request) -> httpx.Response:
+            path = req.url.path
+            if "/panel/api/inbounds/get/" in path:
+                # Hydrated inbound — back-compat clients[] still present.
+                return _ok({
+                    "id": 7,
+                    "settings": json.dumps({
+                        "clients": [
+                            {"id": "other-uuid", "email": "other@x"},
+                            {"id": "target-uuid", "email": "target@x"},
+                        ],
+                    }),
+                })
+            captured.setdefault("paths", []).append(path)
+            return _ok(None)
+
+        c = _make_client(_mock(handler))
+        try:
+            await c.del_client(inbound_id=7, client_uuid="target-uuid")
+        finally:
+            await c.aclose()
+
+        assert captured["paths"] == ["/p/panel/api/clients/del/target@x"]
+
+    @pytest.mark.asyncio
+    async def test_del_client_raises_when_uuid_not_in_inbound(self):
+        # If the resolution lookup fails, surface a clear error so
+        # the API layer 502s the request instead of silently no-op'ing.
+        from app.core.xui_api import XuiAPIError
+
+        def handler(req):
+            if "/panel/api/inbounds/get/" in req.url.path:
+                return _ok({
+                    "id": 7,
+                    "settings": json.dumps({"clients": []}),
+                })
+            return _ok(None)
+
+        c = _make_client(_mock(handler))
+        try:
+            with pytest.raises(XuiAPIError) as exc:
+                await c.del_client(inbound_id=7, client_uuid="ghost-uuid")
+        finally:
+            await c.aclose()
+        assert "not found" in str(exc.value)
+        assert exc.value.kind == "not_found"
+
+    @pytest.mark.asyncio
+    async def test_get_client_traffics_uses_v3_1_endpoint(self):
+        captured: dict = {}
+
+        def handler(req):
+            captured["path"] = req.url.path
+            return _ok({"email": "u@x", "up": 100, "down": 200})
+
+        c = _make_client(_mock(handler))
+        try:
+            res = await c.get_client_traffics_by_email("u@x")
+        finally:
+            await c.aclose()
+        assert captured["path"] == "/p/panel/api/clients/traffic/u@x"
+        assert res["up"] == 100 and res["down"] == 200
 
     @pytest.mark.asyncio
     async def test_get_new_x25519_cert_returns_pair(self):
