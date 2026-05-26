@@ -45,6 +45,30 @@
 #                             middleware exists since v3.0.0; anything older
 #                             requires cookie+CSRF auth which PiTun doesn't
 #                             implement.
+#
+# ── Why upstream scripts are pinned by commit SHA, not tag ──────────────────
+# Both upstream installer URLs below resolve to a **commit SHA**, not a
+# branch/tag. GitHub permits tag force-pushes and `master` is a moving
+# target by definition — if either upstream silently rewrites their
+# installer (intentionally or via repo takeover), our pinned URL still
+# fetches the byte-identical script we audited against XUI_VERSION
+# v3.1.0. Bump XUI_VERSION + the two `*_SHA` constants together when
+# updating to a new 3x-ui release.
+#
+# To bump:
+#   1. Set XUI_VERSION=v3.X.Y below.
+#   2. Update XUI_INSTALL_SHA to the commit at tag v3.X.Y:
+#        curl -sf https://api.github.com/repos/MHSanaei/3x-ui/git/refs/tags/v3.X.Y
+#      → take .object.sha, then dereference annotated tag:
+#        curl -sf https://api.github.com/repos/MHSanaei/3x-ui/git/tags/<above>
+#      → take .object.sha (commit). That's XUI_INSTALL_SHA.
+#   3. Update XUI_PRO_SHA to current x-ui-pro master HEAD:
+#        curl -sf https://api.github.com/repos/GFW4Fun/x-ui-pro/branches/master
+#      → take .commit.sha.
+#   4. Verify content didn't drift unexpectedly:
+#        curl -sf https://raw.githubusercontent.com/MHSanaei/3x-ui/v3.X.Y/install.sh | sha256sum
+#        curl -sf https://raw.githubusercontent.com/MHSanaei/3x-ui/<XUI_INSTALL_SHA>/install.sh | sha256sum
+#      → must match.
 #   PANEL_PORT=<num>          Force the panel port instead of generating one.
 #                             Empty (default) → random 30000-60000.
 #   PANEL_BASEPATH=<str>      Force the panel base path. Empty → random
@@ -91,6 +115,12 @@ info() { echo -e "${BLUE}[i]${NC} $*"; }
 DOMAIN="${DOMAIN:-}"
 EMAIL="${EMAIL:-}"
 XUI_VERSION="${XUI_VERSION:-v3.1.0}"
+# Commit SHAs of the upstream installer scripts at our pinned version.
+# These freeze the downloaded scripts byte-for-byte regardless of any
+# future tag rewrite or master-branch drift. See the bump procedure in
+# the header comment above.
+XUI_INSTALL_SHA="${XUI_INSTALL_SHA:-867a145979be5724becaedfea39543c30cf67d27}"  # MHSanaei/3x-ui@v3.1.0 install.sh
+XUI_PRO_SHA="${XUI_PRO_SHA:-2d8f916526a092358b504903e01c1b3c5329293a}"        # GFW4Fun/x-ui-pro master @ 2026-05-26
 PANEL_PORT="${PANEL_PORT:-}"
 PANEL_BASEPATH="${PANEL_BASEPATH:-}"
 PANEL_USER="${PANEL_USER:-}"
@@ -224,7 +254,10 @@ if [[ "$INSTALL_MODE" == "xui-pro" ]]; then
     # to invoke this mode separately.
     log "Running x-ui-pro installer (this takes 3-8 minutes)..."
     ver_for_pro="${XUI_VERSION#v}"
-    bash <(wget -qO- "https://raw.githubusercontent.com/GFW4Fun/x-ui-pro/master/x-ui-pro.sh") \
+    # Pinned by commit SHA (XUI_PRO_SHA) rather than `/master/` so a
+    # force-push or compromised commit on master can't silently
+    # replace the wrapper. See header comment for the bump procedure.
+    bash <(wget -qO- "https://raw.githubusercontent.com/GFW4Fun/x-ui-pro/${XUI_PRO_SHA}/x-ui-pro.sh") \
         -panel 1 \
         -xuiver "$ver_for_pro" \
         -cdn off \
@@ -244,8 +277,14 @@ else
     # and dumps a "Failed to issue IP certificate" red herring into
     # the log. The trailing `n\n` covers any older revisions that
     # still ask "use default creds?" before the SSL prompt.
+    # Pinned by commit SHA (XUI_INSTALL_SHA) — same rationale as the
+    # x-ui-pro branch above. Note: the version arg ("$XUI_VERSION") is
+    # still passed positionally to the installer because that's how
+    # MHSanaei's install.sh composes the binary tarball download URL
+    # (release-download/<tag>/x-ui-linux-<arch>.tar.gz). The pin
+    # protects the SCRIPT; the positional arg protects the BINARY.
     printf '4\nn\n' | bash <(wget -qO- \
-        "https://raw.githubusercontent.com/MHSanaei/3x-ui/${XUI_VERSION}/install.sh") \
+        "https://raw.githubusercontent.com/MHSanaei/3x-ui/${XUI_INSTALL_SHA}/install.sh") \
         "$XUI_VERSION" \
         || err "3x-ui installer exited non-zero"
 fi
