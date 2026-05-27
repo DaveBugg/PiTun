@@ -580,16 +580,11 @@ class XuiClient:
         found, raise `XuiAPIError` with a clear message so the API
         layer can 502 the request instead of silently no-op'ing.
         """
-        import json as _json
         body = await self._request(
             "GET", f"/panel/api/inbounds/get/{inbound_id}",
         )
         obj = body.get("obj") or {}
-        settings_raw = obj.get("settings") or "{}"
-        try:
-            settings = _json.loads(settings_raw) if isinstance(settings_raw, str) else settings_raw
-        except (ValueError, TypeError):
-            settings = {}
+        settings = parse_inbound_field(obj.get("settings"))
         for client in (settings.get("clients") or []):
             if str(client.get("id") or "").lower() == client_uuid.lower():
                 email = client.get("email")
@@ -749,6 +744,44 @@ _CLIENT_RECORD_KEYS = (
     "limitIp", "totalGB", "expiryTime", "enable", "subId", "tgId",
     "comment", "reset",
 )
+
+
+def parse_inbound_field(value: Any) -> Dict[str, Any]:
+    """Defensive parser for `Inbound.settings` / `streamSettings` /
+    `sniffing` JSON-of-JSON fields.
+
+    v3.0.x panels emitted these as **JSON-encoded strings** (Go struct
+    field type was `string`, the panel stored them stringified inside
+    the outer JSON). The PiTun client + frontend `JSON.parse`'d the
+    inner string to get the actual dict.
+
+    v3.1.0 added a `MarshalJSON` on the Inbound model that emits
+    them as **nested JSON objects** directly. The wire shape is now:
+        settings: { clients: [...], decryption: "none", ... }
+    instead of:
+        settings: "{\\"clients\\":[...],\\"decryption\\":\\"none\\"}"
+
+    JSON.parse / json.loads on a dict throws TypeError, so every
+    callsite that assumed the stringified form crashes silently and
+    falls back to empty {}. This helper normalises both shapes:
+    string → parse it; dict → pass through; anything else → {}.
+
+    Used by both `xui_api._resolve_client_email` and the inbound-
+    sync route handlers so backward compat with any straggler v3.0.x
+    install survives, even though `setup-xui-server.sh` pins v3.1.0.
+    """
+    import json as _json
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        if not value:
+            return {}
+        try:
+            parsed = _json.loads(value)
+        except (ValueError, TypeError):
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+    return {}
 
 
 def _to_client_record(settings: Dict[str, Any]) -> Dict[str, Any]:

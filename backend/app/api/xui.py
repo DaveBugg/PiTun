@@ -41,7 +41,7 @@ from sqlmodel import select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.database import get_session
-from app.core.xui_api import XuiAPIError, XuiClient
+from app.core.xui_api import XuiAPIError, XuiClient, parse_inbound_field
 from app.core.xui_chain import (
     ChainCreateDraft,
     ChannelDraft,
@@ -1094,10 +1094,9 @@ async def sync_xui_server(
         ib_id = int(ib.get("id") or 0)
         if not ib_id:
             continue
-        try:
-            settings = json.loads(ib.get("settings") or "{}")
-        except ValueError:
-            settings = {}
+        # v3.1.0 returns settings as nested dict, v3.0.x as JSON-string —
+        # parse_inbound_field handles both shapes.
+        settings = parse_inbound_field(ib.get("settings"))
         ib_proto = (ib.get("protocol") or "").lower()
         ib_port = int(ib.get("port") or 0)
         ib_remark = ib.get("remark") or ""
@@ -1651,16 +1650,9 @@ async def get_inbound_client_share_uri(
                 detail=f"Inbound lookup failed ({exc.kind}): {exc}",
             )
 
-    settings_raw = inbound.get("settings") or "{}"
-    if isinstance(settings_raw, str):
-        try:
-            settings = json.loads(settings_raw)
-        except ValueError:
-            settings = {}
-    else:
-        settings = settings_raw
+    settings = parse_inbound_field(inbound.get("settings"))
 
-    clients = (settings or {}).get("clients") or []
+    clients = settings.get("clients") or []
     target = None
     for c in clients:
         if c.get("id") == client_id or c.get("email") == client_id:
@@ -1732,13 +1724,8 @@ async def export_inbound_client_to_node(
                 detail=f"Inbound lookup failed ({exc.kind}): {exc}",
             )
 
-    settings = inbound.get("settings") or "{}"
-    if isinstance(settings, str):
-        try:
-            settings = json.loads(settings)
-        except ValueError:
-            settings = {}
-    clients = (settings or {}).get("clients") or []
+    settings = parse_inbound_field(inbound.get("settings"))
+    clients = settings.get("clients") or []
     target = None
     for c in clients:
         if c.get("id") == client_id or c.get("email") == client_id:
@@ -1749,12 +1736,7 @@ async def export_inbound_client_to_node(
             404, detail=f"Client {client_id!r} not found on inbound {inbound_id}",
         )
 
-    stream = inbound.get("streamSettings") or "{}"
-    if isinstance(stream, str):
-        try:
-            stream = json.loads(stream)
-        except ValueError:
-            stream = {}
+    stream = parse_inbound_field(inbound.get("streamSettings"))
 
     # Default: dial the VPS IP directly on the inbound's own port.
     # This is correct for Reality / SOCKS5 / anything not fronted by

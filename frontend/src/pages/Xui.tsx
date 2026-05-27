@@ -686,23 +686,31 @@ function InboundCard({
     flow?: string
     enable?: boolean
   }
+  // 3x-ui v3.1.0 changed `settings` / `streamSettings` / `sniffing`
+  // wire shape from JSON-encoded-string to nested object. v3.0.x
+  // panels still ship them as strings. Handle both shapes — if it's
+  // already an object, use as-is; if it's a string, JSON.parse it.
+  const _loadField = (v: unknown): Record<string, unknown> => {
+    if (v && typeof v === 'object') return v as Record<string, unknown>
+    if (typeof v === 'string' && v) {
+      try { return JSON.parse(v) as Record<string, unknown> } catch { /* fall through */ }
+    }
+    return {}
+  }
+
   let clients: ParsedClient[] = []
   try {
-    const s = JSON.parse(inbound.settings)
-    const arr = s.clients ?? s.accounts ?? []
+    const s = _loadField(inbound.settings)
+    const arr = (s.clients as ParsedClient[] | undefined) ?? (s.accounts as ParsedClient[] | undefined) ?? []
     clients = Array.isArray(arr) ? arr : []
   } catch { /* ignore */ }
 
   // Parse streamSettings once to surface transport + security tags.
-  // x-ui-pro stores both fields top-level under streamSettings, plus
-  // the JSON-in-JSON quirk forces us to JSON.parse the outer blob.
-  // Network is normalised to lowercase for stable badge matching;
-  // `splithttp` → `xhttp` because that's the legacy alias the panel
-  // sometimes still emits.
+  // Same shape-shift quirk as `settings` above.
   let inboundNetwork = ''
   let inboundSecurity = ''
   try {
-    const ss = JSON.parse(inbound.streamSettings || '{}')
+    const ss = _loadField(inbound.streamSettings)
     const net = String(ss.network || '').toLowerCase()
     inboundNetwork = net === 'splithttp' ? 'xhttp' : net
     inboundSecurity = String(ss.security || '').toLowerCase()

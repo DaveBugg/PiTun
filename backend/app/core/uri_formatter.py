@@ -237,19 +237,11 @@ def inbound_client_to_uri(
     # before SQLModel is fully wired in some test contexts.
     from app.models import Node as _Node
 
-    settings = inbound.get("settings") or "{}"
-    if isinstance(settings, str):
-        try:
-            settings = json.loads(settings)
-        except ValueError:
-            settings = {}
-
-    stream = inbound.get("streamSettings") or "{}"
-    if isinstance(stream, str):
-        try:
-            stream = json.loads(stream)
-        except ValueError:
-            stream = {}
+    # v3.0.x panels emit settings/streamSettings as JSON-strings,
+    # v3.1.0 as nested objects — parse_inbound_field handles both.
+    from app.core.xui_api import parse_inbound_field
+    settings = parse_inbound_field(inbound.get("settings"))
+    stream = parse_inbound_field(inbound.get("streamSettings"))
 
     address = server_host
     port = int(inbound.get("port") or 0)
