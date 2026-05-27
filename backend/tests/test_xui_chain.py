@@ -30,6 +30,7 @@ from app.core.xui_chain import (
     _pick_port,
     _relay_tag,
     build_xray_template_config,
+    orchestrate_delete_client,
 )
 from app.models import ChainChannel, ProxyChain
 
@@ -250,6 +251,161 @@ class TestPickPort:
         port = _pick_port(local, set(), 10000, 10100)
         assert port in local
 
+
+class TestOrchestrateDeleteClient:
+    """Cascade behaviour of `orchestrate_delete_client`.
+
+    Pattern mirrors `test_subscriptions.py`: seed DB via the conftest
+    sync `session` fixture, then run the async orchestrator via
+    `asyncio.run` inside the test. The orchestrator opens its OWN
+    `AsyncSession` against `get_async_engine()` — for this to point
+    at the same temp DB as our seed, we need the `client` fixture
+    too (it monkey-patches `db_mod._async_engine` so prod code sees
+    our test engine).
+    """
+
+    def test_orphan_node_cleanup_cascades_on_chain_client_delete(
+        self, client, session,
+    ):
+        """Regression: deleting a ChainClient via orchestrate_delete_client
+        must also drop any Nodes exported from its channels. Without
+        this cascade, the user sees orphan Nodes in the Nodes tab whose
+        UUID no longer authenticates against the panel (because the
+        panel-side client is gone). Mirror of the cascade in
+        xui.py::delete_client for regular x-ui clients."""
+        import asyncio
+        from unittest import mock
+        from unittest.mock import AsyncMock
+        from sqlmodel import select
+        from sqlmodel.ext.asyncio.session import AsyncSession
+        from app.database import get_async_engine
+        from app.models import (
+            Node, Server, XuiServer, ChainClient, ChainClientChannel,
+        )
+
+        # Seed via the conftest sync session — points at the same
+        # temp SQLite file the patched async_engine sees.
+        srv = Server(
+            name="relay-srv", host="1.2.3.4", port=22,
+            user="root", auth_type="key",
+        )
+        session.add(srv)
+        session.commit()
+        session.refresh(srv)
+        xs = XuiServer(
+            server_id=srv.id, api_token="tok", panel_user="u",
+            panel_pass="p", panel_port=12345,
+            panel_basepath="/test", mode="bare",
+        )
+        session.add(xs)
+        session.commit()
+        session.refresh(xs)
+        chain = ProxyChain(
+            name="test-chain",
+            relay_xui_server_id=xs.id,
+            exit_xui_server_id=xs.id,
+            sni_cover="example.com",
+            status="deployed",
+        )
+        session.add(chain)
+        session.commit()
+        session.refresh(chain)
+        ch = ChainChannel(
+            chain_id=chain.id, name="alpha",
+            client_sni="example.com",
+            relay_port=443, exit_port=8443,
+            relay_inbound_remote_id=1,
+            exit_inbound_remote_id=2,
+            relay_pbk="pbk", relay_sid="sid",
+            relay_prv="prv",
+        )
+        session.add(ch)
+        session.commit()
+        session.refresh(ch)
+        node = Node(
+            name="CHAIN-alice-alpha", protocol="vless",
+            address="1.2.3.4", port=443,
+            uuid="00000000-0000-0000-0000-000000000001",
+            transport="tcp", enabled=True,
+        )
+        session.add(node)
+        session.commit()
+        session.refresh(node)
+        cc = ChainClient(chain_id=chain.id, label="alice")
+        session.add(cc)
+        session.commit()
+        session.refresh(cc)
+        pair = ChainClientChannel(
+            chain_client_id=cc.id, channel_id=ch.id,
+            client_uuid="00000000-0000-0000-0000-000000000001",
+            exported_node_id=node.id,
+        )
+        session.add(pair)
+        session.commit()
+        session.refresh(pair)
+
+        cc_id = cc.id
+        node_id = node.id
+        chain_id = chain.id
+        # Close the sync session BEFORE running async — otherwise the
+        # SQLite writer lock from this session blocks the async commit.
+        session.close()
+
+        # Stub XuiClient so the orchestrator doesn't try to dial
+        # the panel — del_client + restart_xray are no-ops here.
+        with mock.patch("app.core.xui_chain.XuiClient") as MC:
+            instance = MC.return_value.__aenter__.return_value
+            instance.del_client = AsyncMock(return_value=None)
+            instance.restart_xray = AsyncMock(return_value=None)
+
+            async def run():
+                async with AsyncSession(get_async_engine()) as async_s:
+                    chain_row = await async_s.get(ProxyChain, chain_id)
+                    cc_row = await async_s.get(ChainClient, cc_id)
+                    pairs = list((await async_s.exec(
+                        select(ChainClientChannel)
+                        .where(ChainClientChannel.chain_client_id == cc_id),
+                    )).all())
+                    channels = list((await async_s.exec(
+                        select(ChainChannel)
+                        .where(ChainChannel.chain_id == chain_id),
+                    )).all())
+                    channels_by_id = {c.id: c for c in channels}
+                    await orchestrate_delete_client(
+                        chain=chain_row, chain_client=cc_row,
+                        pairs=pairs,
+                        channels_by_id=channels_by_id,
+                        session=async_s,
+                    )
+
+            # Use the existing event loop indirectly via run_until_complete
+            # — `asyncio.run()` creates a fresh loop, which conflicts with
+            # the one the `client` fixture's TestClient holds onto.
+            loop = asyncio.new_event_loop()
+            try:
+                loop.run_until_complete(run())
+            finally:
+                loop.close()
+
+        # Verify via fresh sync read.
+        from sqlmodel import Session as SyncSession
+        sync_engine_obj = session.get_bind()
+        with SyncSession(sync_engine_obj) as s:
+            assert s.get(ChainClient, cc_id) is None, \
+                "ChainClient should be deleted"
+            pairs_after = list(s.exec(
+                select(ChainClientChannel)
+                .where(ChainClientChannel.chain_client_id == cc_id),
+            ).all())
+            assert pairs_after == [], \
+                "ChainClientChannel should cascade-delete with parent"
+            assert s.get(Node, node_id) is None, (
+                "exported Node should cascade-delete with chain client "
+                "(this was the regression — orphan Node was left behind)"
+            )
+
+
+class TestPickPortExhaustion:
     def test_raises_when_exhausted(self):
         # 5-port window, all taken.
         with pytest.raises(RuntimeError):

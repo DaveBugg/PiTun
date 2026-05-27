@@ -1497,47 +1497,82 @@ async def orchestrate_delete_client(
     channels_by_id: Dict[int, ChainChannel],
     session: AsyncSession,
 ) -> None:
-    """Remove every panel-side client this ChainClient maps to, then
-    drop the DB row (which cascades the ClientChannel pairs)."""
+    """Remove every panel-side client this ChainClient maps to, drop
+    any Nodes that were exported from its channels, then drop the DB
+    row (which cascades the ClientChannel pairs).
+
+    Cascade rationale: a ChainClientChannel may have an
+    `exported_node_id` pointing at a `Node` row that the user
+    created via "Export to Node". Without this cleanup, removing
+    the chain client leaves orphan Node rows whose UUID no longer
+    authenticates against the panel (panel-side client is gone),
+    cluttering the Nodes page and making routing rules referencing
+    them fail silently. Mirror of the cascade in
+    `xui.py::delete_client` (line 1607+) for regular x-ui clients.
+    """
+    from app.models import Node
     _no_expire_on_commit(session)
+
+    # Step 1: collect Nodes to delete BEFORE we drop ChainClientChannel
+    # rows (FK cascade would lose the linkage otherwise).
+    nodes_to_delete: list[Node] = []
+    for pair in pairs:
+        if pair.exported_node_id is None:
+            continue
+        node = await session.get(Node, pair.exported_node_id)
+        if node is not None:
+            nodes_to_delete.append(node)
+
     relay_xs = await session.get(XuiServer, chain.relay_xui_server_id)
-    if relay_xs is None:
-        await session.delete(chain_client)
-        await session.commit()
-        return
-    relay_srv = await session.get(Server, relay_xs.server_id)
-    if relay_srv is None:
-        await session.delete(chain_client)
-        await session.commit()
-        return
+    relay_srv = (
+        await session.get(Server, relay_xs.server_id) if relay_xs else None
+    )
 
-    try:
-        async with XuiClient(
-            base_url=_api_base_url(relay_xs, relay_srv),
-            api_token=relay_xs.api_token, verify_tls=False,
-        ) as c:
-            for pair in pairs:
-                ch = channels_by_id.get(pair.channel_id)
-                if ch is None:
-                    continue
+    # Step 2: panel-side delete (best-effort — proceed to DB cleanup
+    # even if the relay is unreachable).
+    if relay_xs is not None and relay_srv is not None:
+        try:
+            async with XuiClient(
+                base_url=_api_base_url(relay_xs, relay_srv),
+                api_token=relay_xs.api_token, verify_tls=False,
+            ) as c:
+                for pair in pairs:
+                    ch = channels_by_id.get(pair.channel_id)
+                    if ch is None:
+                        continue
+                    try:
+                        await c.del_client(
+                            ch.relay_inbound_remote_id, pair.client_uuid,
+                        )
+                    except Exception as e:  # noqa: BLE001
+                        logger.warning(
+                            "delete client: panel del_client (%s,%s) failed: %s",
+                            ch.relay_inbound_remote_id, pair.client_uuid, e,
+                        )
+                # Mirror orchestrate_add_client: x-ui-pro persists the
+                # delete to the panel DB but doesn't reload Xray, so the
+                # removed UUID would keep working until the next restart.
                 try:
-                    await c.del_client(
-                        ch.relay_inbound_remote_id, pair.client_uuid,
-                    )
+                    await c.restart_xray()
                 except Exception as e:  # noqa: BLE001
-                    logger.warning(
-                        "delete client: panel del_client (%s,%s) failed: %s",
-                        ch.relay_inbound_remote_id, pair.client_uuid, e,
-                    )
-            # Mirror orchestrate_add_client: x-ui-pro persists the
-            # delete to the panel DB but doesn't reload Xray, so the
-            # removed UUID would keep working until the next restart.
-            try:
-                await c.restart_xray()
-            except Exception as e:  # noqa: BLE001
-                logger.warning("delete client: restart_xray failed: %s", e)
-    except Exception as e:  # noqa: BLE001
-        logger.warning("delete client: relay panel unreachable: %s", e)
+                    logger.warning("delete client: restart_xray failed: %s", e)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("delete client: relay panel unreachable: %s", e)
 
+    # Step 3: cascade-delete exported Nodes + ChainClientChannel pairs
+    # + the ChainClient row itself. The FK `ChainClientChannel ->
+    # ChainClient` has no `ondelete="CASCADE"` declaration in the
+    # migration, and SQLAlchemy doesn't infer ORM-level cascade from a
+    # plain Field-with-foreign_key — so dropping the parent leaves the
+    # child rows orphaned in the DB unless we delete them here too.
+    # (Verified by `TestOrchestrateDeleteClient` regression test.)
+    for node in nodes_to_delete:
+        logger.info(
+            "delete chain client %d (%s): also dropping exported Node %d (%s)",
+            chain_client.id, chain_client.label, node.id, node.name,
+        )
+        await session.delete(node)
+    for pair in pairs:
+        await session.delete(pair)
     await session.delete(chain_client)
     await session.commit()
