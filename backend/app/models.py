@@ -327,8 +327,9 @@ class Subscription(SQLModel, table=True):
     # this subscription (only effective on Happ-style presets). Off by
     # default because most panels device-bind on first-seen HWID — but
     # when a panel starts throttling requests from the same HWID
-    # (we've seen this on s.stun.su returning degraded "proxy" dummies)
-    # rotating gets a clean response.
+    # (observed in the wild as the panel returning degraded "proxy"
+    # placeholder entries instead of real nodes) rotating gets a clean
+    # response.
     rotate_hwid: bool = False
 
 

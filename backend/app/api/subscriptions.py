@@ -76,8 +76,8 @@ def _get_happ_headers(ua_key: str = "happ", *, rotate_hwid: bool = False) -> dic
     When `rotate_hwid=True` (operator opt-in per subscription),
     generate a fresh random UUID instead. Useful when a panel starts
     HWID-throttling and returns degraded payloads to the stable
-    fingerprint — we've seen this on s.stun.su where the same HWID
-    started getting placeholder 'proxy' dummies after a while.
+    fingerprint — we've seen panels where the same HWID over time
+    starts getting placeholder 'proxy' dummies instead of real nodes.
     """
     import uuid, hashlib
     if rotate_hwid:

@@ -113,7 +113,7 @@ class XuiClient:
     """
 
     base_url: str
-    """E.g. `http://194.154.29.69:55975/abc123`. NO trailing slash —
+    """E.g. `http://203.0.113.10:55975/abc123`. NO trailing slash —
     `xui_uri.parse_xui_uri` already normalises this. The panel routes
     `/foo` and `/foo/` identically, but our concatenation of `/login`
     etc. would produce `//login` with a trailing slash on the base."""

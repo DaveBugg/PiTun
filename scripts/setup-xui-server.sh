@@ -351,8 +351,8 @@ if [[ "$INSTALL_MODE" == "xui-pro" ]]; then
     # cert covering $DOMAIN. certbot's lineage naming isn't always the
     # FQDN — when there's a pre-existing folder for any ancestor (or a
     # prior cert for the same subject), certbot will reuse that name.
-    # E.g. requesting cert for `scripttest.daveprod.space` may land in
-    # `/etc/letsencrypt/live/daveprod.space/`. We scan all lineages and
+    # E.g. requesting cert for `panel.example.com` may land in
+    # `/etc/letsencrypt/live/example.com/`. We scan all lineages and
     # pick the one whose CN or SAN actually matches $DOMAIN.
     LE_CERT=""
     LE_KEY=""

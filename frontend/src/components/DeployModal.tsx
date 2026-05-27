@@ -863,9 +863,9 @@ function ProtocolPick(props: {
 // ── XuiFields ─────────────────────────────────────────────────────────────
 /** Strip the leftmost label from a domain when it has 3+ parts, so
  *  Let's Encrypt registration uses the apex domain rather than the
- *  subdomain the panel sits on. `scripttest.daveprod.space` →
- *  `daveprod.space`; `daveprod.space` → `daveprod.space` (kept as-is
- *  on 2-label hosts). Matches the symmetric logic in fake-2fa.php's
+ *  subdomain the panel sits on. `panel.example.com` →
+ *  `example.com`; `example.com` → `example.com` (kept as-is on
+ *  2-label hosts). Matches the symmetric logic in fake-2fa.php's
  *  brand-derivation. Doesn't handle multi-label TLDs (`.co.uk` etc.)
  *  precisely — that needs the public-suffix list, overkill for this
  *  placeholder. */

@@ -255,8 +255,8 @@ def build_xui_env(
       * set   → full x-ui-pro stack (nginx + Let's Encrypt + fakesite).
 
     `email` defaults to admin@<apex-domain> when DOMAIN is set
-    (`scripttest.daveprod.space` → `admin@daveprod.space`); harmless
-    to leave empty in bare mode (the script ignores it).
+    (e.g. `panel.example.com` → `admin@example.com`); harmless to
+    leave empty in bare mode (the script ignores it).
 
     The script generates panel creds + token itself and emits them on
     the final stdout `URI=xui://...` line; we don't pre-set
@@ -265,8 +265,8 @@ def build_xui_env(
     """
     # Apex-domain default for the Let's Encrypt registration email
     # (since v1.3.0-beta.7). Stripping the leftmost label when the
-    # domain has 3+ parts gives `admin@daveprod.space` rather than
-    # `admin@scripttest.daveprod.space` — apex addresses are far more
+    # domain has 3+ parts gives `admin@example.com` rather than
+    # `admin@panel.example.com` — apex addresses are far more
     # likely to be a real mailbox a human reads (LE expiry-notification
     # emails matter). Doesn't handle multi-label TLDs (`.co.uk` etc.)
     # precisely; that needs the public-suffix list which is overkill
