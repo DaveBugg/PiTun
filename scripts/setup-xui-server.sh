@@ -428,11 +428,23 @@ ss -tlnp 2>/dev/null | grep -q ":${PANEL_PORT}\\b" \
     || err "Panel didn't bind :$PANEL_PORT after 20s — check 'journalctl -u x-ui'"
 
 # ── 5. Bootstrap the Bearer API token ───────────────────────────────────────
-# v3.0.0 onwards exposes /panel/api/setting/{getApiToken,regenerateApiToken}.
-# On a fresh install the token may exist already (populated by the panel on
-# first start) OR be empty — in either case we regenerate so we know the
-# value we're about to print.
+# v3.1.0 switched from a single auto-seeded token to a named-tokens model:
+#   GET  /panel/setting/apiTokens          — list rows
+#   POST /panel/setting/apiTokens/create   — body {name: "<str>"} → {token: ...}
+#   POST /panel/setting/apiTokens/delete/:id
+#   POST /panel/setting/apiTokens/setEnabled/:id
+# The legacy v3.0.x endpoints (/panel/setting/{getApiToken,regenerateApiToken})
+# are GONE in v3.1.0 and return 404 — which is exactly the symptom that
+# caught us on the first install. Name is `uniqueIndex` on the
+# ApiToken row, so re-running the script for the same panel finds the
+# existing "pitun" row instead of creating a duplicate (which would
+# error with "name already taken").
 log "Bootstrapping Bearer API token..."
+
+# Stable name we use to find our token across re-runs. Anything matching
+# this name in the panel is assumed to be PiTun's; a 2nd PiTun install
+# against the same panel would clobber it.
+PITUN_TOKEN_NAME="pitun"
 
 # Stage 2: wait for the HTTP layer + scheme detection. Bare 3x-ui defaults
 # to HTTPS with self-signed; x-ui-pro's panel is HTTP (TLS terminates at
@@ -495,38 +507,44 @@ if ! echo "$LOGIN_RESP" | jq -e '.success' >/dev/null 2>&1; then
     err "Login failed (HTTP $LOGIN_CODE, csrf=$CSRF_CODE). Response: ${LOGIN_RESP:-<empty>}. URL=${API_BASE}/login user=${PANEL_USER}"
 fi
 
-# Try GET /getApiToken first — on a fresh install the panel auto-seeds
-# a token at boot, so we'd rather read the existing one than rotate it
-# (rotation invalidates any token we might've handed out previously,
-# which matters for re-runs against an existing PiTun-managed panel).
-GET_TMP="$(mktemp)"
-GET_CODE=$(curl -sk --max-time 10 -b "$COOKIE" \
-    -o "$GET_TMP" -w "%{http_code}" \
-    "${API_BASE}/panel/setting/getApiToken" 2>/dev/null || true)
-GET_RESP="$(cat "$GET_TMP" 2>/dev/null || true)"
-rm -f "$GET_TMP"
-API_TOKEN=$(echo "$GET_RESP" | jq -r '.obj // empty' 2>/dev/null || true)
+# Step 1: list existing named tokens. If "pitun" already exists (re-run
+# case), reuse its token so any handed-out URI stays valid.
+LIST_TMP="$(mktemp)"
+LIST_CODE=$(curl -sk --max-time 10 -b "$COOKIE" \
+    -o "$LIST_TMP" -w "%{http_code}" \
+    "${API_BASE}/panel/setting/apiTokens" 2>/dev/null || true)
+LIST_RESP="$(cat "$LIST_TMP" 2>/dev/null || true)"
+rm -f "$LIST_TMP"
+API_TOKEN=""
+if [[ "$LIST_CODE" == "200" ]]; then
+    API_TOKEN=$(echo "$LIST_RESP" \
+        | jq -r --arg n "$PITUN_TOKEN_NAME" \
+            '.obj[]? | select(.name == $n) | .token' \
+            2>/dev/null | head -n1 || true)
+fi
 
-# Regenerate path — /panel/api/* also goes through CSRFMiddleware for
-# cookie-auth callers, so the token-in-header dance from /login applies
-# here too. Bearer-auth would short-circuit it but we haven't got the
-# token yet, that's the whole point of this call.
+# Step 2: nothing existing → create a fresh one. /panel/setting/* goes
+# through CSRFMiddleware for cookie-auth callers; Bearer would short-
+# circuit it but we don't have a Bearer token yet (that's the whole
+# point of this call). `apiTokens/create` expects a JSON body with the
+# required `name` field; response shape is `{obj: {id, name, token,
+# enabled, createdAt}}`.
 if [[ -z "$API_TOKEN" ]]; then
-    REGEN_TMP="$(mktemp)"
-    REGEN_ARGS=(-sk --max-time 10 -b "$COOKIE"
-        -o "$REGEN_TMP" -w "%{http_code}"
-        -X POST "${API_BASE}/panel/setting/regenerateApiToken"
-        -H "Content-Type: application/json")
-    [[ -n "$CSRF_TOKEN" ]] && REGEN_ARGS+=(-H "X-CSRF-Token: ${CSRF_TOKEN}")
-    REGEN_CODE=$(curl "${REGEN_ARGS[@]}" 2>/dev/null || true)
-    REGEN_RESP="$(cat "$REGEN_TMP" 2>/dev/null || true)"
-    rm -f "$REGEN_TMP"
-    API_TOKEN=$(echo "$REGEN_RESP" | jq -r '.obj // .msg // empty' 2>/dev/null \
-        | grep -E '^[A-Za-z0-9_-]{20,}$' | head -n1 || true)
+    CREATE_TMP="$(mktemp)"
+    CREATE_ARGS=(-sk --max-time 10 -b "$COOKIE"
+        -o "$CREATE_TMP" -w "%{http_code}"
+        -X POST "${API_BASE}/panel/setting/apiTokens/create"
+        -H "Content-Type: application/json"
+        --data-binary "{\"name\":\"${PITUN_TOKEN_NAME}\"}")
+    [[ -n "$CSRF_TOKEN" ]] && CREATE_ARGS+=(-H "X-CSRF-Token: ${CSRF_TOKEN}")
+    CREATE_CODE=$(curl "${CREATE_ARGS[@]}" 2>/dev/null || true)
+    CREATE_RESP="$(cat "$CREATE_TMP" 2>/dev/null || true)"
+    rm -f "$CREATE_TMP"
+    API_TOKEN=$(echo "$CREATE_RESP" | jq -r '.obj.token // empty' 2>/dev/null || true)
 fi
 
 if [[ -z "$API_TOKEN" ]]; then
-    err "Failed to obtain Bearer API token. getCode=${GET_CODE:-?} getResp=${GET_RESP:-<empty>} regenCode=${REGEN_CODE:-?} regenResp=${REGEN_RESP:-<empty>}"
+    err "Failed to obtain Bearer API token. listCode=${LIST_CODE:-?} listResp=${LIST_RESP:-<empty>} createCode=${CREATE_CODE:-?} createResp=${CREATE_RESP:-<empty>}"
 fi
 
 # Verify the token actually authenticates against the inbounds API.
