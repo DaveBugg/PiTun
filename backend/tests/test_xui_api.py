@@ -189,12 +189,18 @@ class TestXuiClient:
         assert captured["path"] == "/p/panel/api/clients/add"
         body = captured["body"]
         assert body["inboundIds"] == [7]
-        # `client` is a flat ClientRecord — no nested settings string.
-        assert body["client"]["uuid"] == "uuid-here"
+        # `client` is a flat model.Client — JSON key for UUID is `id`
+        # (NOT `uuid` — that's model.ClientRecord shape on the storage
+        # side, which we read but don't write). v3.1.0 panel ignored
+        # unknown `uuid` field on the write path and silently auto-
+        # generated a fresh ID, breaking chains until this was fixed.
+        assert body["client"]["id"] == "uuid-here"
         assert body["client"]["email"] == "pi-abc"
         assert body["client"]["flow"] == "xtls-rprx-vision"
-        # Legacy `id` key must NOT pass through — only `uuid`.
-        assert "id" not in body["client"]
+        # `uuid` must NOT appear — the panel's model.Client struct has
+        # no such field, so emitting it is a silent no-op that gets us
+        # a server-side UUID we never see.
+        assert "uuid" not in body["client"]
 
     @pytest.mark.asyncio
     async def test_add_client_multi_attaches_to_many_inbounds(self):
@@ -218,7 +224,7 @@ class TestXuiClient:
             await c.aclose()
 
         assert captured["body"]["inboundIds"] == [3, 7, 11]
-        assert captured["body"]["client"]["uuid"] == "u-1"
+        assert captured["body"]["client"]["id"] == "u-1"
 
     @pytest.mark.asyncio
     async def test_add_client_coerces_int_fields_from_legacy_strings(self):

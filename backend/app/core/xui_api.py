@@ -735,12 +735,33 @@ class XuiClient:
         )
 
 
-# Per-client field projection. v3.0.x callers ship a dict with `id` =
-# the UUID; v3.1.0's ClientRecord uses `uuid` instead. Keep this in
-# one place so every method that builds a v3.1.0 client payload (add,
-# update) emits the same shape.
+# Per-client field projection for `POST /panel/api/clients/add` body.
+#
+# v3.1.0 has TWO different Go structs for clients (confusing!):
+#   * `model.Client`       — the per-inbound shape, embedded in
+#                            `settings.clients[]`. JSON key for UUID
+#                            is `"id"` (struct field `ID`).
+#   * `model.ClientRecord` — the new first-class clients table. JSON
+#                            key for UUID is `"uuid"` (struct field
+#                            `UUID`).
+#
+# `ClientCreatePayload.Client` is type `model.Client`. So when the
+# panel decodes our POST body, it reads `client.id`, NOT `client.uuid`.
+# Earlier versions of this code shipped `"uuid"` and the panel happily
+# ignored it (no error), then `fillProtocolDefaults` saw an empty
+# `client.ID` and generated a fresh UUID server-side. Result: PiTun's
+# DB stored the UUID it pre-generated via `/server/getNewUUID`, but
+# the panel stored a different one → user's Node URI auth'd against
+# the wrong UUID → chain silently broken.
+#
+# Fix: emit `id` in the client payload (matches model.Client JSON tag).
+# v3.0.x callers also use `id`, so no rename happens at the input
+# layer either — `_to_client_record` is effectively a passthrough with
+# type coercion. Note: subsequent reads via `/clients/list` return
+# `uuid` (ClientRecord shape) — that's the panel's storage layer
+# leaking through; ignore the rename when reading.
 _CLIENT_RECORD_KEYS = (
-    "email", "uuid", "password", "auth", "flow", "security", "reverse",
+    "email", "id", "password", "auth", "flow", "security", "reverse",
     "limitIp", "totalGB", "expiryTime", "enable", "subId", "tgId",
     "comment", "reset",
 )
@@ -829,13 +850,15 @@ def _to_client_record(settings: Dict[str, Any]) -> Dict[str, Any]:
         return False
 
     out: Dict[str, Any] = {}
-    # Rename id → uuid if present (v3.0.x callers).
-    if "uuid" in settings and settings.get("uuid"):
-        out["uuid"] = settings["uuid"]
-    elif "id" in settings and settings.get("id"):
-        out["uuid"] = settings["id"]
+    # Both legacy v3.0.x payloads and the v3.1.0 model.Client JSON shape
+    # use `id` for the UUID. If a caller hand-shipped `uuid` (because
+    # they read from ClientRecord), accept that as a fallback alias.
+    if "id" in settings and settings.get("id"):
+        out["id"] = settings["id"]
+    elif "uuid" in settings and settings.get("uuid"):
+        out["id"] = settings["uuid"]
     for k in _CLIENT_RECORD_KEYS:
-        if k == "uuid":
+        if k == "id":
             continue  # already handled above
         if k not in settings:
             continue
