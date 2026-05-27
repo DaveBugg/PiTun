@@ -754,11 +754,47 @@ _CLIENT_RECORD_KEYS = (
 def _to_client_record(settings: Dict[str, Any]) -> Dict[str, Any]:
     """Translate a v3.0.x-style client dict into a v3.1.0 ClientRecord.
 
-    The only structural change is the `id` → `uuid` field rename;
-    every other field name carries over verbatim. Unknown keys are
-    dropped silently so callers that include legacy fields (e.g.
-    `subscription_url`) don't poison the request body.
+    Two transformations:
+    1. `id` → `uuid` field rename (v3.0.x callers shipped `id`, v3.1.0's
+       ClientRecord uses `uuid`).
+    2. Type coercion for fields whose Go type is `int64` / `bool` —
+       v3.0.x panels were lenient and accepted empty-string defaults
+       (`"tgId": ""`), but v3.1.0 (Go's stdlib json.Unmarshal) rejects
+       `"cannot unmarshal string into Go struct field Client.client.tgId
+       of type int64"`. Callers across PiTun shipped strings for
+       legacy reasons; we normalise here so every callsite doesn't
+       have to update independently.
+
+    Unknown keys are dropped silently so callers that include legacy
+    fields (e.g. `subscription_url`) don't poison the request body.
     """
+    # Fields the v3.1.0 ClientRecord declares as numeric. Coerce
+    # empty-string / None / stringified-int to a real int(0) so the
+    # Go json decoder doesn't reject the body.
+    _NUMERIC_FIELDS = ("limitIp", "totalGB", "expiryTime", "tgId", "reset")
+    _BOOL_FIELDS = ("enable",)
+
+    def _coerce_int(v: Any) -> int:
+        if v is None or v == "":
+            return 0
+        if isinstance(v, bool):
+            return int(v)
+        if isinstance(v, int):
+            return v
+        try:
+            return int(v)
+        except (TypeError, ValueError):
+            return 0
+
+    def _coerce_bool(v: Any) -> bool:
+        if isinstance(v, bool):
+            return v
+        if isinstance(v, (int, float)):
+            return bool(v)
+        if isinstance(v, str):
+            return v.lower() in ("true", "1", "yes", "y", "on")
+        return False
+
     out: Dict[str, Any] = {}
     # Rename id → uuid if present (v3.0.x callers).
     if "uuid" in settings and settings.get("uuid"):
@@ -768,6 +804,13 @@ def _to_client_record(settings: Dict[str, Any]) -> Dict[str, Any]:
     for k in _CLIENT_RECORD_KEYS:
         if k == "uuid":
             continue  # already handled above
-        if k in settings:
-            out[k] = settings[k]
+        if k not in settings:
+            continue
+        v = settings[k]
+        if k in _NUMERIC_FIELDS:
+            out[k] = _coerce_int(v)
+        elif k in _BOOL_FIELDS:
+            out[k] = _coerce_bool(v)
+        else:
+            out[k] = v
     return out

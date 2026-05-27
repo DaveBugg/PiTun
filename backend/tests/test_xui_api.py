@@ -221,6 +221,49 @@ class TestXuiClient:
         assert captured["body"]["client"]["uuid"] == "u-1"
 
     @pytest.mark.asyncio
+    async def test_add_client_coerces_int_fields_from_legacy_strings(self):
+        # 3x-ui v3.1.0 ClientRecord declares tgId / limitIp / totalGB /
+        # expiryTime / reset as Go int64; the Go json decoder rejects
+        # empty-string / null values with:
+        #   "cannot unmarshal string into Go struct field
+        #    Client.client.tgId of type int64"
+        # PiTun's legacy callers (xui_chain.py, xui.py) ship
+        # `"tgId": ""` from the v3.0.x era. The adapter coerces those
+        # to int(0) before posting so the panel accepts the body.
+        captured: dict = {}
+
+        def handler(req: httpx.Request) -> httpx.Response:
+            captured["body"] = json.loads(req.read())
+            return _ok(None)
+
+        c = _make_client(_mock(handler))
+        try:
+            await c.add_client(
+                inbound_id=5,
+                settings={
+                    "id": "u-coerce", "email": "pi-coerce",
+                    "flow": "xtls-rprx-vision",
+                    # All the empty-string legacy fields:
+                    "tgId": "", "subId": "",
+                    "limitIp": 0, "totalGB": 0, "expiryTime": 0,
+                    "enable": True,
+                },
+            )
+        finally:
+            await c.aclose()
+
+        client = captured["body"]["client"]
+        assert client["tgId"] == 0 and isinstance(client["tgId"], int), (
+            f"tgId must be coerced to int(0), got {client['tgId']!r}"
+        )
+        assert isinstance(client["limitIp"], int)
+        assert isinstance(client["totalGB"], int)
+        assert isinstance(client["expiryTime"], int)
+        assert isinstance(client["enable"], bool)
+        # subId stays string (it's `string` on the panel side).
+        assert client["subId"] == ""
+
+    @pytest.mark.asyncio
     async def test_del_client_resolves_uuid_to_email(self):
         # v3.1.0's delete endpoint keys by email, not uuid. PiTun's
         # callers still hand us `(inbound_id, uuid)`, so the client
