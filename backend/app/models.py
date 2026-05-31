@@ -288,6 +288,43 @@ class Server(SQLModel, table=True):
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
+class RoutingSet(SQLModel, table=True):
+    """Named group of routing rules applied only to selected devices.
+
+    The default state of PiTun has a single global rule list applied to all
+    LAN traffic. A RoutingSet lets the operator define an alternative rule
+    list ("Kids", "WorkLaptop", "Guests"…) and assign N devices to it. Per-set
+    rules are evaluated FIRST for the assigned devices, then traffic falls
+    through to global rules (`RoutingRule.routing_set_id IS NULL`).
+
+    Isolation is implemented at the nftables PREROUTING + xray inbound layer:
+    each set gets a unique TPROXY port. nftables matches the device MAC and
+    TPROXYs into the set's port; xray spins up a per-set inbound with
+    `tag=tproxy-set-<name>`; xray's router then matches `inboundTag` to
+    decide which rules apply. This is DHCP-resistant (MAC-based, not
+    IP-based) and survives lease changes without needing config regeneration.
+
+    Reserved port range: 65500..65535 (loopback only, see
+    `api/routing_sets.py:TPROXY_PORT_MIN/MAX`). 36 ports → 36 max sets,
+    which is overkill for a home LAN. One port handles TCP+UDP via
+    xray's `dokodemo-door` protocol with `network: "tcp,udp"` — Linux
+    kernel lets TCP and UDP coexist on the same port (different socket
+    families). Inbound listens only on 127.0.0.1 so no LAN exposure.
+    """
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    name: str = Field(unique=True, index=True)
+    description: Optional[str] = None
+    order: int = 0  # render order in UI tabs
+
+    # Auto-allocated on POST /api/routing-sets/. Range 65500..65535.
+    # Unique per row; never re-used after a set is deleted (allocator just
+    # picks the next-free port in the range, gaps are fine).
+    tproxy_port: int = Field(unique=True, index=True)
+
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
 class RoutingRule(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     name: str
@@ -304,6 +341,16 @@ class RoutingRule(SQLModel, table=True):
 
     # Lower number = higher priority
     order: int = 100
+
+    # NULL = global rule, applies to all devices (default behaviour
+    # preserved on upgrade since the migration backfills nothing).
+    # Set to a RoutingSet.id to make this rule only apply to devices
+    # assigned to that set.
+    routing_set_id: Optional[int] = Field(
+        default=None,
+        foreign_key="routingset.id",
+        index=True,
+    )
 
 
 class Subscription(SQLModel, table=True):
@@ -382,6 +429,17 @@ class Device(SQLModel, table=True):
     last_seen: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     is_online: bool = True
     routing_policy: str = "default"  # "default" | "include" | "exclude"
+
+    # NULL = unassigned (device sees only global rules — preserves old
+    # behaviour on upgrade). Set to a RoutingSet.id to apply that set's
+    # rules in addition to globals (per-set rules hit first, then
+    # global fallback). Orthogonal to `routing_policy`: an excluded
+    # device bypasses TPROXY entirely so its routing_set_id is moot.
+    routing_set_id: Optional[int] = Field(
+        default=None,
+        foreign_key="routingset.id",
+        index=True,
+    )
 
 
 class SystemMetric(SQLModel, table=True):

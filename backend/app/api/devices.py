@@ -19,6 +19,14 @@ router = APIRouter(prefix="/devices", tags=["devices"])
 async def list_devices(
     online_only: bool = Query(False),
     policy: Optional[str] = Query(None, description="Filter by routing_policy"),
+    routing_set_id: Optional[str] = Query(
+        None,
+        description=(
+            "Filter by routing_set_id. Pass a numeric id to list members "
+            "of that set, or the literal string 'null' to list unassigned "
+            "(global-only) devices."
+        ),
+    ),
     session: AsyncSession = Depends(get_session),
 ):
     stmt = select(Device).order_by(Device.last_seen.desc())
@@ -26,6 +34,17 @@ async def list_devices(
         stmt = stmt.where(Device.is_online == True)  # noqa: E712
     if policy:
         stmt = stmt.where(Device.routing_policy == policy)
+    if routing_set_id is not None:
+        if routing_set_id == "null":
+            stmt = stmt.where(Device.routing_set_id.is_(None))
+        else:
+            try:
+                sid = int(routing_set_id)
+            except ValueError:
+                raise HTTPException(
+                    400, "routing_set_id must be an integer or the literal 'null'"
+                )
+            stmt = stmt.where(Device.routing_set_id == sid)
     return list((await session.exec(stmt)).all())
 
 
@@ -44,11 +63,56 @@ async def update_device(
     dev = await session.get(Device, device_id)
     if not dev:
         raise HTTPException(404, "Device not found")
-    for k, v in data.model_dump(exclude_unset=True).items():
+
+    patch = data.model_dump(exclude_unset=True)
+
+    # Validate target routing set exists (if assigning, not unassigning).
+    if "routing_set_id" in patch and patch["routing_set_id"] is not None:
+        from app.models import RoutingSet
+        target = await session.get(RoutingSet, patch["routing_set_id"])
+        if target is None:
+            raise HTTPException(
+                404, f"Routing set {patch['routing_set_id']} not found"
+            )
+
+    # exclude+set conflict guard: excluded devices bypass TPROXY entirely
+    # at the nftables layer (their MAC goes into `bypass_mac` which
+    # `return`s before any per-set redirect fires). A set assignment on
+    # such a device is silently dead. Surface a clear 400 instead of
+    # the silent-no-effect trap. The UI already greys out the Set
+    # dropdown for excluded devices; this is defence-in-depth for
+    # direct API access.
+    final_policy = patch.get("routing_policy", dev.routing_policy)
+    final_set_id = patch.get("routing_set_id", dev.routing_set_id)
+    if final_policy == "exclude" and final_set_id is not None:
+        raise HTTPException(
+            400,
+            (
+                "Device cannot be both routing_policy='exclude' AND assigned "
+                "to a routing set — excluded devices bypass TPROXY entirely, "
+                "so any set rules would silently never apply. Either change "
+                "the policy first, or pass routing_set_id=null."
+            ),
+        )
+
+    routing_membership_changed = (
+        "routing_set_id" in patch and patch["routing_set_id"] != dev.routing_set_id
+    )
+
+    for k, v in patch.items():
         setattr(dev, k, v)
     session.add(dev)
     await session.commit()
     await session.refresh(dev)
+
+    # Single-device reassignment changes which set the device's traffic
+    # falls into → nftables MAC sets need to be re-rendered. routing_policy
+    # changes already trigger their own reload path (see system.py), so
+    # we only need to handle the routing_set_id case here.
+    if routing_membership_changed:
+        from app.api.routing_sets import _auto_reload_dataplane
+        await _auto_reload_dataplane(session)
+
     return dev
 
 
@@ -65,12 +129,27 @@ async def delete_device(device_id: int, session: AsyncSession = Depends(get_sess
 async def bulk_update_policy(
     body: DeviceBulkUpdate, session: AsyncSession = Depends(get_session)
 ):
+    membership_changes = 0
     for did in body.device_ids:
         dev = await session.get(Device, did)
-        if dev:
-            dev.routing_policy = body.routing_policy
-            session.add(dev)
+        if not dev:
+            continue
+        dev.routing_policy = body.routing_policy
+        # Excluded devices bypass TPROXY → any set assignment is dead
+        # weight. Auto-null the set_id to keep the two states
+        # consistent (mirrors the UI greying-out the Set dropdown for
+        # excluded rows). User can re-assign later if they un-exclude.
+        if body.routing_policy == "exclude" and dev.routing_set_id is not None:
+            dev.routing_set_id = None
+            membership_changes += 1
+        session.add(dev)
     await session.commit()
+
+    # If any device lost its set membership, re-render nftables so the
+    # affected MACs disappear from the per-set redirect.
+    if membership_changes > 0:
+        from app.api.routing_sets import _auto_reload_dataplane
+        await _auto_reload_dataplane(session)
 
 
 @router.post("/scan", response_model=DeviceScanResult)

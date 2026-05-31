@@ -301,6 +301,26 @@ async def _auto_restart_if_enabled(*, from_boot: bool = False) -> None:
             if naive_dsts:
                 bypass_dsts.extend(naive_dsts)
 
+            # v1.4 RoutingSet support — collect per-set specs so nft
+            # restores the MAC sets + per-set TPROXY redirects after a
+            # crash/reboot. Without this, only the *xray* config
+            # regenerates (which creates per-set inbounds), while nft
+            # rebuilds the table with NO per-set rules → packets from
+            # set members silently fall through to the default tproxy
+            # → set rules never apply. Same bug class as the v1.4-dev
+            # auto_reload_xray-only issue, but on the watchdog path.
+            from app.core.config_gen import collect_routing_set_context
+            from app.core.nftables import RoutingSetSpec
+            routing_sets, device_set_macs = await collect_routing_set_context(session)
+            routing_set_specs = []
+            for rs in routing_sets:
+                macs = device_set_macs.get(rs.id) or []
+                if not macs:
+                    continue
+                routing_set_specs.append(RoutingSetSpec(
+                    set_id=rs.id, macs=tuple(macs), tproxy_port=rs.tproxy_port,
+                ))
+
             mode = settings_map.get("mode", "rules")
             if mode == "bypass":
                 await nftables_manager.flush()
@@ -316,6 +336,7 @@ async def _auto_restart_if_enabled(*, from_boot: bool = False) -> None:
                     dns_port=int(settings_map.get("dns_port", "5353")),
                     block_quic=settings_map.get("block_quic", "true").lower() == "true",
                     kill_switch=settings_map.get("kill_switch", "false").lower() == "true",
+                    routing_set_specs=routing_set_specs,
                 )
 
         await xray_manager._start_unlocked()

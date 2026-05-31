@@ -593,6 +593,9 @@ class RoutingRuleBase(BaseModel):
     match_value: str
     action: str
     order: int = 100
+    # NULL = global rule (applies to all devices). Set to a RoutingSet.id
+    # to make this rule only apply to devices assigned to that set.
+    routing_set_id: Optional[int] = None
 
     @field_validator("rule_type")
     @classmethod
@@ -645,6 +648,65 @@ class RoutingRuleRead(RoutingRuleBase):
 
     class Config:
         from_attributes = True
+
+
+# ─── Routing Sets ─────────────────────────────────────────────────────────────
+
+class RoutingSetBase(BaseModel):
+    name: str
+    description: Optional[str] = None
+    order: int = 0
+
+    @field_validator("name")
+    @classmethod
+    def validate_name(cls, v: str) -> str:
+        v = v.strip()
+        if not v:
+            raise ValueError("name must not be empty")
+        if len(v) > 64:
+            raise ValueError("name must be ≤ 64 chars")
+        return v
+
+
+class RoutingSetCreate(RoutingSetBase):
+    pass
+
+
+class RoutingSetUpdate(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+    order: Optional[int] = None
+
+    @field_validator("name", mode="before")
+    @classmethod
+    def validate_name(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return v
+        v = v.strip()
+        if not v:
+            raise ValueError("name must not be empty")
+        if len(v) > 64:
+            raise ValueError("name must be ≤ 64 chars")
+        return v
+
+
+class RoutingSetRead(RoutingSetBase):
+    id: int
+    tproxy_port: int
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class RoutingSetCapacity(BaseModel):
+    """Surface for /api/routing-sets/capacity — shows the operator how
+    many more sets can be created before the TPROXY port range is
+    exhausted. The frontend uses this to disable the "+" button at limit.
+    """
+    used: int
+    maximum: int
+    available: int
 
 
 # ─── Bulk Rule Import ─────────────────────────────────────────────────────────
@@ -1181,6 +1243,14 @@ class ArpDevice(BaseModel):
     hostname: Optional[str] = None
     vendor: Optional[str] = None
     rule_action: Optional[str] = None  # what routing action applies to this device
+    # v1.4: read-only routing set membership, resolved by MAC against
+    # the Device table. None when the MAC isn't tracked as a managed
+    # device, OR the device is unassigned (global-only). The frontend
+    # shows this as a badge with a deep-link to the Devices page for
+    # actual reassignment (single source of truth for set membership
+    # stays on the Devices page).
+    routing_set_id: Optional[int] = None
+    routing_set_name: Optional[str] = None
 
 
 # ─── Device Management ───────────────────────────────────────────────────────
@@ -1196,6 +1266,9 @@ class DeviceRead(BaseModel):
     last_seen: datetime
     is_online: bool = True
     routing_policy: str = "default"
+    # NULL = unassigned (only global routing rules apply). Set to a
+    # RoutingSet.id to apply that set's rules in addition to globals.
+    routing_set_id: Optional[int] = None
 
     class Config:
         from_attributes = True
@@ -1204,6 +1277,13 @@ class DeviceRead(BaseModel):
 class DeviceUpdate(BaseModel):
     name: Optional[str] = None
     routing_policy: Optional[str] = None
+    # Sentinel-free: pass `null` to unassign (back to global-only),
+    # omit the field entirely to leave the current assignment alone.
+    # FastAPI/pydantic v2 distinguishes "field omitted" from
+    # "explicit null" via `model_fields_set`; the API handler should
+    # check `routing_set_id` is in `update.model_fields_set` before
+    # touching the column.
+    routing_set_id: Optional[int] = None
 
     @field_validator("routing_policy", mode="before")
     @classmethod
@@ -1227,6 +1307,14 @@ class DeviceBulkUpdate(BaseModel):
         if v not in valid:
             raise ValueError(f"routing_policy must be one of {valid}")
         return v
+
+
+class DeviceBulkSetAssign(BaseModel):
+    """Bulk-assign N devices to a RoutingSet (or unassign with set_id=None)."""
+
+    device_ids: List[int]
+    # None = unassign (move to "global only"). Otherwise the target set id.
+    routing_set_id: Optional[int] = None
 
 
 class DeviceScanResult(BaseModel):

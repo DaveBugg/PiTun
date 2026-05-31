@@ -10,7 +10,7 @@ from sqlmodel import SQLModel
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from app.models import (  # noqa: F401 — import all models so SQLModel.metadata is populated
-    Node, RoutingRule, Subscription, DNSRule, DNSQueryLog,
+    Node, RoutingRule, RoutingSet, Subscription, DNSRule, DNSQueryLog,
     Settings, BalancerGroup, NodeCircle, User, Device,
 )
 

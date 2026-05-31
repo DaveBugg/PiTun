@@ -3,12 +3,59 @@ import json
 import logging
 import os
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, TYPE_CHECKING
+
+from sqlmodel import select
 
 from app.config import settings
-from app.models import BalancerGroup, DNSRule, Node, RoutingRule
+from app.models import BalancerGroup, Device, DNSRule, Node, RoutingRule, RoutingSet
+
+if TYPE_CHECKING:
+    from sqlmodel.ext.asyncio.session import AsyncSession
 
 logger = logging.getLogger(__name__)
+
+
+async def collect_routing_set_context(
+    session: "AsyncSession",
+) -> tuple[list[RoutingSet], dict[int, list[str]]]:
+    """Load RoutingSets + device → set MAC mapping from the DB.
+
+    Shared by every callsite that regenerates xray config or applies
+    nftables (`api/system.py`, `core/circle_scheduler.py`,
+    `core/healthcheck.py`). Returning both pieces in one async pass
+    avoids duplicating the query logic across modules and keeps the
+    "snapshot of v1.4 per-set state" consistent within a regen tick.
+
+    Returns:
+        `(routing_sets, device_set_macs)`:
+          * `routing_sets` — every row, ordered by (order, id)
+          * `device_set_macs` — `{set_id: [lowercased MACs]}` for
+            devices with a non-empty `routing_set_id`. Sets without
+            any devices appear with an empty list — callers decide
+            whether to skip (config_gen + nftables both do).
+    """
+    routing_sets = list((await session.exec(
+        select(RoutingSet).order_by(RoutingSet.order, RoutingSet.id)
+    )).all())
+    if not routing_sets:
+        return [], {}
+
+    devices = list((await session.exec(
+        select(Device).where(Device.routing_set_id.is_not(None))
+    )).all())
+
+    device_set_macs: dict[int, list[str]] = {rs.id: [] for rs in routing_sets}
+    for dev in devices:
+        if not dev.mac:
+            continue
+        # Defensive: skip devices pointing at a deleted set (SQLite FK
+        # enforcement is off by default, the orphan can otherwise leak).
+        if dev.routing_set_id not in device_set_macs:
+            continue
+        device_set_macs[dev.routing_set_id].append(dev.mac.lower())
+
+    return routing_sets, device_set_macs
 
 
 def _tls_settings(node: Node) -> Optional[Dict[str, Any]]:
@@ -638,8 +685,29 @@ def generate_config(
     settings_map: Dict[str, str],
     dns_rules: Optional[List[DNSRule]] = None,
     balancer_groups: Optional[List[BalancerGroup]] = None,
+    routing_sets: Optional[List[RoutingSet]] = None,
+    device_set_macs: Optional[Dict[int, List[str]]] = None,
 ) -> Dict[str, Any]:
-    """Build full xray JSON configuration."""
+    """Build full xray JSON configuration.
+
+    Per-set routing (v1.4): when `routing_sets` is non-empty, the config
+    grows N additional TPROXY inbounds (one per RoutingSet that has at
+    least one assigned device, identified by `device_set_macs[set_id]`).
+    Each per-set inbound listens on `127.0.0.1:<set.tproxy_port>` and
+    its tag is `tproxy-set-<set_id>`. Per-set rules carry an
+    `inboundTag: ["tproxy-set-<set_id>"]` matcher so they only apply to
+    traffic that nftables already redirected into that inbound (MAC-
+    based, DHCP-immune).
+
+    Empty sets (no `device_set_macs` entry, or empty list) are silently
+    skipped — both their inbound AND their rules. This means a rule
+    "block ads in Kids" with zero Kids devices is a no-op at config-
+    generation time; it materialises the moment a device is assigned.
+
+    `routing_set_id IS NULL` rules are GLOBAL — emitted without
+    `inboundTag` so they apply to default `tproxy-tcp/udp` AND every
+    per-set inbound (catch-all fallback semantics).
+    """
     log_level = settings_map.get("log_level", "warning")
     dns_port = int(settings_map.get("dns_port", settings.dns_port))
     bypass_private = settings_map.get("bypass_private", "true").lower() == "true"
@@ -745,6 +813,59 @@ def generate_config(
 
     # TPROXY inbounds
     if inbound_mode in ("tproxy", "both"):
+        # Per-set TPROXY inbounds first (v1.4). One inbound per RoutingSet
+        # that has at least one device assigned. nftables redirects MAC-
+        # matched traffic into the set's port; this inbound receives it
+        # and xray router matches `inboundTag` to apply per-set rules.
+        #
+        # We use `inbounds.insert(0, ...)` later for the default TPROXY,
+        # so to keep per-set inbounds AFTER api/dns/socks/http (which
+        # are static and appended above) but BEFORE the defaults, we
+        # build them in a temporary list and insert-0 in reverse order
+        # at the end. Simpler — just append-here, the relative order
+        # within `inbounds` doesn't affect xray routing (rules use tags,
+        # not array positions).
+        if routing_sets and device_set_macs:
+            for rs in sorted(routing_sets, key=lambda s: (s.order, s.id)):
+                # Skip empty sets — zero member MACs means no traffic
+                # will ever hit this port. Listening would waste a
+                # socket and clutter `netstat`.
+                macs = device_set_macs.get(rs.id) or []
+                if not macs:
+                    continue
+                inbounds.append({
+                    "tag": f"tproxy-set-{rs.id}",
+                    "protocol": "dokodemo-door",
+                    "port": rs.tproxy_port,
+                    # listen=0.0.0.0 is REQUIRED for TPROXY (see also
+                    # tproxy-tcp/tproxy-udp below). TPROXY does NOT
+                    # rewrite destination — packets arrive with the
+                    # ORIGINAL dst (e.g. 142.250.190.78:443 for google).
+                    # A socket bound to 127.0.0.1 with IP_TRANSPARENT
+                    # silently drops those packets — the kernel only
+                    # delivers them to a wildcard-bound listener.
+                    # Initial v1.4 dev shipped 127.0.0.1 for "loopback
+                    # isolation"; it caused per-set redirect to mark
+                    # 7796/18650 device packets but xray accepted 0 →
+                    # rules looked configured but nothing was actually
+                    # blocked. Found on live 1.3 smoke test.
+                    #
+                    # Safety: TPROXY sockets only accept packets with
+                    # the matching fwmark, so 0.0.0.0 here isn't a LAN
+                    # exposure — direct connects from LAN devices to
+                    # RPi:<port> hit the standard accept path which
+                    # has nothing to deliver (no listener semantics
+                    # without TPROXY mark).
+                    "listen": "0.0.0.0",
+                    "settings": {"network": "tcp,udp", "followRedirect": True},
+                    "streamSettings": {"sockopt": {"tproxy": "tproxy", "mark": 255}},
+                    "sniffing": {
+                        "enabled": dns_sniffing,
+                        "destOverride": sniff_dest,
+                        "routeOnly": True,
+                    },
+                })
+
         inbounds.insert(0, {
             "tag": "tproxy-udp",
             "protocol": "dokodemo-door",
@@ -906,10 +1027,53 @@ def generate_config(
             routing_rules.append({"type": "field", "ip": _PRIVATE_CIDRS, "outboundTag": "direct"})
 
         sorted_rules = sorted([r for r in rules if r.enabled], key=lambda r: r.order)
+        active_node_id = active_node.id if active_node else None
+
+        # Per-set rules first (v1.4). For each RoutingSet that has at
+        # least one device assigned, emit its rules with `inboundTag`
+        # filter so they only apply to that set's TPROXY inbound. Sort
+        # named sets by their `order` then `id` to make ordering
+        # predictable across config regenerations.
+        #
+        # Empty sets (no member devices) are silently skipped — their
+        # rules would be dead anyway since the corresponding inbound
+        # isn't generated either. When a device is later assigned to
+        # the set, config regenerates and the rules materialise.
+        known_sets = {rs.id: rs for rs in (routing_sets or [])}
+        active_set_ids: set[int] = set()
+        if device_set_macs:
+            for sid, macs in device_set_macs.items():
+                if macs and sid in known_sets:
+                    active_set_ids.add(sid)
+
+        for sid in sorted(
+            active_set_ids,
+            key=lambda s: (known_sets[s].order, s),
+        ):
+            tag = f"tproxy-set-{sid}"
+            for rule in sorted_rules:
+                if rule.routing_set_id != sid:
+                    continue
+                xray_rule = _routing_rule_to_xray(rule, active_node_id)
+                if xray_rule:
+                    xray_rule["inboundTag"] = [tag]
+                    routing_rules.append(xray_rule)
+
+        # Global rules (routing_set_id IS NULL) — apply to ALL inbounds
+        # including per-set ones. No `inboundTag` filter → catch-all
+        # fallback semantics: device in Kids hits Kids rules first
+        # (matched by inboundTag), then falls through to globals.
         for rule in sorted_rules:
-            xray_rule = _routing_rule_to_xray(rule, active_node.id if active_node else None)
-            if xray_rule:
-                routing_rules.append(xray_rule)
+            if rule.routing_set_id is None:
+                xray_rule = _routing_rule_to_xray(rule, active_node_id)
+                if xray_rule:
+                    routing_rules.append(xray_rule)
+
+        # Rules whose `routing_set_id` points at an empty or non-
+        # existent RoutingSet are silently dropped — their inbound
+        # doesn't exist so the rule could never match anyway. Keeping
+        # them out of the config also prevents accidental "leakage"
+        # into the default inbound via the no-inboundTag fallback path.
 
         # Default: direct
         routing_rules.append({"type": "field", "ip": ["0.0.0.0/0", "::/0"], "outboundTag": "direct"})

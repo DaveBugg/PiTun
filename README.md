@@ -216,6 +216,11 @@ Frontend is a single-page React app served by nginx.
   round-trip
 - Per-MAC overrides ("this device always direct, that one always
   through node #5")
+- **Routing Sets** — per-device-group rule lists ("Kids" set blocks
+  gambling, "Work" set routes corp domains direct). Assign devices
+  individually or in bulk; per-set rules apply first, then fall through
+  to global rules. DHCP-resistant (MAC-based via dedicated per-set
+  loopback TPROXY ports + xray `inboundTag` matching)
 
 **Health & resilience**
 - Background liveness probe with two-tier auto-failover: if the failed

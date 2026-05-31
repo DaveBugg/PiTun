@@ -1,20 +1,35 @@
 import { useState, useEffect, useRef } from 'react'
-import { Plus, Pencil, Trash2, ToggleLeft, ToggleRight, GripVertical, Upload, Zap, FileUp, FileDown, HelpCircle, AlertTriangle } from 'lucide-react'
+import { Plus, Pencil, Trash2, ToggleLeft, ToggleRight, GripVertical, Upload, Zap, FileUp, FileDown, HelpCircle, AlertTriangle, Tag } from 'lucide-react'
 import { clsx } from 'clsx'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { isAxiosError } from 'axios'
 import { routingApi } from '@/api/client'
 import { useNodes } from '@/hooks/useNodes'
 import { RuleEditor } from '@/components/RuleEditor'
 import { useConfirm } from '@/components/ConfirmModal'
 import { ModalShell } from '@/components/ModalShell'
+import { RoutingSetModal } from '@/components/RoutingSetModal'
 import { useT } from '@/hooks/useT'
 import { useAppStore } from '@/store'
 import { useSystemSettings } from '@/hooks/useSystem'
 import {
+  useRoutingSets,
+  useRoutingSetCapacity,
+  useDeleteRoutingSet,
+} from '@/hooks/useRoutingSets'
+import {
   GEO_PROFILES, detectActiveProfile, getProfile,
   type QuickAddPreset,
 } from '@/lib/geoProfiles'
-import type { RoutingRule, RoutingRuleCreate, RuleType, BulkRuleCreate, V2RayRule } from '@/types'
+import type { RoutingRule, RoutingRuleCreate, RuleType, BulkRuleCreate, V2RayRule, RoutingSet } from '@/types'
+
+/**
+ * Sub-tab filter on the Rules tab (v1.4):
+ *   * 'all'    — show every rule regardless of routing_set_id (legacy)
+ *   * 'global' — only NULL set rules (apply to every device)
+ *   * number   — only rules belonging to that RoutingSet
+ */
+type SetFilter = 'all' | 'global' | number
 
 type Tab = 'rules' | 'devices'
 type Modal = 'none' | 'add' | 'edit' | 'bulk' | 'import-v2ray' | 'help'
@@ -72,6 +87,15 @@ export function Routing() {
   const [v2rayClear, setV2rayClear] = useState(false)
   const [v2rayFileName, setV2rayFileName] = useState('')
 
+  // Per-device-group routing (v1.4). `selectedSetId` is the sub-tab
+  // filter on the Rules tab — it drives BOTH the list filter AND the
+  // routing_set_id we inject when the user creates a new rule.
+  const [selectedSetId, setSelectedSetId] = useState<SetFilter>('all')
+  // Set CRUD modal state. `setModalEdit === undefined` means "create";
+  // a RoutingSet object means "edit that set".
+  const [setModalOpen, setSetModalOpen] = useState(false)
+  const [setModalEdit, setSetModalEdit] = useState<RoutingSet | undefined>(undefined)
+
   // Multi-select for batch delete
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set())
   const toggleSelect = (id: number) => setSelectedIds(prev => {
@@ -79,7 +103,12 @@ export function Routing() {
     next.has(id) ? next.delete(id) : next.add(id)
     return next
   })
-  const selectAll = () => setSelectedIds(new Set(rules.map(r => r.id)))
+  // selectAll respects the active set sub-tab — picking "select all"
+  // while a single set is active should never silently grab rules from
+  // other sets. `filteredRules` is computed further down in render
+  // order, but the closure binds late so by the time the user clicks
+  // the checkbox it's resolved to the current filter.
+  const selectAll = () => setSelectedIds(new Set(filteredRules.map(r => r.id)))
   const selectNone = () => setSelectedIds(new Set())
 
   const presetsRef = useRef<HTMLDivElement>(null)
@@ -98,6 +127,43 @@ export function Routing() {
   })
   const { data: nodes = [] } = useNodes()
   const { data: sysSettings } = useSystemSettings()
+
+  // v1.4 — routing sets list + capacity + delete mutation
+  const { data: routingSets = [] } = useRoutingSets()
+  const { data: capacity } = useRoutingSetCapacity()
+  const deleteSetMut = useDeleteRoutingSet()
+  const setCanAdd = capacity ? capacity.available > 0 : true
+
+  // If the currently selected sub-tab points at a set that was just
+  // deleted (cascade=move-to-global), snap back to "all" so the UI
+  // doesn't render an empty stale tab.
+  useEffect(() => {
+    if (typeof selectedSetId === 'number'
+        && !routingSets.some(s => s.id === selectedSetId)) {
+      setSelectedSetId('all')
+    }
+  }, [routingSets, selectedSetId])
+
+  // Filtered view of rules driven by the sub-tab. Computed once per
+  // render — list is small (< 1000 entries in practice) so a fresh
+  // filter is cheaper than tracking it via useMemo + invalidation.
+  const filteredRules =
+    selectedSetId === 'all'
+      ? rules
+      : selectedSetId === 'global'
+        ? rules.filter(r => r.routing_set_id === null)
+        : rules.filter(r => r.routing_set_id === selectedSetId)
+
+  // Per-set rule counts for tab badges. `null` key counts globals,
+  // numeric keys count each set, and we expose the total via 'all'.
+  const setCounts = (() => {
+    const m: Record<string, number> = { all: rules.length, global: 0 }
+    for (const r of rules) {
+      if (r.routing_set_id === null) m.global += 1
+      else m[String(r.routing_set_id)] = (m[String(r.routing_set_id)] ?? 0) + 1
+    }
+    return m
+  })()
 
   // Quick-Add presets come from the geo profile that matches the
   // current GeoData URLs. If the user has customised URLs (no profile
@@ -201,11 +267,30 @@ export function Routing() {
     routingApi.reorderRules(ids).then(() => qc.invalidateQueries({ queryKey: ['routing', 'rules'] }))
   }
 
+  // When the user creates a NEW rule, inject the current sub-tab's
+  // routing_set_id. The form (RuleEditor) doesn't know about v1.4 sets
+  // and won't supply this field; we wire it here so the rule lands in
+  // whichever set is active. Edits preserve whatever set_id the rule
+  // already has (RuleEditor doesn't currently let you move a rule
+  // between sets — that's done via the Edit set button + drag-or-
+  // recreate workflow in V1).
+  const setIdForNewRule = (): number | null => {
+    if (selectedSetId === 'all' || selectedSetId === 'global') return null
+    return selectedSetId
+  }
+
   const handleSave = (data: RoutingRuleCreate) => {
     if (editRule) {
       updateRule.mutate({ id: editRule.id, data })
     } else {
-      createRule.mutate(data)
+      // Only inject set_id if the caller didn't already specify it.
+      // Callers that DO know about sets (e.g. RuleEditor V2) can keep
+      // passing their own value.
+      const payload: RoutingRuleCreate =
+        'routing_set_id' in data
+          ? data
+          : { ...data, routing_set_id: setIdForNewRule() }
+      createRule.mutate(payload)
     }
   }
 
@@ -305,6 +390,11 @@ export function Routing() {
         match_value: r.match_value,
         action: r.action as RoutingRuleCreate['action'],
         order: baseOrder + i,
+        // Quick-Add preset rules land in the currently active set
+        // sub-tab. "All" and "Global" tabs both default to NULL
+        // (global rule) — operators picking a preset from a named
+        // set tab expect the preset to apply just there.
+        routing_set_id: setIdForNewRule(),
       })
     }
   }
@@ -436,7 +526,33 @@ export function Routing() {
           >
             {rule.rule_type}
           </span>
-          <span className="flex-1 text-sm text-gray-200 font-medium truncate">{rule.name}</span>
+          <span className="flex-1 text-sm text-gray-200 font-medium truncate flex items-center gap-1.5 min-w-0">
+            <span className="truncate">{rule.name}</span>
+            {/* Set badge — only in the "All" sub-tab and only for
+                rules that actually belong to a named set. Tapping
+                jumps to that set's tab so the operator can see all
+                its rules together. */}
+            {selectedSetId === 'all' && rule.routing_set_id !== null && (
+              (() => {
+                const rs = routingSets.find(s => s.id === rule.routing_set_id)
+                if (!rs) return null
+                return (
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      setSelectedSetId(rs.id)
+                    }}
+                    className="shrink-0 inline-flex items-center gap-1 rounded bg-purple-900/40 px-1.5 py-0.5 text-[10px] font-medium text-purple-300 hover:bg-purple-800/60 transition-colors"
+                    title={t(`Jump to ${rs.name}`, `Перейти к ${rs.name}`)}
+                  >
+                    <Tag className="h-2.5 w-2.5" />
+                    {rs.name}
+                  </button>
+                )
+              })()
+            )}
+          </span>
           {renderMatchValue(rule)}
           <span className={clsx('text-sm font-medium', ACTION_COLORS[rule.action] ?? 'text-gray-400')}>
             → {rule.action}
@@ -624,13 +740,13 @@ export function Routing() {
       </div>
 
       {/* Batch actions bar */}
-      {tab === 'rules' && rules.length > 0 && (
+      {tab === 'rules' && filteredRules.length > 0 && (
         <div className="flex items-center gap-3 flex-wrap">
           <label className="flex items-center gap-1.5 cursor-pointer text-xs text-gray-500">
             <input
               type="checkbox"
-              checked={selectedIds.size === rules.length && rules.length > 0}
-              onChange={() => selectedIds.size === rules.length ? selectNone() : selectAll()}
+              checked={selectedIds.size === filteredRules.length && filteredRules.length > 0}
+              onChange={() => selectedIds.size === filteredRules.length ? selectNone() : selectAll()}
               className="rounded border-gray-600 bg-gray-700"
             />
             {selectedIds.size > 0 ? `${selectedIds.size} selected` : 'Select all'}
@@ -689,6 +805,141 @@ export function Routing() {
         ))}
       </div>
 
+      {/* Sub-tabs by RoutingSet (v1.4). Visible only on the Rules tab.
+          Each sub-tab filters the rule list and drives the
+          routing_set_id we inject when creating new rules. The "+"
+          button at the end opens the create-set modal. */}
+      {tab === 'rules' && (
+        <div className="flex items-center gap-2 flex-wrap text-sm">
+          <div className="flex items-center flex-wrap gap-1">
+            {([
+              ['all',    t('All', 'Все')],
+              ['global', t('Global', 'Глобальные')],
+            ] as const).map(([key, label]) => (
+              <button
+                key={key}
+                onClick={() => setSelectedSetId(key)}
+                className={clsx(
+                  'px-3 py-1.5 rounded-lg border text-xs font-medium transition-colors',
+                  selectedSetId === key
+                    ? 'border-purple-500 bg-purple-900/30 text-purple-200'
+                    : 'border-gray-700 bg-gray-900 text-gray-400 hover:text-gray-200 hover:border-gray-600',
+                )}
+              >
+                {label}
+                <span className="ml-1.5 text-gray-500">
+                  {setCounts[key] ?? 0}
+                </span>
+              </button>
+            ))}
+            {routingSets.map((rs) => (
+              <div key={rs.id} className="group flex items-stretch">
+                <button
+                  onClick={() => setSelectedSetId(rs.id)}
+                  className={clsx(
+                    'px-3 py-1.5 rounded-l-lg border-y border-l text-xs font-medium transition-colors flex items-center gap-1.5',
+                    selectedSetId === rs.id
+                      ? 'border-purple-500 bg-purple-900/30 text-purple-200'
+                      // group-hover highlights ALL three buttons' borders
+                      // together — hovering the label, edit, or delete
+                      // lights up the whole pill, not just the one under
+                      // the cursor.
+                      : 'border-gray-700 bg-gray-900 text-gray-400 hover:text-gray-200 group-hover:border-gray-500',
+                  )}
+                  title={rs.description ?? undefined}
+                >
+                  <Tag className="h-3 w-3" />
+                  {rs.name}
+                  <span className="text-gray-500">
+                    {setCounts[String(rs.id)] ?? 0}
+                  </span>
+                </button>
+                {/* Edit + delete buttons inline with the active tab —
+                    keeps controls tight, doesn't add a separate row. */}
+                <button
+                  onClick={() => { setSetModalEdit(rs); setSetModalOpen(true) }}
+                  title={t('Edit set', 'Изменить набор')}
+                  className={clsx(
+                    'px-1.5 py-1.5 border-y text-gray-500 hover:text-gray-200 flex items-center justify-center transition-colors',
+                    selectedSetId === rs.id
+                      ? 'border-purple-500 bg-purple-900/30'
+                      : 'border-gray-700 bg-gray-900 group-hover:border-gray-500',
+                  )}
+                >
+                  <Pencil className="h-3 w-3" />
+                </button>
+                <button
+                  onClick={async () => {
+                    // Friendly confirm — backend's default refuses
+                    // delete-with-deps, so we offer the cascade option
+                    // explicitly. Operator sees the count of devices/
+                    // rules that will move to global if they proceed.
+                    const ok = await confirm({
+                      title: t(
+                        `Delete set "${rs.name}"?`,
+                        `Удалить набор «${rs.name}»?`,
+                      ),
+                      body: t(
+                        'Any devices and rules in this set will be moved to Global (their routing_set_id becomes null). This is reversible — recreate the set and reassign.',
+                        'Все устройства и правила из этого набора станут глобальными (routing_set_id = null). Обратимо — пересоздай набор и переназначь.',
+                      ),
+                      confirmLabel: t('Delete + move to Global', 'Удалить и перевести в Global'),
+                      danger: true,
+                    })
+                    if (!ok) return
+                    try {
+                      await deleteSetMut.mutateAsync({
+                        id: rs.id,
+                        cascade: 'move-to-global',
+                      })
+                      if (selectedSetId === rs.id) setSelectedSetId('all')
+                    } catch (err) {
+                      let msg = t('Delete failed', 'Не удалось удалить')
+                      if (isAxiosError(err)) {
+                        const d = err.response?.data?.detail
+                        if (typeof d === 'string') msg = d
+                      }
+                      alert(msg)
+                    }
+                  }}
+                  title={t('Delete set', 'Удалить набор')}
+                  className={clsx(
+                    'px-1.5 py-1.5 rounded-r-lg border-y border-r text-gray-500 hover:text-red-400 flex items-center justify-center transition-colors',
+                    selectedSetId === rs.id
+                      ? 'border-purple-500 bg-purple-900/30'
+                      : 'border-gray-700 bg-gray-900 group-hover:border-gray-500',
+                  )}
+                >
+                  <Trash2 className="h-3 w-3" />
+                </button>
+              </div>
+            ))}
+            {/* New-set button — disabled when the 36-set limit is hit */}
+            <button
+              onClick={() => { setSetModalEdit(undefined); setSetModalOpen(true) }}
+              disabled={!setCanAdd}
+              title={
+                setCanAdd
+                  ? t('Create new routing set', 'Создать новый набор')
+                  : t(
+                      `Limit reached (${capacity?.maximum ?? 36} sets max)`,
+                      `Достигнут лимит (макс. ${capacity?.maximum ?? 36} наборов)`,
+                    )
+              }
+              className="px-3 py-1.5 rounded-lg border border-dashed border-gray-700 bg-gray-900 text-xs font-medium text-gray-400 hover:text-gray-200 hover:border-gray-500 disabled:opacity-40 disabled:cursor-not-allowed transition-colors flex items-center gap-1"
+            >
+              <Plus className="h-3 w-3" />
+              {t('New set', 'Новый набор')}
+            </button>
+          </div>
+          {capacity && (
+            <span className="text-xs text-gray-500 ml-auto">
+              {capacity.used}/{capacity.maximum} {t('sets used', 'наборов используется')}
+            </span>
+          )}
+        </div>
+      )}
+
       {/* Rules tab */}
       {tab === 'rules' && (
         <div className="space-y-2">
@@ -699,7 +950,7 @@ export function Routing() {
           <AutoDisabledBanner />
 
           {/* View toggle */}
-          {rules.length > 0 && (
+          {filteredRules.length > 0 && (
             <div className="flex justify-end">
               <div className="inline-flex rounded-lg border border-gray-700 overflow-hidden">
                 <button
@@ -728,26 +979,50 @@ export function Routing() {
             </div>
           )}
 
-          {rules.length === 0 ? (
+          {filteredRules.length === 0 ? (
             <div className="text-center py-12 text-gray-500">
-              No routing rules. Add rules to control traffic flow.
+              {selectedSetId === 'all'
+                ? t(
+                    'No routing rules. Add rules to control traffic flow.',
+                    'Нет правил маршрутизации. Добавь, чтобы управлять трафиком.',
+                  )
+                : selectedSetId === 'global'
+                  ? t(
+                      'No global rules. Add a rule here to apply it to every device.',
+                      'Нет глобальных правил. Добавь правило, чтобы оно работало для всех устройств.',
+                    )
+                  : t(
+                      'No rules in this set yet. Add a rule and it will apply only to devices assigned to this set.',
+                      'В этом наборе пока нет правил. Добавь правило — оно применится только к устройствам этого набора.',
+                    )}
             </div>
           ) : viewMode === 'priority' ? (
-            rules.map((rule) => renderRuleRow(rule, true))
+            filteredRules.map((rule) => renderRuleRow(rule, true))
           ) : (
-            Object.entries(groupedRules()).map(([action, groupRules]) => (
-              <div key={action} className="space-y-2">
-                <div className="flex items-center gap-2 pt-3 pb-1">
-                  <span className={clsx('text-sm font-semibold', ACTION_COLORS[action] ?? 'text-gray-400')}>
-                    → {action}
-                  </span>
-                  <span className="text-xs text-gray-600">
-                    ({groupRules.length} {groupRules.length === 1 ? 'rule' : 'rules'})
-                  </span>
+            Object.entries(groupedRules()).map(([action, groupRules]) => {
+              // Filter grouped rules to match the active sub-tab too.
+              const visible = groupRules.filter(r =>
+                selectedSetId === 'all'
+                  ? true
+                  : selectedSetId === 'global'
+                    ? r.routing_set_id === null
+                    : r.routing_set_id === selectedSetId,
+              )
+              if (visible.length === 0) return null
+              return (
+                <div key={action} className="space-y-2">
+                  <div className="flex items-center gap-2 pt-3 pb-1">
+                    <span className={clsx('text-sm font-semibold', ACTION_COLORS[action] ?? 'text-gray-400')}>
+                      → {action}
+                    </span>
+                    <span className="text-xs text-gray-600">
+                      ({visible.length} {visible.length === 1 ? 'rule' : 'rules'})
+                    </span>
+                  </div>
+                  {visible.map((rule) => renderRuleRow(rule, false))}
                 </div>
-                {groupRules.map((rule) => renderRuleRow(rule, false))}
-              </div>
-            ))
+              )
+            })
           )}
         </div>
       )}
@@ -756,7 +1031,12 @@ export function Routing() {
       {tab === 'devices' && (
         <div className="space-y-2">
           <p className="text-xs text-gray-500">
-            Devices from ARP table. Assign routing action by creating a MAC or Source IP rule.
+            {t(
+              'Devices from ARP table. Assign routing action by creating a MAC or Source IP rule. ' +
+              'For per-device-group rules (Sets), go to the Devices page.',
+              'Устройства из ARP-таблицы. Действие назначается через правило по MAC или src_ip. ' +
+              'Для правил по группам (наборов) — открой страницу Devices.',
+            )}
           </p>
           {devices.length === 0 ? (
             <div className="text-center py-8 text-gray-500">No devices in ARP table</div>
@@ -767,6 +1047,14 @@ export function Routing() {
                   <th className="pb-2 font-medium">IP</th>
                   <th className="pb-2 font-medium">MAC</th>
                   <th className="pb-2 font-medium">Rule Action</th>
+                  {/* v1.4: read-only Set column. Only shown when at
+                      least one set exists — keeps the legacy table
+                      shape for installs that don't use the feature. */}
+                  {routingSets.length > 0 && (
+                    <th className="pb-2 font-medium">
+                      {t('Set', 'Набор')}
+                    </th>
+                  )}
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-800/50">
@@ -783,6 +1071,35 @@ export function Routing() {
                         <span className="text-gray-600 text-xs">default</span>
                       )}
                     </td>
+                    {routingSets.length > 0 && (
+                      <td className="py-2.5">
+                        {d.routing_set_name ? (
+                          // Clickable badge — jump to that set's rules
+                          // tab so the operator sees what rules apply.
+                          // Re-assignment itself happens on the Devices
+                          // page (single source of truth).
+                          <button
+                            type="button"
+                            onClick={() => {
+                              if (d.routing_set_id != null) {
+                                setSelectedSetId(d.routing_set_id)
+                                setTab('rules')
+                              }
+                            }}
+                            className="inline-flex items-center gap-1 rounded bg-purple-900/40 px-1.5 py-0.5 text-[11px] font-medium text-purple-300 hover:bg-purple-800/60 transition-colors"
+                            title={t(
+                              `View "${d.routing_set_name}" rules. Re-assign on the Devices page.`,
+                              `Открыть правила «${d.routing_set_name}». Перепривязать — на странице Devices.`,
+                            )}
+                          >
+                            <Tag className="h-2.5 w-2.5" />
+                            {d.routing_set_name}
+                          </button>
+                        ) : (
+                          <span className="text-gray-600 text-xs">—</span>
+                        )}
+                      </td>
+                    )}
                   </tr>
                 ))}
               </tbody>
@@ -1185,6 +1502,20 @@ export function Routing() {
             </div>
           </div>
         </ModalShell>
+      )}
+
+      {/* RoutingSet create/edit modal (v1.4) — driven by `setModalOpen`
+          + `setModalEdit`. Renders OUTSIDE the main page Container so
+          the modal's portal lands on document.body, matching all the
+          other modals on this page. */}
+      {setModalOpen && (
+        <RoutingSetModal
+          set={setModalEdit}
+          onClose={() => {
+            setSetModalOpen(false)
+            setSetModalEdit(undefined)
+          }}
+        />
       )}
     </div>
   )

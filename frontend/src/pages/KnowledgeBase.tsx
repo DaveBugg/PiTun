@@ -456,6 +456,79 @@ nftables TPROXY -> xray-core -> правила маршрутизации
     },
   },
 
+  /* 5b. Routing Sets (per-device-group rules) */
+  {
+    id: 'routing-sets',
+    title: { en: 'Routing Sets (per-device groups)', ru: 'Наборы правил (группы устройств)' },
+    content: {
+      en: (
+        <>
+          <P>
+            By default every device on your LAN shares the <B>same</B> routing rules.
+            A <B>Routing Set</B> lets you apply a different list of rules to a selected
+            group of devices — a "Kids" set that blocks gambling + forces a parental-
+            control node, a "Work" set that routes corporate domains direct, etc.
+          </P>
+          <P><B>How it works:</B></P>
+          <Ul>
+            <li>Create a named set on the Routing page (the <code className="text-gray-400">+ New set</code> button in the sub-tab bar).</li>
+            <li>Add rules while that set's tab is active — they apply <B>only</B> to devices in the set.</li>
+            <li>Assign devices on the Devices page: per-row <B>Set</B> dropdown, or select several + <B>Move to set</B> bulk action.</li>
+            <li>Rules in the <B>Global</B> tab (or with no set) still apply to <B>every</B> device, including set members — per-set rules are matched first, then traffic falls through to globals.</li>
+          </Ul>
+          <P><B>Under the hood:</B> each set gets a dedicated loopback TPROXY port (65500–65535).
+            nftables matches the device MAC in PREROUTING and redirects its traffic into the set's
+            xray inbound; xray's router then matches the <code className="text-gray-400">inboundTag</code> to
+            decide which rules apply. This is <B>DHCP-resistant</B> — membership is tied to the MAC, not
+            the IP, so it survives lease changes without any reconfiguration.</P>
+          <Ul>
+            <li><B>Limit:</B> 36 sets max (one per port in the reserved range). The "+ New set" button disables at the limit.</li>
+            <li><B>One device → one set</B> in this version. A device's traffic is evaluated against its set's rules + globals.</li>
+            <li><B>Per-set node:</B> use a <code className="text-gray-400">node:&lt;id&gt;</code> action inside the set's rules to force that group through a specific VPN node.</li>
+            <li><B>Deleting a set</B> moves its devices and rules back to Global (their set assignment becomes null) — reversible.</li>
+            <li><B>Excluded devices</B> (Devices → policy "exclude") bypass TPROXY entirely, so their set assignment has no effect — the Set dropdown is greyed out for them.</li>
+          </Ul>
+          <P><B>Tip:</B> for the most reliable matching, give set-member devices a static DHCP
+            reservation on your router. PiTun handles IP changes gracefully (MAC-based), but a fixed
+            IP keeps diagnostics and logs easy to read.</P>
+        </>
+      ),
+      ru: (
+        <>
+          <P>
+            По умолчанию все устройства в LAN используют <B>одни и те же</B> правила
+            маршрутизации. <B>Набор правил (Routing Set)</B> позволяет применить отдельный
+            список правил к выбранной группе устройств — набор «Дети» блокирует азартные
+            игры и гонит трафик через родительскую ноду, набор «Работа» отправляет
+            корпоративные домены напрямую, и т.д.
+          </P>
+          <P><B>Как это работает:</B></P>
+          <Ul>
+            <li>Создай именованный набор на странице Routing (кнопка <code className="text-gray-400">+ Новый набор</code> в строке вкладок).</li>
+            <li>Добавляй правила, когда активна вкладка набора — они применятся <B>только</B> к устройствам этого набора.</li>
+            <li>Назначай устройства на странице Devices: выпадающий список <B>Набор</B> в строке, или выдели несколько + действие <B>Переместить в набор</B>.</li>
+            <li>Правила во вкладке <B>Global</B> (или без набора) по-прежнему применяются ко <B>всем</B> устройствам, включая участников наборов — правила набора проверяются первыми, затем трафик проваливается на глобальные.</li>
+          </Ul>
+          <P><B>Под капотом:</B> каждый набор получает выделенный loopback-порт TPROXY (65500–65535).
+            nftables сопоставляет MAC устройства в PREROUTING и перенаправляет его трафик в xray-inbound
+            набора; роутер xray затем матчит <code className="text-gray-400">inboundTag</code>, чтобы решить какие
+            правила применить. Это <B>устойчиво к DHCP</B> — членство привязано к MAC, а не к IP, поэтому
+            смена аренды IP не требует переконфигурации.</P>
+          <Ul>
+            <li><B>Лимит:</B> максимум 36 наборов (по одному на порт в зарезервированном диапазоне). Кнопка «+ Новый набор» блокируется на лимите.</li>
+            <li><B>Одно устройство → один набор</B> в этой версии. Трафик устройства проверяется против правил его набора + глобальных.</li>
+            <li><B>Нода для набора:</B> используй действие <code className="text-gray-400">node:&lt;id&gt;</code> в правилах набора, чтобы гнать группу через конкретную VPN-ноду.</li>
+            <li><B>Удаление набора</B> возвращает его устройства и правила в Global (их привязка к набору становится null) — обратимо.</li>
+            <li><B>Исключённые устройства</B> (Devices → политика «exclude») полностью минуют TPROXY, поэтому привязка к набору на них не влияет — выпадающий список Набор для них заблокирован.</li>
+          </Ul>
+          <P><B>Совет:</B> для самого надёжного срабатывания дай устройствам-участникам набора
+            статическую DHCP-резервацию на роутере. PiTun корректно обрабатывает смену IP (по MAC),
+            но фиксированный IP упрощает чтение диагностики и логов.</P>
+        </>
+      ),
+    },
+  },
+
   /* 6. DNS Management */
   {
     id: 'dns',

@@ -471,7 +471,13 @@ class CircleScheduler:
                 dns_rules = list((await session.exec(select(DNSRule).where(DNSRule.enabled == True))).all())
                 balancer_groups = list((await session.exec(select(BalancerGroup))).all())
                 mode = settings_map.get("mode", "rules")
-                config = generate_config(active_node, all_nodes, rules, mode, settings_map, dns_rules, balancer_groups)
+                from app.core.config_gen import collect_routing_set_context
+                routing_sets, device_set_macs = await collect_routing_set_context(session)
+                config = generate_config(
+                    active_node, all_nodes, rules, mode, settings_map,
+                    dns_rules, balancer_groups,
+                    routing_sets=routing_sets, device_set_macs=device_set_macs,
+                )
                 await write_config(config)
         except Exception as exc:
             logger.warning("Config file update failed: %s", exc)

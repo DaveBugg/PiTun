@@ -15,6 +15,8 @@ import type {
   BalancerGroup, BalancerGroupCreate, BalancerGroupUpdate,
   NodeCircle, NodeCircleCreate, NodeCircleUpdate,
   Device, DeviceUpdate, DeviceBulkUpdate, DeviceScanResult,
+  RoutingSet, RoutingSetCreate, RoutingSetUpdate, RoutingSetCapacity,
+  DeviceBulkSetAssign,
   SystemMetric,
   NaiveSidecarStatus, NaiveSidecarLogs,
   V2RayImportRequest, V2RayImportResult,
@@ -386,7 +388,16 @@ export const circleApi = {
 // ── Devices ──────────────────────────────────────────────────────────────────
 
 export const devicesApi = {
-  list: (params?: { online_only?: boolean; policy?: string }) =>
+  /**
+   * `routing_set_id`: pass a numeric id to filter to members of that
+   * set, or the literal string `"null"` to list global-only (unassigned)
+   * devices. Omit to list all devices (current behaviour).
+   */
+  list: (params?: {
+    online_only?: boolean
+    policy?: string
+    routing_set_id?: number | 'null'
+  }) =>
     http.get<Device[]>('/devices', { params }).then(r => r.data),
   get: (id: number) =>
     http.get<Device>(`/devices/${id}`).then(r => r.data),
@@ -400,6 +411,31 @@ export const devicesApi = {
     http.post('/devices/bulk-policy', data),
   resetAllPolicies: () =>
     http.post('/devices/reset-all-policies'),
+}
+
+// ── Routing sets (v1.4) ─────────────────────────────────────────────────────
+
+export const routingSetsApi = {
+  list: () =>
+    http.get<RoutingSet[]>('/routing-sets').then(r => r.data),
+  /** Returns {used, maximum, available} — used by UI to gate the "+" button. */
+  capacity: () =>
+    http.get<RoutingSetCapacity>('/routing-sets/capacity').then(r => r.data),
+  get: (id: number) =>
+    http.get<RoutingSet>(`/routing-sets/${id}`).then(r => r.data),
+  create: (data: RoutingSetCreate) =>
+    http.post<RoutingSet>('/routing-sets', data).then(r => r.data),
+  update: (id: number, data: RoutingSetUpdate) =>
+    http.patch<RoutingSet>(`/routing-sets/${id}`, data).then(r => r.data),
+  /**
+   * `cascade='move-to-global'` reassigns dependent devices/rules to NULL
+   * before deletion. Without it, the server returns 409 when there are
+   * dependents (the UI should prompt the operator to confirm).
+   */
+  delete: (id: number, opts?: { cascade?: 'move-to-global' }) =>
+    http.delete(`/routing-sets/${id}`, { params: opts }),
+  bulkAssignDevices: (data: DeviceBulkSetAssign) =>
+    http.post('/routing-sets/devices/bulk', data),
 }
 
 // ── Diagnostics ─────────────────────────────────────────────────────────────

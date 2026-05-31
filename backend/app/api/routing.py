@@ -12,8 +12,24 @@ from sqlmodel import select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.database import get_session
-from app.models import BalancerGroup, Node, RoutingRule
+from app.models import BalancerGroup, Node, RoutingRule, RoutingSet
 from app.schemas import ArpDevice, BulkRuleCreate, BulkRuleResult, RoutingRuleCreate, RoutingRuleRead, RoutingRuleUpdate
+
+
+async def _validate_routing_set_id(
+    session: AsyncSession, set_id: Optional[int]
+) -> None:
+    """Reject rule saves that reference a non-existent RoutingSet.
+
+    NULL is always valid (it means "global rule"). Otherwise we require
+    the target set to actually exist so the user can't orphan a rule by
+    pointing it at id=9999.
+    """
+    if set_id is None:
+        return
+    rs = await session.get(RoutingSet, set_id)
+    if rs is None:
+        raise HTTPException(400, f"Rule references missing routing set {set_id}")
 
 
 async def _validate_action(session: AsyncSession, action: str) -> None:
@@ -128,8 +144,31 @@ async def _auto_reload_xray(session: AsyncSession) -> None:
 # ── Rules CRUD ────────────────────────────────────────────────────────────────
 
 @router.get("/rules", response_model=List[RoutingRuleRead])
-async def list_rules(session: AsyncSession = Depends(get_session)):
-    rules = (await session.exec(select(RoutingRule).order_by(RoutingRule.order, RoutingRule.id))).all()
+async def list_rules(
+    routing_set_id: Optional[str] = None,
+    session: AsyncSession = Depends(get_session),
+):
+    """List routing rules.
+
+    `routing_set_id` accepts:
+      * numeric id  → only rules belonging to that set
+      * `"null"`    → only global rules (set_id IS NULL)
+      * omitted     → all rules (legacy behaviour, what callers without
+        per-set awareness expect)
+    """
+    stmt = select(RoutingRule).order_by(RoutingRule.order, RoutingRule.id)
+    if routing_set_id is not None:
+        if routing_set_id == "null":
+            stmt = stmt.where(RoutingRule.routing_set_id.is_(None))
+        else:
+            try:
+                sid = int(routing_set_id)
+            except ValueError:
+                raise HTTPException(
+                    400, "routing_set_id must be an integer or the literal 'null'"
+                )
+            stmt = stmt.where(RoutingRule.routing_set_id == sid)
+    rules = (await session.exec(stmt)).all()
     return list(rules)
 
 
@@ -244,6 +283,7 @@ async def dismiss_auto_disabled_all(session: AsyncSession = Depends(get_session)
 async def create_rule(data: RoutingRuleCreate, session: AsyncSession = Depends(get_session)):
     await _validate_action(session, data.action)
     _validate_geo_tags(data.rule_type, data.match_value or "")
+    await _validate_routing_set_id(session, data.routing_set_id)
     rule = RoutingRule(**data.model_dump())
     session.add(rule)
     await session.commit()
@@ -268,6 +308,8 @@ async def update_rule(rule_id: int, data: RoutingRuleUpdate, session: AsyncSessi
     patch = data.model_dump(exclude_unset=True)
     if "action" in patch and patch["action"] is not None:
         await _validate_action(session, patch["action"])
+    if "routing_set_id" in patch:
+        await _validate_routing_set_id(session, patch["routing_set_id"])
     # Validate geo tags against the resulting (post-patch) shape.
     # Whichever of (rule_type, match_value) the patch supplies, fall
     # back to the existing row for the other side.
@@ -471,8 +513,34 @@ async def list_devices(session: AsyncSession = Depends(get_session)):
         .order_by(RoutingRule.order)
     )).all())
 
+    # v1.4: enrich ARP entries with routing-set membership (read-only).
+    # Build a MAC → (set_id, set_name) map from the Device table joined
+    # with RoutingSet. Single small query — Device table on a home LAN
+    # is < 100 rows. The ARP view stays SCAN-driven (live `ip neigh`),
+    # so a MAC that hasn't been recorded as a Device yet just has no
+    # badge — no harm.
+    from app.models import Device, RoutingSet
+    db_devices = list((await session.exec(
+        select(Device).where(Device.routing_set_id.is_not(None))
+    )).all())
+    set_by_id: dict[int, RoutingSet] = {}
+    if db_devices:
+        set_ids = {d.routing_set_id for d in db_devices if d.routing_set_id is not None}
+        rs_rows = list((await session.exec(
+            select(RoutingSet).where(RoutingSet.id.in_(set_ids))
+        )).all())
+        set_by_id = {rs.id: rs for rs in rs_rows}
+    mac_to_set: dict[str, RoutingSet] = {}
+    for d in db_devices:
+        if d.mac and d.routing_set_id in set_by_id:
+            mac_to_set[d.mac.lower()] = set_by_id[d.routing_set_id]
+
     for device in devices:
         device.rule_action = _match_device_rule(device, rules)
+        rs = mac_to_set.get(device.mac.lower())
+        if rs is not None:
+            device.routing_set_id = rs.id
+            device.routing_set_name = rs.name
 
     return devices
 

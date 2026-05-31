@@ -9,7 +9,7 @@ from sqlmodel import select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.database import get_session
-from app.models import BalancerGroup, DNSRule, Node, RoutingRule, Settings as DBSettings
+from app.models import BalancerGroup, Device, DNSRule, Node, RoutingRule, RoutingSet, Settings as DBSettings
 from app.core.device_scanner import get_device_macs_for_mode
 from app.schemas import (
     ActiveNodeUpdate,
@@ -374,7 +374,8 @@ def _short_tag(tag: str) -> str:
 
 async def _apply_nftables(session: AsyncSession, settings_map: dict) -> str:
     """Apply nftables rules with device filtering. Returns inbound_mode."""
-    from app.core.nftables import nftables_manager
+    from app.core.nftables import nftables_manager, RoutingSetSpec
+    from app.core.config_gen import collect_routing_set_context
 
     mode = settings_map.get("mode", "rules")
     inbound_mode = settings_map.get("inbound_mode", "tproxy")
@@ -403,6 +404,23 @@ async def _apply_nftables(session: AsyncSession, settings_map: dict) -> str:
     if device_mode == "exclude_list":
         bypass_macs.extend(device_info["exclude_macs"])
 
+    # Per-RoutingSet nftables plumbing (v1.4). Build one RoutingSetSpec
+    # per non-empty set so nftables can render its MAC set + per-set
+    # TPROXY redirect. Empty sets are skipped — they generate no
+    # plumbing and config_gen also omits their xray inbound, so the
+    # rendering stays in sync between the two layers.
+    routing_sets, device_set_macs = await collect_routing_set_context(session)
+    routing_set_specs: list[RoutingSetSpec] = []
+    for rs in routing_sets:
+        macs = device_set_macs.get(rs.id) or []
+        if not macs:
+            continue
+        routing_set_specs.append(RoutingSetSpec(
+            set_id=rs.id,
+            macs=tuple(macs),
+            tproxy_port=rs.tproxy_port,
+        ))
+
     await nftables_manager.apply_rules(
         inbound_mode=inbound_mode,
         bypass_macs=bypass_macs,
@@ -414,6 +432,7 @@ async def _apply_nftables(session: AsyncSession, settings_map: dict) -> str:
         dns_port=_safe_int(settings_map, "dns_port", 5353),
         block_quic=settings_map.get("block_quic", "true").lower() == "true",
         kill_switch=settings_map.get("kill_switch", "false").lower() == "true",
+        routing_set_specs=routing_set_specs,
     )
     return inbound_mode
 
@@ -796,10 +815,13 @@ async def update_settings(body: SettingsUpdate, session: AsyncSession = Depends(
         rules = list((await session.exec(select(RoutingRule).where(RoutingRule.enabled == True))).all())
         dns_rules = list((await session.exec(select(DNSRule).where(DNSRule.enabled == True))).all())
         balancer_groups = list((await session.exec(select(BalancerGroup))).all())
+        from app.core.config_gen import collect_routing_set_context
+        routing_sets, device_set_macs = await collect_routing_set_context(session)
         candidate = generate_config(
             active_node, all_nodes, rules,
             settings_map.get("mode", "rules"),
             settings_map, dns_rules, balancer_groups,
+            routing_sets=routing_sets, device_set_macs=device_set_macs,
         )
 
         # In-process pre-flight: write to a tmp path and run xray -test
@@ -919,7 +941,7 @@ async def _regenerate_and_write(session: AsyncSession, *, _self_heal_attempts: i
     retry the write with the smaller ruleset. Bounded to 5 attempts
     so a pathological `.dat` mismatch can't infinite-loop.
     """
-    from app.core.config_gen import generate_config, write_config
+    from app.core.config_gen import generate_config, write_config, collect_routing_set_context
 
     settings_map = await _load_settings_map(session)
     mode = settings_map.get("mode", "rules")
@@ -935,7 +957,11 @@ async def _regenerate_and_write(session: AsyncSession, *, _self_heal_attempts: i
     rules = list((await session.exec(select(RoutingRule).where(RoutingRule.enabled == True))).all())
     dns_rules = list((await session.exec(select(DNSRule).where(DNSRule.enabled == True))).all())
     balancer_groups = list((await session.exec(select(BalancerGroup))).all())
-    config = generate_config(active_node, all_nodes, rules, mode, settings_map, dns_rules, balancer_groups)
+    routing_sets, device_set_macs = await collect_routing_set_context(session)
+    config = generate_config(
+        active_node, all_nodes, rules, mode, settings_map, dns_rules, balancer_groups,
+        routing_sets=routing_sets, device_set_macs=device_set_macs,
+    )
 
     # On retry passes we skip pre-flight to avoid recursive cost — the
     # outer attempt's pre-flight already proved which rules are bad,

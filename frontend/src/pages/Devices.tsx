@@ -2,14 +2,25 @@ import { useState, useEffect } from 'react'
 import {
   Wifi, WifiOff, Radar, Search, RotateCcw, Pencil, Trash2,
   ShieldCheck, ShieldBan, ShieldMinus, Check, X,
-  Activity, Clock, ListFilter,
+  Activity, Clock, ListFilter, Tag,
 } from 'lucide-react'
+import { isAxiosError } from 'axios'
 import { useConfirm } from '@/components/ConfirmModal'
 import { clsx } from 'clsx'
 import { useDevices, useUpdateDevice, useDeleteDevice, useScanDevices, useBulkPolicy, useResetAllPolicies } from '@/hooks/useDevices'
+import { useRoutingSets, useBulkAssignDevices } from '@/hooks/useRoutingSets'
 import { useSystemSettings, useUpdateSettings } from '@/hooks/useSystem'
 import { useT } from '@/hooks/useT'
 import type { Device, DeviceRoutingPolicy } from '@/types'
+
+/**
+ * Filter value for the "Set" filter pill. Reused for the set-membership
+ * column too:
+ *   * 'any'    — show every device regardless of routing_set_id
+ *   * 'none'   — only devices with routing_set_id === null
+ *   * number   — only members of that set
+ */
+type SetFilterValue = 'any' | 'none' | number
 
 const POLICY_META: Record<DeviceRoutingPolicy, { label: string; color: string; icon: typeof ShieldCheck }> = {
   default:  { label: 'Default',  color: 'bg-gray-700 text-gray-300',          icon: ShieldMinus },
@@ -34,6 +45,7 @@ export function Devices() {
   const [search, setSearch] = useState('')
   const [filterPolicy, setFilterPolicy] = useState<'' | DeviceRoutingPolicy>('')
   const [filterOnline, setFilterOnline] = useState<'' | 'online' | 'offline'>('')
+  const [filterSet, setFilterSet] = useState<SetFilterValue>('any')
   const [selected, setSelected] = useState<Set<number>>(new Set())
   const [editId, setEditId] = useState<number | null>(null)
   const [editName, setEditName] = useState('')
@@ -46,17 +58,19 @@ export function Devices() {
 
   const { data: devices = [], isLoading } = useDevices()
   const { data: settings } = useSystemSettings()
+  const { data: routingSets = [] } = useRoutingSets()
   const updateDevice = useUpdateDevice()
   const deleteDevice = useDeleteDevice()
   const scanDevices = useScanDevices()
   const bulkPolicy = useBulkPolicy()
+  const bulkAssignSet = useBulkAssignDevices()
   const resetAll = useResetAllPolicies()
   const updateSettings = useUpdateSettings()
 
   // Clear selection when filters change
   useEffect(() => {
     setSelected(new Set())
-  }, [search, filterPolicy, filterOnline])
+  }, [search, filterPolicy, filterOnline, filterSet])
 
   const filtered = devices.filter((d) => {
     const q = search.toLowerCase()
@@ -69,7 +83,13 @@ export function Devices() {
     const matchPolicy = !filterPolicy || d.routing_policy === filterPolicy
     const matchOnline = !filterOnline ||
       (filterOnline === 'online' ? d.is_online : !d.is_online)
-    return matchSearch && matchPolicy && matchOnline
+    const matchSet =
+      filterSet === 'any'
+        ? true
+        : filterSet === 'none'
+          ? d.routing_set_id === null
+          : d.routing_set_id === filterSet
+    return matchSearch && matchPolicy && matchOnline && matchSet
   })
 
   const onlineCount = devices.filter(d => d.is_online).length
@@ -109,6 +129,38 @@ export function Devices() {
     bulkPolicy.mutate({ device_ids: [...selected], routing_policy: policy }, {
       onSuccess: () => setSelected(new Set()),
     })
+  }
+
+  // v1.4: reassign N selected devices to a RoutingSet (or null = global).
+  // Backend rejects unknown set ids and rolls back the whole batch on
+  // any missing device id — error surface is friendly enough that we
+  // just surface the detail string.
+  const applyBulkSet = (routing_set_id: number | null) => {
+    if (selected.size === 0) return
+    bulkAssignSet.mutate(
+      { device_ids: [...selected], routing_set_id },
+      {
+        onSuccess: () => setSelected(new Set()),
+        onError: (err) => {
+          let msg = t('Failed to update set assignment', 'Не удалось переместить устройства')
+          if (isAxiosError(err)) {
+            const d = err.response?.data?.detail
+            if (typeof d === 'string') msg = d
+          }
+          alert(msg)
+        },
+      },
+    )
+  }
+
+  // Single-device set assignment via the inline dropdown in the table.
+  // Reuses useUpdateDevice's PATCH flow — the backend treats
+  // `routing_set_id: null` in the patch body as "unassign".
+  const assignSingleDeviceToSet = (
+    deviceId: number,
+    routing_set_id: number | null,
+  ) => {
+    updateDevice.mutate({ id: deviceId, data: { routing_set_id } })
   }
 
   const startEdit = (d: Device) => {
@@ -326,11 +378,40 @@ export function Devices() {
             </button>
           ))}
         </div>
+
+        {/* Set filter (v1.4) — only rendered when at least one set
+            exists, so the page stays exactly v1.3.x for users who
+            never created a routing set. */}
+        {routingSets.length > 0 && (
+          <div className="flex items-center gap-1">
+            <select
+              value={
+                filterSet === 'any' ? 'any'
+                : filterSet === 'none' ? 'none'
+                : String(filterSet)
+              }
+              onChange={(e) => {
+                const v = e.target.value
+                if (v === 'any') setFilterSet('any')
+                else if (v === 'none') setFilterSet('none')
+                else setFilterSet(Number(v))
+              }}
+              className="rounded bg-gray-800 border border-gray-700 px-2 py-1 text-xs font-medium text-gray-200 focus:border-purple-500 focus:outline-none"
+              title={t('Filter by routing set', 'Фильтр по набору')}
+            >
+              <option value="any">{t('Any set', 'Любой набор')}</option>
+              <option value="none">{t('Unassigned (global)', 'Без набора (глобал)')}</option>
+              {routingSets.map((rs) => (
+                <option key={rs.id} value={rs.id}>{rs.name}</option>
+              ))}
+            </select>
+          </div>
+        )}
       </div>
 
       {/* Bulk actions */}
       {selected.size > 0 && (
-        <div className="flex items-center gap-2 rounded-lg bg-gray-900 border border-gray-800 px-4 py-2">
+        <div className="flex items-center gap-2 rounded-lg bg-gray-900 border border-gray-800 px-4 py-2 flex-wrap">
           <span className="text-sm text-gray-400">{selected.size} selected</span>
           <span className="text-gray-700">|</span>
           <button
@@ -351,6 +432,37 @@ export function Devices() {
           >
             <ShieldMinus className="h-3.5 w-3.5" /> Default
           </button>
+          {/* Move-to-set bulk action (v1.4). Rendered only when sets
+              exist — keeps the bar minimal for users who don't use
+              the feature. */}
+          {routingSets.length > 0 && (
+            <>
+              <span className="text-gray-700">|</span>
+              <Tag className="h-3.5 w-3.5 text-purple-400" />
+              <select
+                value=""
+                onChange={(e) => {
+                  const v = e.target.value
+                  if (!v) return  // ignore the "Move to set…" placeholder
+                  if (v === 'null') applyBulkSet(null)
+                  else applyBulkSet(Number(v))
+                  e.target.value = ''  // reset to placeholder
+                }}
+                disabled={bulkAssignSet.isPending}
+                className="rounded bg-gray-800 border border-gray-700 px-2 py-1 text-xs font-medium text-gray-200 focus:border-purple-500 focus:outline-none disabled:opacity-50"
+              >
+                <option value="">
+                  {t('Move to set…', 'Переместить в набор…')}
+                </option>
+                <option value="null">
+                  {t('Unassign (global)', 'Снять (в глобал)')}
+                </option>
+                {routingSets.map((rs) => (
+                  <option key={rs.id} value={rs.id}>{rs.name}</option>
+                ))}
+              </select>
+            </>
+          )}
           <button
             onClick={() => setSelected(new Set())}
             className="ml-auto text-xs text-gray-500 hover:text-gray-300 transition-colors"
@@ -390,6 +502,17 @@ export function Devices() {
                 <th className="px-3 py-2.5 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">MAC</th>
                 <th className="px-3 py-2.5 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Vendor</th>
                 <th className="px-3 py-2.5 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Policy</th>
+                {routingSets.length > 0 && (
+                  <th
+                    className="px-3 py-2.5 text-left text-xs font-medium text-gray-500 uppercase tracking-wider"
+                    title={t(
+                      'RoutingSet — per-device-group rules (v1.4)',
+                      'RoutingSet — правила по группам устройств (v1.4)',
+                    )}
+                  >
+                    {t('Set', 'Набор')}
+                  </th>
+                )}
                 <th className="px-3 py-2.5 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Last Seen</th>
                 <th className="px-3 py-2.5 text-right text-xs font-medium text-gray-500 uppercase tracking-wider w-24">Actions</th>
               </tr>
@@ -476,6 +599,46 @@ export function Devices() {
                         {pm.label}
                       </button>
                     </td>
+                    {/* Set column (v1.4) — inline dropdown to reassign
+                        without leaving the row. Grey out for excluded
+                        devices since their set membership is moot (they
+                        bypass TPROXY entirely at the nftables layer). */}
+                    {routingSets.length > 0 && (
+                      <td className="px-3 py-2.5">
+                        <select
+                          value={d.routing_set_id === null ? 'null' : String(d.routing_set_id)}
+                          onChange={(e) => {
+                            const v = e.target.value
+                            assignSingleDeviceToSet(
+                              d.id,
+                              v === 'null' ? null : Number(v),
+                            )
+                          }}
+                          disabled={d.routing_policy === 'exclude'}
+                          title={
+                            d.routing_policy === 'exclude'
+                              ? t(
+                                  'Excluded devices bypass TPROXY — set membership has no effect',
+                                  'Исключённые устройства минуют TPROXY — набор на них не влияет',
+                                )
+                              : t('Assign to routing set', 'Назначить в набор')
+                          }
+                          className={clsx(
+                            'rounded bg-gray-800 border border-gray-700 px-2 py-0.5 text-xs font-medium focus:border-purple-500 focus:outline-none',
+                            d.routing_policy === 'exclude'
+                              ? 'text-gray-600 cursor-not-allowed'
+                              : d.routing_set_id === null
+                                ? 'text-gray-400'
+                                : 'text-purple-300',
+                          )}
+                        >
+                          <option value="null">— {t('Global', 'Глобал')}</option>
+                          {routingSets.map((rs) => (
+                            <option key={rs.id} value={rs.id}>{rs.name}</option>
+                          ))}
+                        </select>
+                      </td>
+                    )}
                     <td className="px-3 py-2.5 text-xs text-gray-500" title={d.last_seen}>
                       {timeAgo(d.last_seen)}
                     </td>

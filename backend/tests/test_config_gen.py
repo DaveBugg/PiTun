@@ -737,3 +737,226 @@ class TestDNS:
         addrs = {s["address"] for s in obj_servers}
         assert "https://cloudflare-dns.com/dns-query" in addrs
         assert "quic+local://dns.adguard.com" in addrs
+
+
+# ============================================================================
+# RoutingSet — per-device-group routing (v1.4)
+# ============================================================================
+
+from app.models import RoutingSet
+
+
+def _make_routing_set(id, name, tproxy_port, order=0):
+    return RoutingSet(
+        id=id, name=name, tproxy_port=tproxy_port,
+        order=order, description=None,
+    )
+
+
+class TestRoutingSetInbounds:
+    def test_no_set_inbounds_when_no_sets(self):
+        """No RoutingSets → config matches v1.3.x exactly."""
+        cfg = generate_config(
+            None, [], [], "rules", _default_settings(),
+            routing_sets=None, device_set_macs=None,
+        )
+        # Only default tproxy inbounds + api/dns/socks/http (no per-set)
+        set_inbounds = [
+            ib for ib in cfg["inbounds"]
+            if ib["tag"].startswith("tproxy-set-")
+        ]
+        assert set_inbounds == []
+
+    def test_empty_set_skipped(self):
+        """Set with zero member devices generates no inbound."""
+        rs = _make_routing_set(1, "Kids", 65500)
+        cfg = generate_config(
+            None, [], [], "rules", _default_settings(),
+            routing_sets=[rs],
+            device_set_macs={1: []},  # empty
+        )
+        assert _find_inbound(cfg, "tproxy-set-1") is None
+
+    def test_set_with_devices_gets_inbound_wildcard_bound(self):
+        """Per-set TPROXY inbound MUST listen on 0.0.0.0, not 127.0.0.1.
+
+        TPROXY does not rewrite destination — redirected packets keep
+        their ORIGINAL dst (e.g. 142.250.190.78:443 for google). A
+        loopback-bound IP_TRANSPARENT socket silently drops those
+        packets because the kernel only delivers them to a wildcard
+        listener. Regression: initial v1.4 shipped 127.0.0.1, which
+        marked traffic correctly in nftables but xray accepted zero of
+        it (live caught on 1.3 smoke test, see config_gen comment).
+        """
+        rs = _make_routing_set(1, "Kids", 65500)
+        cfg = generate_config(
+            None, [], [], "rules", _default_settings(),
+            routing_sets=[rs],
+            device_set_macs={1: ["aa:bb:cc:dd:ee:01"]},
+        )
+        inbound = _find_inbound(cfg, "tproxy-set-1")
+        assert inbound is not None
+        assert inbound["port"] == 65500
+        # MUST be 0.0.0.0 — see docstring above. TPROXY sockets only
+        # accept packets with the matching fwmark, so wildcard bind
+        # isn't a LAN exposure.
+        assert inbound["listen"] == "0.0.0.0"
+        assert inbound["protocol"] == "dokodemo-door"
+        # One port serves BOTH TCP and UDP
+        assert inbound["settings"]["network"] == "tcp,udp"
+        assert inbound["streamSettings"]["sockopt"]["tproxy"] == "tproxy"
+        assert inbound["streamSettings"]["sockopt"]["mark"] == 255
+
+    def test_multiple_sets_get_separate_ports(self):
+        rs_a = _make_routing_set(1, "Kids", 65500)
+        rs_b = _make_routing_set(2, "Work", 65501)
+        cfg = generate_config(
+            None, [], [], "rules", _default_settings(),
+            routing_sets=[rs_a, rs_b],
+            device_set_macs={
+                1: ["aa:bb:cc:dd:ee:01"],
+                2: ["aa:bb:cc:dd:ee:02"],
+            },
+        )
+        assert _find_inbound(cfg, "tproxy-set-1")["port"] == 65500
+        assert _find_inbound(cfg, "tproxy-set-2")["port"] == 65501
+
+
+class TestRoutingSetRules:
+    def test_per_set_rule_has_inbound_tag(self):
+        rs = _make_routing_set(1, "Kids", 65500)
+        rule = RoutingRule(
+            id=1, name="block ads", rule_type="domain",
+            match_value="doubleclick.net", action="block",
+            enabled=True, order=10, routing_set_id=1,
+        )
+        cfg = generate_config(
+            None, [], [rule], "rules", _default_settings(),
+            routing_sets=[rs],
+            device_set_macs={1: ["aa:bb:cc:dd:ee:01"]},
+        )
+        # Find the rule in routing.rules — must carry inboundTag filter
+        per_set_rules = [
+            r for r in cfg["routing"]["rules"]
+            if r.get("inboundTag") == ["tproxy-set-1"]
+        ]
+        assert len(per_set_rules) == 1
+        assert per_set_rules[0]["outboundTag"] == "block"
+
+    def test_global_rule_no_inbound_tag(self):
+        """NULL routing_set_id → no inboundTag → applies to ALL inbounds."""
+        rule = RoutingRule(
+            id=1, name="block ads global", rule_type="domain",
+            match_value="ads.com", action="block",
+            enabled=True, order=10, routing_set_id=None,
+        )
+        cfg = generate_config(
+            None, [], [rule], "rules", _default_settings(),
+        )
+        matching = [
+            r for r in cfg["routing"]["rules"]
+            if r.get("outboundTag") == "block"
+            and r.get("domain")
+            and any("ads.com" in d for d in r["domain"])
+        ]
+        assert len(matching) == 1
+        assert "inboundTag" not in matching[0]
+
+    def test_per_set_rules_emitted_before_global(self):
+        """First-match-wins: per-set rules must precede globals in
+        routing.rules so a device in Kids hits its set rules first
+        before falling through to globals."""
+        rs = _make_routing_set(1, "Kids", 65500)
+        per_set = RoutingRule(
+            id=1, name="kids-only", rule_type="domain",
+            match_value="kids.com", action="block",
+            enabled=True, order=10, routing_set_id=1,
+        )
+        glob = RoutingRule(
+            id=2, name="global-rule", rule_type="domain",
+            match_value="global.com", action="block",
+            enabled=True, order=20, routing_set_id=None,
+        )
+        cfg = generate_config(
+            None, [], [per_set, glob], "rules", _default_settings(),
+            routing_sets=[rs],
+            device_set_macs={1: ["aa:bb:cc:dd:ee:01"]},
+        )
+        rule_indexes = {}
+        for i, r in enumerate(cfg["routing"]["rules"]):
+            for d in r.get("domain", []):
+                if "kids.com" in d:
+                    rule_indexes["kids"] = i
+                if "global.com" in d:
+                    rule_indexes["global"] = i
+        assert rule_indexes["kids"] < rule_indexes["global"], (
+            f"per-set rule at {rule_indexes['kids']} must precede global "
+            f"at {rule_indexes['global']}"
+        )
+
+    def test_rule_in_empty_set_dropped(self):
+        """Rule pointing at a set with no devices → silently skipped,
+        does NOT leak into the default inbound as a global rule."""
+        rs = _make_routing_set(1, "Kids", 65500)
+        rule = RoutingRule(
+            id=1, name="orphan", rule_type="domain",
+            match_value="orphan.com", action="block",
+            enabled=True, order=10, routing_set_id=1,
+        )
+        cfg = generate_config(
+            None, [], [rule], "rules", _default_settings(),
+            routing_sets=[rs],
+            device_set_macs={1: []},  # empty Kids
+        )
+        for r in cfg["routing"]["rules"]:
+            for d in r.get("domain", []):
+                assert "orphan.com" not in d, (
+                    "rule for empty set must not appear in any inbound"
+                )
+
+    def test_rule_in_unknown_set_dropped(self):
+        """Rule with set_id pointing at non-existent RoutingSet →
+        silently skipped (defensive: orphan rule must not leak)."""
+        rule = RoutingRule(
+            id=1, name="orphan", rule_type="domain",
+            match_value="orphan.com", action="block",
+            enabled=True, order=10, routing_set_id=9999,
+        )
+        cfg = generate_config(
+            None, [], [rule], "rules", _default_settings(),
+            routing_sets=[],
+            device_set_macs={},
+        )
+        for r in cfg["routing"]["rules"]:
+            for d in r.get("domain", []):
+                assert "orphan.com" not in d
+
+    def test_set_order_respected(self):
+        """Sets with lower `order` emit rules first."""
+        rs_b = _make_routing_set(2, "B", 65501, order=2)  # later
+        rs_a = _make_routing_set(1, "A", 65500, order=1)  # earlier
+        rule_a = RoutingRule(
+            id=1, name="rule-a", rule_type="domain",
+            match_value="a.com", action="block",
+            enabled=True, order=10, routing_set_id=1,
+        )
+        rule_b = RoutingRule(
+            id=2, name="rule-b", rule_type="domain",
+            match_value="b.com", action="block",
+            enabled=True, order=10, routing_set_id=2,
+        )
+        # Pass sets in REVERSE order to verify the function sorts them
+        cfg = generate_config(
+            None, [], [rule_a, rule_b], "rules", _default_settings(),
+            routing_sets=[rs_b, rs_a],
+            device_set_macs={1: ["aa:01"], 2: ["aa:02"]},
+        )
+        first_kids_idx = None
+        first_work_idx = None
+        for i, r in enumerate(cfg["routing"]["rules"]):
+            if r.get("inboundTag") == ["tproxy-set-1"]:
+                first_kids_idx = first_kids_idx if first_kids_idx is not None else i
+            if r.get("inboundTag") == ["tproxy-set-2"]:
+                first_work_idx = first_work_idx if first_work_idx is not None else i
+        assert first_kids_idx is not None and first_work_idx is not None
+        assert first_kids_idx < first_work_idx

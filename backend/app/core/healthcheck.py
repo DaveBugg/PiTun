@@ -302,8 +302,14 @@ class HealthChecker:
                 for row in (await session.exec(select(DBSettings))).all()
             }
             mode = settings_map.get("mode", "rules")
+            from app.core.config_gen import collect_routing_set_context
+            routing_sets, device_set_macs = await collect_routing_set_context(session)
 
-            config = generate_config(active_node, all_nodes, rules, mode, settings_map, dns_rules, balancer_groups)
+            config = generate_config(
+                active_node, all_nodes, rules, mode, settings_map,
+                dns_rules, balancer_groups,
+                routing_sets=routing_sets, device_set_macs=device_set_macs,
+            )
             await write_config(config)
             await xray_manager.reload()
         except Exception as exc:

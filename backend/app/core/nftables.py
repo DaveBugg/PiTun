@@ -2,9 +2,26 @@
 import asyncio
 import logging
 import re
-from typing import List, Optional
+from dataclasses import dataclass
+from typing import List, Optional, Sequence
 
 from app.config import settings
+
+
+@dataclass(frozen=True)
+class RoutingSetSpec:
+    """Per-RoutingSet nftables/TPROXY plumbing spec (v1.4).
+
+    Built by `app/api/system.py:_apply_nftables` from the DB state and
+    passed to `NftablesManager.apply()`. Each spec generates:
+      * An `inet pitun` set named `rset_<set_id>_mac` with member MACs.
+      * Two TPROXY redirect rules in `prerouting` (TCP+UDP) that fire
+        BEFORE the default TPROXY rule, sending matched packets to
+        `127.0.0.1:<tproxy_port>` where xray's per-set inbound listens.
+    """
+    set_id: int
+    macs: tuple[str, ...]
+    tproxy_port: int
 
 logger = logging.getLogger(__name__)
 
@@ -79,6 +96,7 @@ class NftablesManager:
         dns_port: Optional[int] = None,
         block_quic: bool = True,
         kill_switch: bool = False,
+        routing_set_specs: Optional[Sequence[RoutingSetSpec]] = None,
     ) -> bool:
         """
         Apply nftables rules based on inbound_mode.
@@ -103,6 +121,7 @@ class NftablesManager:
             tproxy_udp=tproxy_udp,
             dns_port=dns_port,
             block_quic=block_quic,
+            routing_set_specs=routing_set_specs,
         )
 
     async def apply(
@@ -116,6 +135,7 @@ class NftablesManager:
         tproxy_udp: Optional[int] = None,
         dns_port: Optional[int] = None,
         block_quic: bool = True,
+        routing_set_specs: Optional[Sequence[RoutingSetSpec]] = None,
     ) -> bool:
         """
         Create or replace the pitun nftables table with TPROXY rules.
@@ -175,6 +195,57 @@ class NftablesManager:
     }}"""
             proxy_src_match = "        ip saddr != @proxy_src4 return\n"
 
+        # Per-RoutingSet MAC sets + TPROXY redirect rules (v1.4).
+        # For each non-empty RoutingSet, render:
+        #   1. An nft set `rset_<id>_mac` holding the device MACs
+        #   2. Two TPROXY rules in `prerouting` that match those MACs
+        #      and redirect TCP/UDP to the set's xray inbound port,
+        #      injected BEFORE the default TPROXY rules so first-match
+        #      semantics route set members into their own xray inbound.
+        #
+        # Empty sets are filtered out at the call-site (see
+        # `app/api/system.py:_apply_nftables`); this code defends with
+        # an extra `if validated_macs` check so a stale empty list
+        # can't generate an `elements = {  }` nftables syntax error.
+        per_set_definitions = ""
+        per_set_matches = ""
+        if routing_set_specs:
+            for spec in routing_set_specs:
+                validated_macs = [m for m in spec.macs if _validate_mac(m)]
+                if not validated_macs:
+                    continue
+                mac_list = ", ".join(validated_macs)
+                per_set_definitions += f"""
+    set rset_{spec.set_id}_mac {{
+        type ether_addr
+        elements = {{ {mac_list} }}
+    }}"""
+                # Both TCP and UDP redirect to the SAME port — xray's
+                # dokodemo-door inbound bound with `network: "tcp,udp"`
+                # accepts both protocols on one numeric port (TCP/UDP
+                # are independent socket families in the kernel, so a
+                # single port number can be bound by both at once).
+                #
+                # The trailing `accept` is CRITICAL. Without it, the
+                # tproxy verb in nftables doesn't terminate chain
+                # evaluation — the packet's TPROXY assignment and
+                # fwmark get OVERWRITTEN by the default TPROXY rule
+                # below in the same chain, silently routing per-set
+                # device traffic into the default `tproxy-tcp` inbound.
+                # nft trace confirmed this on the v1.4 dev build (1.3
+                # smoke test): per-set rule fired, packet got mark=1,
+                # but then default rule fired too with the SAME action
+                # → last writer wins → packet landed on :7893 instead
+                # of the per-set port. The default rules below don't
+                # need `accept` because they're the last tproxy in the
+                # chain — nothing after them rewrites the redirect.
+                per_set_matches += (
+                    f"        ether saddr @rset_{spec.set_id}_mac ip protocol tcp "
+                    f"tproxy ip to 127.0.0.1:{spec.tproxy_port} meta mark set 1 accept\n"
+                    f"        ether saddr @rset_{spec.set_id}_mac ip protocol udp "
+                    f"tproxy ip to 127.0.0.1:{spec.tproxy_port} meta mark set 1 accept\n"
+                )
+
         script = f"""
 table inet {_TABLE} {{
     set bypass_mac {{
@@ -184,7 +255,7 @@ table inet {_TABLE} {{
         type ipv4_addr
         flags interval
         elements = {{ {bypass_dst_elements} }}
-    }}{include_set}{proxy_src_elements}
+    }}{include_set}{proxy_src_elements}{per_set_definitions}
 
     chain prerouting {{
         type filter hook prerouting priority mangle - 1; policy accept;
@@ -197,7 +268,10 @@ table inet {_TABLE} {{
         ip protocol udp udp dport 53 tproxy ip to 127.0.0.1:{dns_p} meta mark set 1
         {"# Reject QUIC (UDP/443) — browsers immediately fall back to TCP" if block_quic else "# QUIC blocking disabled"}
         {"ip protocol udp udp dport 443 reject" if block_quic else ""}
-        # TCP TPROXY
+        # Per-RoutingSet TPROXY (v1.4) — BEFORE the default TPROXY so
+        # set members get redirected into their own xray inbound
+        # (matched there by xray router via `inboundTag`).
+{per_set_matches}        # TCP TPROXY (default — all other devices)
         ip protocol tcp tproxy ip to 127.0.0.1:{tcp_port} meta mark set 1
         # UDP TPROXY (non-QUIC)
         ip protocol udp tproxy ip to 127.0.0.1:{udp_port} meta mark set 1

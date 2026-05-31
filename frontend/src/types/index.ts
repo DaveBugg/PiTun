@@ -158,10 +158,78 @@ export interface RoutingRule {
   match_value: string
   action: RuleAction
   order: number
+  /**
+   * v1.4: per-device-group routing. `null` = global rule (applies to
+   * every device — preserves v1.3.x behaviour). A number = rule
+   * belongs to the RoutingSet with that id and only applies to
+   * devices assigned to that set.
+   */
+  routing_set_id: number | null
 }
 
-export type RoutingRuleCreate = Omit<RoutingRule, 'id'>
+/**
+ * Create payload — `routing_set_id` is intentionally optional so legacy
+ * call-sites (Quick-Add presets, V2Ray import, RuleEditor without
+ * per-set context) don't need to know about v1.4 sets. Omitting the
+ * field defaults the rule to `null` (global) on the backend, which is
+ * the v1.3.x behaviour preserved by the migration.
+ */
+export type RoutingRuleCreate = Omit<RoutingRule, 'id' | 'routing_set_id'> & {
+  routing_set_id?: number | null
+}
 export type RoutingRuleUpdate = Partial<RoutingRuleCreate>
+
+// ── Routing sets (v1.4) ─────────────────────────────────────────────────────
+
+/**
+ * A named group of routing rules applied only to a selected list of
+ * devices. See `backend/app/models.py:RoutingSet` and
+ * `.claude_temp/DESIGN_routing_sets.md` for the full architecture.
+ */
+export interface RoutingSet {
+  id: number
+  name: string
+  description: string | null
+  order: number
+  /**
+   * Auto-allocated TCP+UDP TPROXY port (65500..65535). One port
+   * serves both protocols via xray dokodemo-door with
+   * `network: "tcp,udp"`. Loopback-only, never exposed to LAN.
+   */
+  tproxy_port: number
+  created_at: string
+}
+
+export interface RoutingSetCreate {
+  name: string
+  description?: string | null
+  order?: number
+}
+
+export interface RoutingSetUpdate {
+  name?: string
+  description?: string | null
+  order?: number
+}
+
+/**
+ * Surface for `GET /api/routing-sets/capacity`. Frontend uses
+ * `available > 0` to enable the "+ New set" button.
+ */
+export interface RoutingSetCapacity {
+  used: number
+  maximum: number
+  available: number
+}
+
+/**
+ * Body for `POST /api/routing-sets/devices/bulk` — reassign N devices
+ * to a set (or to global with `routing_set_id: null`).
+ */
+export interface DeviceBulkSetAssign {
+  device_ids: number[]
+  routing_set_id: number | null
+}
 
 export interface BulkRuleCreate {
   rule_type: RuleType
@@ -180,6 +248,15 @@ export interface ArpDevice {
   hostname?: string
   vendor?: string
   rule_action?: string
+  /**
+   * v1.4 (read-only here): if the MAC is a managed Device assigned
+   * to a RoutingSet, these surface the set's id + name for badge
+   * rendering. ARP view does NOT mutate set membership — that's
+   * single-sourced from the Devices page. Clicking the badge in UI
+   * deep-links there.
+   */
+  routing_set_id?: number | null
+  routing_set_name?: string | null
 }
 
 // ── Subscription ──────────────────────────────────────────────────────────────
@@ -548,11 +625,18 @@ export interface Device {
   last_seen: string
   is_online: boolean
   routing_policy: DeviceRoutingPolicy
+  /**
+   * v1.4: which RoutingSet this device belongs to. `null` = unassigned
+   * (only global rules apply, v1.3.x behaviour).
+   */
+  routing_set_id: number | null
 }
 
 export interface DeviceUpdate {
   name?: string
   routing_policy?: DeviceRoutingPolicy
+  // null = unassign (move to global). Omit field entirely to leave alone.
+  routing_set_id?: number | null
 }
 
 export interface DeviceBulkUpdate {
