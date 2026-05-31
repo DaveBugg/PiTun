@@ -842,6 +842,49 @@ EOF
         echo -e "nft_tproxy\nxt_TPROXY" > /etc/modules-load.d/pitun.conf
     fi
 
+    # Persistent systemd journal. Default Debian/Ubuntu/RaspiOS configs leave
+    # journald in "auto" mode, which means logs live in /run/log/journal and
+    # vanish on every reboot. That makes postmortem debugging of an
+    # unexpected reboot (kernel OOM, undervoltage, watchdog reset) impossible
+    # — by the time the operator SSHes in, the evidence is already gone.
+    # Caps tuned for the documented 64 GB minimum disk in README: 200 MB
+    # max journal size, never eat into the last 1 GB of free space, 20 MB
+    # per file so rotation is responsive. Idempotent: skip if user already
+    # set Storage= in the main conf, or our drop-in already exists.
+    info "Configuring persistent systemd journal (postmortem reboot evidence)…"
+    if [[ "$DRY_RUN" != "1" ]]; then
+        if grep -qE '^\s*Storage=' /etc/systemd/journald.conf 2>/dev/null \
+           || [[ -f /etc/systemd/journald.conf.d/pitun.conf ]]; then
+            info "  journal storage already configured — leaving alone"
+        else
+            # Pre-create /var/log/journal/<machine-id>/ so journald picks
+            # persistent mode on next restart. systemd-journal group +
+            # setgid bit are required by journald spec.
+            mid=$(cat /etc/machine-id 2>/dev/null || true)
+            if [[ -n "$mid" ]]; then
+                install -d -o root -g systemd-journal -m 2755 \
+                    /var/log/journal \
+                    "/var/log/journal/${mid}"
+            fi
+            mkdir -p /etc/systemd/journald.conf.d
+            cat > /etc/systemd/journald.conf.d/pitun.conf <<'EOF'
+[Journal]
+Storage=persistent
+SystemMaxUse=200M
+SystemMaxFileSize=20M
+SystemKeepFree=1G
+EOF
+            # Restart attempts to flush /run → /var/log, but the flush is
+            # idempotent-per-boot: if journald already decided "runtime" at
+            # the current boot it won't migrate until next boot. Still
+            # worth restarting so new entries land in /var/log immediately
+            # on systems where the directory wasn't pre-existing.
+            systemctl restart systemd-journald \
+                || warn "journald restart failed (config still armed — kicks in on next reboot)"
+            info "  persistent journal configured (full effect after next reboot)"
+        fi
+    fi
+
     if ! command -v docker &>/dev/null; then
         info "Installing Docker (via get.docker.com)…"
         # `get.docker.com` is the official auto-detecting installer.
