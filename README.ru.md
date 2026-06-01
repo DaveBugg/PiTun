@@ -134,7 +134,10 @@ homeproxy, xKeen): они блестяще решают «все устройс�
   <img src="docs/screenshots/dashboard.jpg" alt="Dashboard" width="800">
 </a>
 
-### Provisioning VPS и оркестрация x-ui (с v1.3.0)
+<details>
+<summary><strong>Provisioning VPS и оркестрация x-ui</strong> (с v1.3.0) — нажмите чтобы развернуть · 6 скриншотов</summary>
+
+<br>
 
 <table>
   <tr>
@@ -169,7 +172,12 @@ homeproxy, xKeen): они блестяще решают «все устройс�
   </tr>
 </table>
 
-### Маршрутизация и ноды
+</details>
+
+<details>
+<summary><strong>Маршрутизация и ноды</strong> — нажмите чтобы развернуть · 6 скриншотов</summary>
+
+<br>
 
 <table>
   <tr>
@@ -204,7 +212,12 @@ homeproxy, xKeen): они блестяще решают «все устройс�
   </tr>
 </table>
 
-### Устройства, DNS и диагностика
+</details>
+
+<details>
+<summary><strong>Устройства, DNS и диагностика</strong> — нажмите чтобы развернуть · 4 скриншота</summary>
+
+<br>
 
 <table>
   <tr>
@@ -230,6 +243,8 @@ homeproxy, xKeen): они блестяще решают «все устройс�
     </td>
   </tr>
 </table>
+
+</details>
 
 ## Архитектура
 

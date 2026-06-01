@@ -131,7 +131,10 @@ disk.
   <img src="docs/screenshots/dashboard.jpg" alt="Dashboard" width="800">
 </a>
 
-### VPS provisioning & x-ui orchestration (since v1.3.0)
+<details>
+<summary><strong>VPS provisioning & x-ui orchestration</strong> (since v1.3.0) — click to expand · 6 screenshots</summary>
+
+<br>
 
 <table>
   <tr>
@@ -166,7 +169,12 @@ disk.
   </tr>
 </table>
 
-### Routing engine & nodes
+</details>
+
+<details>
+<summary><strong>Routing engine & nodes</strong> — click to expand · 6 screenshots</summary>
+
+<br>
 
 <table>
   <tr>
@@ -201,7 +209,12 @@ disk.
   </tr>
 </table>
 
-### Devices, DNS & diagnostics
+</details>
+
+<details>
+<summary><strong>Devices, DNS & diagnostics</strong> — click to expand · 4 screenshots</summary>
+
+<br>
 
 <table>
   <tr>
@@ -227,6 +240,8 @@ disk.
     </td>
   </tr>
 </table>
+
+</details>
 
 ## Architecture
 
