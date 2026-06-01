@@ -19,6 +19,7 @@
 ## Table of contents
 
 - [What it is](#what-it-is)
+- [Why PiTun?](#why-pitun)
 - [Screenshots](#screenshots)
 - [Architecture](#architecture)
 - [Features](#features)
@@ -64,6 +65,65 @@ routing rule set:**
 | TPROXY | `7893` | Transparent gateway — devices set the box as gateway |
 | SOCKS5 | `1080` | Explicit proxy for browsers and apps |
 | HTTP | `8080` | For apps without SOCKS5 support |
+
+## Why PiTun?
+
+A bunch of self-hosted proxy managers already exist:
+**OpenWrt + podkop / passwall / passwall2 / homeproxy**, **xKeen** on
+Keenetic, **Hiddify**, **Outline**, and others. They're all great at
+"drop on a small router, set up bypass, forget it." PiTun is built
+around features that **aren't there** in those lighter-weight,
+router-bound options:
+
+- **Deploy your own VPN with one click from the UI.** Add your VPS's
+  SSH credentials → click "Deploy NaiveProxy / WireGuard / x-ui" →
+  PiTun SSHs in, runs the installer, writes the new Node into your
+  DB, and your traffic flows through it 30 seconds later. No
+  SSH-and-curl ritual. ("VPS" = a small remote Linux server you rent
+  for a few dollars a month.) **All your data — credentials, panel
+  tokens, rules — stays on your hardware, never in someone's cloud.**
+
+- **Two-hop chains across panels.** Bridge two x-ui panels (a popular
+  web dashboard for managing VPN servers) into one chain with managed
+  per-channel clients. Per-device traffic hops VPS-A → VPS-B →
+  internet. No competing router-based tool does this from one UI.
+
+- **Tunnel one protocol through another, right from the node form.**
+  Want your WireGuard node to dial out through a VLESS tunnel? Open
+  the WG node's edit form, pick a VLESS node from the "Chain"
+  dropdown — done. PiTun wires xray outbounds so the WG handshake
+  (and everything that follows) rides on top of VLESS first, then
+  hits your WG server. Handy when your VPS provider blocks raw WG.
+
+- **Per-device-group rules.** Create your own group of devices and
+  define routing rules just for that group. Examples:
+  - "Kids" group → blocks gambling sites and forces traffic through a
+    parental-control node.
+  - "Work laptop" group → routes corporate domains direct (no VPN),
+    everything else via a different node.
+  - "Smart TV" group → blocks ads and pushes streaming traffic
+    through a specific high-bandwidth node.
+
+  Devices get assigned to a group via a dropdown on the Devices page —
+  no per-device app to install on the client side.
+
+- **Auto-rotate the active node on a schedule.** NodeCircle picks the
+  next live VPN server every N minutes, pre-pings each one, skips
+  dead ones, swaps without dropping your existing connections.
+
+- **Three proxy endpoints, one rule set** — transparent gateway for
+  the whole LAN (TPROXY), SOCKS5 for apps that want an explicit proxy,
+  HTTP for legacy clients. Most tools force you to pick one.
+
+vs. **router-based packages** (podkop, passwall, passwall2,
+homeproxy, xKeen): they're brilliant at "all my devices, minimal
+setup" on a $30 router with 64 MB RAM. PiTun is for the case where
+you want **server-side orchestration** (deploy & manage your own
+VPS), **multi-tier traffic policy** (different rules per device
+group), and **a modern web UI with a mobile-friendly layout — tweak
+a rule from your phone, even from the bathroom if you must** — at
+the cost of needing an RPi 4/5 (or any small Linux box) with 64 GB+
+disk.
 
 ## Screenshots
 
