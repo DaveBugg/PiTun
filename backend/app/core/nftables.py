@@ -263,9 +263,18 @@ table inet {_TABLE} {{
         meta mark 255 return
 {mac_match}{include_match}{proxy_src_match}        # Skip private / bypass destinations
         ip daddr @bypass_dst4 return
-        # DNS redirect to xray DNS inbound
-        ip protocol tcp tcp dport 53 tproxy ip to 127.0.0.1:{dns_p} meta mark set 1
-        ip protocol udp udp dport 53 tproxy ip to 127.0.0.1:{dns_p} meta mark set 1
+        # DNS redirect to xray DNS inbound. MUST trailing-`accept` so the
+        # chain terminates here — otherwise the per-set TPROXY rule below
+        # (which has its own `accept`) would re-route DNS packets from
+        # set members into the per-set inbound instead of `dns-in`.
+        # xray's DNS rules are gated on `inboundTag: [dns-in, dns-in-53]`,
+        # so DNS that lands on a per-set inbound silently bypasses the
+        # whole DNS engine (no upstream override, no DoH/DoT, no
+        # per-domain server) and gets proxied as raw UDP — caught
+        # by an operator on 1.3 (DNS rule for *.youtube.com → DoT
+        # 94.140.14.14 not applying to devices in the test set).
+        ip protocol tcp tcp dport 53 tproxy ip to 127.0.0.1:{dns_p} meta mark set 1 accept
+        ip protocol udp udp dport 53 tproxy ip to 127.0.0.1:{dns_p} meta mark set 1 accept
         {"# Reject QUIC (UDP/443) — browsers immediately fall back to TCP" if block_quic else "# QUIC blocking disabled"}
         {"ip protocol udp udp dport 443 reject" if block_quic else ""}
         # Per-RoutingSet TPROXY (v1.4) — BEFORE the default TPROXY so

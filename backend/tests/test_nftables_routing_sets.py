@@ -124,3 +124,35 @@ async def test_multiple_sets_each_get_their_own_section(captured_script):
     assert "set rset_2_mac" in script
     assert "tproxy ip to 127.0.0.1:65500" in script
     assert "tproxy ip to 127.0.0.1:65501" in script
+
+
+@pytest.mark.asyncio
+async def test_dns_redirect_accept_terminates_chain(captured_script):
+    """DNS redirect rules MUST end with `accept` so they terminate the
+    prerouting chain before per-set redirects can re-route DNS packets.
+
+    Pre-fix bug: DNS redirect was `tproxy ip to ...:5353 meta mark set 1`
+    (no accept). Per-set redirect (which DOES `accept`) sat below in the
+    same chain. For devices in a routing set, a DNS query matched both
+    verbs in sequence — last-writer wins on the tproxy target → packet
+    landed on the per-set inbound instead of `dns-in`. xray's DNS rules
+    are gated on `inboundTag: [dns-in, dns-in-53]`, so the engine never
+    ran and the operator's DNS Rules (e.g. *.youtube.com → DoT) silently
+    didn't apply for set members. Live-caught on 1.3.
+    """
+    manager = NftablesManager()
+    spec = RoutingSetSpec(set_id=1, macs=("aa:bb:cc:dd:ee:01",), tproxy_port=65500)
+    await manager.apply(routing_set_specs=[spec])
+    script = captured_script["script"]
+    # Both DNS redirects must end with `accept`
+    assert "ip protocol tcp tcp dport 53 tproxy ip to 127.0.0.1:5353 meta mark set 1 accept" in script, \
+        "TCP DNS redirect must accept-terminate"
+    assert "ip protocol udp udp dport 53 tproxy ip to 127.0.0.1:5353 meta mark set 1 accept" in script, \
+        "UDP DNS redirect must accept-terminate"
+
+    # And the DNS redirect must come BEFORE the per-set redirect — so a
+    # DNS-port packet from a set member hits DNS first and exits the
+    # chain before the per-set rule can grab it.
+    dns_idx = script.index("dport 53 tproxy ip to 127.0.0.1:5353")
+    set_idx = script.index("@rset_1_mac ip protocol")
+    assert dns_idx < set_idx, "DNS redirect must precede per-set redirect"
