@@ -711,3 +711,149 @@ def probe_gateway(ip: str) -> dict:
         "detail": f"{ip} does not respond to ICMP" + (" or ARP" if has_arping else "")
                   + ". Either the host is offline or you're behind a firewall.",
     }
+
+
+# ── Host fallback DNS (additive, non-destructive) ───────────────────────────
+#
+# Distinct from `apply()` above, which rewrites the whole interface to a
+# static config. This adds FALLBACK DNS servers to the host's OWN resolver
+# WITHOUT touching the DHCP-provided ones or switching off DHCP.
+#
+# Why this exists: the box itself (backend container — subscriptions, geo
+# downloads, x-ui panel reachability, healthchecks) resolves names through
+# the host /etc/resolv.conf, which normally points only at the LAN router.
+# If the router's DNS flakes, ALL of that breaks even though LAN clients
+# keep resolving fine through xray's own DNS engine. Adding public
+# fallbacks (1.1.1.1 / 8.8.8.8) after the router means a router DNS outage
+# no longer blinds the box. Managed from the DNS page so it's one place.
+
+_RESOLVED_DROPIN_DIR = "/etc/systemd/resolved.conf.d"
+_RESOLVED_DROPIN = "/etc/systemd/resolved.conf.d/pitun-fallback.conf"
+_RESOLV_MARK = "# pitun-fallback-dns"
+
+
+def _resolved_active() -> bool:
+    return nc.host_systemctl_is_active("systemd-resolved")
+
+
+def _fallback_via_resolved(servers: List[str]) -> dict:
+    """systemd-resolved: FallbackDNS= is exactly built for this — used
+    only when the primary (DHCP/link) DNS returns nothing. Cleanest,
+    fully persistent, non-destructive."""
+    body = "[Resolve]\nFallbackDNS=" + " ".join(servers) + "\n"
+    # Idempotent: skip the restart if the drop-in already matches.
+    existing = nc.host_read_file(_RESOLVED_DROPIN)
+    if existing is not None and existing.strip() == body.strip():
+        return {"applied": False, "manager": "systemd-resolved",
+                "detail": "fallback DNS already configured"}
+    nc.host_run(["mkdir", "-p", _RESOLVED_DROPIN_DIR], timeout=5)
+    r = nc.host_run(["tee", _RESOLVED_DROPIN], input_data=body, timeout=5)
+    if r.returncode != 0:
+        raise NetworkApplyError(f"failed to write {_RESOLVED_DROPIN}: {r.stderr.strip()}")
+    nc.host_run(["systemctl", "restart", "systemd-resolved"], timeout=10)
+    return {"applied": True, "manager": "systemd-resolved",
+            "detail": f"FallbackDNS set to {' '.join(servers)}"}
+
+
+def _fallback_via_nm(servers: List[str]) -> dict:
+    """NetworkManager: append servers to ipv4.dns on the active default-
+    route connection. With ipv4.method=auto these MERGE with DHCP DNS
+    (router stays first, our fallbacks follow). Persistent in the
+    connection profile. Idempotent — only adds servers not already
+    present, and only reactivates if something changed."""
+    iface, _ = nc.read_default_route()
+    if not iface:
+        raise NetworkApplyError("no default-route interface to attach fallback DNS to")
+    conn = _nm_connection_for_iface(iface)
+    if not conn:
+        raise NetworkApplyError(f"no active NetworkManager connection for {iface}")
+
+    cur = nc.host_run(["nmcli", "-g", "ipv4.dns", "connection", "show", conn], timeout=5)
+    current = set()
+    if cur.returncode == 0:
+        # nmcli -g returns comma-separated, sometimes with trailing escape
+        for tok in cur.stdout.replace("\\", "").replace(",", " ").split():
+            tok = tok.strip()
+            if tok:
+                current.add(tok)
+    to_add = [s for s in servers if s not in current]
+
+    # Always (re)assert fast-fallback options so a dead first server
+    # doesn't stall the whole resolver for 5s — even when DNS list is
+    # unchanged we want these present.
+    mod = ["nmcli", "connection", "modify", conn,
+           "ipv4.dns-options", "timeout:1,attempts:2"]
+    if to_add:
+        mod += ["+ipv4.dns", ",".join(to_add)]
+    r = nc.host_run(mod, timeout=15)
+    if r.returncode != 0:
+        raise NetworkApplyError(f"nmcli modify failed: {r.stderr.strip() or r.stdout.strip()}")
+
+    if not to_add:
+        # Options may have changed; reapply is cheap and keeps SSH up.
+        nc.host_run(["nmcli", "connection", "up", conn], timeout=15)
+        return {"applied": False, "manager": "networkmanager",
+                "detail": "fallback DNS already present (refreshed options)"}
+
+    up = nc.host_run(["nmcli", "connection", "up", conn], timeout=15)
+    if up.returncode != 0:
+        raise NetworkApplyError(f"nmcli up failed: {up.stderr.strip() or up.stdout.strip()}")
+    return {"applied": True, "manager": "networkmanager",
+            "detail": f"appended {', '.join(to_add)} to {conn}"}
+
+
+def _fallback_via_resolvconf(servers: List[str]) -> dict:
+    """Fallback path for networkd / dhcpcd / ifupdown / unknown where we
+    don't have a clean knob — append nameserver lines straight to
+    /etc/resolv.conf with a marker so we stay idempotent. NOTE: may be
+    overwritten by the resolver manager on next lease/reboot — that's a
+    best-effort; the caller surfaces a warning in that case."""
+    content = nc.host_read_file("/etc/resolv.conf") or ""
+    existing_ns = set()
+    for line in content.splitlines():
+        line = line.strip()
+        if line.startswith("nameserver"):
+            parts = line.split()
+            if len(parts) >= 2:
+                existing_ns.add(parts[1])
+    to_add = [s for s in servers if s not in existing_ns]
+    if not to_add:
+        return {"applied": False, "manager": "resolvconf",
+                "detail": "fallback DNS already in /etc/resolv.conf"}
+    # Strip any prior pitun block, then re-append a fresh one.
+    lines = [ln for ln in content.splitlines() if _RESOLV_MARK not in ln]
+    lines.append(_RESOLV_MARK)
+    for s in to_add:
+        lines.append(f"nameserver {s}  {_RESOLV_MARK}")
+    new = "\n".join(lines) + "\n"
+    r = nc.host_run(["tee", "/etc/resolv.conf"], input_data=new, timeout=5)
+    if r.returncode != 0:
+        raise NetworkApplyError(f"failed to write /etc/resolv.conf: {r.stderr.strip()}")
+    return {"applied": True, "manager": "resolvconf",
+            "detail": f"appended {', '.join(to_add)} (may not persist across reboot)"}
+
+
+def apply_host_fallback_dns(servers: List[str]) -> dict:
+    """Ensure `servers` are present as FALLBACK DNS for the host's own
+    resolver, additively (DHCP/router DNS stays primary).
+
+    Picks the right mechanism: systemd-resolved FallbackDNS if active
+    (cleanest), else NetworkManager ipv4.dns append, else direct
+    resolv.conf append. Idempotent — safe to call on every boot.
+
+    Returns {"applied": bool, "manager": str, "detail": str}. An empty
+    `servers` list is a no-op (returns applied=False) — removal of
+    fallbacks is intentionally NOT automated here to avoid surprising
+    an operator who set them up manually.
+    """
+    clean = _validate_dns_list([s.strip() for s in servers if s and s.strip()])
+    if not clean:
+        return {"applied": False, "manager": "none",
+                "detail": "no fallback DNS servers configured"}
+
+    if _resolved_active():
+        return _fallback_via_resolved(clean)
+    manager = nc.detect_manager()
+    if manager == "networkmanager":
+        return _fallback_via_nm(clean)
+    return _fallback_via_resolvconf(clean)

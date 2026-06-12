@@ -42,6 +42,8 @@ _DNS_SETTING_KEYS = {
     "bypass_cn_dns",
     "bypass_ru_dns",
     "dns_disable_fallback",
+    "dns_query_strategy",
+    "host_fallback_dns",
 }
 
 
@@ -66,6 +68,8 @@ def _settings_map_to_dns(m: dict) -> DNSSettingsRead:
         bypass_cn_dns=m.get("bypass_cn_dns", "false").lower() == "true",
         bypass_ru_dns=m.get("bypass_ru_dns", "false").lower() == "true",
         dns_disable_fallback=m.get("dns_disable_fallback", "true").lower() == "true",
+        dns_query_strategy=m.get("dns_query_strategy", "UseIPv4"),
+        host_fallback_dns=m.get("host_fallback_dns", ""),
     )
 
 
@@ -76,6 +80,28 @@ async def _upsert_setting(session: AsyncSession, key: str, value: str) -> None:
         existing.value = value
     else:
         session.add(DBSettings(key=key, value=value))
+
+
+async def _auto_reload_xray(session: AsyncSession) -> None:
+    """Regenerate the xray config and reload if running.
+
+    Called after ANY DNS settings/rule change so the operator sees it
+    take effect immediately — same contract the routing-rules endpoints
+    have always had. Before this, DNS changes only landed on the next
+    xray reload (Start/Restart, NodeCircle rotation, backend restart),
+    which made DNS Rules look like they "didn't work" until something
+    else happened to reload xray. No-op when xray isn't running — the
+    next /system/start builds the fresh config from the saved settings.
+    """
+    try:
+        from app.core.xray import xray_manager
+        if not xray_manager.is_running:
+            return
+        from app.api.system import _regenerate_and_write
+        await _regenerate_and_write(session)
+        await xray_manager.reload()
+    except Exception as exc:
+        logger.warning("Auto-reload after DNS change failed: %s", exc)
 
 
 # ── DNS Settings ──────────────────────────────────────────────────────────────
@@ -96,6 +122,26 @@ async def update_dns_settings(
         if field in _DNS_SETTING_KEYS:
             await _upsert_setting(session, field, str(val).lower() if isinstance(val, bool) else str(val))
     await session.commit()
+
+    # Host fallback DNS is the only DNS-page setting that touches the
+    # HOST network stack (not the xray config). Apply it additively to
+    # the host resolver — non-destructive, keeps DHCP/router DNS first.
+    if "host_fallback_dns" in updates:
+        try:
+            from app.core.network_apply import apply_host_fallback_dns
+            raw = str(updates["host_fallback_dns"] or "")
+            servers = [s.strip() for s in raw.split(",") if s.strip()]
+            apply_host_fallback_dns(servers)
+        except Exception as exc:
+            logger.warning("host_fallback_dns apply failed: %s", exc)
+
+    # Every other DNS setting (mode, upstreams, queryStrategy, fakedns,
+    # bypass toggles, sniffing) lives in the xray config — reload so the
+    # change applies now instead of on the next restart.
+    xray_keys = set(updates) - {"host_fallback_dns"}
+    if xray_keys:
+        await _auto_reload_xray(session)
+
     m = await _get_settings_map(session)
     return _settings_map_to_dns(m)
 
@@ -117,6 +163,7 @@ async def create_dns_rule(
     session.add(rule)
     await session.commit()
     await session.refresh(rule)
+    await _auto_reload_xray(session)
     return rule
 
 
@@ -135,6 +182,7 @@ async def update_dns_rule(
     session.add(rule)
     await session.commit()
     await session.refresh(rule)
+    await _auto_reload_xray(session)
     return rule
 
 
@@ -148,6 +196,7 @@ async def delete_dns_rule(
         raise HTTPException(status_code=404, detail="DNS rule not found")
     await session.delete(rule)
     await session.commit()
+    await _auto_reload_xray(session)
 
 
 @router.post("/rules/reorder", status_code=204)
@@ -163,6 +212,7 @@ async def reorder_dns_rules(
             rule.order = idx * 10
             session.add(rule)
     await session.commit()
+    await _auto_reload_xray(session)
 
 
 # ── DNS Query Log ─────────────────────────────────────────────────────────────

@@ -534,6 +534,10 @@ export interface DnsSettings {
   bypass_cn_dns: boolean
   bypass_ru_dns: boolean
   dns_disable_fallback: boolean
+  /** UseIP | UseIPv4 | UseIPv6 — UseIPv4 closes the IPv6 bypass leak. */
+  dns_query_strategy?: string
+  /** Comma-separated IPv4 fallback resolvers for the box's OWN DNS. */
+  host_fallback_dns?: string
 }
 
 export interface DnsTestResult {

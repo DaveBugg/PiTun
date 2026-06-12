@@ -10,6 +10,15 @@ import {
 import { networkApi, type NetworkBackup, type NetworkProbeResult } from '@/api/client'
 import { useT } from '@/hooks/useT'
 import { useConfirm } from '@/components/ConfirmModal'
+import { HostDnsHelp } from '@/components/HostDnsHelp'
+
+// This host-DNS apply path is IPv4-only on the backend (it sets
+// `ipv4.dns` / writes resolv.conf nameservers). The host's resolv.conf
+// often also carries an IPv6 nameserver handed out by the router via
+// RA (e.g. fdc4:...::1) — that's managed by IPv6 RA, not by this form,
+// so we filter it out of the editable list rather than flag it red and
+// block Apply on something the operator can't fix here.
+const isIpv4 = (s: string) => /^(?:\d{1,3}\.){3}\d{1,3}$/.test(s.trim())
 
 /**
  * Host-level network state + apply form (since v1.3.3).
@@ -237,13 +246,18 @@ function ApplyForm({
   const [applyOk, setApplyOk] = useState<string | null>(null)
   const [applyErr, setApplyErr] = useState<string | null>(null)
 
+  // IPv4 nameservers from current state — the editable list is IPv4-only
+  // (see isIpv4 note). Any router-RA IPv6 nameserver is excluded here so
+  // it neither shows red nor blocks Apply.
+  const currentDnsV4 = currentDns.filter(isIpv4)
+
   // Initial fill from current state — but only ONCE per current-state
   // change. If the user has started typing, don't clobber.
   useEffect(() => {
     if (gateway === '' && currentGateway) setGateway(currentGateway)
-    if (dnsList.length === 0 && currentDns.length > 0) setDnsList([...currentDns])
+    if (dnsList.length === 0 && currentDnsV4.length > 0) setDnsList([...currentDnsV4])
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentGateway, currentDns.join(',')])
+  }, [currentGateway, currentDnsV4.join(',')])
 
   const probeMut = useMutation({
     mutationFn: (ip: string) => networkApi.probe(ip),
@@ -268,19 +282,24 @@ function ApplyForm({
   })
 
   const gatewayChanged = gateway && gateway !== currentGateway
-  const dnsChanged = JSON.stringify(dnsList) !== JSON.stringify(currentDns)
+  // Compare against the IPv4-filtered current list so the form isn't
+  // marked "changed" just because we dropped a router-RA IPv6 entry.
+  const dnsChanged = JSON.stringify(dnsList) !== JSON.stringify(currentDnsV4)
   const hasChanges = Boolean(gatewayChanged || dnsChanged)
 
   // IPv4 syntactic check — backend re-validates, this is just UX.
-  const validIp = (s: string) => /^(?:\d{1,3}\.){3}\d{1,3}$/.test(s)
+  const validIp = isIpv4
   const gatewayValid = !gateway || validIp(gateway)
   const dnsAllValid = dnsList.every(validIp)
 
   return (
     <div className="rounded-lg border border-gray-800 bg-gray-900/40 p-3 space-y-3">
-      <div className="flex items-center justify-between">
-        <div className="text-[11px] uppercase tracking-wider text-gray-500">
-          {t('Change gateway / DNS', 'Изменить gateway / DNS')}
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex items-center gap-2">
+          <span className="text-[11px] uppercase tracking-wider text-gray-500">
+            {t('Change gateway / DNS', 'Изменить gateway / DNS')}
+          </span>
+          <HostDnsHelp highlight="network" />
         </div>
         {disabled && (
           <span className="text-[10px] text-amber-300">{disabledReason}</span>
@@ -345,6 +364,12 @@ function ApplyForm({
         <label className="text-[11px] text-gray-400 font-medium">
           {t('DNS servers', 'DNS-серверы')}
         </label>
+        <p className="text-[10px] text-gray-600 -mt-0.5">
+          {t(
+            "The box's PRIMARY DNS — tried first for its OWN lookups (subscriptions, geo, panels, health checks). Add extra fallbacks on the DNS page.",
+            'ОСНОВНОЙ DNS машины — пробуется первым для её СОБСТВЕННЫХ запросов (подписки, гео, панели, health-проверки). Доп. fallback добавляй на странице DNS.',
+          )}
+        </p>
         {dnsList.map((dns, i) => (
           <div key={i} className="flex gap-1.5">
             <input

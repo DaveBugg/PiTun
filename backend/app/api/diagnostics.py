@@ -5,7 +5,10 @@ import re
 import shlex
 from typing import Any, Dict, List
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Depends, Query
+
+from app.database import get_session
+from app.schemas import RouteExplainRequest
 
 router = APIRouter(prefix="/diagnostics", tags=["diagnostics"])
 logger = logging.getLogger(__name__)
@@ -522,3 +525,276 @@ async def docker_logs(
     """Get backend logs."""
     log_lines = _get_container_logs(lines=lines, filter_level=level)
     return {"lines": log_lines}
+
+
+# ── Route Explainer ───────────────────────────────────────────────────────────
+
+@router.post("/explain")
+async def explain_route(body: RouteExplainRequest, session=Depends(get_session)):
+    """Explain where traffic to a target would go: which DNS rule + server
+    resolves it, which routing rule matches + the resulting outbound, and
+    (optionally) whether it actually connects.
+
+    Layer A (python matcher) is always run. When it can't decide because a
+    geosite/geoip rule blocks certainty AND `verify_routing` is set, layer
+    B (live xray probe) supplies the ground-truth outbound.
+    """
+    import ipaddress
+    import time as _time
+    from sqlmodel import select
+    from app.models import (
+        RoutingRule, DNSRule, Node, Device, RoutingSet,
+        Settings as DBSettings,
+    )
+    from app.core import route_explain as rex
+    from app.schemas import (
+        RouteExplainResult, RouteExplainDns, RouteExplainRouting,
+        RouteExplainReachability,
+    )
+
+    target = body.target.strip().rstrip(".")
+    port = body.port
+    protocol = (body.protocol or "tcp").lower()
+
+    # is the target a literal IP?
+    is_ip = False
+    try:
+        ipaddress.ip_address(target)
+        is_ip = True
+    except ValueError:
+        is_ip = False
+
+    # Load DB state
+    settings_map = {r.key: r.value for r in (await session.exec(select(DBSettings))).all()}
+    routing_rules = list((await session.exec(select(RoutingRule))).all())
+    dns_rules = list((await session.exec(select(DNSRule))).all())
+    nodes = list((await session.exec(select(Node))).all())
+    node_labels = {n.id: n.name for n in nodes}
+    mode = settings_map.get("mode", "rules")
+    bypass_private = settings_map.get("bypass_private", "true").lower() == "true"
+    active_node_id = None
+    aid = settings_map.get("active_node_id", "")
+    if aid:
+        try:
+            active_node_id = int(aid)
+        except ValueError:
+            active_node_id = None
+
+    # Optional per-device (routing set) context
+    set_context = None
+    if body.from_mac:
+        mac = body.from_mac.strip().lower()
+        dev = (await session.exec(
+            select(Device).where(Device.mac == mac)
+        )).first()
+        if dev and dev.routing_set_id:
+            rs = await session.get(RoutingSet, dev.routing_set_id)
+            if rs:
+                member_ids = [
+                    r.id for r in routing_rules
+                    if getattr(r, "routing_set_id", None) == rs.id
+                ]
+                set_context = (rs, member_ids)
+
+    # ── DNS stage ──
+    dns_x = rex.explain_dns(
+        target, is_ip=is_ip, dns_rules=dns_rules, settings_map=settings_map,
+    )
+    resolved_ips: list[str] = []
+    resolve_error = None
+    if not is_ip:
+        try:
+            from app.api.dns import _resolve_plain, _resolve_doh
+            srv = dns_x.server or settings_map.get("dns_upstream", "8.8.8.8")
+            if (dns_x.server_type or "").lower() == "doh" or str(srv).startswith("http"):
+                doh = srv if str(srv).startswith("http") else f"https://{srv}/dns-query"
+                ips, _lat = await _resolve_doh(target, doh)
+            else:
+                # dot maps to plaintext tcp/53 in PiTun — _resolve_plain
+                # uses UDP/53 which returns the same records for an
+                # explain (we only need the address, not the transport).
+                ips, _lat = await _resolve_plain(target, str(srv) if srv else None)
+            resolved_ips = ips
+        except Exception as exc:  # noqa: BLE001
+            resolve_error = str(exc)
+    primary_ip = (target if is_ip else (resolved_ips[0] if resolved_ips else None))
+
+    # ── Routing stage (A: python) ──
+    route_x = rex.explain_routing(
+        target=target, is_ip=is_ip, resolved_ip=primary_ip,
+        port=port, protocol=protocol, mode=mode,
+        bypass_private=bypass_private, rules=routing_rules,
+        active_node_id=active_node_id, node_labels=node_labels,
+        set_context=set_context,
+    )
+    method = "python_matcher"
+    probe_detail = None
+
+    # ── Routing stage (B: xray probe) when uncertain + requested ──
+    if body.verify_routing and not route_x.certain and not is_ip:
+        try:
+            from app.core.config_gen import generate_config, collect_routing_set_context
+            from app.core.route_explain_probe import xray_probe_routing
+            from app.models import BalancerGroup
+            active_node = await session.get(Node, active_node_id) if active_node_id else None
+            all_nodes = [n for n in nodes if n.enabled]
+            balancers = list((await session.exec(select(BalancerGroup))).all())
+            rsets, dmap = await collect_routing_set_context(session)
+            cfg = generate_config(
+                active_node, all_nodes,
+                [r for r in routing_rules if r.enabled],
+                mode, settings_map, dns_rules, balancers,
+                routing_sets=rsets, device_set_macs=dmap,
+            )
+            probe = await xray_probe_routing(
+                base_config=cfg, target=target, port=port, protocol=protocol,
+            )
+            probe_detail = probe.get("detail")
+            if probe.get("ok") and probe.get("outbound"):
+                ob = probe["outbound"]
+                route_x.outbound = ob
+                route_x.outbound_label = rex._label_for(ob, node_labels)
+                route_x.certain = True
+                method = "xray_probe"
+                # xray's access log exposes only the chosen OUTBOUND, never
+                # which rule matched. Layer A's matched_rule was merely the
+                # geosite/geoip CANDIDATE that triggered this probe — it did
+                # NOT necessarily match. Re-derive the action from the real
+                # outbound and drop the stale candidate so the UI can't show
+                # the contradiction "action: direct / outbound: node-2".
+                blocker = route_x.blocking_rule
+                route_x.action = rex.action_from_outbound(ob)
+                route_x.matched_rule_id = None
+                route_x.matched_rule_name = None
+                route_x.matched_rule_type = None
+                route_x.matched_value = None
+                if blocker:
+                    route_x.notes.append(
+                        f"Layer A couldn't decide because rule {blocker} needs "
+                        "the geosite/geoip .dat files. xray evaluated the full "
+                        f"ruleset live and routed the target to {ob} "
+                        "(its access log exposes only the chosen outbound, not "
+                        "which rule matched)."
+                    )
+                route_x.notes.append("Ground-truth decision from live xray probe.")
+        except Exception as exc:  # noqa: BLE001
+            probe_detail = f"probe failed: {exc}"
+
+    # ── Reachability stage ──
+    reach = RouteExplainReachability(tested=False)
+    if body.test_reachability and primary_ip:
+        reach.tested = True
+        ob = route_x.outbound or "direct"
+        t0 = _time.monotonic()
+        if ob == "block":
+            reach.ok = False
+            reach.via = "block"
+            reach.detail = "Routing action is BLOCK — connection would be dropped."
+        elif ob == "direct":
+            code = await _http_probe_direct(primary_ip, target, port=port, timeout=6.0)
+            reach.ok = code is not None
+            reach.http_code = code
+            reach.via = "direct"
+            reach.latency_ms = int((_time.monotonic() - t0) * 1000)
+            reach.detail = (f"HTTP {code} direct (SO_MARK bypass)"
+                            if code is not None else "no response (direct)")
+        else:
+            # proxy / node-N → go through the live SOCKS inbound so it
+            # follows the SAME routing rules the box runs.
+            code, detail = await _probe_via_socks(settings_map, target, port)
+            reach.ok = code is not None
+            reach.http_code = code
+            reach.via = ob
+            reach.latency_ms = int((_time.monotonic() - t0) * 1000)
+            reach.detail = detail
+
+    return RouteExplainResult(
+        target=target, port=port, protocol=protocol, is_ip=is_ip,
+        dns=RouteExplainDns(
+            is_ip=dns_x.is_ip,
+            matched_rule_id=dns_x.matched_rule_id,
+            matched_rule_name=dns_x.matched_rule_name,
+            matched_pattern=dns_x.matched_pattern,
+            server=dns_x.server,
+            server_type=dns_x.server_type,
+            uses_global_upstream=dns_x.uses_global_upstream,
+            query_strategy=dns_x.query_strategy,
+            geosite_uncertain=dns_x.geosite_uncertain,
+            resolved_ips=resolved_ips,
+            resolve_error=resolve_error,
+            note=dns_x.note,
+        ),
+        routing=RouteExplainRouting(
+            matched_rule_id=route_x.matched_rule_id,
+            matched_rule_name=route_x.matched_rule_name,
+            matched_rule_type=route_x.matched_rule_type,
+            matched_value=route_x.matched_value,
+            action=route_x.action,
+            outbound=route_x.outbound,
+            outbound_label=route_x.outbound_label,
+            certain=route_x.certain,
+            blocking_rule=route_x.blocking_rule,
+            rules_evaluated=route_x.rules_evaluated,
+            set_id=route_x.set_id,
+            set_name=route_x.set_name,
+            method=method,
+            probe_detail=probe_detail,
+            notes=route_x.notes,
+        ),
+        reachability=reach,
+    )
+
+
+async def _probe_via_socks(settings_map: dict, target: str, port: int) -> tuple:
+    """Connect to target:port through the live xray SOCKS inbound (1080)
+    so reachability follows the same routing the box runs. Returns
+    (http_code|None, detail). Uses LAN proxy creds if auth is on."""
+    socks_port = int(settings_map.get("socks_port", "1080"))
+    user = settings_map.get("lan_proxy_auth_user", "")
+    pw = settings_map.get("lan_proxy_auth_pass", "")
+    auth_on = settings_map.get("lan_proxy_auth_enabled", "false").lower() == "true"
+    try:
+        reader, writer = await asyncio.wait_for(
+            asyncio.open_connection("127.0.0.1", socks_port), timeout=4
+        )
+    except Exception as exc:  # noqa: BLE001
+        return None, f"cannot reach local SOCKS inbound: {exc}"
+    try:
+        if auth_on and user:
+            writer.write(b"\x05\x01\x02")  # offer user/pass
+            await writer.drain()
+            ver = await asyncio.wait_for(reader.readexactly(2), timeout=4)
+            if ver[1] == 0x02:
+                u = user.encode()[:255]; p = pw.encode()[:255]
+                writer.write(b"\x01" + bytes([len(u)]) + u + bytes([len(p)]) + p)
+                await writer.drain()
+                st = await asyncio.wait_for(reader.readexactly(2), timeout=4)
+                if st[1] != 0x00:
+                    return None, "SOCKS auth rejected"
+        else:
+            writer.write(b"\x05\x01\x00")
+            await writer.drain()
+            await asyncio.wait_for(reader.readexactly(2), timeout=4)
+        host = target.encode()[:255]
+        writer.write(b"\x05\x01\x00\x03" + bytes([len(host)]) + host + port.to_bytes(2, "big"))
+        await writer.drain()
+        rep = await asyncio.wait_for(reader.readexactly(10), timeout=6)
+        if rep[1] != 0x00:
+            return None, f"SOCKS connect failed (code {rep[1]})"
+        # connected through the proxy — send a tiny HTTP probe for a status
+        writer.write(f"GET / HTTP/1.0\r\nHost: {target}\r\nConnection: close\r\n\r\n".encode())
+        await writer.drain()
+        data = await asyncio.wait_for(reader.read(256), timeout=6)
+        first = data.split(b"\r\n", 1)[0]
+        parts = first.split(b" ", 2)
+        if len(parts) >= 2 and parts[1].isdigit():
+            return int(parts[1]), f"HTTP {parts[1].decode()} via proxy"
+        return 0, "connected via proxy (no HTTP status parsed)"
+    except Exception as exc:  # noqa: BLE001
+        return None, f"proxy probe error: {exc}"
+    finally:
+        try:
+            writer.close()
+            await asyncio.wait_for(writer.wait_closed(), timeout=2)
+        except Exception:
+            pass

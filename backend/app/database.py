@@ -159,6 +159,11 @@ async def init_default_settings():
         "fakedns_pool": "198.18.0.0/15",
         "fakedns_pool_size": "65535",
         "dns_sniffing": "true",
+        # UseIPv4 by default — closes the IPv6-bypass leak on the IPv4-only
+        # TPROXY pipeline (AAAA answers would route around PiTun via the
+        # client's router-provided IPv6 default route). See config_gen
+        # _build_dns_section for the full rationale.
+        "dns_query_strategy": "UseIPv4",
         "bypass_cn_dns": "false",
         "bypass_ru_dns": "false",
         "bypass_private": "true",
@@ -187,6 +192,11 @@ async def init_default_settings():
         "gateway_ip": settings.gateway_ip,
         "lan_cidr": settings.lan_cidr,
         "router_ip": "",
+        # Host fallback DNS — additive resolvers for the BOX's own
+        # resolution (subscriptions, geo, x-ui panels, healthchecks).
+        # Comma-separated IPv4. Applied after the DHCP/router DNS so a
+        # router DNS outage doesn't blind the box. Managed from DNS page.
+        "host_fallback_dns": "1.1.1.1,8.8.8.8",
         # Health check
         "health_interval": str(settings.health_interval),
         "health_timeout": str(settings.health_timeout),

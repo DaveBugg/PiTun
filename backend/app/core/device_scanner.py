@@ -144,6 +144,16 @@ async def scan_and_update_devices() -> Dict[str, int]:
                     routing_policy="default",
                 )
                 session.add(dev)
+                # Register the freshly-created row in `existing` so a
+                # SECOND occurrence of the same MAC in this same scan
+                # batch (device answering on two IPs, duplicate ARP
+                # entry, dual-homed NIC) updates this in-memory object
+                # instead of INSERTing a second row with the same MAC.
+                # Without this the commit hit `UNIQUE constraint failed:
+                # device.mac` and the whole scan was lost — and because
+                # the device never persisted, it stayed "new" forever,
+                # failing every 60s scan. Live-caught on the LAN.
+                existing[mac] = dev
                 discovered += 1
 
         for mac, dev in existing.items():

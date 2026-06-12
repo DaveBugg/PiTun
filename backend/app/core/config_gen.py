@@ -494,6 +494,26 @@ def _build_dns_section(
     bypass_ru_dns = settings_map.get("bypass_ru_dns", "false").lower() == "true"
     disable_fallback = settings_map.get("dns_disable_fallback", "true").lower() == "true"
 
+    # queryStrategy — defaults to UseIPv4 to prevent the IPv6 leak.
+    #
+    # PiTun's TPROXY pipeline is IPv4-only (nftables has no ip6 TPROXY
+    # rules). If the DNS engine hands a LAN client an AAAA record, the
+    # client connects over IPv6 — and that traffic uses the client's
+    # OWN IPv6 default route (handed out by the LAN router via RA/
+    # DHCPv6), which goes straight to the internet BYPASSING PiTun
+    # entirely. The proxy/routing rules never see it. Returning only
+    # A records forces clients onto IPv4, which IS intercepted by
+    # TPROXY. This is the standard anti-leak technique for IPv4-only
+    # transparent proxies.
+    #
+    # Overridable for the rare operator who genuinely handles IPv6
+    # elsewhere: set `dns_query_strategy` = UseIP | UseIPv4 | UseIPv6.
+    # Validated against xray's accepted values; anything else falls
+    # back to the safe UseIPv4 default.
+    query_strategy = settings_map.get("dns_query_strategy", "UseIPv4").strip()
+    if query_strategy not in ("UseIP", "UseIPv4", "UseIPv6"):
+        query_strategy = "UseIPv4"
+
     # Format primary upstream based on mode
     if dns_mode == "doh":
         primary_addr = f"https://{dns_upstream}/dns-query" if not dns_upstream.startswith("http") else dns_upstream
@@ -636,6 +656,9 @@ def _build_dns_section(
         "hosts": dns_hosts,
         "servers": pinned_servers,
         "disableFallback": disable_fallback,
+        # See query_strategy note above — UseIPv4 by default closes the
+        # IPv6 bypass leak on this IPv4-only TPROXY box.
+        "queryStrategy": query_strategy,
     }
 
     # FakeDNS pool config

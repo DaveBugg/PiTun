@@ -464,6 +464,66 @@ export const diagnosticsApi = {
 
   logs: (lines?: number, level?: string) =>
     http.get<{ lines: string[] }>('/diagnostics/logs', { params: { lines: lines || 100, level: level || '' } }).then(r => r.data),
+
+  explain: (body: RouteExplainRequest) =>
+    http.post<RouteExplainResult>('/diagnostics/explain', body).then(r => r.data),
+}
+
+// ── Route Explainer ───────────────────────────────────────────────────────────
+
+export interface RouteExplainRequest {
+  target: string
+  port?: number
+  protocol?: string
+  from_mac?: string | null
+  verify_routing?: boolean
+  test_reachability?: boolean
+}
+
+export interface RouteExplainResult {
+  target: string
+  port: number
+  protocol: string
+  is_ip: boolean
+  dns: {
+    is_ip: boolean
+    matched_rule_id: number | null
+    matched_rule_name: string | null
+    matched_pattern: string | null
+    server: string | null
+    server_type: string | null
+    uses_global_upstream: boolean
+    query_strategy: string
+    geosite_uncertain: boolean
+    resolved_ips: string[]
+    resolve_error: string | null
+    note: string | null
+  }
+  routing: {
+    matched_rule_id: number | null
+    matched_rule_name: string | null
+    matched_rule_type: string | null
+    matched_value: string | null
+    action: string | null
+    outbound: string | null
+    outbound_label: string | null
+    certain: boolean
+    blocking_rule: string | null
+    rules_evaluated: number
+    set_id: number | null
+    set_name: string | null
+    method: string
+    probe_detail: string | null
+    notes: string[]
+  }
+  reachability: {
+    tested: boolean
+    ok: boolean | null
+    http_code: number | null
+    latency_ms: number | null
+    via: string | null
+    detail: string | null
+  }
 }
 
 // ── Recent Events ───────────────────────────────────────────────────────────

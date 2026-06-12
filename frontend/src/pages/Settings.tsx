@@ -366,7 +366,7 @@ export function Settings() {
           {toggle('auto_restart_xray', 'Auto Restart', t('Automatically restart xray on crash', 'Автоматически перезапускать xray при падении'))}
           {toggle('block_quic', 'Block QUIC', t('Block UDP/443 for better TPROXY compatibility', 'Блокировать UDP/443 для совместимости с TPROXY'))}
           {toggle('bypass_private', 'Bypass Private IPs', t('Skip proxying for 10.x, 192.168.x, etc.', 'Не проксировать трафик 10.x, 192.168.x и т.д.'), t('LAN traffic (including access to this device) will go through VPN.\nYou may lose access to the web panel!\n\nDisable?', 'LAN-трафик (включая доступ к панели) пойдёт через VPN.\nВы можете потерять доступ к веб-панели!\n\nОтключить?'))}
-          {toggle('disable_ipv6', 'Disable IPv6', t('Disable IPv6 on system level (sysctl)', 'Отключить IPv6 на уровне системы (sysctl)'))}
+          {toggle('disable_ipv6', 'Disable IPv6 (host only)', t('Disables IPv6 on THIS box only (sysctl). Does NOT stop LAN clients from using IPv6 — they get their IPv6 route from the router directly. To prevent the IPv6 bypass leak for clients, the DNS engine already returns IPv4-only answers (queryStrategy=UseIPv4).', 'Отключает IPv6 только на ЭТОЙ машине (sysctl). НЕ мешает LAN-клиентам использовать IPv6 — они получают IPv6-маршрут от роутера напрямую. Чтобы закрыть IPv6-утечку у клиентов, DNS-движок уже отдаёт только IPv4-ответы (queryStrategy=UseIPv4).'))}
           {toggle('dns_over_tcp', 'DNS over TCP', t('Use TCP for DNS queries (fixes networks where UDP:53 is blocked)', 'Использовать TCP для DNS (исправляет сети где UDP:53 заблокирован)'))}
         </div>
       ))}

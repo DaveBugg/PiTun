@@ -1,6 +1,8 @@
+import * as React from 'react'
 import { useState } from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useMutation } from '@tanstack/react-query'
 import { diagnosticsApi } from '@/api/client'
+import type { RouteExplainRequest } from '@/api/client'
 import {
   Activity,
   Wifi,
@@ -19,6 +21,7 @@ import {
   AlertTriangle,
   Router,
   Radio,
+  Search,
 } from 'lucide-react'
 import { clsx } from 'clsx'
 
@@ -465,6 +468,190 @@ function DockerLogs() {
   )
 }
 
+// ── Route Explainer ─────────────────────────────────────────────────────────
+
+function RouteExplainer() {
+  const [target, setTarget] = useState('')
+  const [port, setPort] = useState(443)
+  const [protocol, setProtocol] = useState<'tcp' | 'udp'>('tcp')
+  const [fromMac, setFromMac] = useState('')
+  const [verify, setVerify] = useState(true)
+  const [reach, setReach] = useState(false)
+
+  const mut = useMutation({
+    mutationFn: (body: RouteExplainRequest) => diagnosticsApi.explain(body),
+  })
+
+  const run = () => {
+    const t = target.trim()
+    if (!t) return
+    mut.mutate({
+      target: t, port, protocol,
+      from_mac: fromMac.trim() || null,
+      verify_routing: verify,
+      test_reachability: reach,
+    })
+  }
+
+  const r = mut.data
+  const stage = (icon: typeof Search, label: string, children: React.ReactNode, tone?: 'ok' | 'warn' | 'bad') => (
+    <div className={clsx(
+      'rounded-lg border p-3',
+      tone === 'ok' ? 'border-green-900/50 bg-green-950/20'
+        : tone === 'bad' ? 'border-red-900/50 bg-red-950/20'
+        : tone === 'warn' ? 'border-amber-900/50 bg-amber-950/20'
+        : 'border-gray-800 bg-gray-900/40',
+    )}>
+      <div className="flex items-center gap-2 text-xs font-semibold text-gray-300 mb-2">
+        {React.createElement(icon, { className: 'h-3.5 w-3.5' })}
+        {label}
+      </div>
+      <div className="text-xs text-gray-400 space-y-1">{children}</div>
+    </div>
+  )
+  const kv = (k: string, v: React.ReactNode) => (
+    <div className="flex gap-2"><span className="text-gray-500 min-w-28">{k}</span><span className="text-gray-300 font-mono break-all">{v}</span></div>
+  )
+
+  const actionColor = (a?: string | null) =>
+    a === 'block' ? 'text-red-400' : a === 'direct' ? 'text-green-400'
+      : a === 'proxy' || a?.startsWith('node:') ? 'text-brand-400' : 'text-gray-300'
+
+  return (
+    <div className="rounded-xl border border-gray-800 bg-gray-900/30 p-4">
+      <div className="flex items-center gap-2 mb-1">
+        <Search className="h-4 w-4 text-brand-400" />
+        <h2 className="text-sm font-semibold text-gray-100">Route Explainer</h2>
+      </div>
+      <p className="text-xs text-gray-500 mb-3">
+        Where does traffic to a target go? Shows the matched DNS rule + server, the matched
+        routing rule + outbound, and (optionally) whether it actually connects.
+      </p>
+
+      <div className="grid grid-cols-1 sm:grid-cols-6 gap-2 mb-2">
+        <input
+          value={target}
+          onChange={(e) => setTarget(e.target.value)}
+          onKeyDown={(e) => { if (e.key === 'Enter') run() }}
+          placeholder="domain or IP — e.g. youtube.com"
+          className="sm:col-span-3 rounded bg-gray-800 border border-gray-700 px-3 py-1.5 text-sm text-gray-100 focus:border-brand-500 focus:outline-none"
+        />
+        <input
+          type="number" value={port}
+          onChange={(e) => setPort(Number(e.target.value) || 443)}
+          placeholder="port"
+          className="rounded bg-gray-800 border border-gray-700 px-3 py-1.5 text-sm text-gray-100 focus:border-brand-500 focus:outline-none"
+        />
+        <select
+          value={protocol} onChange={(e) => setProtocol(e.target.value as 'tcp' | 'udp')}
+          className="rounded bg-gray-800 border border-gray-700 px-2 py-1.5 text-sm text-gray-100 focus:border-brand-500 focus:outline-none"
+        >
+          <option value="tcp">TCP</option>
+          <option value="udp">UDP</option>
+        </select>
+        <button
+          onClick={run} disabled={mut.isPending || !target.trim()}
+          className="rounded bg-brand-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-brand-500 disabled:opacity-50 flex items-center justify-center gap-1.5"
+        >
+          {mut.isPending ? <RefreshCw className="h-3.5 w-3.5 animate-spin" /> : <Search className="h-3.5 w-3.5" />}
+          Explain
+        </button>
+      </div>
+
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 mb-3 text-xs">
+        <input
+          value={fromMac} onChange={(e) => setFromMac(e.target.value)}
+          placeholder="from device MAC (optional — for routing set)"
+          className="flex-1 min-w-48 rounded bg-gray-800 border border-gray-700 px-2 py-1 text-xs text-gray-300 focus:border-brand-500 focus:outline-none font-mono"
+        />
+        <label className="flex items-center gap-1.5 cursor-pointer text-gray-400">
+          <input type="checkbox" checked={verify} onChange={(e) => setVerify(e.target.checked)}
+            className="rounded border-gray-600 bg-gray-700" />
+          Verify with live xray (exact geosite/geoip)
+        </label>
+        <label className="flex items-center gap-1.5 cursor-pointer text-gray-400">
+          <input type="checkbox" checked={reach} onChange={(e) => setReach(e.target.checked)}
+            className="rounded border-gray-600 bg-gray-700" />
+          Test reachability (connect)
+        </label>
+      </div>
+
+      {mut.isError && <ErrorBox message="Explain request failed — check backend logs." />}
+
+      {r && (
+        <div className="space-y-2">
+          {/* DNS stage */}
+          {stage(Globe, 'DNS', r.dns.is_ip ? (
+            <div className="text-gray-400">Target is a literal IP — no DNS resolution needed.</div>
+          ) : (
+            <>
+              {r.dns.matched_rule_name
+                ? kv('matched rule', <>{r.dns.matched_rule_name} <span className="text-gray-500">({r.dns.matched_pattern})</span></>)
+                : kv('matched rule', <span className="text-gray-500">none — using global upstream</span>)}
+              {kv('server', <>{r.dns.server} <span className="text-gray-500">[{r.dns.server_type}{r.dns.server_type === 'dot' ? ' = plaintext TCP/53' : ''}]</span></>)}
+              {kv('resolved', r.dns.resolved_ips.length
+                ? r.dns.resolved_ips.join(', ')
+                : <span className="text-amber-400">{r.dns.resolve_error || 'no answer'}</span>)}
+              {kv('IP strategy', r.dns.query_strategy)}
+              {r.dns.geosite_uncertain && (
+                <div className="text-amber-400 mt-1">⚠ A geosite DNS rule exists and might also match — global upstream shown.</div>
+              )}
+            </>
+          ), r.dns.resolved_ips.length || r.dns.is_ip ? 'ok' : 'warn')}
+
+          {/* Routing stage */}
+          {stage(Activity, 'Routing', (
+            <>
+              {r.routing.set_name && kv('device set', <span className="text-purple-300">{r.routing.set_name}</span>)}
+              {kv('matched rule', r.routing.matched_rule_name
+                ? <>{r.routing.matched_rule_name}
+                    {!r.routing.certain && r.routing.method !== 'xray_probe' &&
+                      <span className="text-amber-400"> (candidate — needs xray)</span>}
+                  </>
+                : r.routing.method === 'xray_probe'
+                  ? <span className="text-gray-500">resolved by xray — exact rule not in access log</span>
+                  : <span className="text-gray-500">none</span>)}
+              {r.routing.matched_rule_type && kv('rule type', <>{r.routing.matched_rule_type} = <span className="text-gray-400">{r.routing.matched_value}</span></>)}
+              {kv('action', <span className={actionColor(r.routing.action)}>{r.routing.action}</span>)}
+              {kv('outbound', <>
+                <span className={actionColor(r.routing.action)}>{r.routing.outbound}</span>
+                {r.routing.outbound_label && <span className="text-gray-500"> ({r.routing.outbound_label})</span>}
+              </>)}
+              {kv('decided by', r.routing.method === 'xray_probe'
+                ? <span className="text-green-400">live xray probe (ground truth)</span>
+                : <span>rule matcher</span>)}
+              {kv('rules walked', r.routing.rules_evaluated)}
+              {!r.routing.certain && (
+                <div className="text-amber-400 mt-1">
+                  ⚠ Uncertain — {r.routing.blocking_rule} is a geosite/geoip category.
+                  {!verify && ' Enable "Verify with live xray" for the exact decision.'}
+                </div>
+              )}
+              {r.routing.probe_detail && <div className="text-gray-600 mt-1">{r.routing.probe_detail}</div>}
+            </>
+          ), r.routing.action === 'block' ? 'bad' : r.routing.certain ? 'ok' : 'warn')}
+
+          {/* Reachability stage */}
+          {r.reachability.tested && stage(
+            r.reachability.ok ? CheckCircle2 : XCircle,
+            'Reachability',
+            <>
+              {kv('result', r.reachability.ok
+                ? <span className="text-green-400">connected</span>
+                : <span className="text-red-400">failed</span>)}
+              {r.reachability.http_code != null && r.reachability.http_code > 0 && kv('http', r.reachability.http_code)}
+              {kv('via', r.reachability.via)}
+              {r.reachability.latency_ms != null && kv('latency', `${r.reachability.latency_ms} ms`)}
+              {r.reachability.detail && kv('detail', r.reachability.detail)}
+            </>,
+            r.reachability.ok ? 'ok' : 'bad',
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
 // ── Main Page ───────────────────────────────────────────────────────────────
 
 export function Diagnostics() {
@@ -478,6 +665,7 @@ export function Diagnostics() {
       </div>
 
       <HealthChecks />
+      <RouteExplainer />
       <Resources />
       <NetworkInfo />
       <DockerLogs />

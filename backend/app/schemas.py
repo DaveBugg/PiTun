@@ -1189,6 +1189,11 @@ class DNSSettingsRead(BaseModel):
     bypass_cn_dns: bool = False
     bypass_ru_dns: bool = False
     dns_disable_fallback: bool = True
+    # UseIP | UseIPv4 | UseIPv6 — UseIPv4 default closes the IPv6 leak.
+    dns_query_strategy: str = "UseIPv4"
+    # Comma-separated IPv4 fallback resolvers for the BOX's own DNS
+    # (subscriptions/geo/panels/healthchecks). Empty = router-only.
+    host_fallback_dns: str = ""
 
 
 class DNSSettingsUpdate(BaseModel):
@@ -1204,6 +1209,8 @@ class DNSSettingsUpdate(BaseModel):
     bypass_cn_dns: Optional[bool] = None
     bypass_ru_dns: Optional[bool] = None
     dns_disable_fallback: Optional[bool] = None
+    dns_query_strategy: Optional[str] = None
+    host_fallback_dns: Optional[str] = None
 
 
 class DNSTestRequest(BaseModel):
@@ -1216,6 +1223,69 @@ class DNSTestResult(BaseModel):
     latency_ms: int
     server_used: str
     error: Optional[str] = None
+
+
+# ─── Route Explainer ──────────────────────────────────────────────────────────
+
+class RouteExplainRequest(BaseModel):
+    target: str                       # domain or IP
+    port: int = 443
+    protocol: str = "tcp"             # tcp | udp
+    from_mac: Optional[str] = None    # optional — evaluate as this device (routing set)
+    verify_routing: bool = False      # B: run live-xray probe for geosite/geoip ground truth
+    test_reachability: bool = False   # actually connect through the decided path
+
+
+class RouteExplainDns(BaseModel):
+    is_ip: bool
+    matched_rule_id: Optional[int] = None
+    matched_rule_name: Optional[str] = None
+    matched_pattern: Optional[str] = None
+    server: Optional[str] = None
+    server_type: Optional[str] = None
+    uses_global_upstream: bool = False
+    query_strategy: str = "UseIPv4"
+    geosite_uncertain: bool = False
+    resolved_ips: List[str] = []
+    resolve_error: Optional[str] = None
+    note: Optional[str] = None
+
+
+class RouteExplainRouting(BaseModel):
+    matched_rule_id: Optional[int] = None
+    matched_rule_name: Optional[str] = None
+    matched_rule_type: Optional[str] = None
+    matched_value: Optional[str] = None
+    action: Optional[str] = None
+    outbound: Optional[str] = None
+    outbound_label: Optional[str] = None
+    certain: bool = True
+    blocking_rule: Optional[str] = None
+    rules_evaluated: int = 0
+    set_id: Optional[int] = None
+    set_name: Optional[str] = None
+    method: str = "python_matcher"     # python_matcher | xray_probe
+    probe_detail: Optional[str] = None
+    notes: List[str] = []
+
+
+class RouteExplainReachability(BaseModel):
+    tested: bool = False
+    ok: Optional[bool] = None
+    http_code: Optional[int] = None
+    latency_ms: Optional[int] = None
+    via: Optional[str] = None          # direct | proxy(node-N)
+    detail: Optional[str] = None
+
+
+class RouteExplainResult(BaseModel):
+    target: str
+    port: int
+    protocol: str
+    is_ip: bool
+    dns: RouteExplainDns
+    routing: RouteExplainRouting
+    reachability: RouteExplainReachability
 
 
 # ─── Health ───────────────────────────────────────────────────────────────────

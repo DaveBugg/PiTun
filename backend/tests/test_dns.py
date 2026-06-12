@@ -157,3 +157,87 @@ class TestDNSQueryLog:
         data = resp.json()
         assert data["total_queries"] == 0
         assert data["cache_hit_rate"] == 0.0
+
+
+# ── DNS changes auto-reload xray (fix: DNS settings/rules apply on save) ──────
+
+from unittest.mock import patch, AsyncMock, PropertyMock
+
+
+class TestDnsAutoReload:
+    """Every DNS settings/rule mutation must regenerate the xray config
+    and reload xray so the change takes effect immediately — same
+    contract routing rules have. Pre-fix, DNS changes only landed on the
+    next reload (Start/Restart, circle rotation, backend restart), which
+    made DNS Rules look broken until something else reloaded xray.
+
+    We patch xray as running + the heavy regen/reload helpers and assert
+    they fire. host_fallback_dns is host-network (not xray) so a
+    settings PATCH of ONLY that must NOT reload xray.
+    """
+
+    def _patches(self):
+        return (
+            patch("app.core.xray.XrayManager.is_running",
+                  new_callable=PropertyMock, return_value=True),
+            patch("app.api.system._regenerate_and_write", new_callable=AsyncMock),
+            patch("app.core.xray.xray_manager.reload", new_callable=AsyncMock),
+        )
+
+    def test_settings_patch_reloads_xray(self, client, auth_headers):
+        p_run, p_regen, p_reload = self._patches()
+        with p_run, p_regen as regen, p_reload as reload_:
+            r = client.patch("/api/dns/settings",
+                             json={"dns_query_strategy": "UseIP"},
+                             headers=auth_headers)
+        assert r.status_code == 200
+        assert regen.await_count >= 1
+        assert reload_.await_count >= 1
+
+    def test_host_fallback_only_does_not_reload_xray(self, client, auth_headers):
+        """host_fallback_dns is host-resolver, not xray — no reload."""
+        p_run, p_regen, p_reload = self._patches()
+        with (p_run, p_regen as regen, p_reload as reload_,
+              patch("app.core.network_apply.apply_host_fallback_dns",
+                    return_value={"applied": False})):
+            r = client.patch("/api/dns/settings",
+                             json={"host_fallback_dns": "1.1.1.1"},
+                             headers=auth_headers)
+        assert r.status_code == 200
+        assert regen.await_count == 0
+        assert reload_.await_count == 0
+
+    def test_create_rule_reloads_xray(self, client, auth_headers):
+        p_run, p_regen, p_reload = self._patches()
+        with p_run, p_regen, p_reload as reload_:
+            r = client.post("/api/dns/rules",
+                            json={"name": "yt", "domain_match": "youtube.com",
+                                  "dns_server": "94.140.14.14", "dns_type": "dot",
+                                  "order": 10, "enabled": True},
+                            headers=auth_headers)
+        assert r.status_code == 201
+        assert reload_.await_count >= 1
+
+    def test_delete_rule_reloads_xray(self, client, auth_headers):
+        created = client.post("/api/dns/rules",
+                              json={"name": "x", "domain_match": "x.com",
+                                    "dns_server": "1.1.1.1", "dns_type": "plain",
+                                    "order": 10, "enabled": True},
+                              headers=auth_headers).json()
+        p_run, p_regen, p_reload = self._patches()
+        with p_run, p_regen, p_reload as reload_:
+            r = client.delete(f"/api/dns/rules/{created['id']}", headers=auth_headers)
+        assert r.status_code == 204
+        assert reload_.await_count >= 1
+
+    def test_no_reload_when_xray_stopped(self, client, auth_headers):
+        """xray down → early return, /system/start builds fresh config."""
+        with (patch("app.core.xray.XrayManager.is_running",
+                    new_callable=PropertyMock, return_value=False),
+              patch("app.api.system._regenerate_and_write",
+                    new_callable=AsyncMock) as regen):
+            r = client.patch("/api/dns/settings",
+                             json={"dns_mode": "plain"},
+                             headers=auth_headers)
+        assert r.status_code == 200
+        assert regen.await_count == 0

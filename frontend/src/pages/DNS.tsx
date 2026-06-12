@@ -16,6 +16,7 @@ import {
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { dnsApi, systemApi } from '@/api/client'
 import { InfoTip } from '@/components/InfoTip'
+import { HostDnsHelp } from '@/components/HostDnsHelp'
 import { useT } from '@/hooks/useT'
 import type { DnsRule, DnsRuleCreate, DnsSettings, DnsTestResult, DnsQueryLog, DnsQueryStats, SystemSettings } from '@/types'
 
@@ -119,9 +120,9 @@ function DnsSettingsSection({
           onChange={(e) => set('dns_mode', e.target.value)}
           className="rounded bg-gray-800 border border-gray-700 px-3 py-1.5 text-sm text-gray-100 focus:border-brand-500 focus:outline-none"
         >
-          <option value="plain">Plain DNS</option>
-          <option value="doh">DNS-over-HTTPS (DoH)</option>
-          <option value="dot">DNS-over-TCP (not encrypted)</option>
+          <option value="plain">Plain DNS (UDP)</option>
+          <option value="doh">DNS-over-HTTPS (DoH) — encrypted</option>
+          <option value="dot">DNS-over-TCP/53 — NOT encrypted (xray has no DoT)</option>
           <option value="fakedns">FakeDNS</option>
         </select>
       </div>
@@ -194,7 +195,7 @@ function DnsSettingsSection({
             "Examples with ON:\n" +
             "• youtube.com → 94.140.14.14 (YouTube rule) only\n" +
             "• vk.com → 77.88.8.8 (Bypass RU) only\n" +
-            "• apple.com → DoT 8.8.8.8 → DoT 8.8.4.4 → 1.1.1.1 (plain servers, no rule match)\n\n" +
+            "• apple.com → 8.8.8.8 → 8.8.4.4 → 1.1.1.1 (plain servers, no rule match)\n\n" +
             "Examples with OFF:\n" +
             "• apple.com → queried on ALL servers simultaneously; 94.140.14.14 may appear in the log even though no YouTube rule matched",
             "Определяет что происходит когда DNS-запрос не совпадает ни с одним правилом DNS:\n\n" +
@@ -206,7 +207,7 @@ function DnsSettingsSection({
             "Примеры с ON:\n" +
             "• youtube.com → 94.140.14.14 (правило YouTube) только\n" +
             "• vk.com → 77.88.8.8 (Bypass RU) только\n" +
-            "• apple.com → DoT 8.8.8.8 → DoT 8.8.4.4 → 1.1.1.1 (plain-серверы, правило не совпало)\n\n" +
+            "• apple.com → 8.8.8.8 → 8.8.4.4 → 1.1.1.1 (plain-серверы, правило не совпало)\n\n" +
             "Примеры с OFF:\n" +
             "• apple.com → запрашивается на ВСЕХ серверах одновременно; 94.140.14.14 может появиться в логе хотя правило YouTube не совпало"
           )} /></>}
@@ -216,6 +217,58 @@ function DnsSettingsSection({
           onChange={(v) => set('dns_sniffing', v)}
           label={<>Enable traffic sniffing (for domain-based routing) <InfoTip className="ml-0.5" text={t('xray inspects incoming connections to detect the target domain name from TLS SNI and HTTP Host headers. Enables domain-based routing rules to work correctly for transparent proxy traffic.', 'xray анализирует входящие соединения для определения целевого домена из TLS SNI и HTTP Host заголовков. Позволяет правилам маршрутизации по домену корректно работать для трафика прозрачного прокси.')} /></>}
         />
+      </div>
+
+      {/* IP version strategy — closes the IPv6 bypass leak */}
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+        <div>
+          <label className="block text-xs text-gray-400 mb-1">
+            {t('IP version for client DNS', 'Версия IP для клиентского DNS')}
+            <InfoTip className="ml-1" text={t(
+              'What address types xray returns to LAN clients. UseIPv4 (recommended) returns only A records — prevents the IPv6 bypass leak: PiTun TPROXY is IPv4-only, so an AAAA answer would let a client route IPv6 around the proxy via the router. Change only if you handle IPv6 elsewhere.',
+              'Какие типы адресов xray отдаёт LAN-клиентам. UseIPv4 (рекомендуется) отдаёт только A-записи — закрывает IPv6-утечку: TPROXY у PiTun только IPv4, и AAAA-ответ позволил бы клиенту обойти прокси по IPv6 через роутер. Меняй только если IPv6 обрабатывается иначе.',
+            )} />
+          </label>
+          <select
+            value={form.dns_query_strategy ?? 'UseIPv4'}
+            onChange={(e) => set('dns_query_strategy', e.target.value)}
+            className="w-full rounded bg-gray-800 border border-gray-700 px-3 py-1.5 text-sm text-gray-100 focus:border-brand-500 focus:outline-none"
+          >
+            <option value="UseIPv4">UseIPv4 — IPv4 only (recommended, no leak)</option>
+            <option value="UseIP">UseIP — IPv4 + IPv6 (may leak)</option>
+            <option value="UseIPv6">UseIPv6 — IPv6 only</option>
+          </select>
+        </div>
+      </div>
+
+      {/* Host resolver — the BOX's own DNS, separate from client DNS above */}
+      <div className="rounded-lg border border-gray-800 bg-gray-900/40 p-3 space-y-2">
+        <div className="text-xs font-semibold text-gray-300 flex items-center gap-1.5 flex-wrap">
+          {t('Host resolver (this box only)', 'Резолвер хоста (только эта машина)')}
+          <InfoTip text={t(
+            "Separate from the client DNS above. The DNS Rules and servers above control what your LAN devices resolve through xray. THIS controls how the PiTun box ITSELF resolves names — for fetching subscriptions, downloading geo files, reaching x-ui panels, and the Dashboard health checks. By default the box uses only your router as DNS; if the router's DNS flakes, all of that breaks (even though LAN clients keep working). Adding public fallbacks below keeps the box resolving when the router can't.",
+            'Отдельно от клиентского DNS выше. DNS-правила и серверы выше управляют тем, что резолвят твои LAN-устройства через xray. ЭТО управляет тем, как сама машина PiTun резолвит имена — для загрузки подписок, гео-файлов, доступа к x-ui панелям и health-проверок на Dashboard. По умолчанию машина использует как DNS только твой роутер; если DNS роутера моргнёт — всё это ломается (хотя LAN-клиенты продолжают работать). Публичные fallback ниже держат машину работающей когда роутер не может.',
+          )} />
+          <HostDnsHelp highlight="resolver" />
+        </div>
+        <p className="text-[11px] text-gray-500">
+          {t(
+            "Backup DNS for THIS box only. The primary gateway + DNS live in Settings → Host network — this is just a safety net on top.",
+            'Запасной DNS только для ЭТОЙ машины. Основной gateway + DNS — в Настройках → Host network, а это лишь подстраховка поверх.',
+          )}
+        </p>
+        <Input
+          label={t('Fallback DNS servers (comma-separated)', 'Резервные DNS-серверы (через запятую)')}
+          value={form.host_fallback_dns ?? ''}
+          onChange={(v) => set('host_fallback_dns', v)}
+          placeholder="1.1.1.1, 8.8.8.8"
+        />
+        <p className="text-[11px] text-gray-500">
+          {t(
+            'Added AFTER your router DNS (router stays primary). Applied to the host network manager (NetworkManager / systemd-resolved), persists across reboot. Leave empty to use only the router.',
+            'Добавляются ПОСЛЕ DNS роутера (роутер остаётся основным). Применяются к менеджеру сети хоста (NetworkManager / systemd-resolved), переживают reboot. Оставь пустым чтобы использовать только роутер.',
+          )}
+        </p>
       </div>
 
       <button
@@ -287,9 +340,9 @@ function RuleForm({
             onChange={(e) => set('dns_type', e.target.value as DnsRuleCreate['dns_type'])}
             className="w-full rounded bg-gray-800 border border-gray-700 px-3 py-1.5 text-sm text-gray-100 focus:border-brand-500 focus:outline-none"
           >
-            <option value="plain">Plain</option>
-            <option value="doh">DoH</option>
-            <option value="dot">TCP (not encrypted)</option>
+            <option value="plain">Plain (UDP)</option>
+            <option value="doh">DoH (encrypted)</option>
+            <option value="dot">TCP/53 (not encrypted)</option>
           </select>
         </div>
       </div>
@@ -336,6 +389,7 @@ function DnsRulesSection({
   adding: boolean
   updating: boolean
 }) {
+  const t = useT()
   const [showAdd, setShowAdd] = useState(false)
   const [editId, setEditId] = useState<number | null>(null)
 
@@ -397,8 +451,22 @@ function DnsRulesSection({
                     <td className="py-2 pr-4 font-mono">{rule.domain_match}</td>
                     <td className="py-2 pr-4 font-mono">{rule.dns_server}</td>
                     <td className="py-2 pr-4">
-                      <span className="rounded-full px-2 py-0.5 text-xs bg-gray-700 text-gray-300">
-                        {rule.dns_type}
+                      <span
+                        className="rounded-full px-2 py-0.5 text-xs bg-gray-700 text-gray-300"
+                        title={
+                          rule.dns_type === 'dot'
+                            ? t(
+                                'xray has no native DoT — this resolves over plaintext DNS-over-TCP on port 53.',
+                                'xray не поддерживает нативный DoT — резолвится через незашифрованный DNS-over-TCP на порту 53.',
+                              )
+                            : undefined
+                        }
+                      >
+                        {rule.dns_type === 'dot'
+                          ? 'TCP/53'
+                          : rule.dns_type === 'doh'
+                            ? 'DoH'
+                            : 'plain'}
                       </span>
                     </td>
                     <td className="py-2 pr-4">

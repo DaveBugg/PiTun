@@ -686,6 +686,32 @@ class TestDNS:
             f"dns-out missing proxySettings.tag=direct: {dns_out!r}"
         )
 
+    def test_query_strategy_defaults_to_useipv4(self):
+        """DNS section must default queryStrategy=UseIPv4 to close the
+        IPv6 bypass leak. PiTun's TPROXY is IPv4-only; an AAAA answer
+        would let a LAN client route IPv6 around the proxy via its
+        router-provided default route. Returning only A records keeps
+        clients on the intercepted IPv4 path."""
+        cfg = generate_config(None, [], [], "rules", _default_settings())
+        assert cfg["dns"].get("queryStrategy") == "UseIPv4"
+
+    def test_query_strategy_overridable(self):
+        """Advanced operators who handle IPv6 elsewhere can override."""
+        cfg = generate_config(
+            None, [], [], "rules",
+            _default_settings(dns_query_strategy="UseIP"),
+        )
+        assert cfg["dns"].get("queryStrategy") == "UseIP"
+
+    def test_query_strategy_invalid_falls_back_to_useipv4(self):
+        """A garbage value must not reach xray — coerce to the safe
+        default rather than emit an invalid config."""
+        cfg = generate_config(
+            None, [], [], "rules",
+            _default_settings(dns_query_strategy="nonsense"),
+        )
+        assert cfg["dns"].get("queryStrategy") == "UseIPv4"
+
     def test_fakedns_sentinel_not_wrapped(self):
         """The `fakedns` string is xray's sentinel for the FakeDNS
         protocol — it has no upstream to dial, so wrapping it in an

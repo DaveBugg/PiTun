@@ -153,6 +153,19 @@ async def apply_system_toggles_on_boot() -> None:
         except Exception:
             pass
 
+        # Host fallback DNS — additive resolvers for the box's own
+        # resolution. Idempotent, so re-applying on every boot is safe
+        # and self-heals if NetworkManager/DHCP dropped our entries.
+        host_fallback = m.get("host_fallback_dns", "").strip()
+        if host_fallback:
+            try:
+                from app.core.network_apply import apply_host_fallback_dns
+                servers = [s.strip() for s in host_fallback.split(",") if s.strip()]
+                res = apply_host_fallback_dns(servers)
+                _log.info("Applied host_fallback_dns on boot: %s", res.get("detail"))
+            except Exception as exc:
+                _log.warning("host_fallback_dns boot apply failed: %s", exc)
+
     except Exception as exc:
         _log.warning("Failed to apply system toggles on boot: %s", exc)
 
@@ -900,6 +913,18 @@ async def update_settings(body: SettingsUpdate, session: AsyncSession = Depends(
                 f.write("\n".join(lines) + "\n")
         except Exception:
             pass
+
+    # Apply host fallback DNS additively (NM / systemd-resolved /
+    # resolv.conf depending on what the host runs). Non-destructive —
+    # keeps the DHCP/router DNS primary, appends our fallbacks.
+    if "host_fallback_dns" in patches:
+        try:
+            from app.core.network_apply import apply_host_fallback_dns
+            raw = str(patches["host_fallback_dns"] or "")
+            servers = [s.strip() for s in raw.split(",") if s.strip()]
+            apply_host_fallback_dns(servers)
+        except Exception as exc:
+            logger.warning("host_fallback_dns apply failed: %s", exc)
 
     # LAN proxy auth changes affect the running xray config (SOCKS +
     # HTTP inbounds get `accounts` injected/removed). Reload xray on
