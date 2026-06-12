@@ -305,6 +305,19 @@ async def _resolve_plain(domain: str, server: Optional[str] = None) -> tuple[lis
         raise RuntimeError(str(exc)) from exc
 
 
+def _build_dns_a_query(domain: str, txid: bytes) -> bytes:
+    """Build a minimal RFC 1035 DNS query packet for the A record of
+    `domain` (one question, RD=1, no EDNS). Shared by the UDP path
+    (`_resolve_via_xray`) and the DoH wire-format path (`_resolve_doh`)."""
+    header = txid + b'\x01\x00\x00\x01\x00\x00\x00\x00\x00\x00'
+    question = b''
+    for label in domain.rstrip('.').split('.'):
+        lb = label.encode()
+        question += bytes([len(lb)]) + lb
+    question += b'\x00\x00\x01\x00\x01'  # null root, QTYPE=A, QCLASS=IN
+    return header + question
+
+
 def _parse_dns_a_records(data: bytes, txid: bytes) -> list[str]:
     import struct
     if len(data) < 12 or data[:2] != txid:
@@ -373,13 +386,7 @@ async def _resolve_via_xray(domain: str) -> tuple[list[str], int]:
         pass
 
     txid = os.urandom(2)
-    header = txid + b'\x01\x00\x00\x01\x00\x00\x00\x00\x00\x00'
-    question = b''
-    for label in domain.rstrip('.').split('.'):
-        lb = label.encode()
-        question += bytes([len(lb)]) + lb
-    question += b'\x00\x00\x01\x00\x01'
-    packet = header + question
+    packet = _build_dns_a_query(domain, txid)
 
     loop = asyncio.get_running_loop()
     future: asyncio.Future[bytes] = loop.create_future()
@@ -406,23 +413,42 @@ async def _resolve_via_xray(domain: str) -> tuple[list[str], int]:
 
 
 async def _resolve_doh(domain: str, server: str) -> tuple[list[str], int]:
+    """Resolve an A record over DoH using RFC 8484 wire format
+    (`application/dns-message`) — the universal DoH encoding every server
+    speaks, including DoH-by-IP (Cloudflare 1.1.1.1, Google 8.8.8.8,
+    AdGuard 94.140.14.14, Quad9 9.9.9.9).
+
+    Previously this used the JSON API (`?name=&type=A`,
+    `application/dns-json`, the Google/Cloudflare convenience format).
+    That is non-standard: AdGuard's `/dns-query` rejects it with HTTP 400,
+    so any DNS rule pointing at AdGuard-over-DoH made the diagnostic's
+    resolution (and the reachability stage) fail. Wire format works
+    everywhere."""
     start = time.monotonic()
     if not server.startswith("http"):
         server = f"https://{server}/dns-query"
     elif not server.endswith("/dns-query") and "/dns-query" not in server:
         server = server.rstrip("/") + "/dns-query"
 
+    # RFC 8484 §4.1: the DNS ID SHOULD be 0 so responses stay HTTP-cache
+    # friendly. The server echoes it, and `_parse_dns_a_records` matches
+    # the request ID against the response.
+    txid = b'\x00\x00'
+    query = _build_dns_a_query(domain, txid)
+
     async with httpx.AsyncClient(timeout=10) as client:
-        resp = await client.get(
+        resp = await client.post(
             server,
-            params={"name": domain, "type": "A"},
-            headers={"Accept": "application/dns-json"},
+            content=query,
+            headers={
+                "Content-Type": "application/dns-message",
+                "Accept": "application/dns-message",
+            },
         )
         resp.raise_for_status()
-        data = resp.json()
+        body = resp.content
 
-    answers = data.get("Answer", [])
-    ips = [a["data"] for a in answers if a.get("type") == 1]
+    ips = _parse_dns_a_records(body, txid)
     elapsed = int((time.monotonic() - start) * 1000)
     return ips, elapsed
 
