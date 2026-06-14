@@ -4,6 +4,62 @@ All notable user-facing changes to PiTun. Full per-release detail lives in the
 [GitHub Releases](https://github.com/DaveBugg/PiTun/releases); this file is the
 committed summary.
 
+## v1.4.3 — 2026-06-15
+
+Set-aware routing rule **export/import** (pick scopes, resolve conflicts, import
+into Global / an existing / a new set), a **DNS-over-HTTPS resolver fix**, and a
+clearer **set-deletion** flow. Plus the post-1.4.2 dependency security bumps.
+
+### Added
+
+- **Set-aware export/import (Routing).** Export picks scopes — Global and/or each
+  routing set — and downloads them merged into one file or as separate per-scope
+  files, in a native PiTun envelope (`format: "pitun-routing"`) that preserves
+  every rule field including `mac`/`geosite` and `node:`/`balancer:` actions.
+  Import reads that envelope (or a legacy V2Ray JSON array — auto-detected),
+  previews what would be added vs. skipped (identical / in-file duplicates /
+  unusable), and surfaces **action conflicts** (same match, different action) for
+  per-rule resolution before committing into Global, an existing set, or a new
+  one. Rules referencing a node/balancer or geo tag absent on this box are
+  dropped (and counted) so the result stays valid for xray.
+- **`cascade=delete` on set deletion.** `DELETE /api/routing-sets/{id}` can now
+  drop a set's rules instead of moving them to Global.
+
+### Changed
+
+- **Deleting a routing set now defaults to deleting its rules.** The delete
+  dialog leads with "Delete set + rules"; "Move to Global" is the secondary
+  option. Assigned devices always fall back to Global (a physical device row is
+  never deleted). Previously a delete silently moved every rule to Global.
+- The legacy client-side V2Ray export and the standalone V2Ray import dialog are
+  removed from the UI; the `import-v2ray` endpoint stays for API compatibility.
+
+### Fixed
+
+- **DoH resolver uses RFC 8484 wire format.** `_resolve_doh` issued the
+  Google/Cloudflare JSON query (`?name=&type=A`, `application/dns-json`), which
+  AdGuard's `/dns-query` rejects with HTTP 400 — breaking the Route Explainer's
+  resolution and reachability for any AdGuard-over-DoH rule. It now POSTs
+  `application/dns-message` and parses the wire response (DNS query builder
+  shared with the UDP path).
+
+### Security / dependencies
+
+- `aiohttp` 3.13.5 → 3.14.0 and `asyncssh` 2.22.0 → 2.23.0 — closes 3 Dependabot
+  advisories (none reachable in PiTun's usage, but bumped for hygiene).
+- `uvicorn` 0.46.0 → 0.48.0, `pydantic-settings` 2.14.0 → 2.14.1,
+  `pytest-asyncio` 1.3.0 → 1.4.0 (dev).
+- CI: `actions/checkout` 6.0.2 → 6.0.3, `docker/setup-buildx-action` 4.0.0 → 4.1.0.
+- 3 CodeQL `routing_sets.py` alerts dismissed as false positives (int-typed log
+  args; an intentional bind-and-close port probe).
+
+### Notes
+
+- No breaking changes, no schema migration (alembic head stays at `017`).
+- Backend suite 745 passing. Frontend type-checks and builds clean.
+
+**Full Changelog:** https://github.com/DaveBugg/PiTun/compare/v1.4.2...v1.4.3
+
 ## v1.4.2 — 2026-06-12
 
 Adds the **Route Explainer** — a two-layer diagnostic that shows exactly where
