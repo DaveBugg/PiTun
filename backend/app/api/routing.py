@@ -13,7 +13,11 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.database import get_session
 from app.models import BalancerGroup, Node, RoutingRule, RoutingSet
-from app.schemas import ArpDevice, BulkRuleCreate, BulkRuleResult, RoutingRuleCreate, RoutingRuleRead, RoutingRuleUpdate
+from app.schemas import (
+    ArpDevice, BulkRuleCreate, BulkRuleResult, RoutingRuleCreate, RoutingRuleRead, RoutingRuleUpdate,
+    RoutingPortRule, RoutingImportDestination, RoutingImportPreviewRequest, RoutingImportPreviewResult,
+    RoutingImportConflict, RoutingImportCommitRequest, RoutingImportCommitResult,
+)
 
 
 async def _validate_routing_set_id(
@@ -488,6 +492,243 @@ async def import_v2ray_rules(
     await _auto_reload_xray(session)
     logger.info("V2Ray import: %d rules imported, %d skipped (mode=%s)", imported, skipped, body.mode)
     return V2RayImportResult(imported=imported, skipped=skipped, rule_ids=rule_ids)
+
+
+# ── Set-aware native import (preview + commit) ───────────────────────────────
+#
+# The V2Ray path above is flat + lossy (no mac/geosite/node: actions, no set
+# membership). The native path round-trips every RoutingRule field and lets
+# the operator choose a destination (global / existing set / new set) plus
+# resolve duplicate/conflict situations so the resulting ruleset stays sane
+# for xray's first-match-wins evaluation.
+
+
+def _norm_match(match_value: str) -> str:
+    """Canonical form of a match_value for equality: comma-split, trim,
+    lowercase, dedupe, sort. So `B.com, a.com` == `a.com,b.com`."""
+    toks = sorted({t.strip().lower() for t in (match_value or "").split(",") if t.strip()})
+    return ",".join(toks)
+
+
+def _imp_key(rule_type: str, match_value: str) -> str:
+    return f"{rule_type}|{_norm_match(match_value)}"
+
+
+async def _action_importable(session: AsyncSession, action: str) -> bool:
+    """Non-raising variant of `_validate_action` — True if the action is
+    usable on THIS box (proxy/direct/block always; node:/balancer: only
+    when the target row exists)."""
+    if action in ("proxy", "direct", "block"):
+        return True
+    if action.startswith("node:"):
+        try:
+            return (await session.get(Node, int(action.split(":", 1)[1]))) is not None
+        except (ValueError, IndexError):
+            return False
+    if action.startswith("balancer:"):
+        try:
+            return (await session.get(BalancerGroup, int(action.split(":", 1)[1]))) is not None
+        except (ValueError, IndexError):
+            return False
+    return False
+
+
+async def _filter_importable(
+    session: AsyncSession, rules: List[RoutingPortRule]
+) -> tuple[List[RoutingPortRule], int]:
+    """Drop rules that can't apply on this box (action references a node/
+    balancer that doesn't exist here, or a geosite/geoip tag absent from
+    the loaded .dat). Returns (keepable, dropped_count). Keeps the import
+    resilient instead of 400-ing the whole batch on one stray rule."""
+    keep: List[RoutingPortRule] = []
+    dropped = 0
+    for inc in rules:
+        if not await _action_importable(session, inc.action):
+            dropped += 1
+            continue
+        try:
+            _validate_geo_tags(inc.rule_type, inc.match_value or "")
+        except HTTPException:
+            dropped += 1
+            continue
+        keep.append(inc)
+    return keep, dropped
+
+
+def _analyze_import(existing: List[RoutingRule], incoming: List[RoutingPortRule]):
+    """Bucket `incoming` against `existing` destination rules.
+
+    Returns (will_add, identical, conflicts, collapsed) where:
+      * will_add   — RoutingPortRule with no key match in the destination
+      * identical  — key match AND same action (already present → skip)
+      * conflicts  — key match, DIFFERENT action: list of dicts carrying the
+                     incoming rule + the existing action/ids for resolution
+      * collapsed  — count of later incoming rows sharing a key already seen
+                     in the file (first-wins dedupe within the import itself)
+    """
+    emap: Dict[str, Dict[str, Any]] = {}
+    for r in existing:
+        slot = emap.setdefault(_imp_key(r.rule_type, r.match_value),
+                               {"action": r.action, "ids": []})
+        slot["ids"].append(r.id)
+
+    seen: set[str] = set()
+    will_add: List[RoutingPortRule] = []
+    identical: List[RoutingPortRule] = []
+    conflicts: List[Dict[str, Any]] = []
+    collapsed = 0
+    for inc in incoming:
+        k = _imp_key(inc.rule_type, inc.match_value)
+        if k in seen:
+            collapsed += 1
+            continue
+        seen.add(k)
+        slot = emap.get(k)
+        if slot is None:
+            will_add.append(inc)
+        elif slot["action"] == inc.action:
+            identical.append(inc)
+        else:
+            conflicts.append({"key": k, "inc": inc,
+                              "existing_action": slot["action"],
+                              "existing_ids": list(slot["ids"])})
+    return will_add, identical, conflicts, collapsed
+
+
+async def _resolve_import_dest(
+    session: AsyncSession, dest: RoutingImportDestination, *, create: bool
+) -> tuple[Optional[int], str, bool, List[RoutingRule]]:
+    """Resolve the destination → (set_id|None, label, exists, existing_rules).
+
+    `create=False` (preview): a "new set" destination is reported as
+    not-yet-existing with an empty rule list (we never write on preview).
+    `create=True` (commit): the new set is actually created here."""
+    if dest.kind == "global":
+        rows = (await session.exec(
+            select(RoutingRule).where(RoutingRule.routing_set_id.is_(None))
+        )).all()
+        return None, "Global", True, list(rows)
+
+    # kind == "set"
+    if dest.set_id is not None:
+        rs = await session.get(RoutingSet, dest.set_id)
+        if rs is None:
+            raise HTTPException(400, f"Routing set {dest.set_id} not found")
+        rows = (await session.exec(
+            select(RoutingRule).where(RoutingRule.routing_set_id == rs.id)
+        )).all()
+        return rs.id, f"Set: {rs.name}", True, list(rows)
+
+    name = (dest.new_set_name or "").strip()
+    if not name:
+        raise HTTPException(400, "new_set_name is required when creating a set")
+    dup = (await session.exec(select(RoutingSet).where(RoutingSet.name == name))).first()
+    if dup is not None:
+        raise HTTPException(400, f"A routing set named {name!r} already exists")
+    if not create:
+        return None, f"New set: {name}", False, []
+
+    from app.api.routing_sets import _allocate_tproxy_port
+    port = await _allocate_tproxy_port(session)
+    rs = RoutingSet(name=name, description=dest.new_set_description, tproxy_port=port, order=0)
+    session.add(rs)
+    await session.commit()
+    await session.refresh(rs)
+    logger.info("Import created routing set %r (id=%d, port=%d)", rs.name, rs.id, rs.tproxy_port)
+    return rs.id, f"Set: {rs.name}", True, []
+
+
+@router.post("/import/preview", response_model=RoutingImportPreviewResult)
+async def import_preview(
+    body: RoutingImportPreviewRequest, session: AsyncSession = Depends(get_session)
+):
+    """Dry-run an import: report what would be added, what's already there
+    (identical), in-file duplicates, unusable rules, and action CONFLICTS
+    (same match, different action) for the user to resolve. No writes."""
+    keep, invalid = await _filter_importable(session, body.rules)
+    set_id, label, exists, existing = await _resolve_import_dest(
+        session, body.destination, create=False
+    )
+    will_add, identical, conflicts, collapsed = _analyze_import(existing, keep)
+    return RoutingImportPreviewResult(
+        destination_label=label,
+        destination_exists=exists,
+        total_in_file=len(body.rules),
+        will_add=len(will_add),
+        identical_skipped=len(identical),
+        collapsed_duplicates=collapsed,
+        invalid_skipped=invalid,
+        conflicts=[
+            RoutingImportConflict(
+                key=c["key"], rule_type=c["inc"].rule_type, match_value=c["inc"].match_value,
+                incoming_action=c["inc"].action, incoming_name=c["inc"].name or "",
+                existing_action=c["existing_action"], existing_rule_ids=c["existing_ids"],
+            )
+            for c in conflicts
+        ],
+    )
+
+
+@router.post("/import/commit", response_model=RoutingImportCommitResult, status_code=201)
+async def import_commit(
+    body: RoutingImportCommitRequest, session: AsyncSession = Depends(get_session)
+):
+    """Apply an import (append semantics). Identical rules are skipped;
+    conflicts follow per-key `resolutions` ('keep' = leave existing,
+    'replace' = delete existing + use incoming), defaulting to
+    `default_conflict_choice`. Creates the destination set if requested."""
+    keep, invalid = await _filter_importable(session, body.rules)
+    set_id, label, _exists, existing = await _resolve_import_dest(
+        session, body.destination, create=True
+    )
+    will_add, identical, conflicts, collapsed = _analyze_import(existing, keep)
+
+    res_map = {r.key: r.choice for r in body.resolutions}
+    base_order = max([r.order for r in existing], default=0)
+
+    def _next() -> int:
+        nonlocal base_order
+        base_order += 10
+        return base_order
+
+    added = replaced = skipped_conflicts = 0
+
+    for inc in will_add:
+        session.add(RoutingRule(
+            name=inc.name or "Imported", enabled=inc.enabled, rule_type=inc.rule_type,
+            match_value=inc.match_value, action=inc.action, order=_next(), routing_set_id=set_id,
+        ))
+        added += 1
+
+    for c in conflicts:
+        choice = res_map.get(c["key"], body.default_conflict_choice)
+        if choice == "replace":
+            for rid in c["existing_ids"]:
+                row = await session.get(RoutingRule, rid)
+                if row is not None:
+                    await session.delete(row)
+            inc = c["inc"]
+            session.add(RoutingRule(
+                name=inc.name or "Imported", enabled=inc.enabled, rule_type=inc.rule_type,
+                match_value=inc.match_value, action=inc.action, order=_next(), routing_set_id=set_id,
+            ))
+            replaced += 1
+        else:
+            skipped_conflicts += 1
+
+    await session.commit()
+    await _auto_reload_xray(session)
+    set_name = label[len("Set: "):] if label.startswith("Set: ") else None
+    logger.info(
+        "Routing import → %s: +%d added, %d identical, %d replaced, %d conflicts skipped, "
+        "%d invalid, %d collapsed", label, added, len(identical), replaced,
+        skipped_conflicts, invalid, collapsed,
+    )
+    return RoutingImportCommitResult(
+        set_id=set_id, set_name=set_name, added=added, skipped_identical=len(identical),
+        replaced=replaced, skipped_conflicts=skipped_conflicts, invalid_skipped=invalid,
+        collapsed_duplicates=collapsed,
+    )
 
 
 @router.post("/rules/reorder", status_code=204)

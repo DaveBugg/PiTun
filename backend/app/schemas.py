@@ -650,6 +650,114 @@ class RoutingRuleRead(RoutingRuleBase):
         from_attributes = True
 
 
+# ─── Routing rule export / import (set-aware, native PiTun format) ─────────────
+
+class RoutingPortRule(BaseModel):
+    """One rule in the portable export/import envelope. Carries everything
+    needed to recreate a RoutingRule EXCEPT its DB id and set membership
+    (the destination is chosen at import time, so `routing_set_id` is
+    deliberately absent)."""
+    name: str = ""
+    enabled: bool = True
+    rule_type: str
+    match_value: str
+    action: str
+    order: int = 100
+
+    @field_validator("rule_type")
+    @classmethod
+    def _vt(cls, v: str) -> str:
+        valid = {"mac", "src_ip", "dst_ip", "domain", "port", "protocol", "geoip", "geosite"}
+        if v not in valid:
+            raise ValueError(f"rule_type must be one of {valid}")
+        return v
+
+    @field_validator("action")
+    @classmethod
+    def _va(cls, v: str) -> str:
+        if v not in ("proxy", "direct", "block") and not v.startswith("node:") and not v.startswith("balancer:"):
+            raise ValueError("action must be proxy|direct|block|node:<id>|balancer:<id>")
+        return v
+
+
+class RoutingImportDestination(BaseModel):
+    """Where imported rules land. `kind`:
+      * "global"  → global rules (routing_set_id = NULL)
+      * "set"     → an existing set (`set_id`) OR a new one (`new_set_name`)
+    """
+    kind: str  # "global" | "set"
+    set_id: Optional[int] = None
+    new_set_name: Optional[str] = None
+    new_set_description: Optional[str] = None
+
+    @field_validator("kind")
+    @classmethod
+    def _vk(cls, v: str) -> str:
+        if v not in ("global", "set"):
+            raise ValueError("destination kind must be 'global' or 'set'")
+        return v
+
+
+class RoutingImportPreviewRequest(BaseModel):
+    rules: List[RoutingPortRule]
+    destination: RoutingImportDestination
+
+
+class RoutingImportConflict(BaseModel):
+    """An incoming rule whose (rule_type, normalized match) already exists
+    in the destination with a DIFFERENT action — the kind of contradiction
+    that makes xray's first-match-wins behaviour ambiguous. Surfaced for
+    the user to resolve before commit."""
+    key: str                       # stable id: f"{rule_type}|{norm_match}"
+    rule_type: str
+    match_value: str
+    incoming_action: str
+    incoming_name: str
+    existing_action: str
+    existing_rule_ids: List[int]
+
+
+class RoutingImportPreviewResult(BaseModel):
+    destination_label: str
+    destination_exists: bool       # False when kind=set + new_set_name (not created yet)
+    total_in_file: int
+    will_add: int
+    identical_skipped: int         # same key AND same action already present
+    collapsed_duplicates: int      # duplicate keys within the file itself
+    invalid_skipped: int           # missing node:/balancer: target, or geo tag not loaded
+    conflicts: List[RoutingImportConflict]
+
+
+class RoutingImportResolution(BaseModel):
+    key: str
+    choice: str                    # "keep" (skip incoming) | "replace" (delete existing, use incoming)
+
+    @field_validator("choice")
+    @classmethod
+    def _vc(cls, v: str) -> str:
+        if v not in ("keep", "replace"):
+            raise ValueError("choice must be 'keep' or 'replace'")
+        return v
+
+
+class RoutingImportCommitRequest(BaseModel):
+    rules: List[RoutingPortRule]
+    destination: RoutingImportDestination
+    resolutions: List[RoutingImportResolution] = []
+    default_conflict_choice: str = "keep"   # applied to any conflict not in `resolutions`
+
+
+class RoutingImportCommitResult(BaseModel):
+    set_id: Optional[int]          # destination set id (created if new); None = global
+    set_name: Optional[str] = None
+    added: int
+    skipped_identical: int
+    replaced: int
+    skipped_conflicts: int
+    invalid_skipped: int
+    collapsed_duplicates: int
+
+
 # ─── Routing Sets ─────────────────────────────────────────────────────────────
 
 class RoutingSetBase(BaseModel):

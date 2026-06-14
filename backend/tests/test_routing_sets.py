@@ -262,6 +262,38 @@ class TestRoutingSetDelete:
         assert dev.routing_set_id is None
         assert rule.routing_set_id is None
 
+    def test_delete_cascade_delete_drops_rules_keeps_device(
+        self, client, session, auth_headers, sample_device, sample_rule
+    ):
+        """cascade=delete removes the set's RULES but the physical device
+        row survives (just unassigned → Global)."""
+        rs = client.post(
+            "/api/routing-sets", json={"name": "Kids"}, headers=auth_headers
+        ).json()
+        client.patch(
+            f"/api/devices/{sample_device.id}",
+            json={"routing_set_id": rs["id"]},
+            headers=auth_headers,
+        )
+        client.patch(
+            f"/api/routing/rules/{sample_rule.id}",
+            json={"routing_set_id": rs["id"]},
+            headers=auth_headers,
+        )
+        r = client.delete(
+            f"/api/routing-sets/{rs['id']}?cascade=delete",
+            headers=auth_headers,
+        )
+        assert r.status_code == 204
+
+        # The row was deleted via the async session — expunge the sync
+        # identity map so get() reloads from the DB instead of handing back
+        # the stale (now-deleted) instance.
+        session.expunge_all()
+        assert session.get(RoutingRule, sample_rule.id) is None  # rule deleted
+        dev = session.get(Device, sample_device.id)
+        assert dev is not None and dev.routing_set_id is None  # device survives
+
 
 # ── Bulk device assignment ────────────────────────────────────────────────────
 

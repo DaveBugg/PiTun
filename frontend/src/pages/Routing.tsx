@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
-import { Plus, Pencil, Trash2, ToggleLeft, ToggleRight, GripVertical, Upload, Zap, FileUp, FileDown, HelpCircle, AlertTriangle, Tag } from 'lucide-react'
+import { Plus, Pencil, Trash2, ToggleLeft, ToggleRight, GripVertical, Upload, Zap, FileUp, FileDown, HelpCircle, AlertTriangle, Tag, Loader2 } from 'lucide-react'
 import { clsx } from 'clsx'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { isAxiosError } from 'axios'
@@ -9,6 +9,8 @@ import { RuleEditor } from '@/components/RuleEditor'
 import { useConfirm } from '@/components/ConfirmModal'
 import { ModalShell } from '@/components/ModalShell'
 import { RoutingSetModal } from '@/components/RoutingSetModal'
+import { RoutingExportModal } from '@/components/RoutingExportModal'
+import { RoutingImportModal } from '@/components/RoutingImportModal'
 import { useT } from '@/hooks/useT'
 import { useAppStore } from '@/store'
 import { useSystemSettings } from '@/hooks/useSystem'
@@ -21,7 +23,7 @@ import {
   GEO_PROFILES, detectActiveProfile, getProfile,
   type QuickAddPreset,
 } from '@/lib/geoProfiles'
-import type { RoutingRule, RoutingRuleCreate, RuleType, BulkRuleCreate, V2RayRule, RoutingSet } from '@/types'
+import type { RoutingRule, RoutingRuleCreate, RuleType, BulkRuleCreate, RoutingSet } from '@/types'
 
 /**
  * Sub-tab filter on the Rules tab (v1.4):
@@ -32,7 +34,7 @@ import type { RoutingRule, RoutingRuleCreate, RuleType, BulkRuleCreate, V2RayRul
 type SetFilter = 'all' | 'global' | number
 
 type Tab = 'rules' | 'devices'
-type Modal = 'none' | 'add' | 'edit' | 'bulk' | 'import-v2ray' | 'help'
+type Modal = 'none' | 'add' | 'edit' | 'bulk' | 'help'
 
 const RULE_TYPE_COLORS: Record<RuleType, string> = {
   mac:      'bg-purple-900/60 text-purple-300',
@@ -81,11 +83,9 @@ export function Routing() {
   const [bulkAction, setBulkAction] = useState<string>('proxy')
   const [bulkValues, setBulkValues] = useState('')
 
-  // V2Ray import state
-  const [v2rayRules, setV2rayRules] = useState<V2RayRule[]>([])
-  const [v2rayMode, setV2rayMode] = useState<'as_is' | 'invert'>('as_is')
-  const [v2rayClear, setV2rayClear] = useState(false)
-  const [v2rayFileName, setV2rayFileName] = useState('')
+  // Set-aware export / import modals (v1.4.3)
+  const [showExport, setShowExport] = useState(false)
+  const [showImport, setShowImport] = useState(false)
 
   // Per-device-group routing (v1.4). `selectedSetId` is the sub-tab
   // filter on the Rules tab — it drives BOTH the list filter AND the
@@ -95,6 +95,9 @@ export function Routing() {
   // a RoutingSet object means "edit that set".
   const [setModalOpen, setSetModalOpen] = useState(false)
   const [setModalEdit, setSetModalEdit] = useState<RoutingSet | undefined>(undefined)
+  // Delete-set dialog (offers move-to-global vs delete-rules)
+  const [deletingSet, setDeletingSet] = useState<RoutingSet | null>(null)
+  const [deleteErr, setDeleteErr] = useState<string | null>(null)
 
   // Multi-select for batch delete
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set())
@@ -112,7 +115,6 @@ export function Routing() {
   const selectNone = () => setSelectedIds(new Set())
 
   const presetsRef = useRef<HTMLDivElement>(null)
-  const fileInputRef = useRef<HTMLInputElement>(null)
   const qc = useQueryClient()
 
   const { data: rules = [] } = useQuery({
@@ -213,35 +215,6 @@ export function Routing() {
       setBulkValues('')
     },
   })
-  const v2rayImport = useMutation({
-    mutationFn: (data: { rules: V2RayRule[]; mode: 'as_is' | 'invert'; clear_existing: boolean }) =>
-      routingApi.importV2ray(data),
-    onSuccess: (result) => {
-      qc.invalidateQueries({ queryKey: ['routing'] })
-      setModal('none')
-      setV2rayRules([])
-      setV2rayFileName('')
-      if (fileInputRef.current) fileInputRef.current.value = ''
-      alert(`Imported ${result.imported} rules, skipped ${result.skipped}`)
-    },
-  })
-
-  const handleV2rayFile = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0]
-    if (!file) return
-    setV2rayFileName(file.name)
-    const reader = new FileReader()
-    reader.onload = (ev) => {
-      try {
-        const data = JSON.parse(ev.target?.result as string)
-        setV2rayRules(Array.isArray(data) ? data : data.rules || [])
-      } catch {
-        alert('Invalid JSON file')
-      }
-    }
-    reader.readAsText(file)
-  }
-
   const nodeOptions = nodes.map((n) => ({ id: n.id, name: n.name }))
 
   // Close presets dropdown on outside click
@@ -294,80 +267,10 @@ export function Routing() {
     }
   }
 
-  // Export all current rules as a V2Ray-style JSON array — same schema we
-  // read on import. Useful as a backup, or to share a curated ruleset with
-  // another PiTun instance / a Shadowrocket config. The generated file
-  // round-trips through the "Import JSON" dialog.
-  //
-  // Field mapping:
-  //   name         → remarks
-  //   enabled      → enabled
-  //   action       → outboundTag ("proxy"|"direct"|"block") or balancerTag
-  //                  (node:<id> actions are not in v2ray's vocabulary; they
-  //                   export as-is and will be skipped by a stock importer)
-  //   rule_type    → which payload field is populated:
-  //     domain|geosite → domain: [match_value...]
-  //     dst_ip|geoip   → ip:     [match_value...]
-  //     src_ip         → source: [match_value...]
-  //     port           → port:   "match_value"
-  //     protocol       → protocol: [match_value...]
-  //     mac            → attrs:  {mac: "..."}   (PiTun-specific, ignored by stock v2ray)
-  const handleExport = () => {
-    const exported = rules.map((r) => {
-      const values = r.match_value.split(',').map(v => v.trim()).filter(Boolean)
-      const entry: Record<string, unknown> = {
-        type: 'field',
-        remarks: r.name,
-        enabled: r.enabled,
-      }
-      // Map action
-      if (r.action.startsWith('balancer:')) {
-        entry.balancerTag = `balancer-${r.action.split(':', 2)[1]}`
-      } else if (r.action.startsWith('node:')) {
-        entry.outboundTag = `node-${r.action.split(':', 2)[1]}`
-      } else {
-        entry.outboundTag = r.action
-      }
-      // Map payload per rule_type
-      switch (r.rule_type) {
-        case 'domain':
-        case 'geosite':
-          entry.domain = values.map(v => r.rule_type === 'geosite' ? `geosite:${v}` : v)
-          break
-        case 'dst_ip':
-          entry.ip = values
-          break
-        case 'geoip':
-          entry.ip = values.map(v => `geoip:${v}`)
-          break
-        case 'src_ip':
-          entry.source = values
-          break
-        case 'port':
-          entry.port = r.match_value
-          break
-        case 'protocol':
-          entry.protocol = values
-          break
-        case 'mac':
-          entry.attrs = { mac: r.match_value }
-          break
-      }
-      return entry
-    })
-
-    const json = JSON.stringify(exported, null, 2)
-    const blob = new Blob([json], { type: 'application/json' })
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
-    const date = new Date().toISOString().slice(0, 10)
-    a.download = `pitun-routing-rules-${date}.json`
-    document.body.appendChild(a)
-    a.click()
-    document.body.removeChild(a)
-    URL.revokeObjectURL(url)
-  }
+  // Routing export/import now live in dedicated set-aware modals
+  // (RoutingExportModal / RoutingImportModal). The legacy client-side
+  // V2Ray dump was removed — the new export writes the native PiTun
+  // envelope, and the new import still reads V2Ray files for interop.
 
   const handlePreset = async (preset: QuickAddPreset) => {
     setShowPresets(false)
@@ -699,24 +602,23 @@ export function Routing() {
               <Upload className="h-4 w-4" />
               Bulk
             </button>
-            {/* V2Ray Import */}
+            {/* Set-aware import (native PiTun envelope + legacy V2Ray) */}
             <button
-              onClick={() => setModal('import-v2ray')}
+              onClick={() => setShowImport(true)}
               className="flex items-center gap-1.5 rounded-lg border border-gray-700 bg-gray-800 px-3 py-2 text-sm font-medium text-gray-300 hover:bg-gray-700 transition-colors"
             >
               <FileUp className="h-4 w-4" />
-              Import JSON
+              {t('Import', 'Импорт')}
             </button>
-            {/* V2Ray Export — downloads current rules as a JSON array in
-                the same shape as the Import dialog expects (round-trip). */}
+            {/* Set-aware export — pick Global / sets, merged or separate */}
             <button
-              onClick={handleExport}
+              onClick={() => setShowExport(true)}
               disabled={rules.length === 0}
-              title={rules.length === 0 ? 'No rules to export' : 'Export rules as V2Ray JSON'}
+              title={rules.length === 0 ? t('No rules to export', 'Нет правил для экспорта') : t('Export routing rules', 'Экспорт правил')}
               className="flex items-center gap-1.5 rounded-lg border border-gray-700 bg-gray-800 px-3 py-2 text-sm font-medium text-gray-300 hover:bg-gray-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
             >
               <FileDown className="h-4 w-4" />
-              Export JSON
+              {t('Export', 'Экспорт')}
             </button>
             {/* Help */}
             <button
@@ -869,39 +771,7 @@ export function Routing() {
                   <Pencil className="h-3 w-3" />
                 </button>
                 <button
-                  onClick={async () => {
-                    // Friendly confirm — backend's default refuses
-                    // delete-with-deps, so we offer the cascade option
-                    // explicitly. Operator sees the count of devices/
-                    // rules that will move to global if they proceed.
-                    const ok = await confirm({
-                      title: t(
-                        `Delete set "${rs.name}"?`,
-                        `Удалить набор «${rs.name}»?`,
-                      ),
-                      body: t(
-                        'Any devices and rules in this set will be moved to Global (their routing_set_id becomes null). This is reversible — recreate the set and reassign.',
-                        'Все устройства и правила из этого набора станут глобальными (routing_set_id = null). Обратимо — пересоздай набор и переназначь.',
-                      ),
-                      confirmLabel: t('Delete + move to Global', 'Удалить и перевести в Global'),
-                      danger: true,
-                    })
-                    if (!ok) return
-                    try {
-                      await deleteSetMut.mutateAsync({
-                        id: rs.id,
-                        cascade: 'move-to-global',
-                      })
-                      if (selectedSetId === rs.id) setSelectedSetId('all')
-                    } catch (err) {
-                      let msg = t('Delete failed', 'Не удалось удалить')
-                      if (isAxiosError(err)) {
-                        const d = err.response?.data?.detail
-                        if (typeof d === 'string') msg = d
-                      }
-                      alert(msg)
-                    }
-                  }}
+                  onClick={() => setDeletingSet(rs)}
                   title={t('Delete set', 'Удалить набор')}
                   className={clsx(
                     'px-1.5 py-1.5 rounded-r-lg border-y border-r text-gray-500 hover:text-red-400 flex items-center justify-center transition-colors',
@@ -1199,124 +1069,111 @@ export function Routing() {
         </ModalShell>
       )}
 
-      {/* V2Ray JSON Import Modal */}
-      {modal === 'import-v2ray' && (
-        <ModalShell onClose={() => setModal('none')} labelledBy="v2ray-modal-title">
-          <div className="w-full max-w-2xl max-h-[90vh] overflow-y-auto rounded-2xl bg-gray-950 border border-gray-800 p-6">
-            <h2 id="v2ray-modal-title" className="text-base font-semibold text-gray-100 mb-5">Import V2Ray / Shadowrocket Rules</h2>
-            <div className="space-y-4">
-              {/* File upload */}
-              <div>
-                <label className="block text-xs text-gray-500 mb-1.5">JSON File (V2RayN routing format)</label>
-                <input
-                  ref={fileInputRef}
-                  type="file"
-                  accept=".json"
-                  onChange={handleV2rayFile}
-                  className="w-full text-sm text-gray-400 file:mr-3 file:rounded-lg file:border-0 file:bg-gray-800 file:px-3 file:py-2 file:text-sm file:text-gray-300 hover:file:bg-gray-700"
-                />
-                {v2rayFileName && (
-                  <p className="text-xs text-gray-500 mt-1">{v2rayFileName} — {v2rayRules.length} rules found</p>
-                )}
+      {/* Set-aware export / import modals (v1.4.3) */}
+      {showExport && (
+        <RoutingExportModal
+          rules={rules}
+          routingSets={routingSets}
+          onClose={() => setShowExport(false)}
+        />
+      )}
+      {showImport && (
+        <RoutingImportModal
+          routingSets={routingSets}
+          onClose={() => setShowImport(false)}
+          onImported={() => qc.invalidateQueries({ queryKey: ['routing'] })}
+        />
+      )}
+
+      {/* Delete-set dialog — choose what happens to the set's rules */}
+      {deletingSet && (() => {
+        const ruleCount = rules.filter(r => r.routing_set_id === deletingSet.id).length
+        const close = () => { setDeletingSet(null); setDeleteErr(null) }
+        const run = async (cascade?: 'move-to-global' | 'delete') => {
+          setDeleteErr(null)
+          try {
+            await deleteSetMut.mutateAsync({ id: deletingSet.id, cascade })
+            if (selectedSetId === deletingSet.id) setSelectedSetId('all')
+            close()
+          } catch (err) {
+            let msg = t('Delete failed', 'Не удалось удалить')
+            if (isAxiosError(err)) {
+              const d = err.response?.data?.detail
+              if (typeof d === 'string') msg = d
+            }
+            setDeleteErr(msg)
+          }
+        }
+        const busy = deleteSetMut.isPending
+        return (
+          <ModalShell onClose={close} labelledBy="delset-title">
+            <div className="w-full max-w-md rounded-2xl bg-gray-950 border border-gray-800 shadow-xl p-6 space-y-4">
+              <div className="flex items-center gap-2">
+                <Trash2 className="h-5 w-5 text-red-400" />
+                <h2 id="delset-title" className="text-lg font-semibold text-white">
+                  {t(`Delete set "${deletingSet.name}"?`, `Удалить набор «${deletingSet.name}»?`)}
+                </h2>
               </div>
 
-              {/* Mode selector */}
-              <div>
-                <label className="block text-xs text-gray-500 mb-1.5">Import Mode</label>
-                <div className="grid grid-cols-2 gap-2">
-                  <button
-                    onClick={() => setV2rayMode('as_is')}
-                    className={clsx(
-                      'rounded-lg border p-3 text-left text-xs transition-all',
-                      v2rayMode === 'as_is'
-                        ? 'border-brand-600 bg-brand-900/20 text-brand-300'
-                        : 'border-gray-700 bg-gray-900 text-gray-400 hover:border-gray-600',
-                    )}
-                  >
-                    <div className="font-medium text-sm mb-0.5">As Is (Whitelist)</div>
-                    <div className="opacity-70">proxy→proxy, direct→direct. Only listed domains through VPN</div>
-                  </button>
-                  <button
-                    onClick={() => setV2rayMode('invert')}
-                    className={clsx(
-                      'rounded-lg border p-3 text-left text-xs transition-all',
-                      v2rayMode === 'invert'
-                        ? 'border-brand-600 bg-brand-900/20 text-brand-300'
-                        : 'border-gray-700 bg-gray-900 text-gray-400 hover:border-gray-600',
-                    )}
-                  >
-                    <div className="font-medium text-sm mb-0.5">Inverted (Blacklist)</div>
-                    <div className="opacity-70">proxy↔direct swapped. Everything through VPN except listed</div>
-                  </button>
-                </div>
-              </div>
+              {ruleCount === 0 ? (
+                <p className="text-sm text-gray-400">
+                  {t('This set has no rules. Any assigned devices move to Global.',
+                     'В наборе нет правил. Назначенные устройства станут глобальными.')}
+                </p>
+              ) : (
+                <p className="text-sm text-gray-400">
+                  {t(
+                    `This set has ${ruleCount} rule(s) — they will be deleted along with the set. Assigned devices move to Global (never deleted). Want to keep the rules instead? Use "Move to Global".`,
+                    `В наборе ${ruleCount} правил(а) — они будут удалены вместе с набором. Назначенные устройства перейдут в Global (не удаляются). Хочешь сохранить правила? Жми «Перенести в Global».`,
+                  )}
+                </p>
+              )}
 
-              {/* Clear existing */}
-              <label className="flex items-center gap-2 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={v2rayClear}
-                  onChange={(e) => setV2rayClear(e.target.checked)}
-                  className="rounded border-gray-600 bg-gray-700 text-red-600"
-                />
-                <span className="text-xs text-gray-300">Clear all existing rules before import</span>
-              </label>
-
-              {/* Preview */}
-              {v2rayRules.length > 0 && (
-                <div className="rounded-lg border border-gray-800 bg-gray-900/30 max-h-48 overflow-y-auto p-3">
-                  <p className="text-xs text-gray-500 mb-2">Preview ({v2rayRules.length} rules):</p>
-                  {v2rayRules.map((r, i) => {
-                    const tag = r.outboundTag || '?'
-                    const displayTag = v2rayMode === 'invert'
-                      ? (tag === 'proxy' ? 'direct' : tag === 'direct' ? 'proxy' : tag)
-                      : tag
-                    const domains = r.domain?.length || 0
-                    const ips = r.ip?.length || 0
-                    const port = r.port ? 1 : 0
-                    return (
-                      <div key={i} className="flex items-center gap-2 text-xs py-0.5">
-                        <span className={clsx(
-                          'rounded px-1.5 py-0.5 font-mono text-[10px]',
-                          displayTag === 'proxy' ? 'bg-brand-900/40 text-brand-300' :
-                          displayTag === 'direct' ? 'bg-green-900/40 text-green-300' :
-                          'bg-red-900/40 text-red-300'
-                        )}>
-                          {displayTag}
-                        </span>
-                        <span className="text-gray-400 truncate">
-                          {r.remarks || `Rule #${i+1}`}
-                          <span className="text-gray-600 ml-1">
-                            ({domains > 0 ? `${domains} domains` : ''}{ips > 0 ? `${domains > 0 ? ', ' : ''}${ips} IPs` : ''}{port > 0 ? 'port' : ''})
-                          </span>
-                        </span>
-                      </div>
-                    )
-                  })}
+              {deleteErr && (
+                <div className="flex items-start gap-2 rounded-lg bg-red-900/30 border border-red-700/50 p-3 text-sm text-red-300">
+                  <AlertTriangle className="h-4 w-4 mt-0.5 flex-shrink-0" />
+                  <span>{deleteErr}</span>
                 </div>
               )}
 
-              {/* Actions */}
-              <div className="flex justify-end gap-3 pt-2">
+              <div className="flex flex-wrap justify-end gap-2 pt-1">
                 <button
-                  onClick={() => { setModal('none'); setV2rayRules([]); setV2rayFileName('') }}
-                  className="rounded-lg border border-gray-700 bg-gray-800 px-4 py-2 text-sm font-medium text-gray-300 hover:bg-gray-700 transition-colors"
+                  type="button" onClick={close} disabled={busy}
+                  className="px-4 py-2 rounded-lg bg-gray-800 hover:bg-gray-700 text-gray-300 text-sm disabled:opacity-50"
                 >
-                  Cancel
+                  {t('Cancel', 'Отмена')}
                 </button>
-                <button
-                  onClick={() => v2rayImport.mutate({ rules: v2rayRules, mode: v2rayMode, clear_existing: v2rayClear })}
-                  disabled={v2rayRules.length === 0 || v2rayImport.isPending}
-                  className="flex items-center gap-1.5 rounded-lg bg-brand-600 px-4 py-2 text-sm font-medium text-white hover:bg-brand-500 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-                >
-                  <FileUp className="h-4 w-4" />
-                  {v2rayImport.isPending ? 'Importing...' : `Import ${v2rayRules.length} rules`}
-                </button>
+                {ruleCount === 0 ? (
+                  <button
+                    type="button" onClick={() => run()} disabled={busy}
+                    className="px-4 py-2 rounded-lg bg-red-600 hover:bg-red-500 text-white text-sm disabled:opacity-50"
+                  >
+                    {t('Delete set', 'Удалить набор')}
+                  </button>
+                ) : (
+                  <>
+                    <button
+                      type="button" onClick={() => run('move-to-global')} disabled={busy}
+                      title={t('Keep the rules — move them to Global instead', 'Сохранить правила — перенести в Global')}
+                      className="px-3 py-2 rounded-lg text-gray-400 hover:text-gray-200 hover:bg-gray-800 text-sm disabled:opacity-50"
+                    >
+                      {t('Move to Global instead', 'Перенести в Global')}
+                    </button>
+                    <button
+                      type="button" onClick={() => run('delete')} disabled={busy} autoFocus
+                      title={t('Delete the set AND its rules (default)', 'Удалить набор ВМЕСТЕ с правилами (по умолчанию)')}
+                      className="px-3 py-2 rounded-lg bg-red-600 hover:bg-red-500 text-white text-sm font-medium disabled:opacity-50 inline-flex items-center gap-1.5"
+                    >
+                      {busy && <Loader2 className="h-4 w-4 animate-spin" />}
+                      {t('Delete set + rules', 'Удалить с правилами')}
+                    </button>
+                  </>
+                )}
               </div>
             </div>
-          </div>
-        </ModalShell>
-      )}
+          </ModalShell>
+        )
+      })()}
 
       {/* Help Modal */}
       {modal === 'help' && (
@@ -1488,12 +1345,12 @@ export function Routing() {
                 <ul className="list-disc pl-5 space-y-1 text-gray-400">
                   {lang === 'ru' ? (<>
                     <li>Используйте <span className="font-mono bg-gray-800 px-1 rounded">Bulk</span> для вставки множества значений одного типа/действия сразу (по одному на строку).</li>
-                    <li>Используйте <span className="font-mono bg-gray-800 px-1 rounded">Import JSON</span> для файлов маршрутизации V2RayN / Shadowrocket. Режим <em>Inverted</em> меняет proxy ↔ direct (белый список в чёрный).</li>
+                    <li><span className="font-mono bg-gray-800 px-1 rounded">Экспорт</span>/<span className="font-mono bg-gray-800 px-1 rounded">Импорт</span> — переносят правила между областями (Global + сеты): выбери области галочками, импортируй в Global / существующий / новый сет. Импорт находит дубликаты и конфликты (тот же match, другой action) для разрешения. Читает и старые файлы V2RayN / Shadowrocket.</li>
                     <li>Отключайте правило вместо удаления при отладке — переключатель справа.</li>
                     <li>Ставьте более специфичные правила <em>выше</em> общих (напр. <span className="font-mono">full:api.x.com → direct</span> выше <span className="font-mono">domain:x.com → proxy</span>).</li>
                   </>) : (<>
                     <li>Use <span className="font-mono bg-gray-800 px-1 rounded">Bulk</span> to paste many values of the same type/action at once (one per line).</li>
-                    <li>Use <span className="font-mono bg-gray-800 px-1 rounded">Import JSON</span> for V2RayN / Shadowrocket routing files. <em>Inverted</em> mode swaps proxy ↔ direct (turn whitelist into blacklist).</li>
+                    <li><span className="font-mono bg-gray-800 px-1 rounded">Export</span>/<span className="font-mono bg-gray-800 px-1 rounded">Import</span> move rules between scopes (Global + sets): tick the scopes to export, import into Global / an existing / a new set. Import flags duplicates and conflicts (same match, different action) to resolve. Also reads legacy V2RayN / Shadowrocket files.</li>
                     <li>Disable a rule instead of deleting it while debugging — toggle the switch on the right.</li>
                     <li>Put more specific rules <em>above</em> more generic ones (e.g. <span className="font-mono">full:api.x.com → direct</span> above <span className="font-mono">domain:x.com → proxy</span>).</li>
                   </>)}

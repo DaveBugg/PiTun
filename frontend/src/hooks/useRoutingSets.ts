@@ -58,7 +58,7 @@ export function useUpdateRoutingSet() {
 export function useDeleteRoutingSet() {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: ({ id, cascade }: { id: number; cascade?: 'move-to-global' }) =>
+    mutationFn: ({ id, cascade }: { id: number; cascade?: 'move-to-global' | 'delete' }) =>
       routingSetsApi.delete(id, cascade ? { cascade } : undefined),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['routing-sets'] })

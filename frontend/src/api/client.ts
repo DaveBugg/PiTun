@@ -16,6 +16,8 @@ import type {
   NodeCircle, NodeCircleCreate, NodeCircleUpdate,
   Device, DeviceUpdate, DeviceBulkUpdate, DeviceScanResult,
   RoutingSet, RoutingSetCreate, RoutingSetUpdate, RoutingSetCapacity,
+  RoutingPortRule, RoutingImportDestination, RoutingImportPreviewResult,
+  RoutingImportResolution, RoutingImportCommitResult,
   DeviceBulkSetAssign,
   SystemMetric,
   NaiveSidecarStatus, NaiveSidecarLogs,
@@ -194,6 +196,20 @@ export const routingApi = {
 
   importV2ray: (data: V2RayImportRequest) =>
     http.post<V2RayImportResult>('/routing/rules/import-v2ray', data).then(r => r.data),
+
+  // Set-aware native import (preview then commit). `rules` is the flattened
+  // RoutingPortRule[] from a parsed export file; destination + resolutions
+  // are chosen in the import dialog.
+  importPreview: (data: { rules: RoutingPortRule[]; destination: RoutingImportDestination }) =>
+    http.post<RoutingImportPreviewResult>('/routing/import/preview', data).then(r => r.data),
+
+  importCommit: (data: {
+    rules: RoutingPortRule[]
+    destination: RoutingImportDestination
+    resolutions?: RoutingImportResolution[]
+    default_conflict_choice?: 'keep' | 'replace'
+  }) =>
+    http.post<RoutingImportCommitResult>('/routing/import/commit', data).then(r => r.data),
 
   listDevices: () =>
     http.get<ArpDevice[]>('/routing/devices').then(r => r.data),
@@ -432,7 +448,7 @@ export const routingSetsApi = {
    * before deletion. Without it, the server returns 409 when there are
    * dependents (the UI should prompt the operator to confirm).
    */
-  delete: (id: number, opts?: { cascade?: 'move-to-global' }) =>
+  delete: (id: number, opts?: { cascade?: 'move-to-global' | 'delete' }) =>
     http.delete(`/routing-sets/${id}`, { params: opts }),
   bulkAssignDevices: (data: DeviceBulkSetAssign) =>
     http.post('/routing-sets/devices/bulk', data),

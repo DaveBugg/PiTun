@@ -283,11 +283,15 @@ async def update_routing_set(
 @router.delete("/{set_id}", status_code=204)
 async def delete_routing_set(
     set_id: int,
-    cascade: Optional[Literal["move-to-global"]] = Query(
+    cascade: Optional[Literal["move-to-global", "delete"]] = Query(
         None,
         description=(
-            "If 'move-to-global', NULL out routing_set_id on all dependent "
-            "rows (devices fall back to global-only, rules become global). "
+            "How to handle dependents:\n"
+            "  * 'move-to-global' — NULL routing_set_id on dependent devices "
+            "AND rules (devices fall back to global-only, rules become global).\n"
+            "  * 'delete' — DELETE the dependent rules outright; devices are "
+            "still NULL'd (a physical device row is never deleted — it just "
+            "becomes unassigned).\n"
             "If absent and dependents exist, the call returns 409."
         ),
     ),
@@ -297,10 +301,10 @@ async def delete_routing_set(
 
     Default behaviour is **refuse** if any Device or RoutingRule still
     references the set — the caller has to either reassign them or pass
-    `?cascade=move-to-global` to NULL the FKs out. This matches PiTun's
-    pattern elsewhere (BalancerGroup delete cascades into orphan rules
-    via explicit code, not FK ON DELETE) and is friendlier than a silent
-    cascade that the user didn't see coming.
+    `?cascade=move-to-global` (keep the rules, move them to Global) or
+    `?cascade=delete` (drop the rules with the set). Devices are always
+    moved to Global, never deleted, since they're physical LAN entries
+    that would just re-appear on the next scan.
     """
     rs = await session.get(RoutingSet, set_id)
     if rs is None:
@@ -313,29 +317,38 @@ async def delete_routing_set(
         select(RoutingRule).where(RoutingRule.routing_set_id == set_id)
     )).all()
 
-    if (dep_devices or dep_rules) and cascade != "move-to-global":
+    if (dep_devices or dep_rules) and cascade not in ("move-to-global", "delete"):
         raise HTTPException(
             409,
             (
                 f"Routing set {rs.name!r} still has {len(dep_devices)} device(s) "
-                f"and {len(dep_rules)} rule(s) assigned. Reassign them first, "
-                "or pass ?cascade=move-to-global to NULL the FKs out."
+                f"and {len(dep_rules)} rule(s) assigned. Reassign them first, or "
+                "pass ?cascade=move-to-global (keep rules → Global) or "
+                "?cascade=delete (drop the rules)."
             ),
         )
 
-    # Cascade-move (or no-op if there were no dependents).
+    # Devices always fall back to Global (never deleted — they're physical).
     for dev in dep_devices:
         dev.routing_set_id = None
         session.add(dev)
-    for r in dep_rules:
-        r.routing_set_id = None
-        session.add(r)
+
+    deleted_rules = 0
+    if cascade == "delete":
+        for r in dep_rules:
+            await session.delete(r)
+            deleted_rules += 1
+    else:  # move-to-global (or no dependents → no-op)
+        for r in dep_rules:
+            r.routing_set_id = None
+            session.add(r)
 
     await session.delete(rs)
     await session.commit()
     logger.info(
-        "Deleted routing set id=%d (%d devices, %d rules moved to global)",
+        "Deleted routing set id=%d (%d devices → global, %d rules %s)",
         set_id, len(dep_devices), len(dep_rules),
+        "DELETED" if cascade == "delete" else "moved to global",
     )
     await _auto_reload_dataplane(session)
 

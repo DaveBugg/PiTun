@@ -222,6 +222,79 @@ export interface RoutingSetCapacity {
   available: number
 }
 
+// ── Set-aware routing export / import (native PiTun envelope) ────────────────
+
+/** One portable rule — everything needed to recreate a RoutingRule except
+ *  its DB id and set membership (the destination is chosen at import). */
+export interface RoutingPortRule {
+  name: string
+  enabled: boolean
+  rule_type: RuleType
+  match_value: string
+  action: string
+  order: number
+}
+
+/** One scope inside an export file: global rules, or a named set's rules. */
+export interface RoutingExportScope {
+  kind: 'global' | 'set'
+  set_name?: string
+  set_description?: string | null
+  rules: RoutingPortRule[]
+}
+
+/** The file format written on export / read on import. */
+export interface RoutingExportEnvelope {
+  format: 'pitun-routing'
+  version: 1
+  exported_at: string
+  scopes: RoutingExportScope[]
+}
+
+export interface RoutingImportDestination {
+  kind: 'global' | 'set'
+  set_id?: number | null
+  new_set_name?: string | null
+  new_set_description?: string | null
+}
+
+export interface RoutingImportConflict {
+  key: string
+  rule_type: string
+  match_value: string
+  incoming_action: string
+  incoming_name: string
+  existing_action: string
+  existing_rule_ids: number[]
+}
+
+export interface RoutingImportPreviewResult {
+  destination_label: string
+  destination_exists: boolean
+  total_in_file: number
+  will_add: number
+  identical_skipped: number
+  collapsed_duplicates: number
+  invalid_skipped: number
+  conflicts: RoutingImportConflict[]
+}
+
+export interface RoutingImportResolution {
+  key: string
+  choice: 'keep' | 'replace'
+}
+
+export interface RoutingImportCommitResult {
+  set_id: number | null
+  set_name: string | null
+  added: number
+  skipped_identical: number
+  replaced: number
+  skipped_conflicts: number
+  invalid_skipped: number
+  collapsed_duplicates: number
+}
+
 /**
  * Body for `POST /api/routing-sets/devices/bulk` — reassign N devices
  * to a set (or to global with `routing_set_id: null`).
