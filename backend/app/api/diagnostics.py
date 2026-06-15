@@ -529,6 +529,31 @@ async def docker_logs(
 
 # ── Route Explainer ───────────────────────────────────────────────────────────
 
+def _extract_host(raw: str) -> str:
+    """Reduce whatever the user typed to a bare host (domain or IP).
+
+    Operators routinely paste a full URL (`https://cloudconvert.com/md-to-pdf`)
+    into the target box; resolving that whole string as a domain yields a
+    confusing NXDOMAIN. Strip scheme, userinfo, path/query/fragment, and a
+    trailing :port — while leaving bare IPv6 (multiple colons) and bare
+    hostnames untouched. The port comes from the dedicated port field.
+    """
+    s = (raw or "").strip()
+    if "://" in s:
+        s = s.split("://", 1)[1]
+    if "@" in s:                       # strip user:pass@
+        s = s.rsplit("@", 1)[1]
+    for sep in ("/", "?", "#"):        # strip path / query / fragment
+        if sep in s:
+            s = s.split(sep, 1)[0]
+    s = s.strip()
+    if s.startswith("[") and "]" in s:           # [IPv6]:port → IPv6
+        s = s[1:s.index("]")]
+    elif s.count(":") == 1:                       # host:port (not IPv6) → host
+        s = s.split(":", 1)[0]
+    return s.strip().rstrip(".")
+
+
 @router.post("/explain")
 async def explain_route(body: RouteExplainRequest, session=Depends(get_session)):
     """Explain where traffic to a target would go: which DNS rule + server
@@ -552,7 +577,7 @@ async def explain_route(body: RouteExplainRequest, session=Depends(get_session))
         RouteExplainReachability,
     )
 
-    target = body.target.strip().rstrip(".")
+    target = _extract_host(body.target)
     port = body.port
     protocol = (body.protocol or "tcp").lower()
 

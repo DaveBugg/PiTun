@@ -180,7 +180,46 @@ class TestExplainRouting:
 from unittest.mock import patch, AsyncMock
 
 
+class TestExtractHost:
+    def _h(self, s):
+        from app.api.diagnostics import _extract_host
+        return _extract_host(s)
+
+    def test_full_url_strips_scheme_and_path(self):
+        assert self._h("https://cloudconvert.com/md-to-pdf") == "cloudconvert.com"
+
+    def test_url_with_query_and_trailing_slash(self):
+        assert self._h("https://www.markdowntopdf.com/?a=1#frag") == "www.markdowntopdf.com"
+
+    def test_host_port_strips_port(self):
+        assert self._h("example.com:8443") == "example.com"
+
+    def test_userinfo_stripped(self):
+        assert self._h("http://user:pass@example.com/x") == "example.com"
+
+    def test_bare_hostname_untouched(self):
+        assert self._h("www.youtube.com") == "www.youtube.com"
+
+    def test_bare_ipv4_untouched(self):
+        assert self._h("1.2.3.4") == "1.2.3.4"
+
+    def test_ipv6_bracketed_with_port(self):
+        assert self._h("[2001:db8::1]:443") == "2001:db8::1"
+
+    def test_bare_ipv6_untouched(self):
+        assert self._h("2001:db8::1") == "2001:db8::1"
+
+
 class TestExplainEndpoint:
+    def test_full_url_target_resolves_to_host(self, client, session, auth_headers, default_settings):
+        with patch("app.api.dns._resolve_plain",
+                   new=AsyncMock(return_value=(["93.184.216.34"], 3))):
+            r = client.post("/api/diagnostics/explain",
+                            json={"target": "https://cloudconvert.com/md-to-pdf", "port": 443},
+                            headers=auth_headers)
+        assert r.status_code == 200, r.text
+        assert r.json()["target"] == "cloudconvert.com"
+
     def test_explain_domain_basic(self, client, session, auth_headers, default_settings):
         # seed a routing rule + dns rule
         from app.models import RoutingRule, DNSRule
