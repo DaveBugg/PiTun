@@ -370,7 +370,7 @@ export function NodeForm({ initial, onSave, onCancel, loading, nodes = [] }: Pro
       <section className="space-y-3">
         <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wider flex items-center gap-1.5">
           Chain via (double tunnel)
-          <InfoTip text="Advanced: route this node's traffic through another node as outer transport. Creates a double tunnel — the chain node is the outer (visible) layer, this node is the inner layer. Use for maximum privacy or bypassing restrictions on the inner tunnel protocol." />
+          <InfoTip text="Advanced: route this node's traffic through another node as outer transport. Creates a double tunnel — the chain node is the outer (visible) layer, this node is the inner layer. Note: WireGuard nodes can't be a relay (xray can't tunnel through WireGuard) — they only work as the chain's exit, so they're not listed here." />
         </h3>
         <select
           value={chainNodeId}
@@ -379,7 +379,10 @@ export function NodeForm({ initial, onSave, onCancel, loading, nodes = [] }: Pro
         >
           <option value="">None (single tunnel)</option>
           {nodes
-            .filter((n) => n.id !== (initial as Node | undefined)?.id)
+            // WireGuard can't be a relay — xray can't tunnel traffic
+            // THROUGH a WG outbound (0 bytes); it only works as the exit
+            // hop. So exclude WG nodes from the "chain through" list.
+            .filter((n) => n.id !== (initial as Node | undefined)?.id && n.protocol !== 'wireguard')
             .map((n) => (
               <option key={n.id} value={n.id.toString()}>
                 {n.name} ({n.protocol} · {n.address})

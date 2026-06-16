@@ -212,8 +212,34 @@ async def list_nodes_paginated(
     return NodePage(items=items, total=int(total), limit=limit, offset=offset)
 
 
+async def _validate_chain_target(session: AsyncSession, chain_node_id: Optional[int]) -> None:
+    """Reject a chain that routes THROUGH a WireGuard node.
+
+    xray's WireGuard outbound can't act as a dialer for another outbound:
+    when something chains through it, the tunnel forwards 0 bytes (the
+    config is accepted and xray starts, but traffic silently dies).
+    WireGuard can only be the FINAL exit hop. So a node may chain THROUGH
+    vless / trojan / vmess / ss / etc., but never through wireguard.
+    (Verified live on a box: WG-over-VLESS works; *-over-WG = 0 B.)
+    """
+    if chain_node_id is None:
+        return
+    target = await session.get(Node, chain_node_id)
+    if target is None:
+        raise HTTPException(400, f"Chain target node {chain_node_id} not found")
+    if target.protocol == "wireguard":
+        raise HTTPException(
+            400,
+            f"Can't chain through {target.name!r}: xray can't tunnel traffic "
+            "through a WireGuard node — WireGuard can only be the chain's final "
+            "exit hop. Use a stream-protocol relay (VLESS / Trojan / VMess / SS), "
+            "or make the WireGuard node the exit instead.",
+        )
+
+
 @router.post("", response_model=NodeRead, status_code=201)
 async def create_node(data: NodeCreate, session: AsyncSession = Depends(get_session)):
+    await _validate_chain_target(session, data.chain_node_id)
     node = Node(**data.model_dump())
     session.add(node)
     await session.commit()
@@ -244,6 +270,8 @@ async def update_node(node_id: int, data: NodeUpdate, session: AsyncSession = De
     if not node:
         raise HTTPException(404, "Node not found")
     patch = data.model_dump(exclude_unset=True)
+    if "chain_node_id" in patch:
+        await _validate_chain_target(session, patch["chain_node_id"])
 
     # Track fields that change sidecar behaviour, so we know whether to restart.
     _naive_sensitive = {

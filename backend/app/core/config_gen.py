@@ -361,12 +361,51 @@ def _outbound_hy2(node: Node) -> Dict[str, Any]:
     }
 
 
-def _apply_chain(node: Node, outbound: Dict[str, Any], outbounds: List[Dict], used_ids: set, all_nodes: List[Node]) -> None:
-    """If node has chain_node_id, add chain node outbound and proxySettings."""
+# Guards a pathological config (and keeps xray's dialerProxy nesting sane).
+# Far deeper than any real topology — a 3-hop chain is already exotic.
+_MAX_CHAIN_DEPTH = 8
+
+
+def _apply_chain(
+    node: Node,
+    outbound: Dict[str, Any],
+    outbounds: List[Dict],
+    used_ids: set,
+    all_nodes: List[Node],
+    _seen: Optional[set] = None,
+    _depth: int = 0,
+) -> None:
+    """Wire `node`'s chain into the config — RECURSIVELY, for multi-hop.
+
+    `node.chain_node_id` is the relay this node dials through. We point
+    `node`'s proxySettings at that relay's outbound tag, build the relay's
+    outbound if it isn't in the config yet, then RECURSE so the relay's own
+    chain is wired too. That gives a full path, e.g. exit → mid → entry
+    (`WG2 → WG1 → VLESS`). Previously only the first hop was wired and any
+    deeper relay silently dialed direct, collapsing a 3-node chain to 2.
+
+    `proxySettings.transportLayer = true` is xray's documented chaining
+    knob — it's converted to `sockopt.dialerProxy`, so the relay carries
+    this outbound's traffic over its own transport (works for vless /
+    trojan / ss / wireguard / …; the WireGuard-over-WireGuard hop is valid
+    config but worth runtime-testing). Self-chains, cycles, and an
+    over-deep chain are truncated with a warning instead of emitting a
+    broken (or infinite) config.
+    """
     if not node.chain_node_id:
+        return
+    if _seen is None:
+        _seen = {node.id}
+    if _depth >= _MAX_CHAIN_DEPTH:
+        logger.warning("Chain from node %d exceeds max depth %d — truncating",
+                       node.id, _MAX_CHAIN_DEPTH)
         return
     if node.chain_node_id == node.id:
         logger.warning("Node %d chains to itself — skipping chain", node.id)
+        return
+    if node.chain_node_id in _seen:
+        logger.warning("Chain cycle at node %d → %d (already in chain) — truncating",
+                       node.id, node.chain_node_id)
         return
     chain = next((n for n in all_nodes if n.id == node.chain_node_id), None)
     if not chain:
@@ -375,17 +414,38 @@ def _apply_chain(node: Node, outbound: Dict[str, Any], outbounds: List[Dict], us
     if not chain.enabled:
         logger.warning("Chain node %d is disabled for node %d — skipping chain", chain.id, node.id)
         return
-    if chain.id not in used_ids:
+    # xray can't tunnel traffic THROUGH a WireGuard outbound (it only works
+    # as the exit hop; as a relay it forwards 0 bytes). The API blocks this
+    # at save time, but guard here too for legacy/imported data: skip the
+    # link so the node dials direct rather than into a dead WG tunnel.
+    if chain.protocol == "wireguard":
+        logger.warning(
+            "Node %d chains THROUGH WireGuard node %d — unsupported by xray "
+            "(WG can only be the exit hop); skipping chain link", node.id, chain.id)
+        return
+
+    # Reuse the relay's outbound if it's already present (it may be the
+    # active node, a `node:<id>` target, or another node's relay); else
+    # build it once. A node's chain is a property OF THE NODE, so sharing
+    # the same outbound object keeps the relay's own chain consistent
+    # everywhere it's referenced.
+    chain_tag = f"node-{chain.id}"
+    chain_ob = next((o for o in outbounds if o.get("tag") == chain_tag), None)
+    if chain_ob is None:
         try:
-            outbounds.insert(0, _build_outbound(chain))
-            used_ids.add(chain.id)
+            chain_ob = _build_outbound(chain)
         except Exception as exc:
             logger.warning("Chain node %d build failed: %s", chain.id, exc)
             return
-    outbound["proxySettings"] = {
-        "tag": f"node-{chain.id}",
-        "transportLayer": True,
-    }
+        outbounds.insert(0, chain_ob)
+        used_ids.add(chain.id)
+
+    outbound["proxySettings"] = {"tag": chain_tag, "transportLayer": True}
+
+    # Recurse so the relay's OWN chain is wired (multi-hop). `_seen` grows
+    # per branch → cycles truncate; `_depth` caps runaway nesting.
+    _apply_chain(chain, chain_ob, outbounds, used_ids, all_nodes,
+                 _seen | {chain.id}, _depth + 1)
 
 
 def _build_outbound(node: Node) -> Dict[str, Any]:

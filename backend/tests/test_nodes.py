@@ -51,6 +51,48 @@ class TestNodeCRUD:
         assert resp2.status_code == 404
 
 
+class TestChainThroughWireguardRejected:
+    """xray can't tunnel THROUGH a WireGuard node — the API must reject a
+    chain whose relay (chain_node_id target) is WireGuard."""
+
+    def _mk(self, client, auth_headers, **over):
+        body = {"name": "n", "protocol": "vless", "address": "1.2.3.4", "port": 443,
+                "uuid": "u", "transport": "tcp", "tls": "none"}
+        body.update(over)
+        return client.post("/api/nodes", json=body, headers=auth_headers)
+
+    def test_create_chaining_through_wg_rejected(self, client, admin_user, auth_headers):
+        wg = self._mk(client, auth_headers, name="wg", protocol="wireguard",
+                      wg_private_key="p", wg_public_key="pub", wg_local_address="10.0.0.2/32")
+        assert wg.status_code == 201, wg.text
+        wg_id = wg.json()["id"]
+        resp = self._mk(client, auth_headers, name="exit", chain_node_id=wg_id)
+        assert resp.status_code == 400
+        assert "wireguard" in resp.json()["detail"].lower()
+
+    def test_update_chaining_through_wg_rejected(self, client, admin_user, auth_headers):
+        wg = self._mk(client, auth_headers, name="wg", protocol="wireguard",
+                      wg_private_key="p", wg_public_key="pub", wg_local_address="10.0.0.2/32")
+        exit_ = self._mk(client, auth_headers, name="exit")
+        r = client.patch(f"/api/nodes/{exit_.json()['id']}",
+                         json={"chain_node_id": wg.json()["id"]}, headers=auth_headers)
+        assert r.status_code == 400
+
+    def test_chaining_through_stream_ok(self, client, admin_user, auth_headers):
+        # Chaining through a stream relay (vless) is allowed.
+        relay = self._mk(client, auth_headers, name="relay")
+        resp = self._mk(client, auth_headers, name="exit", chain_node_id=relay.json()["id"])
+        assert resp.status_code == 201, resp.text
+
+    def test_wireguard_exit_through_stream_ok(self, client, admin_user, auth_headers):
+        # A WireGuard node MAY chain through a stream relay (WG = exit). OK.
+        relay = self._mk(client, auth_headers, name="relay")
+        resp = self._mk(client, auth_headers, name="wg-exit", protocol="wireguard",
+                        wg_private_key="p", wg_public_key="pub", wg_local_address="10.0.0.2/32",
+                        chain_node_id=relay.json()["id"])
+        assert resp.status_code == 201, resp.text
+
+
 class TestDeleteNodeCascade:
     def test_delete_node_cleans_routing_rules(self, client, admin_user, auth_headers, session):
         from app.models import Node, RoutingRule

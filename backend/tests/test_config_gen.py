@@ -452,6 +452,56 @@ class TestChainTunnel:
         assert ob is not None
         assert "proxySettings" not in ob
 
+    def test_three_hop_chain_fully_wired(self):
+        # exit(1) → mid(2) → entry(3). Every hop must carry proxySettings
+        # except the entry, which dials direct. (Regression: previously
+        # only the first hop wired and node-2 silently dialed direct.)
+        entry = _make_node(id=3, name="entry", address="3.3.3.3")
+        mid = _make_node(id=2, name="mid", address="2.2.2.2", chain_node_id=3)
+        exit_ = _make_node(id=1, name="exit", address="1.1.1.1", chain_node_id=2)
+        cfg = generate_config(exit_, [exit_, mid, entry], [], "global", _default_settings())
+
+        assert _find_outbound(cfg, "node-1")["proxySettings"]["tag"] == "node-2"
+        assert _find_outbound(cfg, "node-2")["proxySettings"]["tag"] == "node-3"
+        assert "proxySettings" not in _find_outbound(cfg, "node-3")
+        # transportLayer flag preserved on each hop (→ sockopt.dialerProxy)
+        assert _find_outbound(cfg, "node-1")["proxySettings"]["transportLayer"] is True
+        assert _find_outbound(cfg, "node-2")["proxySettings"]["transportLayer"] is True
+
+    def test_chain_through_wireguard_is_skipped(self):
+        # xray can't tunnel THROUGH a WireGuard outbound (0 bytes at
+        # runtime, verified live). config_gen must drop such a link so the
+        # node dials direct instead of into a dead WG tunnel.
+        wg_relay = _make_node(id=2, protocol="wireguard", name="wg-relay", address="2.2.2.2",
+                              wg_private_key="p", wg_public_key="pub",
+                              wg_local_address="10.0.0.2/32")
+        exit_ = _make_node(id=1, protocol="vless", name="exit", address="1.1.1.1", chain_node_id=2)
+        cfg = generate_config(exit_, [exit_, wg_relay], [], "global", _default_settings())
+        assert "proxySettings" not in _find_outbound(cfg, "node-1")
+
+    def test_wireguard_exit_over_stream_is_wired(self):
+        # The valid direction: WireGuard as the EXIT hop, chaining through a
+        # stream relay (WG-over-VLESS works at runtime). MUST wire.
+        vless = _make_node(id=2, protocol="vless", name="relay", address="2.2.2.2")
+        wg_exit = _make_node(id=1, protocol="wireguard", name="wg-exit", address="1.1.1.1",
+                             wg_private_key="p", wg_public_key="pub",
+                             wg_local_address="10.0.0.2/32", chain_node_id=2)
+        cfg = generate_config(wg_exit, [wg_exit, vless], [], "global", _default_settings())
+        ob = _find_outbound(cfg, "node-1")
+        assert ob["protocol"] == "wireguard"
+        assert ob["proxySettings"]["tag"] == "node-2"
+        assert "proxySettings" not in _find_outbound(cfg, "node-2")
+
+    def test_chain_cycle_truncated(self):
+        # 1 → 2 → 1 (cycle). Must terminate (no infinite recursion) and
+        # break the loop: node-1 chains to node-2, but node-2's chain back
+        # to node-1 is dropped so node-2 dials direct.
+        n1 = _make_node(id=1, name="a", address="1.1.1.1", chain_node_id=2)
+        n2 = _make_node(id=2, name="b", address="2.2.2.2", chain_node_id=1)
+        cfg = generate_config(n1, [n1, n2], [], "global", _default_settings())
+        assert _find_outbound(cfg, "node-1")["proxySettings"]["tag"] == "node-2"
+        assert "proxySettings" not in _find_outbound(cfg, "node-2")
+
 
 # ============================================================================
 # Balancer tests
