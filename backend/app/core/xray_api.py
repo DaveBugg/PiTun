@@ -91,9 +91,16 @@ async def remove_routing_rules(rule_tags: List[str]) -> bool:
 
 
 async def override_balancer(balancer_tag: str, outbound_tags: List[str]) -> bool:
-    """Override which outbounds a balancer selects (bo = balancer override)."""
-    # bo command: xray api bo <balancerTag> <outbound1> <outbound2> ...
-    rc, out, err = await _run_api("bo", balancer_tag, *outbound_tags)
+    """Override which outbound a balancer selects (bo = balancer override).
+
+    xray 26.x usage: `xray api bo [--server=…] -b <balancer> <outboundTag…>`
+    — the balancer tag MUST be passed via the `-b` flag, not positionally
+    (a bare positional gives "balancer tag not specified"). This pins the
+    balancer to a specific member, which is how NodeCircle rotation hot-swaps
+    the active node with zero restart (live connections keep their current
+    outbound; only new ones use the override target).
+    """
+    rc, out, err = await _run_api("bo", "-b", balancer_tag, *outbound_tags)
     if rc != 0:
         logger.debug("xray api bo failed: %s", err.strip())
         return False

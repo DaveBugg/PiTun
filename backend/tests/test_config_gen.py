@@ -1036,3 +1036,68 @@ class TestRoutingSetRules:
                 first_work_idx = first_work_idx if first_work_idx is not None else i
         assert first_kids_idx is not None and first_work_idx is not None
         assert first_kids_idx < first_work_idx
+
+
+class TestNodeCircleBalancer:
+    """Active-NodeCircle balancer indirection — the foundation of seamless
+    rotation: an enabled circle routes proxy traffic at a balancer over ALL
+    members (preloaded), so rotation hot-swaps the selected node via the gRPC
+    balancerOverride API with no xray restart (live connections survive)."""
+
+    def _wg(self, id, relay_id=5):
+        return _make_node(
+            id=id, protocol="wireguard",
+            wg_private_key="cHJpdmtleXByaXZrZXlwcml2a2V5cHJpdmtleXByaT0=",
+            wg_public_key="cHVia2V5cHVia2V5cHVia2V5cHVia2V5cHVia2V5cHU9",
+            wg_endpoint=f"203.0.113.{id}:51820", address=f"203.0.113.{id}",
+            chain_node_id=relay_id,
+        )
+
+    def test_active_circle_emits_balancer_and_routes_via_it(self):
+        relay = _make_node(id=5, protocol="vless")
+        nodes = [relay, self._wg(14), self._wg(15), self._wg(16)]
+        cfg = generate_config(
+            self._wg(14), nodes, [], "global", _default_settings(),
+            active_circle_id=2, active_circle_node_ids=[14, 15, 16],
+        )
+        bals = cfg["routing"].get("balancers", [])
+        cb = next((b for b in bals if b["tag"] == "circle-2"), None)
+        assert cb is not None, "circle balancer must be emitted"
+        assert set(cb["selector"]) == {"node-14", "node-15", "node-16"}
+        # every member (+ the shared relay) preloaded so rotation can hot-swap
+        for tag in ("node-5", "node-14", "node-15", "node-16"):
+            assert _find_outbound(cfg, tag) is not None, f"{tag} must be preloaded"
+        # global catch-all routes to the balancer, NOT a single node outbound
+        catchall = [r for r in cfg["routing"]["rules"] if r.get("ip") == ["0.0.0.0/0", "::/0"]]
+        assert any(r.get("balancerTag") == "circle-2" for r in catchall)
+        assert not any(str(r.get("outboundTag", "")).startswith("node-") for r in catchall)
+
+    def test_circle_proxy_rule_targets_balancer(self):
+        relay = _make_node(id=5, protocol="vless")
+        rule = RoutingRule(
+            id=1, name="all", rule_type="domain", match_value="example.com",
+            action="proxy", enabled=True, order=0, routing_set_id=None,
+        )
+        cfg = generate_config(
+            self._wg(14), [relay, self._wg(14), self._wg(15)], [rule], "rules",
+            _default_settings(), active_circle_id=2, active_circle_node_ids=[14, 15],
+        )
+        assert any(r.get("balancerTag") == "circle-2" for r in cfg["routing"]["rules"]), \
+            "proxy rule must target the circle balancer when a circle is active"
+
+    def test_no_active_circle_routes_to_single_node(self):
+        node = _make_node(id=14)
+        cfg = generate_config(node, [node], [], "global", _default_settings())
+        catchall = [r for r in cfg["routing"]["rules"] if r.get("ip") == ["0.0.0.0/0", "::/0"]]
+        assert any(r.get("outboundTag") == "node-14" for r in catchall)
+        assert not cfg["routing"].get("balancers")
+
+    def test_resolve_active_circle_respects_enabled_and_membership(self):
+        from app.core.config_gen import resolve_active_circle
+
+        class _C:
+            def __init__(self, id, enabled, ids):
+                self.id, self.enabled, self.node_ids = id, enabled, json.dumps(ids)
+        assert resolve_active_circle([_C(2, False, [14, 15])], 14) == (None, None)
+        assert resolve_active_circle([_C(2, True, [14, 15])], 14) == (2, [14, 15])
+        assert resolve_active_circle([_C(2, True, [14, 15])], 99) == (None, None)

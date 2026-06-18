@@ -538,13 +538,45 @@ async def set_mode(body: ModeUpdate, session: AsyncSession = Depends(get_session
     await session.commit()
 
 
+async def _pin_circle_balancer(session: AsyncSession, node_id: int) -> None:
+    """If `node_id` belongs to a running NodeCircle, pin that circle's xray
+    balancer to it via gRPC balancerOverride. The config routes circle proxy
+    traffic at a balancer over all members (cold-start strategy = random), so
+    after a (re)load we must override to the actually-selected node.
+    Best-effort — silently skipped if the API isn't up."""
+    try:
+        from app.core import xray_api
+        from app.core.config_gen import resolve_active_circle
+        from app.models import NodeCircle
+        circles = list((await session.exec(select(NodeCircle))).all())
+        cid, member_ids = resolve_active_circle(circles, node_id)
+        if cid and node_id in (member_ids or []) and await xray_api.is_api_available():
+            await xray_api.override_balancer(f"circle-{cid}", [f"node-{node_id}"])
+    except Exception as exc:
+        logging.getLogger(__name__).debug("pin circle balancer skipped: %s", exc)
+
+
 @router.post("/active-node", status_code=204)
 async def set_active_node(body: ActiveNodeUpdate, session: AsyncSession = Depends(get_session)):
+    from app.core.xray import xray_manager
+
     node = await session.get(Node, body.node_id)
     if not node:
         raise HTTPException(404, "Node not found")
     await _set_setting(session, "active_node_id", str(body.node_id))
     await session.commit()
+
+    # Switching the active node must actually APPLY it: regenerate the xray
+    # config (picks the new active outbound + wires its chain) and hot-reload.
+    # Without this the DB flips but xray keeps serving the PREVIOUS node — so
+    # activating a WireGuard chain left traffic exiting the old node and the
+    # real exit IP never changed, even though the UI showed the new node.
+    await _regenerate_and_write(session)
+    settings_map = await _load_settings_map(session)
+    await _apply_nftables(session, settings_map)
+    if xray_manager.is_running:
+        await xray_manager.reload()
+    await _pin_circle_balancer(session, body.node_id)
 
 
 # ── Settings ──────────────────────────────────────────────────────────────────
@@ -983,9 +1015,16 @@ async def _regenerate_and_write(session: AsyncSession, *, _self_heal_attempts: i
     dns_rules = list((await session.exec(select(DNSRule).where(DNSRule.enabled == True))).all())
     balancer_groups = list((await session.exec(select(BalancerGroup))).all())
     routing_sets, device_set_macs = await collect_routing_set_context(session)
+    from app.models import NodeCircle
+    from app.core.config_gen import resolve_active_circle
+    circles = list((await session.exec(select(NodeCircle))).all())
+    active_circle_id, active_circle_node_ids = resolve_active_circle(
+        circles, active_node.id if active_node else None
+    )
     config = generate_config(
         active_node, all_nodes, rules, mode, settings_map, dns_rules, balancer_groups,
         routing_sets=routing_sets, device_set_macs=device_set_macs,
+        active_circle_id=active_circle_id, active_circle_node_ids=active_circle_node_ids,
     )
 
     # On retry passes we skip pre-flight to avoid recursive cost — the

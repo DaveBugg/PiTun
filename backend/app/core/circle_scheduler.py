@@ -399,57 +399,62 @@ class CircleScheduler:
     async def _seamless_rotate(
         self, prev_node_id: int, next_node_id: int
     ) -> None:
+        new_tag = f"node-{next_node_id}"
         try:
             from app.core.xray import xray_manager
             if not xray_manager.is_running:
                 return
-
             from app.core import xray_api
-            from app.core.config_gen import _build_outbound, _stream_settings
+            from app.core.config_gen import resolve_active_circle
 
-            if not await xray_api.is_api_available():
-                logger.warning("xray API not available, falling back to full restart")
-                await self._full_reload()
-                return
-
+            # Resolve the circle the rotated node belongs to. When the live
+            # config routes that circle's proxy traffic at a balancer over all
+            # preloaded members, we can hot-swap the selected member with a
+            # single gRPC balancerOverride — xray picks the outbound per NEW
+            # connection, so existing connections keep their current member and
+            # finish naturally. Zero restart, zero outbound churn.
             async with AsyncSession(get_async_engine()) as session:
-                next_node = await session.get(Node, next_node_id)
-                if not next_node:
-                    logger.error("Node %d not found for seamless rotation", next_node_id)
-                    await self._full_reload()
-                    return
-                try:
-                    new_outbound = _build_outbound(next_node)
-                except Exception as exc:
-                    logger.error("Failed to build outbound for node %d: %s", next_node_id, exc)
-                    return
+                from app.models import NodeCircle
+                circles = list((await session.exec(select(NodeCircle))).all())
+                cid, member_ids = resolve_active_circle(circles, next_node_id)
 
-            new_tag = f"node-{next_node_id}"
-            old_tag = f"node-{prev_node_id}"
-
-            added = await xray_api.add_outbound(new_outbound)
-            if not added:
-                # `add_outbound` already retries on "existing tag found" via
-                # its idempotency path. Any other failure means the live xray
-                # doesn't know about the new outbound — writing config file
-                # alone would leave live state desynced. Fall back to a full
-                # reload so live xray and config file agree.
-                logger.warning(
-                    "Seamless rotation: add_outbound(%s) failed — falling back to full reload",
-                    new_tag,
+            in_balancer = bool(
+                cid and member_ids and next_node_id in member_ids
+            )
+            if in_balancer and await xray_api.is_api_available():
+                bal_tag = f"circle-{cid}"
+                if await xray_api.override_balancer(bal_tag, [new_tag]):
+                    await self._update_config_file()  # keep file's selector/active in sync
+                    logger.info(
+                        "Seamless rotation: balancerOverride %s → %s "
+                        "(live connections finish on their current node)",
+                        bal_tag, new_tag,
+                    )
+                    return
+                # Override missed — the balancer/members aren't loaded in the
+                # live xray yet (config predates this circle being active).
+                # Reload to materialize them, then pin the rotated node.
+                logger.info(
+                    "balancerOverride(%s) miss — reloading to materialize circle balancer",
+                    bal_tag,
                 )
                 await self._full_reload()
+                try:
+                    await xray_api.override_balancer(bal_tag, [new_tag])
+                except Exception:
+                    pass
                 return
 
-            await self._update_config_file()
-
-            logger.info(
-                "Seamless rotation: %s → %s (old connections finish naturally)",
-                old_tag, new_tag,
+            # No circle balancer (single-node active) or API down → the only
+            # way to apply is a full reload (restart, drops live connections).
+            logger.warning(
+                "Rotation to %s: no circle balancer / xray API unavailable — full reload",
+                new_tag,
             )
+            await self._full_reload()
 
         except Exception as exc:
-            logger.error("Seamless rotation failed, falling back to full restart: %s", exc)
+            logger.error("Seamless rotation failed, falling back to full reload: %s", exc)
             await self._full_reload()
 
     async def _update_config_file(self) -> None:
@@ -471,12 +476,16 @@ class CircleScheduler:
                 dns_rules = list((await session.exec(select(DNSRule).where(DNSRule.enabled == True))).all())
                 balancer_groups = list((await session.exec(select(BalancerGroup))).all())
                 mode = settings_map.get("mode", "rules")
-                from app.core.config_gen import collect_routing_set_context
+                from app.core.config_gen import collect_routing_set_context, resolve_active_circle
+                from app.models import NodeCircle
                 routing_sets, device_set_macs = await collect_routing_set_context(session)
+                circles = list((await session.exec(select(NodeCircle))).all())
+                acid, acids = resolve_active_circle(circles, active_node.id if active_node else None)
                 config = generate_config(
                     active_node, all_nodes, rules, mode, settings_map,
                     dns_rules, balancer_groups,
                     routing_sets=routing_sets, device_set_macs=device_set_macs,
+                    active_circle_id=acid, active_circle_node_ids=acids,
                 )
                 await write_config(config)
         except Exception as exc:

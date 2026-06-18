@@ -419,6 +419,11 @@ async def import_nodes(
     from app.core.uri_parser import parse_uri_list
 
     parsed = parse_uri_list(body.uris)
+    # "Name from filename" (single-config file upload): override the parsed
+    # node's name only when exactly one node came through, so a multi-URI
+    # paste/subscription file never collapses every node to the same name.
+    if body.name_override and len(parsed) == 1:
+        parsed[0]["name"] = body.name_override
     imported = 0
     skipped = 0
     errors: List[str] = []

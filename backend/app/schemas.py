@@ -196,6 +196,11 @@ class NaiveSidecarLogs(BaseModel):
 
 class NodeImportRequest(BaseModel):
     uris: str  # newline-separated or single URI
+    # When set AND exactly one node parses (single-config file import, e.g.
+    # a WireGuard .conf), override that node's name with this value — backs
+    # the "name from filename" toggle in the file-upload UI. Ignored for
+    # multi-URI input so a paste of many URIs never collapses to one name.
+    name_override: Optional[str] = None
 
 
 class NodeImportResponse(BaseModel):

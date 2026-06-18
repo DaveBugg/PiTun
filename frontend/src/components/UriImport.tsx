@@ -39,18 +39,39 @@ export function UriImport({ onDone, onCancel }: Props) {
   const [result, setResult] = useState<{ imported: number; skipped: number; errors: string[] } | null>(null)
   const fileRef = useRef<HTMLInputElement>(null)
   const qc = useQueryClient()
+  const [fileName, setFileName] = useState<string | null>(null)
+  const [nameFromFile, setNameFromFile] = useState(true)
+  const [dragActive, setDragActive] = useState(false)
 
   const { mutate: importNodes, isPending: importingUris } = useImportNodes()
   const [importingJson, setImportingJson] = useState(false)
   const isPending = importingUris || importingJson
 
+  // Strip the last extension: "my-vpn.conf" -> "my-vpn".
+  const stripExt = (n: string) => n.replace(/\.[^/.]+$/, '')
+
+  // Shared by the file picker and drag-drop: read the file's text into the
+  // editor, remember its name (for the "name from filename" toggle), and
+  // flip to the text tab so the parsed content is visible/editable.
+  const loadFile = (file: File) => {
+    const reader = new FileReader()
+    reader.onload = (ev) => setUris((ev.target?.result as string) ?? '')
+    reader.readAsText(file)
+    setFileName(stripExt(file.name))
+    setNameFromFile(true)
+    setTab('text')
+  }
+
   const handleFile = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
-    if (!file) return
-    const reader = new FileReader()
-    reader.onload = (ev) => setUris(ev.target?.result as string ?? '')
-    reader.readAsText(file)
-    setTab('text')
+    if (file) loadFile(file)
+  }
+
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault()
+    setDragActive(false)
+    const file = e.dataTransfer.files?.[0]
+    if (file) loadFile(file)
   }
 
   const handleSubmit = async () => {
@@ -77,9 +98,9 @@ export function UriImport({ onDone, onCancel }: Props) {
       }
       return
     }
-    // URI list — paste or .txt file contents.
+    // URI list — paste or file contents (.txt/.conf/.yaml/base64…).
     importNodes(
-      { uris },
+      { uris, nameOverride: nameFromFile && fileName ? fileName : undefined },
       {
         onSuccess: (data) => {
           setResult({ imported: data.imported, skipped: data.skipped, errors: data.errors })
@@ -112,20 +133,27 @@ export function UriImport({ onDone, onCancel }: Props) {
 
       {tab === 'file' && (
         <div
-          className="flex flex-col items-center justify-center rounded-xl border-2 border-dashed border-gray-700 py-10 cursor-pointer hover:border-gray-600 transition-colors"
+          className={clsx(
+            'flex flex-col items-center justify-center rounded-xl border-2 border-dashed py-10 cursor-pointer transition-colors',
+            dragActive ? 'border-brand-500 bg-brand-500/5' : 'border-gray-700 hover:border-gray-600',
+          )}
           onClick={() => fileRef.current?.click()}
+          onDragEnter={(e) => { e.preventDefault(); setDragActive(true) }}
+          onDragOver={(e) => { e.preventDefault(); setDragActive(true) }}
+          onDragLeave={(e) => { e.preventDefault(); setDragActive(false) }}
+          onDrop={handleDrop}
         >
-          <Upload className="h-8 w-8 text-gray-600 mb-2" />
-          <p className="text-sm text-gray-400">Click to upload a nodes file</p>
-          <p className="text-xs text-gray-600 mt-1">Auto-detect: PiTun JSON bundle, URI list, Clash YAML, base64</p>
-          <input ref={fileRef} type="file" className="hidden" accept=".txt,.yaml,.yml,.json" onChange={handleFile} />
+          <Upload className={clsx('h-8 w-8 mb-2', dragActive ? 'text-brand-400' : 'text-gray-600')} />
+          <p className="text-sm text-gray-400">{dragActive ? 'Drop the file here' : 'Click to upload or drag & drop a nodes file'}</p>
+          <p className="text-xs text-gray-600 mt-1">Auto-detect: PiTun JSON bundle, URI list, Clash YAML, WireGuard .conf, base64</p>
+          <input ref={fileRef} type="file" className="hidden" accept=".txt,.yaml,.yml,.json,.conf,.ini" onChange={handleFile} />
         </div>
       )}
 
       {tab === 'text' && (
         <textarea
           value={uris}
-          onChange={(e) => setUris(e.target.value)}
+          onChange={(e) => { setUris(e.target.value); setFileName(null) }}
           rows={10}
           placeholder={`Paste proxy URIs (one per line) or a PiTun JSON bundle — format is auto-detected:\n\nvless://...\nvmess://...\ntrojan://...\nnaive+https://user:pass@example.com:443/?padding=1#MyNaive`}
           className="w-full rounded-lg bg-gray-800 border border-gray-700 px-3 py-2 text-sm text-gray-100 font-mono focus:border-brand-500 focus:outline-none resize-none"
@@ -138,6 +166,19 @@ export function UriImport({ onDone, onCancel }: Props) {
             {detectKind(uris) === 'json' ? 'PiTun JSON bundle' : 'URI list / Clash / base64'}
           </span>
         </p>
+      )}
+
+      {fileName && detectKind(uris) !== 'json' && (
+        <label className="flex items-center gap-2 text-xs text-gray-400 cursor-pointer select-none">
+          <input
+            type="checkbox"
+            checked={nameFromFile}
+            onChange={(e) => setNameFromFile(e.target.checked)}
+            className="h-3.5 w-3.5 rounded border-gray-600 bg-gray-800 text-brand-600 focus:ring-brand-500"
+          />
+          Use filename as node name (<span className="font-mono text-gray-300">{fileName}</span>)
+          <span className="text-gray-600">— single-config files only</span>
+        </label>
       )}
 
       {result && (

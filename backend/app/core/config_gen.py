@@ -475,14 +475,27 @@ _PRIVATE_CIDRS = [
 ]
 
 
-def _routing_rule_to_xray(rule: RoutingRule, active_node_id: Optional[int]) -> Optional[Dict[str, Any]]:
-    """Convert a RoutingRule DB row to an xray routing rule dict."""
+def _routing_rule_to_xray(
+    rule: RoutingRule,
+    active_node_id: Optional[int],
+    active_balancer_tag: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    """Convert a RoutingRule DB row to an xray routing rule dict.
+
+    When `active_balancer_tag` is set (the active node belongs to a running
+    NodeCircle), `action == "proxy"` targets that balancer instead of a
+    single `node-<id>` outbound — so circle rotation can hot-swap the
+    selected node via the gRPC balancerOverride API without a restart.
+    """
     values = [v.strip() for v in rule.match_value.split(",") if v.strip()]
 
     xray_rule: Dict[str, Any] = {"type": "field"}
 
     if rule.action == "proxy":
-        xray_rule["outboundTag"] = f"node-{active_node_id}" if active_node_id else "direct"
+        if active_balancer_tag:
+            xray_rule["balancerTag"] = active_balancer_tag
+        else:
+            xray_rule["outboundTag"] = f"node-{active_node_id}" if active_node_id else "direct"
     elif rule.action == "direct":
         xray_rule["outboundTag"] = "direct"
     elif rule.action == "block":
@@ -760,6 +773,29 @@ def _build_tun_inbound(settings_map: Dict[str, str]) -> Dict[str, Any]:
     return inbound
 
 
+def resolve_active_circle(circles, active_node_id):
+    """Return (circle_id, member_node_ids) of the enabled NodeCircle that
+    contains `active_node_id`, else (None, None).
+
+    Callers pass the active circle into `generate_config` so the proxy
+    traffic routes via a per-circle balancer over all members — that's what
+    lets rotation hot-swap the selected node through the gRPC balancerOverride
+    API without restarting xray (live connections survive).
+    """
+    if not active_node_id:
+        return None, None
+    for c in circles or []:
+        if not getattr(c, "enabled", False):
+            continue
+        try:
+            ids = json.loads(c.node_ids) if isinstance(c.node_ids, str) else (c.node_ids or [])
+        except Exception:
+            ids = []
+        if active_node_id in ids:
+            return c.id, list(ids)
+    return None, None
+
+
 def generate_config(
     active_node: Optional[Node],
     all_nodes: List[Node],
@@ -770,6 +806,8 @@ def generate_config(
     balancer_groups: Optional[List[BalancerGroup]] = None,
     routing_sets: Optional[List[RoutingSet]] = None,
     device_set_macs: Optional[Dict[int, List[str]]] = None,
+    active_circle_id: Optional[int] = None,
+    active_circle_node_ids: Optional[List[int]] = None,
 ) -> Dict[str, Any]:
     """Build full xray JSON configuration.
 
@@ -984,6 +1022,32 @@ def generate_config(
         except Exception as exc:
             logger.error("Failed to build outbound for node %d: %s", active_node.id, exc)
 
+    # NodeCircle members: when the active node belongs to a running circle,
+    # preload EVERY member's outbound (+ its chain) and route proxy traffic at
+    # a balancer over them (built below). Rotation then hot-swaps the selected
+    # member via the gRPC balancerOverride API — no xray restart, so live
+    # connections survive (xray picks the outbound per-connection at dispatch).
+    circle_member_tags: List[str] = []
+    circle_active = bool(active_circle_id and active_circle_node_ids and active_node)
+    if circle_active:
+        for nid in active_circle_node_ids:
+            tag = f"node-{nid}"
+            if not any(o.get("tag") == tag for o in outbounds):
+                node = next((n for n in all_nodes if n.id == nid), None)
+                if node and node.enabled:
+                    try:
+                        ob = _build_outbound(node)
+                        _apply_chain(node, ob, outbounds, used_ids, all_nodes)
+                        outbounds.append(ob)
+                        used_ids.add(nid)
+                    except Exception as exc:
+                        logger.warning("Circle member node %d skip: %s", nid, exc)
+            if any(o.get("tag") == tag for o in outbounds):
+                circle_member_tags.append(tag)
+    active_balancer_tag = (
+        f"circle-{active_circle_id}" if (circle_active and circle_member_tags) else None
+    )
+
     # Additional nodes for "node:<id>" routing rules
     for node in all_nodes:
         if node.id not in used_ids and node.enabled:
@@ -1056,6 +1120,18 @@ def generate_config(
                     "strategy": {"type": bg.strategy},
                 })
 
+    # Active-NodeCircle balancer. Selector lists every preloaded member; the
+    # actually-selected member is pinned at runtime via balancerOverride (the
+    # apply path overrides to active_node on (re)load, the scheduler overrides
+    # to the next member on rotation). `random` is just a valid cold-start
+    # default before the first override lands.
+    if active_balancer_tag and circle_member_tags:
+        xray_balancers.append({
+            "tag": active_balancer_tag,
+            "selector": circle_member_tags,
+            "strategy": {"type": "random"},
+        })
+
     # Routing
     routing_rules: List[Dict[str, Any]] = [
         # Stats API: route api inbound to api outbound (internal)
@@ -1099,10 +1175,14 @@ def generate_config(
     elif mode == "global":
         if bypass_private:
             routing_rules.append({"type": "field", "ip": _PRIVATE_CIDRS, "outboundTag": "direct"})
+        _global_target = (
+            {"balancerTag": active_balancer_tag} if active_balancer_tag
+            else {"outboundTag": f"node-{active_node.id}" if active_node else "direct"}
+        )
         routing_rules.append({
             "type": "field",
             "ip": ["0.0.0.0/0", "::/0"],
-            "outboundTag": f"node-{active_node.id}" if active_node else "direct",
+            **_global_target,
         })
     else:
         # rules mode
@@ -1137,7 +1217,7 @@ def generate_config(
             for rule in sorted_rules:
                 if rule.routing_set_id != sid:
                     continue
-                xray_rule = _routing_rule_to_xray(rule, active_node_id)
+                xray_rule = _routing_rule_to_xray(rule, active_node_id, active_balancer_tag)
                 if xray_rule:
                     xray_rule["inboundTag"] = [tag]
                     routing_rules.append(xray_rule)
@@ -1148,7 +1228,7 @@ def generate_config(
         # (matched by inboundTag), then falls through to globals.
         for rule in sorted_rules:
             if rule.routing_set_id is None:
-                xray_rule = _routing_rule_to_xray(rule, active_node_id)
+                xray_rule = _routing_rule_to_xray(rule, active_node_id, active_balancer_tag)
                 if xray_rule:
                     routing_rules.append(xray_rule)
 

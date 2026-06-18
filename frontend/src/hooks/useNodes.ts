@@ -82,8 +82,8 @@ export function useDeleteNode() {
 export function useImportNodes() {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: ({ uris, subscriptionId }: { uris: string; subscriptionId?: number }) =>
-      nodesApi.import({ uris }, subscriptionId),
+    mutationFn: ({ uris, subscriptionId, nameOverride }: { uris: string; subscriptionId?: number; nameOverride?: string }) =>
+      nodesApi.import({ uris, name_override: nameOverride }, subscriptionId),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['nodes'] }),
   })
 }

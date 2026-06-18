@@ -28,12 +28,26 @@ class TestMode:
 
 class TestActiveNode:
     def test_set_active_node(self, client, admin_user, auth_headers, default_settings, sample_node):
-        resp = client.post(
-            "/api/system/active-node",
-            json={"node_id": sample_node.id},
-            headers=auth_headers,
-        )
+        # Switching the active node must regenerate the xray config + hot-reload
+        # so the switch actually APPLIES. Regression: it used to only flip the
+        # `active_node_id` DB row, leaving xray on the previous node — so
+        # activating a WireGuard chain never took effect (traffic kept exiting
+        # the old node). Assert the config got regenerated on the switch.
+        write_mock = AsyncMock(return_value=None)
+        with (
+            patch("app.core.config_gen.generate_config", return_value={}),
+            patch("app.core.config_gen.write_config", write_mock),
+            patch("app.core.xray.xray_manager", _make_mock_xray()),
+            patch("app.core.nftables.nftables_manager", _make_mock_nftables()),
+            patch("app.core.device_scanner.get_device_macs_for_mode", _make_mock_device_macs()),
+        ):
+            resp = client.post(
+                "/api/system/active-node",
+                json={"node_id": sample_node.id},
+                headers=auth_headers,
+            )
         assert resp.status_code == 204
+        assert write_mock.await_count >= 1  # config regenerated on node switch
 
     def test_set_active_node_not_found(self, client, admin_user, auth_headers, default_settings):
         resp = client.post(

@@ -4,6 +4,39 @@ All notable user-facing changes to PiTun. Full per-release detail lives in the
 [GitHub Releases](https://github.com/DaveBugg/PiTun/releases); this file is the
 committed summary.
 
+## v1.4.5 — 2026-06-18
+
+Node-circle rotation that no longer drops connections, a fix so switching the
+active node (WireGuard chains especially) actually takes effect, and node-import
+quality-of-life (drag & drop, `.conf` files, name-from-filename).
+
+### Fixed
+
+- **Switching the active node now applies immediately.** `POST /api/system/active-node`
+  only wrote the DB row — it never regenerated the xray config or reloaded xray,
+  so activating a node (a WireGuard chain especially) left traffic exiting the
+  *previous* node while the UI showed the new one. It now regenerates + hot-reloads.
+- **Balancer override silently failed.** `xray api bo` was called with the balancer
+  tag positionally instead of via `-b <tag>` ("balancer tag not specified"), so
+  every runtime balancer override was a no-op.
+
+### Added
+
+- **Seamless NodeCircle rotation.** An enabled circle now routes proxy traffic at a
+  per-circle xray balancer over all preloaded members; rotation hot-swaps the
+  selected node via the gRPC `balancerOverride` API — no xray restart, so live
+  connections finish on their current node and only new ones move. Manual
+  active-node switches into a circle pin the balancer the same way.
+- **Node import UX.** The upload box now accepts **drag & drop**, the file picker
+  allows WireGuard `.conf` (and `.ini`), and a **"name from filename"** toggle names
+  a single-config import after the dropped file.
+
+### Notes
+
+- WireGuard can still only be a chain's **exit** hop — it can't carry transit as a
+  relay (verified again live: a mid-chain WG forwards 0 bytes). The circle balancer
+  preloads each member together with its stream relay, so WG-circle rotation works.
+
 ## v1.4.4 — 2026-06-16
 
 Multi-hop node chaining that actually wires every hop, a Route Explainer that

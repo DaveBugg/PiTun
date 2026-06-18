@@ -89,6 +89,9 @@ export type NodeUpdate = Partial<NodeCreate>
 
 export interface NodeImportRequest {
   uris: string
+  /** Override the parsed node's name when exactly one node parses
+   *  (file upload "name from filename" toggle). */
+  name_override?: string
 }
 
 /**
