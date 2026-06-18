@@ -4,6 +4,57 @@ All notable user-facing changes to PiTun. Full per-release detail lives in the
 [GitHub Releases](https://github.com/DaveBugg/PiTun/releases); this file is the
 committed summary.
 
+## v1.4.4 — 2026-06-16
+
+Multi-hop node chaining that actually wires every hop, a Route Explainer that
+accepts pasted URLs, and a frontend toolchain refresh (Vite 5→8 / Rolldown) that
+drops the vulnerable esbuild dependency. Plus security bumps for react-router and
+build-time transitives.
+
+### Added
+
+- **Recursive multi-hop node chaining.** `config_gen` now follows `chain_node_id`
+  transitively, wiring proxySettings (→ `sockopt.dialerProxy`) at every hop with
+  cycle detection and a depth cap. A 3-node chain (exit → mid → entry) generates
+  fully; previously only the first link was wired and deeper relays silently
+  dialed direct, collapsing the chain.
+
+### Changed
+
+- **WireGuard can only be a chain's exit hop.** xray can't tunnel traffic THROUGH
+  a WireGuard outbound — as a relay it forwards 0 bytes (config is accepted, xray
+  starts, traffic dies; verified live: WG-over-VLESS works, VLESS-over-WG and
+  WG-over-WG = 0 B). Enforced three ways: the nodes API rejects pointing a chain
+  at a WireGuard node (400), config_gen skips a WG-relay link with a warning, and
+  the Node form omits WireGuard from the "chain via" dropdown.
+- **Frontend build moved to Vite 8 / Rolldown** (`@vitejs/plugin-react` 4→6),
+  which removes the bundled esbuild entirely.
+
+### Fixed
+
+- **Route Explainer accepts a full URL.** Pasting `https://host/path` resolved the
+  whole string as a domain → confusing NXDOMAIN. It now extracts the bare host
+  (strips scheme / userinfo / path / port, leaves bare IPv6 intact).
+
+### Security / dependencies
+
+- Dropping esbuild (via the Vite 8 bump) closes 2 dev-scope esbuild advisories
+  (Deno integrity GHSA-gv7w-rqvm-qjhr; Windows dev-server file read
+  GHSA-g7r4-m6w7-qqqr) and the Vite ≤6.4.1 path-traversal (GHSA-4w7w-66w2-5vf9).
+- `react-router` / `react-router-dom` 7.15.0 → 7.18.0 — CSRF via PUT/PATCH/DELETE
+  document requests (GHSA-84g9-w2xq-vcv6).
+- Build-time transitives patched via `npm audit fix`: `@babel/core` (arbitrary
+  file read), `form-data` (CRLF injection), `js-yaml` (DoS). `npm audit` → 0.
+
+### Notes
+
+- No breaking changes, no schema migration (alembic head stays at `017`).
+- The frontend now builds with Rolldown — output is functionally identical;
+  verified in a browser (authenticated, 0 console errors).
+- Backend suite 762 passing; 25 frontend tests passing; `npm audit` clean.
+
+**Full Changelog:** https://github.com/DaveBugg/PiTun/compare/v1.4.3...v1.4.4
+
 ## v1.4.3 — 2026-06-15
 
 Set-aware routing rule **export/import** (pick scopes, resolve conflicts, import
