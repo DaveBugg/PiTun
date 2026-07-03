@@ -4,6 +4,25 @@ All notable user-facing changes to PiTun. Full per-release detail lives in the
 [GitHub Releases](https://github.com/DaveBugg/PiTun/releases); this file is the
 committed summary.
 
+## v1.4.6 — 2026-07-03
+
+Two fixes from field-testing multi-hop chains: removing a node's chain (or its
+Server link) now actually saves, and a failed speed test now tells you *why*
+instead of a blank "couldn't start".
+
+### Fixed
+
+- **Removing a chain / Server link now persists.** Clearing a node's *"Chain via"*
+  relay (or its optional Server link) never stuck — you could add a chain but never
+  remove it. The form sent the cleared field as `undefined`, which `JSON.stringify`
+  drops, so it never reached the `PATCH` body and the backend's
+  `model_dump(exclude_unset=True)` kept the old value. The form now sends an explicit
+  `null`, which the backend nulls out correctly. Affects `chain_node_id` and `server_id`.
+- **Speed test surfaces the real xray error.** A node test that couldn't start its
+  throwaway xray always showed a generic *"Failed to start temp xray"*, hiding the
+  cause. `_start_temp_xray` now propagates xray's own error into the result, so the UI
+  shows the actionable reason — e.g. `xray: invalid "shortId"` or `xray: empty publicKey`.
+
 ## v1.4.5 — 2026-06-18
 
 Node-circle rotation that no longer drops connections, a fix so switching the

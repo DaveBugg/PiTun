@@ -70,10 +70,10 @@ export interface Node {
   last_check?: string
   is_online: boolean
   order: number
-  chain_node_id?: number
+  chain_node_id?: number | null
   // Optional link to a Server (the VPS hosting this node's upstream).
   // Purely informational — does not affect routing/connection.
-  server_id?: number
+  server_id?: number | null
   // Optional link to a DeploymentClient — set on Nodes that were
   // exported from a multi-client server-side deployment (WireGuard).
   // Drives the "from server X" source label and the orphan badge.

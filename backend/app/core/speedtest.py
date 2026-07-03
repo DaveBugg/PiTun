@@ -87,9 +87,9 @@ async def speedtest_node(node: Node) -> Dict:
         if not resolved_urls:
             return _result(node, error="Failed to resolve any test URL")
 
-        socks_port, proc, tmp_path = await _start_temp_xray(node, chain, entry_ip)
+        socks_port, proc, tmp_path, start_err = await _start_temp_xray(node, chain, entry_ip)
         if proc is None:
-            return _result(node, error="Failed to start temp xray")
+            return _result(node, error=start_err or "Failed to start temp xray")
 
         return await _run_curl_speedtest(node, socks_port, resolved_urls)
 
@@ -151,7 +151,7 @@ async def _resolve_test_urls() -> List[Tuple[str, str, str, int]]:
 
 async def _start_temp_xray(
     node: Node, chain: List[Node], entry_ip: Optional[str]
-) -> Tuple[int, Optional[asyncio.subprocess.Process], Optional[str]]:
+) -> Tuple[int, Optional[asyncio.subprocess.Process], Optional[str], Optional[str]]:
     """
     Start a minimal xray instance bound to 127.0.0.1:<random>.
 
@@ -189,7 +189,7 @@ async def _start_temp_xray(
             outbounds_chain.append(ob)
     except Exception as exc:
         logger.warning("Cannot build chain outbounds for node %d: %s", node.id, exc)
-        return 0, None, None
+        return 0, None, None, f"chain build error: {exc}"
 
     final_tag = outbounds_chain[-1]["tag"]
 
@@ -241,9 +241,13 @@ async def _start_temp_xray(
             err = (stderr_data or stdout_data or b"").decode(errors="replace")[-300:]
             logger.warning("Temp xray for node %d died early: %s", node.id, err)
             _safe_unlink(tmp_path)
-            return 0, None, None
+            # Surface the real reason (last segment of xray's error chain) to
+            # the UI instead of a generic "failed to start" — e.g. an invalid
+            # reality shortId or empty publicKey is otherwise invisible.
+            reason = err.strip().rsplit(">", 1)[-1].strip() or "xray exited early"
+            return 0, None, None, f"xray: {reason}"
         if await _port_open("127.0.0.1", socks_port):
-            return socks_port, proc, tmp_path
+            return socks_port, proc, tmp_path, None
         await asyncio.sleep(0.15)
 
     # Timed out waiting for port — still alive but unresponsive

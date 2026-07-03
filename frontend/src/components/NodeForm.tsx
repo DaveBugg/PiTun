@@ -81,8 +81,12 @@ export function NodeForm({ initial, onSave, onCancel, loading, nodes = [] }: Pro
     onSave({
       ...form,
       order: initial?.order ?? 0,
-      chain_node_id: chainNodeId ? Number(chainNodeId) : undefined,
-      server_id: serverId ? Number(serverId) : undefined,
+      // Send an explicit `null` (not `undefined`) when cleared — `undefined`
+      // is dropped by JSON.stringify, so the field never reaches the PATCH
+      // body and the backend's `model_dump(exclude_unset=True)` leaves the
+      // old value in place (you could set a chain but never remove it).
+      chain_node_id: chainNodeId ? Number(chainNodeId) : null,
+      server_id: serverId ? Number(serverId) : null,
     })
   }
 
