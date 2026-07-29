@@ -108,6 +108,19 @@ desktop.ini
 .continue/
 .playwright-mcp/
 
+# The markdown "brain" — durable project facts (architecture maps, deploy
+# hosts, known issues, release log) that agents read at session start.
+# Same reason as above: it records the maintainer's specific infrastructure
+# and workflow, which has no place in a public repo.
+memory/
+
+# Code-graph artifact built by codebase-memory-mcp. Regenerable in seconds
+# via index_repository; binary blob, no value in git.
+.codebase-memory/
+
+# Stray directory created by a malformed shell redirect on Windows.
+frontend;C/
+
 # ── Misc ─────────────────────────────────────────────────────────────────────
 /tmp/
 *.tmp

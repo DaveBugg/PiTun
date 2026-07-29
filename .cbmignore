@@ -1,0 +1,38 @@
+# Extra exclusions for codebase-memory-mcp, layered on top of .gitignore.
+# Goal: keep search_graph free of dead symbols from vendored code, build
+# output, and maintainer scratch space.
+
+# Vendored / generated
+node_modules/
+frontend/dist/
+backend/dist/
+build/
+dist/
+
+# Local backup of the pre-public git history — full duplicate of the tree.
+# Indexing it would double every symbol.
+.git.bak/
+
+# Maintainer scratch space (throwaway SSH runners, deploy tarballs)
+.claude_temp/
+
+# Stray empty dir from a malformed shell redirect; safe to delete
+frontend;C/
+
+# Backups / snapshots
+*.bak
+*.bak*
+*.orig
+*.old/
+*_bak_*/
+
+# Agent state
+.serena/
+.claude/
+.cursor/
+.playwright-mcp/
+
+# Runtime data / archives (already gitignored, repeated for safety)
+data/
+*.zip
+*.tar.gz
