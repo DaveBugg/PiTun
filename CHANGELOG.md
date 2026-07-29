@@ -4,6 +4,57 @@ All notable user-facing changes to PiTun. Full per-release detail lives in the
 [GitHub Releases](https://github.com/DaveBugg/PiTun/releases); this file is the
 committed summary.
 
+## v1.4.7 — 2026-07-29
+
+The User-Agent presets a subscription fetches with are no longer baked into the
+code. They now live in an editable table you manage from the Subscriptions page,
+and a template can carry extra request headers for panels that check more than
+the UA string.
+
+### Added
+
+- **User-Agent templates.** The nine presets that used to be two hardcoded Python
+  dicts (`v2ray`, `clash`, `sing-box`, the four Happ profiles, `streisand`,
+  `chrome`) are now ordinary rows in a new `useragenttemplate` table, seeded by
+  migration `018`. Manage them from **Subscriptions → UA templates**: a table with
+  add / edit / delete, and an editor for the name, key, UA string and description.
+  Bumping Happ's app version or Chrome's build number when a panel starts rejecting
+  a stale fingerprint no longer needs a redeploy.
+- **Custom request headers per template.** A template can declare extra headers
+  sent alongside its User-Agent — for panels that also gate on an API key, a
+  `Referer`, or a device fingerprint. Leaving a value **empty removes** that header
+  from the request instead of sending it blank, which is how you drop
+  `Accept-Encoding` for panels that mishandle gzip.
+- **Export / import.** Download the whole catalogue as JSON from the Subscriptions
+  header and restore it on another install. Import is additive by default; matching
+  keys are skipped unless you choose to overwrite them in place (which keeps their
+  row id, so subscriptions stay attached).
+- **Guard rails.** Renaming a template's key re-points every subscription using it
+  in the same transaction. Deleting one that is still in use returns a `409` naming
+  the affected subscriptions, with an explicit "delete anyway" path.
+
+### Fixed
+
+- **Header injection and non-ASCII in operator-supplied headers.** Values are now
+  validated on save. A `CR`/`LF` inside a header value is forwarded verbatim by
+  httpx — a smuggled extra header — and a non-ASCII value raises at send time and
+  would have surfaced hours later as an opaque `last_error` on the subscription.
+  Both are rejected with a clear message instead, in the UI and at the API.
+- **Esc no longer closes a whole modal stack.** `useEscapeKey` listens on
+  `document`, so two open dialogs both closed on one keypress, discarding the
+  half-filled form underneath. `ModalShell` gained `closeOnEscape` for nested
+  dialogs.
+
+### Notes
+
+- Migration `018` seeds the presets with the exact User-Agent strings the hardcoded
+  map used, keyed by the same slugs already stored in `subscription.ua` — existing
+  subscriptions send a byte-identical header set after the upgrade. A regression
+  test pins this by replaying the v1.4.6 logic and diffing the result.
+- `subscription.ua` stays a plain string, not a foreign key: an unknown key falls
+  back to the built-in User-Agent map rather than breaking a refresh, so a deleted
+  template degrades instead of failing.
+
 ## v1.4.6 — 2026-07-03
 
 Two fixes from field-testing multi-hop chains: removing a node's chain (or its

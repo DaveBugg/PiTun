@@ -353,11 +353,47 @@ class RoutingRule(SQLModel, table=True):
     )
 
 
+class UserAgentTemplate(SQLModel, table=True):
+    """A reusable client fingerprint for subscription fetches.
+
+    Replaces the hardcoded `_UA_MAP` / `_HAPP_PROFILES` dicts that used
+    to live in `app/api/subscriptions.py`. Alembic 018 seeds the table
+    with exactly those presets so nothing changes on upgrade — but they
+    are now ordinary editable rows, and the operator can add a template
+    for a panel we've never seen without touching Python.
+
+    Full rationale, header-merge order and the reason Happ's X-* bundle
+    is still generated in code: `app/core/ua_templates.py`.
+    """
+    id: Optional[int] = Field(default=None, primary_key=True)
+    # Stable slug referenced by `Subscription.ua`. Not the display name —
+    # renaming the label is free, changing the key re-points every
+    # subscription using it (the API migrates them, see user_agents.py).
+    key: str = Field(unique=True, index=True)
+    name: str
+    # Literal `User-Agent` header value.
+    user_agent: str = ""
+    # JSON object of extra request headers, merged over the base set at
+    # fetch time: `{"X-Api-Key": "…", "Referer": "https://…"}`.
+    # An empty value drops that header from the request entirely.
+    headers: str = "{}"
+    description: Optional[str] = None
+    # True for the rows seeded by the migration. Purely informational —
+    # built-ins are fully editable and deletable, the flag only drives a
+    # UI badge and a slightly louder delete confirmation.
+    builtin: bool = False
+    # Lower number = earlier in the dropdown.
+    order: int = 100
+
+
 class Subscription(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     name: str
     url: str
     enabled: bool = True
+    # References `UserAgentTemplate.key`. Not a real FK: an unknown key
+    # degrades to the built-in fallback map rather than 500-ing a
+    # refresh, which keeps a deleted template from breaking fetches.
     ua: str = "clash"
     filter_regex: Optional[str] = None
     auto_update: bool = False
@@ -366,9 +402,9 @@ class Subscription(SQLModel, table=True):
     node_count: int = 0
     last_error: Optional[str] = None
     # Optional override for the User-Agent header. When set, replaces
-    # the UA derived from the `ua` preset (`_UA_MAP[ua]`). Only useful
-    # for panels that gate on a fingerprint we don't ship a preset for
-    # — most subscriptions should leave this empty and pick a preset.
+    # the UA from the `ua` template (and from the fallback map). Only
+    # useful for a one-off panel whose fingerprint doesn't deserve its
+    # own template — most subscriptions should leave this empty.
     custom_ua: Optional[str] = None
     # When True, generate a fresh random X-Hwid per refresh request for
     # this subscription (only effective on Happ-style presets). Off by

@@ -9,6 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from sqlmodel import select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
+from app.core.ua_templates import build_subscription_headers
 from app.database import get_session, get_async_engine
 from app.models import Node, NodeCircle, RoutingRule, Settings as DBSettings, Subscription
 from app.schemas import SubscriptionCreate, SubscriptionRead, SubscriptionUpdate
@@ -17,87 +18,12 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/subscriptions", tags=["subscriptions"])
 
-# Happ client emulation — exposed as separate UA presets in the picker.
-#
-# Happ ships on iOS / Android / macOS / Windows. Stricter panels
-# (xtoolapp / marzban with per-OS rules) cross-validate the UA against
-# the `X-Device-Os` / `X-Ver-Os` / `X-Device-Model` headers — so all
-# four must describe the same device, otherwise the panel falls back to
-# a dummy "App not supported" placeholder.
-#
-# UA format that panels reliably accept: `Happ/<app_ver>/<os>/<os_ver>/<model>`.
-# OS segment is lowercased to mirror what real Happ sends; the
-# corresponding `X-Device-Os` header keeps the canonical case
-# (`iOS`, `Android`, `Windows`, `macOS`) — some panels look at both,
-# and a mismatch flips the fingerprint check.
-#
-# Each Happ flavour is its own UA key (`happ`, `happ-android`, …) so
-# the subscription-form dropdown lists them as discrete options. The
-# legacy `happ` key is an alias for the iOS profile to keep existing
-# subscriptions working without a migration.
-_HAPP_VERSION = "2.7.0"
-
-# happ-* ua key -> (X-Device-Os, X-Ver-Os, X-Device-Model)
-_HAPP_PROFILES: dict[str, tuple[str, str, str]] = {
-    "happ":         ("iOS",     "17.4",          "iPhone15,2"),
-    "happ-android": ("Android", "14",            "Pixel 8"),
-    "happ-windows": ("Windows", "11_10.0.26200", "DESKTOP-PiTun_x86_64"),
-    "happ-macos":   ("macOS",   "14.4",          "Mac15,7"),
-}
-
-
-def _happ_ua_for(ua_key: str) -> str:
-    """Build the User-Agent string for a Happ UA preset key."""
-    os_canonical, os_ver, model = _HAPP_PROFILES.get(ua_key, _HAPP_PROFILES["happ"])
-    return f"Happ/{_HAPP_VERSION}/{os_canonical.lower()}/{os_ver}/{model}"
-
-
-_UA_MAP = {
-    "v2ray": "v2rayN/6.60",
-    "clash": "clash.meta/1.18.0",
-    "sing-box": "sing-box/1.8.0",
-    "streisand": "Streisand/3.0",
-    "chrome": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-    # All Happ presets resolved at module load.
-    **{k: _happ_ua_for(k) for k in _HAPP_PROFILES},
-}
-
-
-def _get_happ_headers(ua_key: str = "happ", *, rotate_hwid: bool = False) -> dict:
-    """Build the X-* header bundle that real Happ sends alongside its UA.
-
-    HWID is normally derived from `/etc/machine-id` (or a constant
-    fallback on non-Linux dev machines) and stable across refreshes —
-    most panels device-bind on first-seen HWID and rotating it would
-    silently break the subscription. We mix the profile into the seed
-    so different OS choices yield different HWIDs (real iOS vs Android
-    Happ instances would never share one).
-
-    When `rotate_hwid=True` (operator opt-in per subscription),
-    generate a fresh random UUID instead. Useful when a panel starts
-    HWID-throttling and returns degraded payloads to the stable
-    fingerprint — we've seen panels where the same HWID over time
-    starts getting placeholder 'proxy' dummies instead of real nodes.
-    """
-    import uuid, hashlib
-    if rotate_hwid:
-        hwid = str(uuid.uuid4())
-    else:
-        try:
-            with open("/etc/machine-id") as f:
-                seed = f.read().strip()
-        except FileNotFoundError:
-            seed = "pitun-default-seed"
-        hwid = str(uuid.UUID(hashlib.md5(f"pitun-happ-{seed}-{ua_key}".encode()).hexdigest()))
-    os_canonical, os_ver, model = _HAPP_PROFILES.get(ua_key, _HAPP_PROFILES["happ"])
-    return {
-        "X-App-Version": _HAPP_VERSION,
-        "X-Device-Locale": "RU",
-        "X-Device-Os": os_canonical,
-        "X-Device-Model": model,
-        "X-Hwid": hwid,
-        "X-Ver-Os": os_ver,
-    }
+# The UA catalogue lived in this module until v1.4.7 as two hardcoded
+# dicts (`_UA_MAP` + `_HAPP_PROFILES`). It now lives in the
+# `useragenttemplate` table — CRUD in `api/user_agents.py`, resolution
+# and the remaining code-side pieces (the built-in fallback map, and
+# Happ's X-* bundle whose `X-Hwid` must be derived per request) in
+# `core/ua_templates.py`.
 
 
 # ── CRUD ──────────────────────────────────────────────────────────────────────
@@ -285,34 +211,12 @@ async def _fetch_subscription_unlocked(sub_id: int) -> None:
         if not sub:
             return
 
-        # Pick UA: explicit per-subscription override > preset map > v2ray fallback.
-        # Override is for panels that gate on a fingerprint we don't ship
-        # a preset for — paste the UA the panel docs specify.
-        custom = (sub.custom_ua or "").strip()
-        ua = custom or _UA_MAP.get(sub.ua, _UA_MAP["v2ray"])
-        headers = {
-            "User-Agent": ua,
-            "Accept": "*/*",
-            "Accept-Language": "ru-RU,en,*",
-            "Accept-Encoding": "gzip, deflate",
-        }
-        # Happ-based panels gate on UA + a bundle of X-* headers. Attach
-        # them whenever:
-        #   - the subscription's preset is a `happ-*` profile, OR
-        #   - the custom UA starts with "Happ/" (likely a Happ-targeted panel
-        #     even if the user pasted a unique UA string).
-        # The profile key drives which OS the X-* describe so UA + headers
-        # stay consistent.
-        ua_lc = ua.lower()
-        # `rotate_hwid` is opt-in per subscription. When set, every
-        # refresh generates a fresh UUID for X-Hwid instead of the
-        # stable machine-id-derived one — for panels that throttle
-        # the same HWID over time.
-        rotate = bool(getattr(sub, "rotate_hwid", False))
-        if sub.ua in _HAPP_PROFILES:
-            headers.update(_get_happ_headers(sub.ua, rotate_hwid=rotate))
-        elif ua_lc.startswith("happ/"):
-            headers.update(_get_happ_headers("happ", rotate_hwid=rotate))
+        # Resolve the full request fingerprint from the UA template the
+        # subscription points at: User-Agent, the base Accept-* set, the
+        # dynamic Happ X-* bundle where applicable, and any extra headers
+        # the template declares. Precedence and merge order are
+        # documented on `build_subscription_headers`.
+        headers = await build_subscription_headers(session, sub)
 
         content: str = ""
         err_msg: str = ""

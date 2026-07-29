@@ -1,17 +1,24 @@
-import { useState } from 'react'
-import { Plus, RefreshCw, Trash2, Rss, Link, Zap } from 'lucide-react'
+import { useRef, useState } from 'react'
+import {
+  Download, Fingerprint, Link, Plus, RefreshCw, Rss, Trash2, Upload, Zap,
+} from 'lucide-react'
 import { InfoTip } from '@/components/InfoTip'
 import { clsx } from 'clsx'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { subsApi } from '@/api/client'
+import { subsApi, uaTemplatesApi } from '@/api/client'
 import { useConfirm } from '@/components/ConfirmModal'
 import { ModalShell } from '@/components/ModalShell'
-import type { Subscription, SubscriptionCreate } from '@/types'
+import { UserAgentTemplatesModal } from '@/components/UserAgentTemplatesModal'
+import { useT } from '@/hooks/useT'
+import { apiErrorText } from '@/lib/apiError'
+import type { Subscription, SubscriptionCreate, UserAgentTemplate } from '@/types'
 
-const UA_OPTIONS = [
+// Last-resort UA keys for the dropdown, used only while the template list
+// is loading or if the table is empty (a DB built before Alembic 018 ran).
+// The backend has the matching fallback in `core/ua_templates.BUILTIN_UA_MAP`,
+// so picking one of these still resolves to a real User-Agent.
+const FALLBACK_UA_KEYS = [
   'v2ray', 'clash', 'sing-box',
-  // Happ — distinct presets per OS. Stricter panels gate on the OS
-  // segment and X-Device-Os header; pick the one your panel expects.
   'happ', 'happ-android', 'happ-windows', 'happ-macos',
   'streisand', 'chrome',
 ]
@@ -30,12 +37,18 @@ function SubForm({
   onSave,
   onCancel,
   loading,
+  templates,
+  onManageTemplates,
 }: {
   initial?: Partial<Subscription>
   onSave: (d: SubscriptionCreate) => void
   onCancel: () => void
   loading?: boolean
+  /** UA templates from the API — drives the dropdown. */
+  templates: UserAgentTemplate[]
+  onManageTemplates: () => void
 }) {
+  const t = useT()
   const [form, setForm] = useState({
     name: initial?.name ?? '',
     url: initial?.url ?? '',
@@ -49,6 +62,19 @@ function SubForm({
   })
   const set = <K extends keyof typeof form>(k: K, v: typeof form[K]) =>
     setForm((f) => ({ ...f, [k]: v }))
+
+  // Templates are the source of truth for the dropdown. FALLBACK_UA_KEYS
+  // only shows up while the query is in flight, or on an install whose
+  // `useragenttemplate` table is empty — those keys still resolve
+  // server-side via the built-in UA map.
+  const uaOptions = templates.length > 0
+    ? templates.map((tpl) => ({
+        key: tpl.key,
+        label: tpl.name === tpl.key ? tpl.key : `${tpl.name} · ${tpl.key}`,
+      }))
+    : FALLBACK_UA_KEYS.map((k) => ({ key: k, label: k }))
+  const selectedTemplate = templates.find((tpl) => tpl.key === form.ua)
+  const selectedHeaderCount = Object.keys(selectedTemplate?.headers ?? {}).length
 
   return (
     <form
@@ -81,7 +107,7 @@ function SubForm({
         <div>
           <label className="flex items-center gap-1 text-xs font-medium text-gray-400 mb-1">
             User-Agent
-            <InfoTip className="ml-0.5" text="User agent sent when fetching the subscription. Providers serve different formats based on UA. v2ray → base64 URI list, clash → YAML, sing-box → JSON config, happ/streisand → bypass some CDN protections, chrome → full browser UA for strict CDN." />
+            <InfoTip className="ml-0.5" text="User agent sent when fetching the subscription. Providers serve different formats based on UA. v2ray → base64 URI list, clash → YAML, sing-box → JSON config, happ/streisand → bypass some CDN protections, chrome → full browser UA for strict CDN. Manage the list with the 'UA templates' button on this page — a template can also carry extra request headers." />
           </label>
           <select
             value={form.ua}
@@ -89,8 +115,39 @@ function SubForm({
             disabled={!!form.custom_ua.trim()}
             className="w-full rounded bg-gray-800 border border-gray-700 px-3 py-1.5 text-sm text-gray-100 focus:border-brand-500 focus:outline-none disabled:opacity-50"
           >
-            {UA_OPTIONS.map((u) => <option key={u} value={u}>{u}</option>)}
+            {uaOptions.map((o) => (
+              <option key={o.key} value={o.key}>{o.label}</option>
+            ))}
+            {/* The subscription points at a key that no longer has a
+                template (deleted or renamed outside this form). Keep it
+                selectable so opening Edit doesn't silently re-point the
+                subscription at whatever happens to be first. */}
+            {form.ua && !uaOptions.some((o) => o.key === form.ua) && (
+              <option value={form.ua}>
+                {t(`${form.ua} (missing template)`, `${form.ua} (шаблон удалён)`)}
+              </option>
+            )}
           </select>
+          <div className="mt-1 flex items-start justify-between gap-2">
+            <span className="text-[11px] text-gray-600 font-mono truncate" title={selectedTemplate?.user_agent}>
+              {selectedTemplate?.user_agent ?? ''}
+            </span>
+            <button
+              type="button"
+              onClick={onManageTemplates}
+              className="text-[11px] text-brand-400 hover:text-brand-300 whitespace-nowrap"
+            >
+              {t('Manage…', 'Настроить…')}
+            </button>
+          </div>
+          {selectedHeaderCount > 0 && (
+            <p className="mt-0.5 text-[11px] text-brand-400">
+              {t(
+                `+${selectedHeaderCount} custom header(s)`,
+                `+${selectedHeaderCount} свой(их) заголовк(ов)`,
+              )}
+            </p>
+          )}
         </div>
         <div>
           <label className="flex items-center gap-1 text-xs font-medium text-gray-400 mb-1">
@@ -186,13 +243,106 @@ export function Subscriptions() {
   const [modal, setModal] = useState<'none' | 'add' | 'edit'>('none')
   const [editSub, setEditSub] = useState<Subscription | null>(null)
   const [quickUrl, setQuickUrl] = useState('')
+  const [templatesOpen, setTemplatesOpen] = useState(false)
+  const [uaNotice, setUaNotice] = useState<string | null>(null)
+  const importRef = useRef<HTMLInputElement>(null)
   const qc = useQueryClient()
   const confirm = useConfirm()
+  const t = useT()
 
   const { data: subs = [] } = useQuery({
     queryKey: ['subscriptions'],
     queryFn: () => subsApi.list(),
   })
+
+  // Shared with the templates modal under the same key, so a save there
+  // repaints this page's UA dropdown without a refetch.
+  const { data: uaTemplates = [] } = useQuery({
+    queryKey: ['ua-templates'],
+    queryFn: () => uaTemplatesApi.list(),
+  })
+
+  const importTemplates = useMutation({
+    mutationFn: ({ bundle, overwrite }: { bundle: unknown; overwrite: boolean }) =>
+      uaTemplatesApi.importJSON(bundle, { overwrite }),
+    onSuccess: (r) => {
+      qc.invalidateQueries({ queryKey: ['ua-templates'] })
+      const parts = [
+        t(`${r.imported} added`, `добавлено: ${r.imported}`),
+        t(`${r.updated} updated`, `обновлено: ${r.updated}`),
+        t(`${r.skipped} skipped`, `пропущено: ${r.skipped}`),
+      ]
+      if (r.errors.length > 0) {
+        parts.push(t(`${r.errors.length} failed`, `с ошибкой: ${r.errors.length}`))
+      }
+      setUaNotice(`${t('UA templates', 'Шаблоны UA')}: ${parts.join(' · ')}`)
+    },
+  })
+
+  const handleExportTemplates = async () => {
+    setUaNotice(null)
+    try {
+      await uaTemplatesApi.exportJSON()
+    } catch (err) {
+      setUaNotice(
+        t('Export failed: ', 'Ошибка экспорта: ') +
+        (err instanceof Error ? err.message : String(err)),
+      )
+    }
+  }
+
+  const handleImportTemplates = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    // Reset immediately so re-picking the same file fires `onChange` again.
+    e.target.value = ''
+    if (!file) return
+    setUaNotice(null)
+
+    let bundle: unknown
+    try {
+      bundle = JSON.parse(await file.text())
+    } catch {
+      setUaNotice(t('Not a valid JSON file.', 'Файл не является корректным JSON.'))
+      return
+    }
+
+    // Import is additive: a key that already exists is skipped unless the
+    // operator opts into overwriting. Only ask when the bundle actually
+    // collides with something — otherwise a prompt with no consequence
+    // just trains people to click through it.
+    const bundleKeys: string[] = Array.isArray((bundle as { templates?: unknown })?.templates)
+      ? ((bundle as { templates: unknown[] }).templates
+          .map((e) => (e as { key?: unknown })?.key)
+          .filter((k): k is string => typeof k === 'string'))
+      : []
+    const existing = new Set(uaTemplates.map((tpl) => tpl.key))
+    const collisions = bundleKeys.filter((k) => existing.has(k))
+
+    let overwrite = false
+    if (collisions.length > 0) {
+      overwrite = await confirm({
+        title: t(
+          `${collisions.length} template(s) already exist`,
+          `${collisions.length} шаблон(ов) уже существует`,
+        ),
+        body: t(
+          `${collisions.join(', ')} — overwrite with the file's version? Their subscriptions stay attached either way. Choosing "Keep mine" imports only the new templates.`,
+          `${collisions.join(', ')} — перезаписать версией из файла? Подписки останутся привязанными в любом случае. «Оставить свои» — импортировать только новые шаблоны.`,
+        ),
+        confirmLabel: t('Overwrite', 'Перезаписать'),
+        cancelLabel: t('Keep mine', 'Оставить свои'),
+      })
+    }
+
+    try {
+      await importTemplates.mutateAsync({ bundle, overwrite })
+    } catch (err) {
+      setUaNotice(
+        t('Import failed: ', 'Ошибка импорта: ') +
+        apiErrorText(err, t('unknown error', 'неизвестная ошибка')),
+      )
+    }
+  }
 
   const create = useMutation({
     mutationFn: (d: SubscriptionCreate) => subsApi.create(d),
@@ -266,9 +416,47 @@ export function Subscriptions() {
 
   return (
     <div className="p-4 sm:p-6 space-y-5">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <h1 className="text-xl font-bold text-gray-100">Subscriptions</h1>
         <div className="flex items-center gap-2">
+          {/* UA template catalogue — manage, plus file-level export/import
+              so a fingerprint set can move between installs. */}
+          <div className="flex items-center rounded-lg bg-gray-800 overflow-hidden">
+            <button
+              onClick={() => setTemplatesOpen(true)}
+              className="flex items-center gap-1.5 px-3 py-2 text-sm text-gray-300 hover:bg-gray-700 transition-colors"
+            >
+              <Fingerprint className="h-4 w-4" />
+              <span className="hidden sm:inline">{t('UA templates', 'Шаблоны UA')}</span>
+              <span className="sm:hidden">UA</span>
+            </button>
+            <span className="h-5 w-px bg-gray-700" aria-hidden="true" />
+            <button
+              onClick={handleExportTemplates}
+              title={t('Export UA templates to a JSON file', 'Экспорт шаблонов UA в JSON-файл')}
+              aria-label={t('Export UA templates', 'Экспорт шаблонов UA')}
+              className="px-2.5 py-2 text-gray-400 hover:bg-gray-700 hover:text-gray-200 transition-colors"
+            >
+              <Download className="h-4 w-4" />
+            </button>
+            <button
+              onClick={() => importRef.current?.click()}
+              disabled={importTemplates.isPending}
+              title={t('Import UA templates from a JSON file', 'Импорт шаблонов UA из JSON-файла')}
+              aria-label={t('Import UA templates', 'Импорт шаблонов UA')}
+              className="px-2.5 py-2 text-gray-400 hover:bg-gray-700 hover:text-gray-200 transition-colors disabled:opacity-50"
+            >
+              <Upload className="h-4 w-4" />
+            </button>
+            <input
+              ref={importRef}
+              type="file"
+              accept=".json,application/json"
+              onChange={handleImportTemplates}
+              className="hidden"
+            />
+          </div>
+
           {subs.length > 0 && (
             <button
               onClick={refreshAll}
@@ -288,6 +476,22 @@ export function Subscriptions() {
           </button>
         </div>
       </div>
+
+      {uaNotice && (
+        <div
+          role="status"
+          className="flex items-start justify-between gap-3 rounded-lg border border-gray-800 bg-gray-900/50 px-3 py-2 text-xs text-gray-300"
+        >
+          <span>{uaNotice}</span>
+          <button
+            onClick={() => setUaNotice(null)}
+            aria-label={t('Dismiss', 'Закрыть')}
+            className="text-gray-500 hover:text-gray-200"
+          >
+            ×
+          </button>
+        </div>
+      )}
 
       {/* Quick Add bar */}
       <div className="rounded-xl border border-gray-800 bg-gray-900/30 p-3">
@@ -326,6 +530,8 @@ export function Subscriptions() {
           {subs.map((sub) => {
             const intervalLabel = INTERVAL_PRESETS.find(p => p.value === sub.update_interval)?.label
               ?? `${Math.round(sub.update_interval / 3600)}h`
+            const tpl = uaTemplates.find((x) => x.key === sub.ua)
+            const tplHeaderCount = Object.keys(tpl?.headers ?? {}).length
             return (
               <div key={sub.id} className={clsx(
                 'rounded-xl border bg-gray-900 p-4 transition-colors',
@@ -339,7 +545,20 @@ export function Subscriptions() {
                       <div className="text-xs text-gray-500 font-mono mt-0.5 truncate">{sub.url}</div>
                       <div className="flex flex-wrap items-center gap-x-3 gap-y-1 mt-2 text-xs text-gray-600">
                         <span className="text-gray-400 font-medium">{sub.node_count} nodes</span>
-                        <span>UA: {sub.ua}</span>
+                        {/* Show the resolved UA string on hover — the key
+                            alone doesn't say what actually goes on the wire
+                            once a template has been edited. */}
+                        <span title={sub.custom_ua?.trim() || tpl?.user_agent || undefined}>
+                          UA: {sub.ua}
+                          {tplHeaderCount > 0 && (
+                            <span className="ml-1 text-brand-400">+{tplHeaderCount}h</span>
+                          )}
+                          {sub.custom_ua?.trim() && (
+                            <span className="ml-1 text-yellow-600">
+                              {t('(overridden)', '(переопределён)')}
+                            </span>
+                          )}
+                        </span>
                         {sub.auto_update && (
                           <span className="text-green-600">auto: {intervalLabel}</span>
                         )}
@@ -405,7 +624,14 @@ export function Subscriptions() {
       )}
 
       {(modal !== 'none') && (
-        <ModalShell onClose={() => setModal('none')} labelledBy="subscription-modal-title">
+        <ModalShell
+          onClose={() => setModal('none')}
+          labelledBy="subscription-modal-title"
+          // The templates dialog stacks on top of this one; without this
+          // a single Esc would collapse both and discard the half-filled
+          // subscription form.
+          closeOnEscape={!templatesOpen}
+        >
           <div className="w-full max-w-lg rounded-2xl bg-gray-950 border border-gray-800 p-6">
             <h2 id="subscription-modal-title" className="text-base font-semibold text-gray-100 mb-5">
               {modal === 'add' ? 'Add Subscription' : 'Edit Subscription'}
@@ -415,9 +641,19 @@ export function Subscriptions() {
               onSave={handleSave}
               onCancel={() => setModal('none')}
               loading={create.isPending || update.isPending}
+              templates={uaTemplates}
+              onManageTemplates={() => setTemplatesOpen(true)}
             />
           </div>
         </ModalShell>
+      )}
+
+      {/* Rendered above the subscription form (default z-50 each, but the
+          templates modal mounts later so it paints on top) — the operator
+          can jump from "User-Agent" straight into editing the catalogue
+          and come back to a still-filled form. */}
+      {templatesOpen && (
+        <UserAgentTemplatesModal onClose={() => setTemplatesOpen(false)} />
       )}
     </div>
   )

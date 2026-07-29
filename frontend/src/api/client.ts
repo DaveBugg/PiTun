@@ -6,6 +6,8 @@ import type {
   RoutingRule, RoutingRuleCreate, RoutingRuleUpdate, ArpDevice,
   BulkRuleCreate, BulkRuleResult,
   Subscription, SubscriptionCreate, SubscriptionUpdate,
+  UserAgentTemplate, UserAgentTemplateCreate, UserAgentTemplateUpdate,
+  UserAgentTemplateImportResult,
   SystemStatus, SystemSettings, SystemVersions, ProxyMode,
   GeoDataStatus, GeoUpdateProgress,
   DecoyTemplate,
@@ -261,6 +263,54 @@ export const subsApi = {
 
   refresh: (id: number) =>
     http.post(`/subscriptions/${id}/refresh`).then(r => r.data),
+}
+
+// ── User-Agent templates ──────────────────────────────────────────────────────
+
+export const uaTemplatesApi = {
+  list: () =>
+    http.get<UserAgentTemplate[]>('/user-agents').then(r => r.data),
+
+  create: (data: UserAgentTemplateCreate) =>
+    http.post<UserAgentTemplate>('/user-agents', data).then(r => r.data),
+
+  update: (id: number, data: UserAgentTemplateUpdate) =>
+    http.patch<UserAgentTemplate>(`/user-agents/${id}`, data).then(r => r.data),
+
+  /**
+   * `force` deletes a template that subscriptions still reference — they
+   * keep the dangling key and fall back to the built-in UA, so their
+   * fingerprint changes on the next refresh. Without it the backend
+   * answers 409 and names the subscriptions.
+   */
+  delete: (id: number, force = false) =>
+    http.delete(`/user-agents/${id}`, { params: { force } }),
+
+  /** Triggers a browser download — same shape as `nodesApi.exportJSON`. */
+  exportJSON: async (): Promise<void> => {
+    const r = await http.get('/user-agents/export-json', { responseType: 'json' })
+    const blob = new Blob([JSON.stringify(r.data, null, 2)], { type: 'application/json' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = 'pitun-ua-templates.json'
+    document.body.appendChild(a)
+    a.click()
+    a.remove()
+    URL.revokeObjectURL(url)
+  },
+
+  /**
+   * `overwrite` updates templates whose key already exists (keeping their
+   * row id, so subscriptions stay attached); `replace` wipes the table
+   * first. Default is additive — matching keys are skipped.
+   */
+  importJSON: (bundle: unknown, opts: { replace?: boolean; overwrite?: boolean } = {}) =>
+    http.post<UserAgentTemplateImportResult>(
+      '/user-agents/import-json',
+      bundle,
+      { params: { replace: !!opts.replace, overwrite: !!opts.overwrite } },
+    ).then(r => r.data),
 }
 
 // ── System ────────────────────────────────────────────────────────────────────

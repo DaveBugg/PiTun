@@ -250,3 +250,19 @@ async def init_default_settings():
             admin = User(username="admin", password_hash=hash_password("password"))
             session.add(admin)
             await session.commit()
+
+    # UA templates are normally seeded by Alembic 018. This covers the
+    # `run_migrations()` fallback path where a migration failure drops us
+    # to `create_all()` — that builds the table but runs no seeding step,
+    # which would leave the subscription UA dropdown empty. Only fires
+    # when the table has zero rows, so it never resurrects a template the
+    # operator deleted. See `core/ua_templates.ensure_default_ua_templates`.
+    from app.core.ua_templates import ensure_default_ua_templates
+
+    async with AsyncSession(get_async_engine()) as session:
+        try:
+            await ensure_default_ua_templates(session)
+        except Exception as exc:
+            # Never let a seeding hiccup abort startup — an empty table
+            # degrades to the hardcoded fallback UA map, not an outage.
+            logger.warning("Could not seed default UA templates: %s", exc)
