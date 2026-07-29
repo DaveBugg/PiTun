@@ -23,13 +23,11 @@ class XrayManager:
     # worst case) but short enough that one stuck reload doesn't wedge
     # every API endpoint that touches xray forever.
     #
-    # Observed in the wild on 192.168.1.4 during the 1.3.3 burn-in:
-    # a broken /etc/resolv.conf caused a sync getaddrinfo() inside
-    # _apply_nftables to hang while holding the lock; subsequent
-    # routing-rule POSTs and /system/restart calls then queued
-    # indefinitely. This timeout ensures the queue drains as 503
-    # within a bounded window so the operator gets a clear error
-    # instead of a frozen UI.
+    # Without it, one stuck holder (e.g. a sync getaddrinfo() inside
+    # _apply_nftables hanging on a broken /etc/resolv.conf) queues every
+    # subsequent routing-rule POST and /system/restart indefinitely. The
+    # timeout drains the queue as 503 so the operator sees an error
+    # rather than a frozen UI.
     LOCK_ACQUIRE_TIMEOUT: float = 30.0
 
     def __init__(self) -> None:

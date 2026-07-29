@@ -1,31 +1,13 @@
-"""Add UserAgentTemplate table and seed it with the former hardcoded presets.
+"""Add UserAgentTemplate table, seeded with the built-in UA presets.
 
-Until v1.4.6 the subscription UA catalogue was two module-level dicts in
-`app/api/subscriptions.py` — `_UA_MAP` (9 UA strings) and `_HAPP_PROFILES`
-(the per-OS Happ device tuples). Adding a preset for a new panel, or
-attaching an extra header the panel gates on, meant a code change and a
-redeploy.
+The presets are keyed by the same slugs already stored in
+`subscription.ua` and carry the same User-Agent strings, so every
+existing subscription resolves to an identical request after the
+upgrade — the rows are simply editable now.
 
-This migration moves the catalogue into `useragenttemplate` and seeds it
-with **exactly** those nine presets, keyed by the same slugs already
-stored in `subscription.ua`. So nothing changes behaviourally on upgrade:
-every existing subscription resolves to the identical User-Agent it used
-yesterday. The difference is that the rows are now editable — the whole
-point of the change is that `happ`'s app version, or `chrome`'s Chrome
-build number, can be bumped from the UI when a panel starts rejecting a
-stale fingerprint.
-
-`builtin=1` on the seeded rows is informational only (it drives a badge
-in the UI and a louder delete confirmation). Built-ins are fully
-editable AND deletable; nothing re-seeds them, because resurrecting a
-row the operator deliberately deleted would be worse than an empty
-dropdown. The runtime keeps a hardcoded fallback map for exactly that
-case (`core/ua_templates.BUILTIN_UA_MAP`), so a deleted or renamed
-template degrades to the old UA instead of breaking a refresh.
-
-Not a foreign key: `subscription.ua` stays a plain string. A dangling
-key has a well-defined fallback, whereas an FK would either block the
-delete or cascade into wiping subscriptions.
+`subscription.ua` stays a plain string rather than a foreign key: a
+dangling key falls back to `core/ua_templates.BUILTIN_UA_MAP`, whereas an
+FK would either block the delete or cascade into wiping subscriptions.
 
 Revision ID: 018
 Revises: 017
@@ -43,24 +25,11 @@ branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
 
-# The seed rows are INLINED here rather than imported from
-# `app.core.ua_templates`, for two reasons:
-#
-# 1. **A migration is a historical snapshot.** If someone later adds a
-#    tenth preset to `DEFAULT_UA_TEMPLATES`, an import would make this
-#    migration retroactively seed different data than it did for every
-#    install that already ran it. Migrations must not move.
-#
-# 2. **Deploy safety.** `docker-compose.yml` bind-mounts `./backend/app`
-#    and `./backend/alembic` as two separate volumes, and `entrypoint.sh`
-#    runs `alembic upgrade head` with `MIGRATION_STRICT=1` before the app
-#    starts. A hot-deploy that copies the new `alembic/` but not the new
-#    `app/` would hit an ImportError here and put the container in a
-#    crash loop. With no app import there is nothing to get out of sync.
-#
-# `tests/test_ua_templates.py::TestMigrationSeedData` asserts these stay
-# byte-identical to `DEFAULT_UA_TEMPLATES`, so drift is a failing test
-# rather than a silent difference between fresh and upgraded installs.
+# Inlined rather than imported from `app.core.ua_templates`: a migration
+# is a historical snapshot, and `app/` and `alembic/` are separate bind
+# mounts, so an import would crash-loop the container on a deploy that
+# updated one before the other. `TestMigrationSeedData` pins these against
+# the runtime copy so the two cannot drift.
 _HAPP_NOTE = (
     "X-Device-* / X-Hwid headers are added automatically to match this profile."
 )
@@ -104,11 +73,9 @@ def upgrade() -> None:
     templates = op.create_table(
         "useragenttemplate",
         sa.Column("id", sa.Integer(), primary_key=True),
-        # Stable slug referenced by `subscription.ua`.
         sa.Column("key", sa.String(), nullable=False),
         sa.Column("name", sa.String(), nullable=False),
         sa.Column("user_agent", sa.String(), nullable=False, server_default=""),
-        # JSON object of extra request headers merged over the base set.
         sa.Column("headers", sa.String(), nullable=False, server_default="{}"),
         sa.Column("description", sa.String(), nullable=True),
         sa.Column(

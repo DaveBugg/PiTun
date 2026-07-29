@@ -13,10 +13,8 @@ import { useT } from '@/hooks/useT'
 import { apiErrorText } from '@/lib/apiError'
 import type { Subscription, SubscriptionCreate, UserAgentTemplate } from '@/types'
 
-// Last-resort UA keys for the dropdown, used only while the template list
-// is loading or if the table is empty (a DB built before Alembic 018 ran).
-// The backend has the matching fallback in `core/ua_templates.BUILTIN_UA_MAP`,
-// so picking one of these still resolves to a real User-Agent.
+// Shown only while the template list loads, or if the table is empty. The
+// backend has the matching fallback, so these still resolve to a real UA.
 const FALLBACK_UA_KEYS = [
   'v2ray', 'clash', 'sing-box',
   'happ', 'happ-android', 'happ-windows', 'happ-macos',
@@ -63,10 +61,6 @@ function SubForm({
   const set = <K extends keyof typeof form>(k: K, v: typeof form[K]) =>
     setForm((f) => ({ ...f, [k]: v }))
 
-  // Templates are the source of truth for the dropdown. FALLBACK_UA_KEYS
-  // only shows up while the query is in flight, or on an install whose
-  // `useragenttemplate` table is empty — those keys still resolve
-  // server-side via the built-in UA map.
   const uaOptions = templates.length > 0
     ? templates.map((tpl) => ({
         key: tpl.key,
@@ -255,8 +249,7 @@ export function Subscriptions() {
     queryFn: () => subsApi.list(),
   })
 
-  // Shared with the templates modal under the same key, so a save there
-  // repaints this page's UA dropdown without a refetch.
+  // Same key as the templates modal, so a save there repaints this list.
   const { data: uaTemplates = [] } = useQuery({
     queryKey: ['ua-templates'],
     queryFn: () => uaTemplatesApi.list(),
@@ -306,10 +299,8 @@ export function Subscriptions() {
       return
     }
 
-    // Import is additive: a key that already exists is skipped unless the
-    // operator opts into overwriting. Only ask when the bundle actually
-    // collides with something — otherwise a prompt with no consequence
-    // just trains people to click through it.
+    // Only ask about overwriting when the bundle actually collides —
+    // a prompt with no consequence just trains people to click through.
     const bundleKeys: string[] = Array.isArray((bundle as { templates?: unknown })?.templates)
       ? ((bundle as { templates: unknown[] }).templates
           .map((e) => (e as { key?: unknown })?.key)
@@ -419,8 +410,7 @@ export function Subscriptions() {
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h1 className="text-xl font-bold text-gray-100">Subscriptions</h1>
         <div className="flex items-center gap-2">
-          {/* UA template catalogue — manage, plus file-level export/import
-              so a fingerprint set can move between installs. */}
+          {/* UA templates: manage, export, import. */}
           <div className="flex items-center rounded-lg bg-gray-800 overflow-hidden">
             <button
               onClick={() => setTemplatesOpen(true)}
@@ -545,9 +535,8 @@ export function Subscriptions() {
                       <div className="text-xs text-gray-500 font-mono mt-0.5 truncate">{sub.url}</div>
                       <div className="flex flex-wrap items-center gap-x-3 gap-y-1 mt-2 text-xs text-gray-600">
                         <span className="text-gray-400 font-medium">{sub.node_count} nodes</span>
-                        {/* Show the resolved UA string on hover — the key
-                            alone doesn't say what actually goes on the wire
-                            once a template has been edited. */}
+                        {/* Resolved UA on hover: the key alone doesn't say
+                            what goes on the wire once a template is edited. */}
                         <span title={sub.custom_ua?.trim() || tpl?.user_agent || undefined}>
                           UA: {sub.ua}
                           {tplHeaderCount > 0 && (
@@ -648,10 +637,8 @@ export function Subscriptions() {
         </ModalShell>
       )}
 
-      {/* Rendered above the subscription form (default z-50 each, but the
-          templates modal mounts later so it paints on top) — the operator
-          can jump from "User-Agent" straight into editing the catalogue
-          and come back to a still-filled form. */}
+      {/* Opens over the subscription form so the operator can edit the
+          catalogue and come back to a still-filled form. */}
       {templatesOpen && (
         <UserAgentTemplatesModal onClose={() => setTemplatesOpen(false)} />
       )}

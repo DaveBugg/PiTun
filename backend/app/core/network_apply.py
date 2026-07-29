@@ -244,9 +244,8 @@ def create_backup(state: nc.NetworkState) -> Backup:
 
 def list_backups() -> List[dict]:
     """Return all stored backups, newest first. The full ``files``
-    blob is omitted from the listing — only metadata, so the API
-    can show "Backup #5 from 2026-05-20 14:22, manager: ifupdown,
-    iface enp1s0, gateway 192.168.1.3" without dumping kilobytes."""
+    blob is omitted — only metadata, so the API can render a one-line
+    summary per backup without dumping kilobytes."""
     out: List[dict] = []
     for path in sorted(_list_backup_filenames(), reverse=True):
         content = nc.host_read_file(path)
@@ -480,11 +479,10 @@ def _apply_ifupdown(
         # dhcpcd refreshes (lease renewal, daemon restart, reboot on
         # systems where dhcpcd-base ships even when ifupdown owns the
         # interface), the resolv.conf we just wrote gets clobbered to
-        # an empty header and the host loses DNS.
-        # Observed in production on 192.168.1.4 during 1.3.3 burn-in:
-        # static IP applied via PiTun → resolv.conf populated →
-        # subsequent reboot → dhcpcd regenerated empty resolv.conf →
-        # every API endpoint touching getaddrinfo wedged.
+        # an empty header and the host loses DNS. The failure chain is:
+        # static IP applied → resolv.conf populated → reboot → dhcpcd
+        # regenerates it empty → every endpoint touching getaddrinfo
+        # wedges.
         nc.host_run(["tee", "/etc/resolv.conf.head"], input_data=resolv, timeout=5)
         logger.info("ifupdown: resolv.conf + .head -> %r", final_dns)
 

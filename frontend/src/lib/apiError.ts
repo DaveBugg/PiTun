@@ -3,12 +3,10 @@ import { isAxiosError } from 'axios'
 /**
  * Pull a human-readable message out of an API failure.
  *
- * FastAPI answers with two different `detail` shapes and both reach the
- * UI: a plain string for the `HTTPException`s we raise by hand (those are
- * written for operators and worth showing verbatim), and an array of
- * per-field objects for pydantic 422s. Without the array branch a
- * validation error renders as the generic fallback and the operator has
- * no idea which field is wrong.
+ * FastAPI uses two `detail` shapes and both reach the UI: a plain string
+ * from a hand-raised `HTTPException`, and an array of per-field objects
+ * from a pydantic 422. Without the array branch a validation error
+ * renders as the generic fallback, naming no field.
  */
 export function apiErrorText(err: unknown, fallback: string): string {
   if (isAxiosError(err)) {

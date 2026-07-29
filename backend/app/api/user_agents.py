@@ -1,24 +1,8 @@
 """User-Agent template CRUD + JSON export/import.
 
-A `UserAgentTemplate` is the client fingerprint a subscription fetch
-presents: the `User-Agent` string plus any extra request headers the
-panel gates on. The catalogue used to be two hardcoded dicts in
-`api/subscriptions.py`; Alembic 018 seeds the table with exactly those
-presets, and everything here exists so the operator can edit, extend and
-move them between installs without a redeploy.
-
-Header-merge order, the reason Happ's X-* bundle is still generated in
-code, and the validation ruleset all live in `app/core/ua_templates.py`.
-
-Endpoint summary
-----------------
-* `GET    /api/user-agents`                    — list, dropdown order, with usage counts
-* `POST   /api/user-agents`                    — create
-* `GET    /api/user-agents/export-json`        — downloadable bundle
-* `POST   /api/user-agents/import-json`        — restore a bundle (`?replace=`, `?overwrite=`)
-* `GET    /api/user-agents/{id}`               — read one
-* `PATCH  /api/user-agents/{id}`               — edit; a key rename re-points its subscriptions
-* `DELETE /api/user-agents/{id}`               — delete; 409 while subscriptions use it unless `?force=true`
+A template is the fingerprint a subscription fetch presents: the
+`User-Agent` string plus any extra headers the panel gates on. Header
+assembly and the validation ruleset live in `app/core/ua_templates.py`.
 """
 import logging
 from datetime import datetime, timezone
@@ -47,8 +31,7 @@ router = APIRouter(prefix="/user-agents", tags=["user-agents"])
 EXPORT_KIND = "pitun-ua-templates-export"
 EXPORT_VERSION = 1
 
-# Sanity ceiling on the table. The dropdown becomes unusable long before
-# this, and it bounds an import bundle's blast radius.
+# Bounds the dropdown and an import bundle's blast radius.
 MAX_TEMPLATES = 200
 
 
@@ -57,9 +40,8 @@ MAX_TEMPLATES = 200
 async def _usage_counts(session: AsyncSession) -> Dict[str, int]:
     """How many subscriptions reference each template key.
 
-    One query for the whole table, counted in Python — the subscription
-    count is in the tens at most, and this avoids a GROUP BY that would
-    need a raw-SQL escape hatch under SQLModel's async session.
+    Counted in Python: subscriptions number in the tens, and a GROUP BY
+    would need a raw-SQL escape hatch under SQLModel's async session.
     """
     keys = (await session.exec(select(Subscription.ua))).all()
     counts: Dict[str, int] = {}
@@ -91,14 +73,12 @@ async def _get_or_404(session: AsyncSession, tpl_id: int) -> UserAgentTemplate:
 
 
 def _row_label(entry: Any) -> str:
-    """Safe identifier for an import row, for use in logs and error text.
+    """Safe identifier for an import row, for logs and error text.
 
-    Taken from the row's raw `key` because that is the only field present
-    on a row that failed validation. Sanitised before it goes anywhere:
-    control characters are stripped (CWE-117 log injection) and the value
-    is truncated, since a bundle is untrusted input. Only the key is ever
-    surfaced — never `user_agent` or `headers`, which can carry the
-    operator's panel credentials.
+    The raw `key` is the only field present on a row that failed
+    validation. Stripped of control characters (CWE-117) and truncated,
+    since a bundle is untrusted. Never surfaces `user_agent` or
+    `headers` — those can carry panel credentials.
     """
     if not isinstance(entry, dict):
         return "?"
@@ -162,9 +142,7 @@ async def create_ua_template(
     return _to_read(row, 0)
 
 
-# Declared BEFORE `/{tpl_id}` so FastAPI matches the literal path instead
-# of reading "export-json" as an int path param (same trick as
-# routing_sets' /capacity).
+# Must precede `/{tpl_id}` or FastAPI reads "export-json" as an int param.
 @router.get("/export-json")
 async def export_ua_templates(session: AsyncSession = Depends(get_session)):
     """Return every template as a downloadable JSON bundle."""
@@ -182,8 +160,7 @@ async def export_ua_templates(session: AsyncSession = Depends(get_session)):
                 "key": r.key,
                 "name": r.name,
                 "user_agent": r.user_agent,
-                # Sanitised, not raw: an exported bundle must be
-                # re-importable, and import re-validates every header.
+                # Sanitised so the bundle survives import re-validation.
                 "headers": sanitize_headers(r.headers),
                 "description": r.description,
                 "order": r.order,
@@ -222,18 +199,12 @@ async def import_ua_templates(
     ),
     session: AsyncSession = Depends(get_session),
 ):
-    """Restore templates from a previously-exported bundle.
+    """Restore templates from an exported bundle.
 
-    Three behaviours, in increasing destructiveness:
-
-    * default — additive; a key that already exists is **skipped**.
-    * `overwrite=true` — additive, but a matching key is **updated** in
-      place. Keeps its id, so subscriptions pointing at it are unaffected.
-    * `replace=true` — wipe the table first, then insert. The only way to
-      drop templates that aren't in the bundle.
-
-    Rows are validated individually: one bad entry lands in `errors` and
-    the rest still import.
+    Additive by default (existing key skipped); `overwrite` updates a
+    match in place, keeping its id so subscriptions stay attached;
+    `replace` wipes first. Rows validate individually — one bad entry
+    lands in `errors` and the rest still import.
     """
     if not isinstance(payload, dict):
         raise HTTPException(400, "Invalid bundle: expected a JSON object at the top level")
@@ -261,21 +232,18 @@ async def import_ua_templates(
             await session.delete(row)
         await session.flush()
 
-    # Track keys seen in this bundle so a bundle containing the same key
-    # twice reports a clean per-row error instead of tripping the UNIQUE
-    # constraint and rolling back the whole request.
+    # A key twice in one bundle should be a per-row error, not a UNIQUE
+    # violation that rolls back the whole request.
     seen_keys: set[str] = set()
 
     for entry in entries:
-        # Label the row from its RAW key before validating, so a row that
-        # fails validation is still identifiable in `errors` — deriving it
-        # from the validated object would leave every rejected row as "?".
+        # Label from the RAW key: deriving it from the validated object
+        # would leave every rejected row as "?".
         row_label = _row_label(entry)
         try:
             if not isinstance(entry, dict):
                 raise ValueError("entry is not an object")
-            # Drop unknown fields (forward-compat: a newer export with
-            # extra columns still imports into an older PiTun).
+            # Forward-compat: a newer export with extra columns still imports.
             allowed = set(UserAgentTemplateCreate.model_fields.keys())
             clean = {k: v for k, v in entry.items() if k in allowed}
             validated = UserAgentTemplateCreate(**clean)
@@ -319,12 +287,9 @@ async def import_ua_templates(
             await session.flush()
             imported += 1
         except Exception as exc:  # noqa: BLE001 — surface per-row errors
-            # Log the exception *type* only, never the value: a bundle row
-            # can carry operator secrets (panel API keys live in the
-            # headers object) and a pydantic ValidationError message
-            # echoes the offending input verbatim. Same envelope as nodes'
-            # import-json (CWE-209/532/117). `row_label` is already
-            # sanitised by `_row_label`.
+            # Type only, never the value: a ValidationError echoes its
+            # input and a row's headers can hold a panel API key
+            # (CWE-209/532/117).
             logger.warning(
                 "UA template import row failed: key=%r err_type=%s",
                 row_label, type(exc).__name__,
@@ -354,12 +319,12 @@ async def update_ua_template(
     body: UserAgentTemplateUpdate,
     session: AsyncSession = Depends(get_session),
 ):
-    """Edit a template, including the built-in ones.
+    """Edit a template, built-ins included.
 
-    Renaming the `key` would orphan every subscription pointing at the
-    old value — those would silently fall back to the built-in UA map and
-    start presenting a different fingerprint. So we re-point them in the
-    same transaction instead.
+    Renaming the `key` would orphan every subscription pointing at the old
+    value — they would fall back to the built-in map and start presenting
+    a different fingerprint — so they are re-pointed in the same
+    transaction.
     """
     row = await _get_or_404(session, tpl_id)
     patch = body.model_dump(exclude_unset=True)

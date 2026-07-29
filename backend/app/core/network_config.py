@@ -30,7 +30,7 @@ Manager detection priority
 --------------------------
 1. NetworkManager  — modern desktop / RPi OS Bookworm+
 2. systemd-networkd — Debian server modern
-3. ifupdown         — Debian server classic (our test box 192.168.1.4)
+3. ifupdown         — Debian server classic
 4. dhcpcd           — legacy RPi OS
 
 Multiple managers can be installed but only one actively controlling

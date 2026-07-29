@@ -18,22 +18,15 @@ import type { UserAgentTemplate, UserAgentTemplateCreate } from '@/types'
  * Manage the User-Agent template catalogue — the list behind the
  * subscription form's UA dropdown.
  *
- * Two views inside one dialog: a table of templates, and an editor for
- * one of them. Kept in a single modal (rather than nesting a second
- * `ModalShell`) because the list is the natural place to return to after
- * a save, and stacked backdrops on mobile are miserable.
- *
- * The nine rows seeded by Alembic 018 carry `builtin: true`. They are
- * fully editable and deletable — the flag only earns a badge and a
- * slightly louder delete confirmation, since bumping `happ`'s app
- * version or `chrome`'s build number from here is exactly why the
- * catalogue moved out of Python.
+ * Two views in one dialog rather than a nested `ModalShell`: the list is
+ * where you return after a save, and stacked backdrops are miserable on
+ * mobile. Seeded rows carry `builtin: true`, which only earns a badge and
+ * a louder delete confirmation — they are editable and deletable.
  */
 
 const KEY_PATTERN = /^[a-z0-9][a-z0-9._-]*$/
-// Mirrors `FORBIDDEN_HEADER_NAMES` in `backend/app/core/ua_templates.py`.
-// Checked client-side purely so the operator sees the problem next to the
-// field instead of as a 422 after submit; the backend is the authority.
+// Mirrors `FORBIDDEN_HEADER_NAMES` server-side. Checked here only so the
+// error lands next to the field instead of as a 422; the backend decides.
 const FORBIDDEN_HEADERS = new Set([
   'user-agent', 'host', 'content-length', 'transfer-encoding',
   'connection', 'upgrade', 'expect',
@@ -56,12 +49,9 @@ function toHeaderRows(headers: Record<string, string>): HeaderRow[] {
 }
 
 /**
- * Field label wired to its input with `htmlFor`.
- *
- * The `InfoTip` sits OUTSIDE the `<label>` deliberately. Nested inside, its
- * tooltip copy becomes part of the input's accessible name — a screen
- * reader would read a whole paragraph where "Key" was expected, and
- * `getByLabelText` in the tests matches the paragraph too.
+ * Field label wired to its input with `htmlFor`. The `InfoTip` sits
+ * outside the `<label>`: nested, its copy joins the input's accessible
+ * name and a screen reader reads a paragraph where "Key" was expected.
  */
 function FieldLabel({
   htmlFor, label, hint,
@@ -120,8 +110,7 @@ function TemplateForm({
 
   const invalidate = () => {
     qc.invalidateQueries({ queryKey: ['ua-templates'] })
-    // A key rename re-points subscriptions server-side, so their cached
-    // `ua` values are stale too.
+    // A key rename re-points subscriptions server-side.
     qc.invalidateQueries({ queryKey: ['subscriptions'] })
   }
 
@@ -552,11 +541,7 @@ function TemplateTable({
 
 export function UserAgentTemplatesModal({
   onClose,
-  /**
-   * Default 60 rather than ModalShell's 50: this dialog can open on top of
-   * the subscription form (via its "Manage…" link) and has to paint above
-   * it. Harmless when it's the only dialog on screen.
-   */
+  /** 60, not ModalShell's 50: this can open over the subscription form. */
   z = 60,
 }: {
   onClose: () => void
@@ -608,8 +593,8 @@ export function UserAgentTemplatesModal({
       await del.mutateAsync({ id: tpl.id, force: false })
       return
     } catch (err) {
-      // 409 = subscriptions still point at this key. The backend names
-      // them in `detail`; re-ask with that message before forcing.
+      // 409 = still in use. The backend names the subscriptions in
+      // `detail`; re-ask with that message before forcing.
       if (!isAxiosError(err) || err.response?.status !== 409) {
         setListError(apiErrorText(err, t('Delete failed', 'Не удалось удалить')))
         return

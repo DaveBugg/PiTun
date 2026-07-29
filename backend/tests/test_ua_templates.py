@@ -1,4 +1,4 @@
-"""Tests for the User-Agent template catalogue (v1.4.7).
+"""Tests for the User-Agent template catalogue.
 
 Three layers are covered:
 
@@ -690,7 +690,7 @@ class TestDefaultSeeding:
 
 
 class TestMigrationSeedData:
-    """Alembic 018 inlines its seed rows instead of importing app code.
+    """The seeding migration inlines its rows instead of importing app code.
 
     That is deliberate — a migration is a historical snapshot, and the two
     bind-mounts (`./backend/app`, `./backend/alembic`) can be updated out

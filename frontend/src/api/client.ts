@@ -277,16 +277,11 @@ export const uaTemplatesApi = {
   update: (id: number, data: UserAgentTemplateUpdate) =>
     http.patch<UserAgentTemplate>(`/user-agents/${id}`, data).then(r => r.data),
 
-  /**
-   * `force` deletes a template that subscriptions still reference — they
-   * keep the dangling key and fall back to the built-in UA, so their
-   * fingerprint changes on the next refresh. Without it the backend
-   * answers 409 and names the subscriptions.
-   */
+  /** Without `force`, the backend answers 409 and names the subscriptions. */
   delete: (id: number, force = false) =>
     http.delete(`/user-agents/${id}`, { params: { force } }),
 
-  /** Triggers a browser download — same shape as `nodesApi.exportJSON`. */
+  /** Triggers a browser download. */
   exportJSON: async (): Promise<void> => {
     const r = await http.get('/user-agents/export-json', { responseType: 'json' })
     const blob = new Blob([JSON.stringify(r.data, null, 2)], { type: 'application/json' })
@@ -301,9 +296,8 @@ export const uaTemplatesApi = {
   },
 
   /**
-   * `overwrite` updates templates whose key already exists (keeping their
-   * row id, so subscriptions stay attached); `replace` wipes the table
-   * first. Default is additive — matching keys are skipped.
+   * Additive by default. `overwrite` updates a matching key in place
+   * (keeping its row id); `replace` wipes the table first.
    */
   importJSON: (bundle: unknown, opts: { replace?: boolean; overwrite?: boolean } = {}) =>
     http.post<UserAgentTemplateImportResult>(

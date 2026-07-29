@@ -364,38 +364,23 @@ export interface Subscription {
 export type SubscriptionCreate = Omit<Subscription, 'id' | 'last_updated' | 'node_count' | 'last_error'>
 export type SubscriptionUpdate = Partial<SubscriptionCreate>
 
-// ── User-Agent templates (v1.4.7) ─────────────────────────────────────────────
+// ── User-Agent templates ──────────────────────────────────────────────────────
 
-/**
- * The client fingerprint a subscription fetch presents. Backed by the
- * `useragenttemplate` table — Alembic 018 seeds it with the nine presets
- * that used to be hardcoded in `api/subscriptions.py`, so they are now
- * editable rows rather than a code constant.
- */
+/** The client fingerprint a subscription fetch presents. */
 export interface UserAgentTemplate {
   id: number
-  /**
-   * Stable slug stored in `Subscription.ua`. Renaming it re-points every
-   * subscription using it (the backend migrates them in the same PATCH).
-   */
+  /** Stable slug in `Subscription.ua`; renaming re-points its subscriptions. */
   key: string
   name: string
-  /** Literal `User-Agent` header value. */
   user_agent: string
   /**
-   * Extra request headers merged over the base set at fetch time. An
-   * empty value *drops* that header instead of sending it blank — the
-   * documented way to strip `Accept-Encoding` for panels that mis-handle
-   * gzip. `User-Agent`, `Host` and the other transport-owned names are
-   * rejected by the backend.
+   * Extra request headers merged over the base set. An empty value drops
+   * that header instead of sending it blank. Transport-owned names
+   * (`User-Agent`, `Host`, …) are rejected by the backend.
    */
   headers: Record<string, string>
   description?: string | null
-  /**
-   * True for the migration-seeded rows. Informational only — built-ins
-   * are fully editable and deletable; this just drives a badge and a
-   * louder delete confirmation.
-   */
+  /** Set on seeded rows; drives a badge and a louder delete confirmation. */
   builtin: boolean
   /** Lower number = earlier in the dropdown. */
   order: number

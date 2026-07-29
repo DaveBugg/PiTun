@@ -695,10 +695,9 @@ def _build_dns_section(
     # captures the DNS resolver's own connection to 8.8.8.8:53,
     # tunnelling it through the active node. If the node is flaky or
     # under handshake-failure, the whole DNS layer dies — and with
-    # broken DNS, nothing else resolves either. Observed in the wild on
-    # the 1256-node burn-in (192.168.1.4): user added "Port Range
-    # 0-65535 → proxy", node had a transient handshake failure, the
-    # whole API and proxy locked up.
+    # broken DNS, nothing else resolves either. A catch-all proxy rule
+    # plus one transient handshake failure is enough to lock up both
+    # the API and the proxy.
     #
     # The `outboundTag` field on a DNS server config is exactly the
     # escape hatch — xray short-circuits routing for THAT server's
@@ -1091,9 +1090,7 @@ def generate_config(
         # `port: 0-65535 → proxy`, `geoip:!ru → proxy`) intercepts
         # the DNS dial too and tunnels it through the active VPN
         # node — if that node has any handshake issue, DNS dies and
-        # nothing else can resolve. Observed in the wild on
-        # 192.168.1.4 during 1.3.4 burn-in (1256-node subscription
-        # + Port Range 0-65535 → proxy rule). Pair with the
+        # nothing else can resolve. Pair with the
         # `outboundTag: direct` per-DNS-server pin in `_build_dns_section`
         # — that one wins for any internal xray query that goes
         # through the routing engine BEFORE hitting the outbound.
@@ -1155,8 +1152,8 @@ def generate_config(
     # so a user `port: 0-65535 → proxy` (or `geoip:!ru → proxy`) rule
     # would otherwise capture the DNS dial and tunnel it through the
     # active VPN node, breaking the resolver when that node has any
-    # handshake issue. Burn-in on 192.168.1.4 nailed the exact case:
-    # add the catch-all rule → kill DNS → kill everything.
+    # handshake issue: add the catch-all rule → kill DNS → kill
+    # everything.
     #
     # Why we don't pin via dns-out's `proxySettings.tag`: that field
     # chains outbounds (dns-out's resolved data flows through direct)

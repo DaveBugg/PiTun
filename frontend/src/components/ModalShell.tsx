@@ -34,14 +34,10 @@ interface ModalShellProps {
   /** Override z-index (default 50). Bump if you nest dialogs. */
   z?: number
   /**
-   * Set false while a dialog is open ON TOP of this one.
-   *
-   * `useEscapeKey` listens on `document`, so two mounted ModalShells both
-   * fire on a single Esc and the whole stack collapses — losing the state
-   * of the modal underneath. The outer one passes
-   * `closeOnEscape={!childOpen}` so Esc dismisses only the topmost dialog.
-   * Backdrop clicks don't need this: the child's backdrop covers the
-   * parent's, so the click never reaches it.
+   * Set false while a dialog is open ON TOP of this one. `useEscapeKey`
+   * listens on `document`, so otherwise one Esc collapses the whole stack
+   * and loses the state underneath. Backdrop clicks don't need this — the
+   * child's backdrop covers the parent's.
    */
   closeOnEscape?: boolean
 }

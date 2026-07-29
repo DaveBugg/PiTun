@@ -1193,13 +1193,10 @@ async def _collect_naive_bypass_dsts(session: AsyncSession) -> List[str]:
     Domain names are resolved via ``socket.getaddrinfo`` (A records only).
 
     Resolution runs OFF the event loop thread (``asyncio.to_thread``)
-    and with a 2-second per-host budget. The earlier sync version
-    blocked the entire FastAPI event loop when /etc/resolv.conf was
-    misconfigured — observed in the wild on 192.168.1.4 during 1.3.3
-    burn-in: every API endpoint that touched ``_auto_reload_xray``
-    (routing-rule CRUD, ``/system/restart``) stalled forever because
-    the underlying ``getaddrinfo`` call wedged the loop while glibc
-    retried against zero nameservers.
+    and with a 2-second per-host budget. Resolving inline wedges the
+    whole event loop when /etc/resolv.conf is misconfigured: glibc
+    retries against zero nameservers and every endpoint touching
+    ``_auto_reload_xray`` stalls with it.
 
     DNS-broken or host-unreachable cases are absorbed silently
     (worst case: loop prevention doesn't apply until the host

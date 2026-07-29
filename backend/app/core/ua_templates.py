@@ -1,35 +1,15 @@
-"""User-Agent templates — the fingerprint a subscription fetch presents.
+"""Header assembly for a subscription fetch, driven by UA templates.
 
-Before v1.4.7 the presets lived as two module-level dicts inside
-`app/api/subscriptions.py` (`_UA_MAP` + `_HAPP_PROFILES`), so adding a
-preset for a new panel meant editing Python and redeploying. This module
-moves the catalogue into the `useragenttemplate` table (seeded by Alembic
-018 with exactly the presets that used to be hardcoded) and keeps the
-hardcoded map only as a fallback for the window where the table is empty
-— a fresh test DB built with `SQLModel.metadata.create_all` instead of
-migrations, or an install whose migration hasn't run yet.
+A template is a row in `useragenttemplate`: a `key` (stored in
+`Subscription.ua`), a `user_agent` string, and a JSON object of extra
+request headers merged over the base set. CRUD lives in
+`api/user_agents.py`.
 
-What a template owns
---------------------
-* `key`         — stable slug stored in `Subscription.ua`. Renaming a key
-                  orphans every subscription pointing at it, so the API
-                  guards that (see `api/user_agents.py`).
-* `user_agent`  — the literal `User-Agent` header value.
-* `headers`     — JSON object of extra request headers merged on top of
-                  the base set. This is the "modify the request for this
-                  client" half of the feature: panels that gate on
-                  `X-Api-Key`, `Authorization`, a specific `Referer`, …
-                  no longer need a code change.
+`BUILTIN_UA_MAP` is the fallback for a key with no row — a deleted
+template, or a DB built by `create_all` rather than by migration.
 
-Happ stays partly in code
--------------------------
-`HAPP_PROFILES` still lives here rather than in the `headers` column
-because Happ's `X-Hwid` is *derived at request time* from
-`/etc/machine-id` (and re-rolled per request when the subscription sets
-`rotate_hwid`). A value frozen in the DB would break both behaviours, so
-the seeded happ-* templates ship with an empty `headers` object and the
-X-* bundle is injected dynamically — a template's own headers are then
-applied last and can still override any of it.
+Happ's X-* bundle stays in code because `X-Hwid` is derived per request;
+a value frozen in the DB would break HWID rotation.
 """
 from __future__ import annotations
 
@@ -51,22 +31,11 @@ logger = logging.getLogger(__name__)
 
 # ── Happ client emulation ─────────────────────────────────────────────────────
 #
-# Happ ships on iOS / Android / macOS / Windows. Stricter panels
-# (xtoolapp / marzban with per-OS rules) cross-validate the UA against
-# the `X-Device-Os` / `X-Ver-Os` / `X-Device-Model` headers — so all
-# four must describe the same device, otherwise the panel falls back to
-# a dummy "App not supported" placeholder.
-#
-# UA format that panels reliably accept: `Happ/<app_ver>/<os>/<os_ver>/<model>`.
-# OS segment is lowercased to mirror what real Happ sends; the
-# corresponding `X-Device-Os` header keeps the canonical case
-# (`iOS`, `Android`, `Windows`, `macOS`) — some panels look at both,
-# and a mismatch flips the fingerprint check.
-#
-# Each Happ flavour is its own template key (`happ`, `happ-android`, …)
-# so the subscription-form dropdown lists them as discrete options. The
-# legacy `happ` key is the iOS profile, which is why existing
-# subscriptions kept working when the per-OS split landed.
+# Strict panels cross-validate the UA against `X-Device-Os` / `X-Ver-Os` /
+# `X-Device-Model`, so all four must describe the same device or the panel
+# serves an "App not supported" placeholder. UA shape they accept:
+# `Happ/<app_ver>/<os>/<os_ver>/<model>` — OS segment lowercased, while the
+# `X-Device-Os` header keeps its canonical case. Some panels read both.
 HAPP_VERSION = "2.7.0"
 
 # happ-* template key -> (X-Device-Os, X-Ver-Os, X-Device-Model)
@@ -85,20 +54,15 @@ def happ_ua_for(ua_key: str) -> str:
 
 
 def get_happ_headers(ua_key: str = "happ", *, rotate_hwid: bool = False) -> Dict[str, str]:
-    """Build the X-* header bundle that real Happ sends alongside its UA.
+    """Build the X-* bundle Happ sends alongside its UA.
 
-    HWID is normally derived from `/etc/machine-id` (or a constant
-    fallback on non-Linux dev machines) and stable across refreshes —
-    most panels device-bind on first-seen HWID and rotating it would
-    silently break the subscription. We mix the profile into the seed
-    so different OS choices yield different HWIDs (real iOS vs Android
-    Happ instances would never share one).
+    HWID is derived from `/etc/machine-id` and stable across refreshes:
+    panels device-bind on the first one they see, so rotating it silently
+    breaks the subscription. The profile is mixed into the seed so
+    different OS choices yield different HWIDs.
 
-    When `rotate_hwid=True` (operator opt-in per subscription),
-    generate a fresh random UUID instead. Useful when a panel starts
-    HWID-throttling and returns degraded payloads to the stable
-    fingerprint — we've seen panels where the same HWID over time
-    starts getting placeholder 'proxy' dummies instead of real nodes.
+    `rotate_hwid=True` generates a fresh UUID instead — for a panel that
+    has started throttling the stable one.
     """
     if rotate_hwid:
         hwid = str(uuid.uuid4())
@@ -120,24 +84,17 @@ def get_happ_headers(ua_key: str = "happ", *, rotate_hwid: bool = False) -> Dict
     }
 
 
-# ── Fallback catalogue ────────────────────────────────────────────────────────
-#
-# Used only when the `useragenttemplate` table has no row for the
-# subscription's `ua` key. Keeps a pre-migration install (and the test
-# suite, which builds its schema with `create_all` and therefore skips
-# the seeding migration) fetching subscriptions exactly as before.
+# Fallback for a `ua` key with no matching row.
 BUILTIN_UA_MAP: Dict[str, str] = {
     "v2ray": "v2rayN/6.60",
     "clash": "clash.meta/1.18.0",
     "sing-box": "sing-box/1.8.0",
     "streisand": "Streisand/3.0",
     "chrome": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-    # All Happ presets resolved at import time.
     **{k: happ_ua_for(k) for k in HAPP_PROFILES},
 }
 
-# Header set every subscription fetch starts from, before the template's
-# own `headers` object is layered on top.
+# Starting point for every fetch; a template's headers layer over this.
 BASE_FETCH_HEADERS: Dict[str, str] = {
     "Accept": "*/*",
     "Accept-Language": "ru-RU,en,*",
@@ -145,15 +102,9 @@ BASE_FETCH_HEADERS: Dict[str, str] = {
 }
 
 
-# ── Seed data ─────────────────────────────────────────────────────────────────
-#
-# Single source of truth for the built-in templates, consumed by BOTH
-# the Alembic 018 seeding step and `ensure_default_ua_templates` (the
-# first-run bootstrap for installs whose DB predates migrations).
-#
-# `headers` is empty for every seeded row on purpose: the generic
-# presets need nothing extra, and the happ-* ones get their X-* bundle
-# injected dynamically (see the module docstring).
+# Built-in templates. `headers` is empty throughout: the generic presets
+# need nothing extra and the happ-* ones get their X-* bundle at request
+# time. The seeding migration keeps its own copy — see the drift test.
 DEFAULT_UA_TEMPLATES: List[dict] = [
     {
         "key": "v2ray",
@@ -271,15 +222,9 @@ def validate_key(value: str) -> str:
 def validate_header_value(value: str, *, field: str) -> str:
     """Reject values httpx cannot send, or that would smuggle a header.
 
-    Two distinct failure modes, both verified against httpx 0.28:
-
-    * **Non-ASCII** — `httpx.Headers` encodes str values as ASCII and
-      raises `UnicodeEncodeError`. Caught here it is a clean 422 on
-      save; caught at fetch time it would surface as an opaque
-      `last_error` on the subscription hours later.
-    * **CR / LF / NUL** — httpx does *not* reject these, so a value like
-      ``"a\\r\\nX-Admin: 1"`` would be smuggled through as an extra
-      header (CWE-93 response/request splitting). We refuse it.
+    Non-ASCII raises `UnicodeEncodeError` inside `httpx.Headers` at send
+    time. CR/LF/NUL are forwarded unchanged and smuggle an extra header
+    (CWE-93). Both have to be caught here, on save.
     """
     v = value if isinstance(value, str) else str(value)
     for ch, label in (("\r", "CR"), ("\n", "LF"), ("\0", "NUL")):
@@ -328,8 +273,8 @@ def validate_description(value: Optional[str]) -> Optional[str]:
 def validate_headers(raw: Optional[Dict[str, str]]) -> Dict[str, str]:
     """Validate a template's extra-headers mapping.
 
-    An empty *value* is legal and meaningful: it removes the header from
-    the request instead of sending it blank (see `apply_header_overrides`).
+    An empty value is legal: it removes the header rather than sending it
+    blank (see `apply_header_overrides`).
     """
     if raw is None:
         return {}
@@ -374,12 +319,8 @@ def validate_headers(raw: Optional[Dict[str, str]]) -> Dict[str, str]:
 # ── (de)serialisation ─────────────────────────────────────────────────────────
 
 def parse_headers(raw: Optional[str]) -> Dict[str, str]:
-    """Decode the `headers` column into a dict, defensively.
-
-    A malformed blob (hand-edited DB, half-written import) degrades to
-    "no extra headers" rather than breaking every refresh of every
-    subscription that uses the template.
-    """
+    """Decode the `headers` column. A malformed blob degrades to `{}`
+    rather than breaking every refresh that uses the template."""
     if not raw:
         return {}
     try:
@@ -394,13 +335,11 @@ def parse_headers(raw: Optional[str]) -> Dict[str, str]:
 
 
 def sanitize_headers(raw) -> Dict[str, str]:
-    """Lenient counterpart to `validate_headers`, for data on the way OUT.
+    """Lenient counterpart to `validate_headers`, for data on the way out.
 
-    `validate_headers` raises, which is right for a save. But a row can
-    already hold something it would reject — a hand-edited DB, or a rule
-    we tightened after the row was written. Listing templates must not
-    500 because of one bad entry, so here we drop the offenders and keep
-    the rest.
+    A stored row can hold something the validator would now reject, and
+    listing templates must not 500 over one bad entry. Drop offenders,
+    keep the rest.
     """
     parsed = parse_headers(raw) if isinstance(raw, (str, type(None))) else raw
     if not isinstance(parsed, dict):
@@ -424,16 +363,13 @@ def apply_header_overrides(
 ) -> Dict[str, str]:
     """Merge template headers into `base`, case-insensitively, in place.
 
-    HTTP header names are case-insensitive but a plain dict is not, so a
-    template setting `accept-encoding` next to our own `Accept-Encoding`
-    would send the header twice with conflicting values. Match on the
-    lowercased name and replace the existing entry, keeping the
-    template's spelling.
+    Header names are case-insensitive but a dict is not, so matching on
+    the lowercased name is what stops `accept-encoding` and
+    `Accept-Encoding` both going out with conflicting values.
 
-    An empty override value *deletes* the header rather than sending it
-    blank — that is the only way to drop one of the base headers, and
-    dropping `Accept-Encoding` is a real need (a handful of panels
-    mis-handle gzip and return a truncated body).
+    An empty override value deletes the header — the only way to drop a
+    base header, which panels that mis-handle gzip need for
+    `Accept-Encoding`.
     """
     lowered = {k.lower(): k for k in base}
     for name, value in overrides.items():
@@ -455,15 +391,10 @@ async def get_template_by_key(
 ) -> Optional[UserAgentTemplate]:
     """Look up a template, treating "can't" the same as "not found".
 
-    The `useragenttemplate` table may genuinely not exist yet: the backend
-    bind-mounts `./backend/app` and `./backend/alembic` separately, so a
-    hot deploy that drops in new code and reloads the app *before*
-    `entrypoint.sh` re-runs `alembic upgrade head` leaves this querying a
-    missing table. Letting the `OperationalError` escape would fail the
-    refresh and stamp a cryptic `last_error` on the subscription; falling
-    through to `BUILTIN_UA_MAP` instead keeps it fetching with exactly the
-    UA it used before the deploy. The next container restart migrates and
-    the template takes over silently.
+    The table may not exist yet: `app/` and `alembic/` are separate bind
+    mounts, so new code can run before `entrypoint.sh` re-runs the
+    migration. Falling through to `BUILTIN_UA_MAP` keeps the subscription
+    fetching instead of stamping a cryptic `last_error` on it.
     """
     if not key:
         return None
@@ -476,29 +407,20 @@ async def get_template_by_key(
     except SQLAlchemyError as exc:
         logger.warning(
             "UA template lookup failed (%s) — falling back to the built-in "
-            "User-Agent map. If this persists, the 018 migration has not run.",
+            "User-Agent map. If this persists, migrations have not run.",
             type(exc).__name__,
         )
         return None
 
 
 async def build_subscription_headers(session: AsyncSession, sub) -> Dict[str, str]:
-    """Assemble the full outbound header set for one subscription fetch.
+    """Assemble the outbound header set for one subscription fetch.
 
-    Precedence, highest first:
+    UA precedence: `custom_ua` (per-subscription escape hatch) → the
+    template's `user_agent` → `BUILTIN_UA_MAP[key]` → v2ray.
 
-    1. `Subscription.custom_ua` — a per-subscription paste-the-exact-UA
-       escape hatch. Beats the template so an operator can fix one
-       misbehaving subscription without cloning a template.
-    2. The template's `user_agent`.
-    3. `BUILTIN_UA_MAP[sub.ua]`, then `BUILTIN_UA_MAP["v2ray"]` — covers
-       an unknown/deleted key and the pre-seed window.
-
-    Then, in order: base headers → dynamic Happ X-* bundle (when the key
-    is a happ profile, or the resolved UA looks like Happ) → the
-    template's own `headers`. The template goes last deliberately: it is
-    the operator's explicit instruction and must be able to override
-    anything we picked for them.
+    Then base headers → Happ X-* bundle → the template's own headers.
+    The template goes last so it can override anything chosen for it.
     """
     key = (sub.ua or "").strip()
     tpl = await get_template_by_key(session, key)
@@ -509,10 +431,8 @@ async def build_subscription_headers(session: AsyncSession, sub) -> Dict[str, st
 
     headers: Dict[str, str] = {"User-Agent": ua, **BASE_FETCH_HEADERS}
 
-    # Happ-based panels gate on UA + a bundle of X-* headers. Attach
-    # them whenever the subscription's template key is a happ profile,
-    # or the resolved UA starts with "Happ/" (a pasted custom UA
-    # targeting a Happ panel).
+    # Attach the X-* bundle for a happ profile key, or for a pasted
+    # custom UA that targets a Happ panel.
     rotate = bool(getattr(sub, "rotate_hwid", False))
     if key in HAPP_PROFILES:
         headers.update(get_happ_headers(key, rotate_hwid=rotate))
@@ -528,16 +448,12 @@ async def build_subscription_headers(session: AsyncSession, sub) -> Dict[str, st
 # ── Bootstrap ─────────────────────────────────────────────────────────────────
 
 async def ensure_default_ua_templates(session: AsyncSession) -> int:
-    """Seed the built-in templates, but only into an empty table.
+    """Seed the built-in templates into an EMPTY table only; returns the
+    number of rows inserted.
 
-    Deliberately *not* an upsert. The whole point of moving the presets
-    into the DB is that they are editable and deletable — re-seeding on
-    every boot would resurrect a template the operator deleted and
-    revert one they edited. Existing installs get the same rows from
-    Alembic 018; this covers a DB created by `create_all` (no migration
-    history) and is a no-op every time after the first.
-
-    Returns the number of rows inserted.
+    Not an upsert: re-seeding on boot would resurrect a template the
+    operator deleted and revert one they edited. Covers a DB built by
+    `create_all`; migrated installs already have the rows.
     """
     existing = (await session.exec(select(UserAgentTemplate).limit(1))).first()
     if existing is not None:
@@ -561,7 +477,7 @@ async def ensure_default_ua_templates(session: AsyncSession) -> int:
 
 
 def default_template_rows() -> Iterable[dict]:
-    """Seed rows shaped for a raw SQL insert (used by Alembic 018)."""
+    """Seed rows flattened the way the ORM stores them."""
     for spec in DEFAULT_UA_TEMPLATES:
         yield {
             "key": spec["key"],

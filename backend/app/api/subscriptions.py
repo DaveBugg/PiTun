@@ -18,14 +18,6 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/subscriptions", tags=["subscriptions"])
 
-# The UA catalogue lived in this module until v1.4.7 as two hardcoded
-# dicts (`_UA_MAP` + `_HAPP_PROFILES`). It now lives in the
-# `useragenttemplate` table — CRUD in `api/user_agents.py`, resolution
-# and the remaining code-side pieces (the built-in fallback map, and
-# Happ's X-* bundle whose `X-Hwid` must be derived per request) in
-# `core/ua_templates.py`.
-
-
 # ── CRUD ──────────────────────────────────────────────────────────────────────
 
 @router.get("", response_model=List[SubscriptionRead])
@@ -96,18 +88,10 @@ async def refresh_subscription(
     sub = await session.get(Subscription, sub_id)
     if not sub:
         raise HTTPException(404, "Subscription not found")
-    # Per-subscription mutex — concurrent calls return 409 instead of
-    # spawning duplicate fetch tasks. Without this, two clicks within
-    # a few hundred ms (UI double-click, scheduler tick overlapping a
-    # manual refresh, two browser tabs etc.) used to fire two
-    # background `_fetch_subscription` runs against the same row.
-    # Each one would `delete all old nodes → insert new`, so the
-    # second one racing the first could observe a half-deleted state
-    # and import a partial node set, or both could land near-
-    # simultaneously and corrupt `active_node_id` via duplicate
-    # delete-then-create. Observed in the wild on 192.168.1.4 —
-    # logs show 4 refreshes within 60s with one returning 57 nodes
-    # instead of the canonical 1256.
+    # Per-subscription mutex. Two refreshes racing (double-click,
+    # scheduler tick overlapping a manual refresh, two tabs) could each
+    # observe a half-deleted node set and import a partial one, or
+    # corrupt `active_node_id`.
     if _is_refresh_active(sub_id):
         raise HTTPException(
             status_code=409,
@@ -211,11 +195,6 @@ async def _fetch_subscription_unlocked(sub_id: int) -> None:
         if not sub:
             return
 
-        # Resolve the full request fingerprint from the UA template the
-        # subscription points at: User-Agent, the base Accept-* set, the
-        # dynamic Happ X-* bundle where applicable, and any extra headers
-        # the template declares. Precedence and merge order are
-        # documented on `build_subscription_headers`.
         headers = await build_subscription_headers(session, sub)
 
         content: str = ""
