@@ -62,6 +62,26 @@ _LOG_TAIL_BYTES = 4 * 1024
 # the buffer is freed.
 _DRAIN_GRACE_SEC = 30.0
 
+
+def _put_sentinel(q: "asyncio.Queue") -> None:
+    """Deliver the finalization sentinel even to a full queue.
+
+    A plain `put_nowait` inside `except QueueFull: pass` silently lost
+    the sentinel when a slow client's 4096-slot queue was saturated —
+    that subscriber then waited on `get()` forever and never emitted
+    `done`. Dropping the oldest line is the right trade: the stream is
+    already lossy at that point, but the terminator is not optional.
+    """
+    while True:
+        try:
+            q.put_nowait(None)
+            return
+        except asyncio.QueueFull:
+            try:
+                q.get_nowait()
+            except asyncio.QueueEmpty:
+                return
+
 # Stale-job healer: any `running` job whose `started_at` is older than
 # this on backend startup is flagged as a restart casualty.
 _STALE_RUNNING_THRESHOLD = timedelta(hours=1)
@@ -125,6 +145,14 @@ class JobManager:
         # clients per job). Each queue receives (kind, line) tuples
         # plus a sentinel `None` on finalization.
         self._subscribers: dict[str, list[asyncio.Queue]] = {}
+        # job_ids that already finalized but whose buffer is still alive
+        # for the drain grace period. A client that subscribes inside
+        # that window has no producer left to send it the sentinel, so
+        # it used to block on `q.get()` forever — leaking the coroutine,
+        # its queue and its backlog (the WS handler never reads from the
+        # socket, so even the client disconnecting didn't free it), and
+        # never emitting `done`. Checked at subscribe time.
+        self._finalized: set[str] = set()
         # (target_id, protocol) → bool — set if a job is currently
         # holding the slot. We use a dict not asyncio.Lock because
         # we only want to fail-fast (raise SlotBusy) not block-wait.
@@ -380,12 +408,10 @@ class JobManager:
 
         # Signal subscribers with a sentinel — they treat None as
         # "no more lines, emit done event, close".
+        self._finalized.add(job_id)
         subs = self._subscribers.get(job_id, [])
         for q in list(subs):
-            try:
-                q.put_nowait(None)
-            except asyncio.QueueFull:
-                pass
+            _put_sentinel(q)
 
         # Free slot immediately so a retry can start
         self._slot_busy.pop(slot, None)
@@ -395,8 +421,14 @@ class JobManager:
         # any open WS clients time to drain backlog + done event.
         async def _drain():
             await asyncio.sleep(_DRAIN_GRACE_SEC)
+            # Anyone still attached gets a last sentinel before their
+            # queue is dropped — otherwise they'd wait on a queue no
+            # producer can ever feed again.
+            for q in list(self._subscribers.get(job_id, [])):
+                _put_sentinel(q)
             self._buffers.pop(job_id, None)
             self._subscribers.pop(job_id, None)
+            self._finalized.discard(job_id)
         asyncio.create_task(_drain())
 
     # ── Read API ─────────────────────────────────────────────────────────────
@@ -473,6 +505,13 @@ class JobManager:
         q: asyncio.Queue = asyncio.Queue(maxsize=4096)
         subs = self._subscribers.setdefault(job_id, [])
         subs.append(q)
+
+        # Subscribing inside the post-finalization grace window: the
+        # producer is gone, so seed the sentinel ourselves. Without it
+        # this iterator blocks forever on `q.get()` and the caller never
+        # emits `done`.
+        if job_id in self._finalized:
+            _put_sentinel(q)
 
         try:
             for entry in backlog:

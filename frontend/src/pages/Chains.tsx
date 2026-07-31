@@ -734,6 +734,7 @@ function CreateChainModal({
   onCreated: (chain: ChainRead) => void
 }) {
   const t = useT()
+  const qc = useQueryClient()
   const [name, setName] = useState('')
   const [exitId, setExitId] = useState<number | null>(null)
   const [relayId, setRelayId] = useState<number | null>(null)
@@ -768,6 +769,11 @@ function CreateChainModal({
     }),
     onSuccess: onCreated,
     onError: (err: unknown) => {
+      // A failed create still leaves a `failed` ProxyChain row behind
+      // (deliberately — the UI must show it and offer a delete). With
+      // refetchOnMount/refetchOnWindowFocus off, nothing would fetch it,
+      // so the row stayed invisible and un-deletable.
+      qc.invalidateQueries({ queryKey: ['xui', 'chains'] })
       let msg = 'Create failed'
       if (typeof err === 'object' && err !== null) {
         const e = err as { response?: { data?: { detail?: unknown } }, message?: string }

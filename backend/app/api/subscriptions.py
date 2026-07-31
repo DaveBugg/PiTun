@@ -65,18 +65,47 @@ async def update_subscription(
 @router.delete("/{sub_id}", status_code=204)
 async def delete_subscription(
     sub_id: int,
+    background_tasks: BackgroundTasks,
     delete_nodes: bool = True,
     session: AsyncSession = Depends(get_session),
 ):
     sub = await session.get(Subscription, sub_id)
     if not sub:
         raise HTTPException(404, "Subscription not found")
+    deleted_ids: set = set()
     if delete_nodes:
         nodes = (await session.exec(select(Node).where(Node.subscription_id == sub_id))).all()
         for n in nodes:
+            deleted_ids.add(n.id)
             await session.delete(n)
     await session.delete(sub)
     await session.commit()
+
+    if deleted_ids:
+        # Nodes elsewhere may relay THROUGH one of these. Left dangling,
+        # the chained node silently stops working with nothing in the UI
+        # to say why — the exact failure reported in the wild.
+        from app.api.nodes import clear_chain_refs, _heal_active_node_after_delete
+        unchained = await clear_chain_refs(session, deleted_ids)
+        if unchained:
+            await session.commit()
+            logger.warning(
+                "Subscription %d delete: unchained node(s) %s — their relay was removed",
+                sub_id, unchained,
+            )
+            from app.core.events import record_event
+            await record_event(
+                category="node.unchained",
+                severity="warning",
+                title="Chained nodes lost their relay",
+                details=(
+                    f"Deleting subscription {sub_id} removed the relay node(s) that "
+                    f"node(s) {unchained} were chained through; the chain link was "
+                    f"cleared and they now connect directly."
+                ),
+            )
+        # The subscription may have carried the active node with it.
+        await _heal_active_node_after_delete(session, deleted_ids, background_tasks)
 
 
 @router.post("/{sub_id}/refresh", status_code=202)
@@ -159,6 +188,106 @@ def _node_row_fingerprint(node) -> str:
         node.transport or "tcp",
         node.tls or "none",
     ))
+
+
+async def _config_referenced_node_ids(session: AsyncSession) -> set:
+    """Node ids the CURRENT xray config actually depends on.
+
+    Anything else can change freely without touching the dataplane.
+    Covers: the active node, every circle/balancer member, `node:<id>`
+    rule targets, and any node reachable as a chain hop from those.
+    """
+    import json as _json
+
+    from app.models import BalancerGroup
+
+    ids: set = set()
+
+    active_row = (await session.exec(
+        select(DBSettings).where(DBSettings.key == "active_node_id")
+    )).first()
+    if active_row and active_row.value:
+        try:
+            ids.add(int(active_row.value))
+        except (TypeError, ValueError):
+            pass
+
+    for group in (await session.exec(select(NodeCircle))).all():
+        try:
+            members = (
+                _json.loads(group.node_ids)
+                if isinstance(group.node_ids, str) else (group.node_ids or [])
+            )
+        except Exception:  # noqa: BLE001
+            continue
+        ids.update(i for i in members if isinstance(i, int))
+
+    for bal in (await session.exec(select(BalancerGroup))).all():
+        try:
+            members = (
+                _json.loads(bal.node_ids)
+                if isinstance(bal.node_ids, str) else (bal.node_ids or [])
+            )
+        except Exception:  # noqa: BLE001
+            continue
+        ids.update(i for i in members if isinstance(i, int))
+
+    for rule in (await session.exec(select(RoutingRule))).all():
+        if rule.enabled and (rule.action or "").startswith("node:"):
+            try:
+                ids.add(int(rule.action.split(":", 1)[1]))
+            except (TypeError, ValueError):
+                pass
+
+    # Follow chain_node_id hops — a relay's parameters matter just as
+    # much as the exit's.
+    seen: set = set()
+    frontier = set(ids)
+    while frontier:
+        current = frontier.pop()
+        if current in seen:
+            continue
+        seen.add(current)
+        node = await session.get(Node, current)
+        if node and node.chain_node_id:
+            ids.add(node.chain_node_id)
+            frontier.add(node.chain_node_id)
+
+    return ids
+
+
+async def _reload_if_config_nodes_touched(
+    session: AsyncSession, *, touched_ids: set, force: bool = False,
+) -> None:
+    """Re-apply the dataplane when a refresh changed a node the config uses.
+
+    A panel rotating a Reality key or an SNI updates the row in place —
+    the fingerprint still matches, so nothing else notices — while the
+    running xray keeps dialling with the old crypto. Health checks don't
+    catch it either: they TCP-connect to the address from the FRESH row.
+    Result: the whole LAN loses internet while the UI stays green.
+    """
+    if not touched_ids and not force:
+        return
+    try:
+        from app.core.xray import xray_manager
+        if not xray_manager.is_running:
+            return
+        if not force:
+            relevant = await _config_referenced_node_ids(session)
+            if not (touched_ids & relevant):
+                return
+        from app.api.system import (
+            _apply_nftables, _load_settings_map, _regenerate_and_write,
+        )
+        await _regenerate_and_write(session)
+        await xray_manager.reload()
+        settings_map = await _load_settings_map(session)
+        await _apply_nftables(session, settings_map)
+        logger.info("Subscription refresh changed live nodes — dataplane reloaded")
+    except Exception as exc:  # noqa: BLE001
+        # Never fail a refresh over this: the DB is already consistent.
+        logger.warning("Reload after subscription refresh failed: %s", exc)
 
 
 async def _fetch_subscription(sub_id: int) -> None:
@@ -493,6 +622,12 @@ async def _fetch_subscription_unlocked(sub_id: int) -> None:
 
         imported = 0
         seen_fps: set[str] = set()
+        # Node ids whose wire parameters actually CHANGED value. The
+        # fingerprint only covers protocol/address/port/uuid, so a panel
+        # rotating a Reality key or an SNI updates the row in place and
+        # leaves the running xray dialling with stale crypto. We reload
+        # the dataplane below when a changed node is one the config uses.
+        changed_ids: set[int] = set()
         for node_dict in parsed:
             node_dict["subscription_id"] = sub_id
             fp = _node_fingerprint(node_dict)
@@ -503,6 +638,11 @@ async def _fetch_subscription_unlocked(sub_id: int) -> None:
                     # UPDATE in place — preserves id, order, health.
                     for k in _MUTABLE_FIELDS:
                         if k in node_dict:
+                            # `or None` folds the ""/None/0 spread the
+                            # parsers produce for absent values — only a
+                            # real value change counts as a change.
+                            if (getattr(existing, k, None) or None) != (node_dict[k] or None):
+                                changed_ids.add(existing.id)
                             setattr(existing, k, node_dict[k])
                     session.add(existing)
                 else:
@@ -612,4 +752,32 @@ async def _fetch_subscription_unlocked(sub_id: int) -> None:
             len(removed_ids),
             f", active_node healed: {active_id_before}→{healed_active}"
             if healed_active is not None else "",
+        )
+
+        # Same dangling-relay problem as the delete path: a node that
+        # vanished from the panel may have been someone's relay.
+        from app.api.nodes import clear_chain_refs
+        unchained = await clear_chain_refs(session, removed_ids)
+        if unchained:
+            await session.commit()
+            logger.warning(
+                "Subscription %d refresh: unchained node(s) %s — their relay vanished "
+                "from the panel", sub_id, unchained,
+            )
+            from app.core.events import record_event
+            await record_event(
+                category="node.unchained",
+                severity="warning",
+                title="Chained nodes lost their relay",
+                details=(
+                    f"Subscription {sub_id} no longer serves the relay node(s) that "
+                    f"node(s) {unchained} were chained through; the chain link was "
+                    f"cleared and they now connect directly."
+                ),
+            )
+
+        await _reload_if_config_nodes_touched(
+            session,
+            touched_ids=changed_ids | removed_ids,
+            force=healed_active is not None,
         )

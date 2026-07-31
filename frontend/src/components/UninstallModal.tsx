@@ -8,6 +8,7 @@ import { Link } from 'react-router-dom'
 import { http } from '@/api/client'
 import { ModalShell } from '@/components/ModalShell'
 import { useT } from '@/hooks/useT'
+import { effectiveJobStatus } from '@/lib/jobStatus'
 import {
   useCancelServerTask,
   useServerTask,
@@ -215,8 +216,13 @@ function UninstallRunning({
   const t = useT()
   const qc = useQueryClient()
   const { frames, done, error: wsError } = useServerTaskStream(jobId)
-  const isRunning = done === null
-  const { data: jobRow } = useServerTask(jobId, { polling: isRunning })
+  // Poll until the persisted row is terminal — a dropped socket
+  // (`done === 'unknown'`) must not switch off the fallback channel,
+  // and the row is committed microseconds before the `done` frame.
+  // See DeployModal for the full rationale.
+  const { data: jobRow } = useServerTask(jobId, { polling: true })
+  const rowTerminal = jobRow != null && jobRow.status !== 'running'
+  const isRunning = !rowTerminal && (done === null || done === 'unknown')
 
   const cancel = useCancelServerTask()
   const onCancel = () => cancel.mutate(jobId)
@@ -225,29 +231,23 @@ function UninstallRunning({
   // nodes (orphan badges may have flipped for WG), wg-clients
   // cache (was wiped server-side).
   useEffect(() => {
-    if (done && done !== 'unknown') {
-      qc.invalidateQueries({ queryKey: ['nodes'] })
-      qc.invalidateQueries({ queryKey: ['servers'] })
-      qc.invalidateQueries({ queryKey: ['servers', server.id, 'deployments'] })
-      qc.invalidateQueries({ queryKey: ['servers', server.id, 'wg-clients'] })
-    }
-  }, [done, qc, server.id])
+    if (!rowTerminal) return
+    qc.invalidateQueries({ queryKey: ['nodes'] })
+    qc.invalidateQueries({ queryKey: ['servers'] })
+    qc.invalidateQueries({ queryKey: ['servers', server.id, 'deployments'] })
+    qc.invalidateQueries({ queryKey: ['servers', server.id, 'wg-clients'] })
+  }, [rowTerminal, qc, server.id])
 
   const result = useMemo<DeployJobResult | null>(() => {
     const r = jobRow?.result
     return r ? (r as DeployJobResult) : null
   }, [jobRow])
 
-  // WS `done` frame is authoritative — polling stops the moment it
-  // arrives, so the last polled `jobRow.status` is often still
-  // 'running' even after the job finalised. Prefer WS when it
-  // reports a terminal state; fall back to jobRow only when WS
-  // hasn't reported yet or said 'unknown' (dropped connection).
-  // Same fix as DeployModal got in beta.6 commit e105b58.
-  const finalStatus =
-    done && done !== 'unknown'
-      ? done
-      : (jobRow?.status ?? (done === null ? 'running' : done))
+  // Persisted row wins once terminal, read through the shared
+  // projection (a non-zero exit finalizes the job as `succeeded`).
+  const finalStatus = rowTerminal && jobRow
+    ? effectiveJobStatus(jobRow)
+    : (done && done !== 'unknown' ? done : 'running')
 
   return (
     <div>

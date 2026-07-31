@@ -88,7 +88,10 @@ async def speedtest_node(node: Node) -> Dict:
             return _result(node, error="Failed to resolve any test URL")
 
         socks_port, proc, tmp_path, start_err = await _start_temp_xray(node, chain, entry_ip)
-        if proc is None:
+        if proc is None or start_err:
+            # `start_err` with a live proc = the port never opened. Running
+            # curl anyway would just burn _CURL_TIMEOUT and report a generic
+            # failure instead of the real reason; `finally` still reaps proc.
             return _result(node, error=start_err or "Failed to start temp xray")
 
         return await _run_curl_speedtest(node, socks_port, resolved_urls)
@@ -167,7 +170,7 @@ async def _start_temp_xray(
     inside the outbound is already 127.0.0.1:<sidecar_port>, not the remote
     server — see comment in speedtest_node).
     """
-    socks_port = random.randint(19000, 19999)
+    socks_port = _reserve_local_port()
 
     try:
         outbounds_chain: List[Dict] = []
@@ -250,9 +253,13 @@ async def _start_temp_xray(
             return socks_port, proc, tmp_path, None
         await asyncio.sleep(0.15)
 
-    # Timed out waiting for port — still alive but unresponsive
+    # Timed out waiting for port — process is alive but unresponsive.
+    # This MUST stay a 4-tuple: returning three items made the caller's
+    # unpack raise before `proc`/`tmp_path` were bound, so the `finally`
+    # cleanup got None/None and the xray process leaked forever, holding
+    # a temp config that contains the node's credentials.
     logger.warning("Temp xray for node %d: SOCKS port %d never opened", node.id, socks_port)
-    return socks_port, proc, tmp_path  # caller still cleans up via finally
+    return socks_port, proc, tmp_path, "xray: SOCKS port never opened"
 
 
 def _override_outbound_address(outbound: Dict, ip: str) -> None:
@@ -280,6 +287,25 @@ def _override_outbound_address(outbound: Dict, ip: str) -> None:
             if ":" in ep:
                 _, port = ep.rsplit(":", 1)
                 p["endpoint"] = f"{ip}:{port}"
+
+
+def _reserve_local_port() -> int:
+    """Ask the OS for a free loopback port instead of guessing one.
+
+    The old `random.randint(19000, 19999)` could collide with a concurrent
+    speedtest (two nodes tested back to back) or with a leaked temp xray.
+    On collision our own xray died on bind while `_port_open` cheerfully
+    saw the OTHER instance listening — so the measurement ran through a
+    different node's tunnel and was attributed to this one.
+
+    Falls back to the legacy random range if the bind probe fails.
+    """
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.bind(("127.0.0.1", 0))
+            return s.getsockname()[1]
+    except OSError:
+        return random.randint(19000, 19999)
 
 
 async def _port_open(host: str, port: int) -> bool:

@@ -7,10 +7,11 @@ from datetime import datetime, timedelta, timezone
 from typing import List, Optional
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import BackgroundTasks, APIRouter, Depends, HTTPException, Query
 from sqlmodel import select, func, delete
 from sqlmodel.ext.asyncio.session import AsyncSession
 
+from app.core.dataplane import dispatch_dataplane
 from app.database import get_session
 from app.models import DNSRule, DNSQueryLog, Settings as DBSettings
 from app.schemas import (
@@ -82,7 +83,9 @@ async def _upsert_setting(session: AsyncSession, key: str, value: str) -> None:
         session.add(DBSettings(key=key, value=value))
 
 
-async def _auto_reload_xray(session: AsyncSession) -> None:
+async def _auto_reload_xray(
+    session: AsyncSession, background_tasks: Optional[BackgroundTasks] = None,
+) -> None:
     """Regenerate the xray config and reload if running.
 
     Called after ANY DNS settings/rule change so the operator sees it
@@ -99,7 +102,9 @@ async def _auto_reload_xray(session: AsyncSession) -> None:
             return
         from app.api.system import _regenerate_and_write
         await _regenerate_and_write(session)
-        await xray_manager.reload()
+        # Deferred when we have a response to protect — the reload
+        # restarts xray and would sever the caller's own connection.
+        await dispatch_dataplane(background_tasks, "reload")
     except Exception as exc:
         logger.warning("Auto-reload after DNS change failed: %s", exc)
 
@@ -115,6 +120,7 @@ async def get_dns_settings(session: AsyncSession = Depends(get_session)):
 @router.patch("/settings", response_model=DNSSettingsRead)
 async def update_dns_settings(
     body: DNSSettingsUpdate,
+    background_tasks: BackgroundTasks,
     session: AsyncSession = Depends(get_session),
 ):
     updates = body.model_dump(exclude_none=True)
@@ -140,7 +146,7 @@ async def update_dns_settings(
     # change applies now instead of on the next restart.
     xray_keys = set(updates) - {"host_fallback_dns"}
     if xray_keys:
-        await _auto_reload_xray(session)
+        await _auto_reload_xray(session, background_tasks)
 
     m = await _get_settings_map(session)
     return _settings_map_to_dns(m)
@@ -157,13 +163,14 @@ async def list_dns_rules(session: AsyncSession = Depends(get_session)):
 @router.post("/rules", response_model=DNSRuleRead, status_code=201)
 async def create_dns_rule(
     body: DNSRuleCreate,
+    background_tasks: BackgroundTasks,
     session: AsyncSession = Depends(get_session),
 ):
     rule = DNSRule(**body.model_dump())
     session.add(rule)
     await session.commit()
     await session.refresh(rule)
-    await _auto_reload_xray(session)
+    await _auto_reload_xray(session, background_tasks)
     return rule
 
 
@@ -171,6 +178,7 @@ async def create_dns_rule(
 async def update_dns_rule(
     rule_id: int,
     body: DNSRuleUpdate,
+    background_tasks: BackgroundTasks,
     session: AsyncSession = Depends(get_session),
 ):
     rule = await session.get(DNSRule, rule_id)
@@ -182,13 +190,14 @@ async def update_dns_rule(
     session.add(rule)
     await session.commit()
     await session.refresh(rule)
-    await _auto_reload_xray(session)
+    await _auto_reload_xray(session, background_tasks)
     return rule
 
 
 @router.delete("/rules/{rule_id}", status_code=204)
 async def delete_dns_rule(
     rule_id: int,
+    background_tasks: BackgroundTasks,
     session: AsyncSession = Depends(get_session),
 ):
     rule = await session.get(DNSRule, rule_id)
@@ -196,12 +205,13 @@ async def delete_dns_rule(
         raise HTTPException(status_code=404, detail="DNS rule not found")
     await session.delete(rule)
     await session.commit()
-    await _auto_reload_xray(session)
+    await _auto_reload_xray(session, background_tasks)
 
 
 @router.post("/rules/reorder", status_code=204)
 async def reorder_dns_rules(
     ids: List[int],
+    background_tasks: BackgroundTasks,
     session: AsyncSession = Depends(get_session),
 ):
     """Reorder DNS rules. Matches the 204 contract of other reorder endpoints
@@ -212,7 +222,7 @@ async def reorder_dns_rules(
             rule.order = idx * 10
             session.add(rule)
     await session.commit()
-    await _auto_reload_xray(session)
+    await _auto_reload_xray(session, background_tasks)
 
 
 # ── DNS Query Log ─────────────────────────────────────────────────────────────

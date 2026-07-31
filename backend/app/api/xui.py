@@ -1126,6 +1126,20 @@ async def sync_xui_server(
         (r.inbound_remote_id, r.client_uuid): r for r in cache_rows
     }
 
+    # Fallback index by (inbound, label). Rows written before the
+    # natural-id fix stored an EMPTY `client_uuid` for trojan clients,
+    # so they can never match a panel entry keyed by password — sync
+    # would call a live client "vanished" and cascade-delete the Node it
+    # was exported to. Matching on the label (the panel's `email`, which
+    # PiTun itself generated) recovers those rows and heals them in
+    # place; only rows with a genuinely missing counterpart are dropped.
+    cache_by_label = {
+        (r.inbound_remote_id, r.label): r
+        for r in cache_rows
+        if r.label and not r.client_uuid
+    }
+    adopted_rows: list = []
+
     added = 0
     updated = 0
     removed = 0
@@ -1134,6 +1148,14 @@ async def sync_xui_server(
     now = datetime.now(timezone.utc)
     for key, pv in panel_view.items():
         existing = cache_by_key.get(key)
+        if existing is None:
+            legacy = cache_by_label.get((key[0], pv["label"]))
+            if legacy is not None:
+                # Adopt the panel's natural id so the next sync matches
+                # on the fast path — and keep `exported_node_id`.
+                legacy.client_uuid = key[1]
+                existing = legacy
+                adopted_rows.append(legacy)
         if existing is None:
             session.add(XuiClientModel(
                 xui_server_id=xui_server_id,
@@ -1163,6 +1185,9 @@ async def sync_xui_server(
     # be defensive against legacy rows from older PiTun builds).
     for key, row in cache_by_key.items():
         if key in panel_view:
+            continue
+        # Adopted above under the panel's real key — not an orphan.
+        if row in adopted_rows:
             continue
         # Look up whether the inbound itself disappeared (the panel
         # del-inbound path would have cascaded all its clients).
@@ -1526,10 +1551,20 @@ async def add_client(
                 "add_client: restart_xray failed: %s", exc,
             )
 
+    # Store the same natural id `/sync` derives from the panel payload
+    # (`id` → `password` → `user`). Storing "" for trojan meant the cache
+    # row never matched its panel counterpart, so the very next sync
+    # declared the client "vanished" and cascade-deleted the Node it had
+    # been exported to — while the client was alive on the panel.
     row = XuiClientModel(
         xui_server_id=xui_server_id,
         inbound_remote_id=inbound_id,
-        client_uuid=uuid if protocol != "trojan" else "",
+        client_uuid=str(
+            client_obj.get("id")
+            or client_obj.get("password")
+            or client_obj.get("user")
+            or ""
+        ),
         label=label,
         inbound_protocol=protocol,
         inbound_port=port,
@@ -2271,7 +2306,9 @@ async def healthcheck_chain(
       * relay's running xray has the chain outbound + matching
         routing rule (otherwise traffic from clients gets blackholed)
 
-    The endpoint is read-only — no panel state is mutated.
+    No PANEL state is mutated. PiTun's own `ProxyChain.status` is
+    updated from the verdict (deployed ↔ degraded) so drift stays
+    visible after the dialog is closed.
     """
     chain = await session.get(ProxyChain, chain_id)
     if chain is None:
@@ -2484,6 +2521,25 @@ async def healthcheck_chain(
             )
 
     ok = all(c.status == "ok" for c in checks)
+
+    # Persist the verdict. `degraded` was documented on the model and
+    # rendered by the UI, but nothing ever set it — a chain whose relay
+    # inbound had been hand-deleted in the panel kept showing "deployed"
+    # once the healthcheck dialog was closed, and "Add client" happily
+    # handed out URIs that could never connect.
+    failed = [c.name for c in checks if c.status == "fail"]
+    if chain.status in ("deployed", "degraded"):
+        new_status = "deployed" if ok else ("degraded" if failed else chain.status)
+        if new_status != chain.status:
+            chain.status = new_status
+            chain.last_error = (
+                None if new_status == "deployed"
+                else f"healthcheck failed: {', '.join(failed)[:800]}"
+            )
+            chain.updated_at = datetime.now(timezone.utc)
+            session.add(chain)
+            await session.commit()
+
     return ChainHealthCheckResponse(
         chain_id=chain_id, ok=ok, checks=checks,
     )

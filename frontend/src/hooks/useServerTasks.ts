@@ -25,13 +25,24 @@ export function useServerTasks(params?: {
 }
 
 /** Single-job detail (with log_tail + config). Poll while running so the
- * status flip lands within ~2s of finalization even if the WS dropped. */
+ * status flip lands within ~2s of finalization even if the WS dropped.
+ *
+ * The interval is derived from the DATA, not just the caller's flag: a
+ * static `2000` kept hammering the backend for a job that finished hours
+ * ago (each response carries the full log_tail), while callers that set
+ * `polling:false` the moment a `done` frame arrived stopped polling
+ * before the terminal row was ever fetched — leaving the modal showing a
+ * `running` snapshot with no result and no error. */
 export function useServerTask(jobId: string | null, opts?: { polling?: boolean }) {
   return useQuery({
     queryKey: ['server-tasks', jobId],
     queryFn: () => serverTasksApi.get(jobId as string),
     enabled: !!jobId,
-    refetchInterval: opts?.polling ? 2000 : false,
+    refetchInterval: (query) => {
+      const status = query.state.data?.status
+      if (status && status !== 'running') return false
+      return opts?.polling ? 2000 : false
+    },
   })
 }
 

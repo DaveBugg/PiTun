@@ -1,4 +1,5 @@
 """Generate xray JSON configuration from DB models."""
+import asyncio
 import json
 import logging
 import os
@@ -14,6 +15,27 @@ if TYPE_CHECKING:
     from sqlmodel.ext.asyncio.session import AsyncSession
 
 logger = logging.getLogger(__name__)
+
+# Guards the whole write→validate sequence in `write_config` — every
+# writer goes through that one function.
+#
+# One lock PER EVENT LOOP, not a single module-level lock: an
+# `asyncio.Lock` binds itself to the first loop that awaits it and then
+# raises "bound to a different event loop" everywhere else. The app runs
+# one loop, but helpers and tests call `asyncio.run()`, which makes a
+# fresh one each time. Keyed weakly-ish by loop, with closed loops pruned.
+_write_locks: "dict[Any, asyncio.Lock]" = {}
+
+
+def _write_lock() -> asyncio.Lock:
+    loop = asyncio.get_running_loop()
+    lock = _write_locks.get(loop)
+    if lock is None:
+        for dead in [lp for lp in _write_locks if lp.is_closed()]:
+            _write_locks.pop(dead, None)
+        lock = asyncio.Lock()
+        _write_locks[loop] = lock
+    return lock
 
 
 async def collect_routing_set_context(
@@ -1455,6 +1477,23 @@ async def write_config(
     config: Dict[str, Any], *, validate: bool = True,
     settings_map: Optional[Dict[str, str]] = None,
 ) -> Optional[tuple[str, str]]:
+    """Serialize + validate the xray config, serialized against itself.
+
+    Several independent writers exist (API reload, circle rotation,
+    failover, crash watchdog). Overlapping runs used to truncate the same
+    file in place and validate each other's half-written JSON. The lock
+    covers write AND `xray run -test`, since the test re-reads the path.
+    """
+    async with _write_lock():
+        return await _write_config_unlocked(
+            config, validate=validate, settings_map=settings_map,
+        )
+
+
+async def _write_config_unlocked(
+    config: Dict[str, Any], *, validate: bool = True,
+    settings_map: Optional[Dict[str, str]] = None,
+) -> Optional[tuple[str, str]]:
     """Serialize config to JSON, write to disk, then (when `validate`)
     run a pre-flight `xray run -test` to catch obviously-invalid configs
     (typically a routing rule referencing a geosite/geoip tag absent
@@ -1477,8 +1516,19 @@ async def write_config(
     def _write() -> None:
         path = Path(settings.xray_config_path)
         os.makedirs(path.parent, exist_ok=True)
-        with open(path, "w") as f:
+        # Write to a sibling temp file and rename over the target.
+        # `open(path, "w")` truncates in place, so a concurrent writer
+        # (scheduled circle rotation vs. an operator hitting "Reload
+        # config", failover vs. the watchdog) could interleave into a
+        # torn JSON file — which the `-test` below then validated, or
+        # worse, which xray was asked to load. os.replace is atomic on
+        # the same filesystem, so every reader sees one whole config.
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        with open(tmp, "w") as f:
             json.dump(config, f, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
 
     await asyncio.to_thread(_write)
     logger.info("xray config written to %s", settings.xray_config_path)

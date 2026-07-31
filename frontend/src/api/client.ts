@@ -500,6 +500,52 @@ export const routingSetsApi = {
 
 // ── Diagnostics ─────────────────────────────────────────────────────────────
 
+/** Advisory release check — applies nothing. */
+export interface UpdateCheckResult {
+  current: string
+  latest: string | null
+  update_available: boolean
+  /** "active node" | "direct" | "unreachable" — lets the UI tell
+   *  "no update" apart from "we couldn't look". */
+  network_path: string
+  published_at?: string | null
+  notes?: string | null
+  error?: string | null
+  /** Installing `latest` would REMOVE Settings → Updates (a downgrade
+   *  below the version that introduced it). The box stays updatable, but
+   *  only from a shell — say so BEFORE, not after. */
+  target_lacks_update_ui?: boolean
+  update_ui_since?: string
+}
+
+export interface UpdateStatus {
+  state: 'idle' | 'queued' | 'running' | 'done' | 'failed' | 'available' | 'unknown'
+  pct: number
+  step: string
+  message: string
+  ok: boolean | null
+  from?: string | null
+  to?: string | null
+  updated_at?: string | null
+  /** Still true → the host agent never picked the request up (not
+   *  installed, or not running). */
+  request_pending: boolean
+}
+
+export const updateApi = {
+  check: (prerelease = false) =>
+    http.get<UpdateCheckResult>('/system/update/check', { params: { prerelease } })
+      .then(r => r.data),
+
+  status: () =>
+    http.get<UpdateStatus>('/system/update/status').then(r => r.data),
+
+  /** 202 — the work happens in a host agent and outlives this response;
+   *  poll `status()` for progress. */
+  start: (body: { version?: string; force?: boolean; prerelease?: boolean }) =>
+    http.post<UpdateStatus>('/system/update/start', body).then(r => r.data),
+}
+
 export const diagnosticsApi = {
   healthChecks: () =>
     http.get<{ checks: Array<{ name: string; ok: boolean; detail: string; info?: boolean }> }>('/diagnostics/health-checks').then(r => r.data),
@@ -1176,6 +1222,20 @@ export interface NetworkApplyResult {
   new_state: NetworkState
 }
 
+/** `POST /network/rollback` does NOT answer with `backup` — it reports
+ *  what it restored FROM, under a different key and without `manager`.
+ *  Typing it as `NetworkApplyResult` made `data.backup.id` compile while
+ *  being `undefined` at runtime. */
+export interface NetworkRollbackResult {
+  ok: boolean
+  restored_from: {
+    id: string
+    created_at: string
+    live_state: NetworkBackup['live_state']
+  }
+  new_state: NetworkState
+}
+
 export const networkApi = {
   getState: async (): Promise<NetworkState> => {
     const r = await http.get('/network/state')
@@ -1200,7 +1260,7 @@ export const networkApi = {
   },
 
   /** Restore a previous configuration. Empty body = newest backup. */
-  rollback: async (backup_id?: string): Promise<NetworkApplyResult> => {
+  rollback: async (backup_id?: string): Promise<NetworkRollbackResult> => {
     const r = await http.post('/network/rollback', { backup_id })
     return r.data
   },

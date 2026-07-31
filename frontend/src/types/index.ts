@@ -82,6 +82,10 @@ export interface Node {
   // (sync detected the peer is gone) or via Remove client. The Node
   // keeps working but warns the admin that the upstream peer is dead.
   client_orphan?: boolean
+  /** `chain_node_id` points at a node that no longer exists. Computed
+   *  server-side on every read, so it also catches rows broken by an
+   *  older version or an external DB edit. */
+  chain_orphan?: boolean
 }
 
 export type NodeCreate = Omit<Node, 'id' | 'latency_ms' | 'last_check' | 'is_online'>

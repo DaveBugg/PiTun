@@ -24,6 +24,7 @@ import asyncio
 import json
 import os
 import re
+import socket
 import tempfile
 from typing import Optional
 
@@ -32,6 +33,22 @@ from app.config import settings
 
 # access.log line: "... accepted tcp:HOST:PORT [INBOUND >> OUTBOUND]"
 _ACCESS_RE = re.compile(r"accepted\s+\w+:[^\s]+\s+\[([^\]]+)\]")
+
+
+def _reserve_local_port(fallback: int = 15359) -> int:
+    """Free loopback port for the throwaway probe instance.
+
+    A fixed port meant two concurrent Explain calls (two tabs, or a second
+    click while the first probe still ran) fought over it: the loser's xray
+    died with "address already in use" and the UI reported the diagnostic
+    itself as broken.
+    """
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.bind(("127.0.0.1", 0))
+            return s.getsockname()[1]
+    except OSError:
+        return fallback
 
 
 def build_probe_config(base_config: dict, *, probe_port: int, log_path: str) -> dict:
@@ -103,7 +120,7 @@ async def xray_probe_routing(
         return {"ok": False, "outbound": None,
                 "detail": "xray binary not found — cannot run live probe"}
 
-    probe_port = 15359  # private, well above ephemeral; loopback only
+    probe_port = _reserve_local_port()
     workdir = tempfile.mkdtemp(prefix="pitun-explain-")
     cfg_path = os.path.join(workdir, "probe.json")
     log_path = os.path.join(workdir, "access.log")

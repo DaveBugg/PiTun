@@ -6,11 +6,12 @@ import re
 import subprocess
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from pydantic import BaseModel
 from sqlmodel import select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
+from app.core.dataplane import dispatch_dataplane
 from app.database import get_session
 from app.models import BalancerGroup, Node, RoutingRule, RoutingSet
 from app.schemas import (
@@ -132,15 +133,36 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/routing", tags=["routing"])
 
 
-async def _auto_reload_xray(session: AsyncSession) -> None:
-    """Regenerate xray config and reload if running. Called after rule changes."""
+async def _auto_reload_xray(
+    session: AsyncSession, background_tasks: Optional[BackgroundTasks] = None,
+) -> None:
+    """Re-apply BOTH dataplane layers after a rule change.
+
+    xray alone is not enough. `mac` rules never reach the xray config at
+    all (config_gen skips them — MAC is an L2 property nftables owns), and
+    `dst_ip + direct` rules become an nftables bypass set. Reloading only
+    xray meant a new MAC bypass silently did nothing, and — worse — a
+    DELETED one kept bypassing the proxy until the next restart.
+
+    Order is load-bearing and matches `routing_sets._auto_reload_dataplane`:
+    xray first so its inbounds are live, nftables second so redirects point
+    at a listening port.
+
+    The restart runs AFTER the response when `background_tasks` is given: a
+    reload drops every connection xray carries, including the operator's
+    own browser session when the UI is reached through the box, which used
+    to kill the very request that asked for the change. See
+    core/dataplane.py.
+
+    No-op when xray isn't running — `/system/start` builds both layers.
+    """
     try:
         from app.core.xray import xray_manager
         if not xray_manager.is_running:
             return
         from app.api.system import _regenerate_and_write
         await _regenerate_and_write(session)
-        await xray_manager.reload()
+        await dispatch_dataplane(background_tasks, "reload")
     except Exception as exc:
         logger.warning("Auto-reload after rule change failed: %s", exc)
 
@@ -206,7 +228,8 @@ async def list_auto_disabled(session: AsyncSession = Depends(get_session)):
 
 @router.post("/auto-disabled/{rule_id}/re-enable", status_code=204)
 async def re_enable_auto_disabled(
-    rule_id: int, session: AsyncSession = Depends(get_session)
+    rule_id: int,
+    background_tasks: BackgroundTasks, session: AsyncSession = Depends(get_session)
 ):
     """Re-enable a rule and remove it from the auto-disabled inbox.
     Forces the user to acknowledge they understand the rule will
@@ -233,12 +256,13 @@ async def re_enable_auto_disabled(
             pass
 
     await session.commit()
-    await _auto_reload_xray(session)
+    await _auto_reload_xray(session, background_tasks)
 
 
 @router.delete("/auto-disabled/{rule_id}", status_code=204)
 async def delete_auto_disabled(
-    rule_id: int, session: AsyncSession = Depends(get_session)
+    rule_id: int,
+    background_tasks: BackgroundTasks, session: AsyncSession = Depends(get_session)
 ):
     """Permanently delete an auto-disabled rule and remove from the
     inbox. The "this rule will never come back" path for users who
@@ -263,7 +287,7 @@ async def delete_auto_disabled(
             pass
 
     await session.commit()
-    await _auto_reload_xray(session)
+    await _auto_reload_xray(session, background_tasks)
 
 
 @router.post("/auto-disabled/dismiss", status_code=204)
@@ -284,7 +308,8 @@ async def dismiss_auto_disabled_all(session: AsyncSession = Depends(get_session)
 
 
 @router.post("/rules", response_model=RoutingRuleRead, status_code=201)
-async def create_rule(data: RoutingRuleCreate, session: AsyncSession = Depends(get_session)):
+async def create_rule(data: RoutingRuleCreate,
+    background_tasks: BackgroundTasks, session: AsyncSession = Depends(get_session)):
     await _validate_action(session, data.action)
     _validate_geo_tags(data.rule_type, data.match_value or "")
     await _validate_routing_set_id(session, data.routing_set_id)
@@ -292,7 +317,7 @@ async def create_rule(data: RoutingRuleCreate, session: AsyncSession = Depends(g
     session.add(rule)
     await session.commit()
     await session.refresh(rule)
-    await _auto_reload_xray(session)
+    await _auto_reload_xray(session, background_tasks)
     return rule
 
 
@@ -305,7 +330,8 @@ async def get_rule(rule_id: int, session: AsyncSession = Depends(get_session)):
 
 
 @router.patch("/rules/{rule_id}", response_model=RoutingRuleRead)
-async def update_rule(rule_id: int, data: RoutingRuleUpdate, session: AsyncSession = Depends(get_session)):
+async def update_rule(rule_id: int, data: RoutingRuleUpdate,
+    background_tasks: BackgroundTasks, session: AsyncSession = Depends(get_session)):
     rule = await session.get(RoutingRule, rule_id)
     if not rule:
         raise HTTPException(404, "Rule not found")
@@ -326,43 +352,47 @@ async def update_rule(rule_id: int, data: RoutingRuleUpdate, session: AsyncSessi
     session.add(rule)
     await session.commit()
     await session.refresh(rule)
-    await _auto_reload_xray(session)
+    await _auto_reload_xray(session, background_tasks)
     return rule
 
 
 @router.delete("/rules/{rule_id}", status_code=204)
-async def delete_rule(rule_id: int, session: AsyncSession = Depends(get_session)):
+async def delete_rule(rule_id: int,
+    background_tasks: BackgroundTasks, session: AsyncSession = Depends(get_session)):
     rule = await session.get(RoutingRule, rule_id)
     if not rule:
         raise HTTPException(404, "Rule not found")
     await session.delete(rule)
     await session.commit()
-    await _auto_reload_xray(session)
+    await _auto_reload_xray(session, background_tasks)
 
 
 @router.delete("/rules", status_code=204)
-async def delete_all_rules(session: AsyncSession = Depends(get_session)):
+async def delete_all_rules(
+    background_tasks: BackgroundTasks,session: AsyncSession = Depends(get_session)):
     """Delete ALL routing rules."""
     rules = (await session.exec(select(RoutingRule))).all()
     for r in rules:
         await session.delete(r)
     await session.commit()
-    await _auto_reload_xray(session)
+    await _auto_reload_xray(session, background_tasks)
 
 
 @router.post("/rules/delete-batch", status_code=204)
-async def delete_batch_rules(ids: List[int], session: AsyncSession = Depends(get_session)):
+async def delete_batch_rules(ids: List[int],
+    background_tasks: BackgroundTasks, session: AsyncSession = Depends(get_session)):
     """Delete multiple rules by ID list."""
     for rid in ids:
         rule = await session.get(RoutingRule, rid)
         if rule:
             await session.delete(rule)
     await session.commit()
-    await _auto_reload_xray(session)
+    await _auto_reload_xray(session, background_tasks)
 
 
 @router.post("/rules/bulk", response_model=BulkRuleResult, status_code=201)
-async def bulk_create_rules(body: BulkRuleCreate, session: AsyncSession = Depends(get_session)):
+async def bulk_create_rules(body: BulkRuleCreate,
+    background_tasks: BackgroundTasks, session: AsyncSession = Depends(get_session)):
     raw = body.values.replace("\r\n", "\n").replace("\r", "\n")
     parts = []
     for line in raw.split("\n"):
@@ -388,7 +418,7 @@ async def bulk_create_rules(body: BulkRuleCreate, session: AsyncSession = Depend
     session.add(rule)
     await session.commit()
     await session.refresh(rule)
-    await _auto_reload_xray(session)
+    await _auto_reload_xray(session, background_tasks)
     return BulkRuleResult(created=len(parts), rule_ids=[rule.id])
 
 
@@ -416,6 +446,7 @@ def _v2ray_action(tag: str, mode: str) -> Optional[str]:
 @router.post("/rules/import-v2ray", response_model=V2RayImportResult, status_code=201)
 async def import_v2ray_rules(
     body: V2RayImportRequest,
+    background_tasks: BackgroundTasks,
     session: AsyncSession = Depends(get_session),
 ):
     if body.mode not in ("as_is", "invert"):
@@ -489,7 +520,7 @@ async def import_v2ray_rules(
             skipped += 1
 
     await session.commit()
-    await _auto_reload_xray(session)
+    await _auto_reload_xray(session, background_tasks)
     logger.info("V2Ray import: %d rules imported, %d skipped (mode=%s)", imported, skipped, body.mode)
     return V2RayImportResult(imported=imported, skipped=skipped, rule_ids=rule_ids)
 
@@ -671,7 +702,8 @@ async def import_preview(
 
 @router.post("/import/commit", response_model=RoutingImportCommitResult, status_code=201)
 async def import_commit(
-    body: RoutingImportCommitRequest, session: AsyncSession = Depends(get_session)
+    body: RoutingImportCommitRequest,
+    background_tasks: BackgroundTasks, session: AsyncSession = Depends(get_session)
 ):
     """Apply an import (append semantics). Identical rules are skipped;
     conflicts follow per-key `resolutions` ('keep' = leave existing,
@@ -717,7 +749,7 @@ async def import_commit(
             skipped_conflicts += 1
 
     await session.commit()
-    await _auto_reload_xray(session)
+    await _auto_reload_xray(session, background_tasks)
     set_name = label[len("Set: "):] if label.startswith("Set: ") else None
     logger.info(
         "Routing import → %s: +%d added, %d identical, %d replaced, %d conflicts skipped, "
@@ -732,7 +764,8 @@ async def import_commit(
 
 
 @router.post("/rules/reorder", status_code=204)
-async def reorder_rules(ids: List[int], session: AsyncSession = Depends(get_session)):
+async def reorder_rules(ids: List[int],
+    background_tasks: BackgroundTasks, session: AsyncSession = Depends(get_session)):
     """Set the order of rules by providing an ordered list of IDs."""
     for idx, rule_id in enumerate(ids):
         rule = await session.get(RoutingRule, rule_id)
@@ -740,7 +773,7 @@ async def reorder_rules(ids: List[int], session: AsyncSession = Depends(get_sess
             rule.order = idx * 10
             session.add(rule)
     await session.commit()
-    await _auto_reload_xray(session)
+    await _auto_reload_xray(session, background_tasks)
 
 
 # ── ARP devices ───────────────────────────────────────────────────────────────

@@ -16,8 +16,8 @@
 #                     a real domain pointed at the VPS isn't needed.
 #
 # Both modes pin the SAME upstream 3x-ui release tag (XUI_VERSION below) so
-# the API surface (`/panel/api/inbounds/...`, Bearer auth, /panel/api/setting/
-# getApiToken endpoints) stays identical regardless of which path was used.
+# the API surface (`/panel/api/inbounds/...`, `/panel/api/clients/...`, Bearer
+# auth, apiTokens endpoints) stays identical regardless of which path was used.
 # Pinning matters because 3x-ui's `master` branch is a moving target — a
 # major-version drift between PiTun's API client and a freshly-installed
 # panel would silently break inbound CRUD.
@@ -34,17 +34,13 @@
 #   DOMAIN=<sub.domain.tld>   See above. Empty triggers bare-3x-ui mode.
 #   EMAIL=<addr>              Let's Encrypt registration email (DOMAIN mode
 #                             only). Defaults to admin@<DOMAIN> if missing.
-#   XUI_VERSION=v3.1.0        Pinned 3x-ui release tag. Both modes use this.
-#                             Bumped from v3.0.1 in PiTun v1.3.8 because v3.1.0
-#                             moved per-client endpoints to a separate
-#                             /panel/api/clients/* controller. PiTun v1.3.7
-#                             and older cannot manage v3.1.x panels; PiTun
-#                             v1.3.8+ cannot manage v3.0.x panels (the new
-#                             client controller doesn't exist there).
-#                             Override at your own risk — the Bearer API
-#                             middleware exists since v3.0.0; anything older
-#                             requires cookie+CSRF auth which PiTun doesn't
-#                             implement.
+#   XUI_VERSION=v3.6.0        Pinned 3x-ui release tag. Both modes use this.
+#                             The API surface PiTun uses is identical across
+#                             v3.1.0–v3.6.0 (verified additive-only), so PiTun
+#                             manages panels on any tag in that range. Panels
+#                             older than v3.1.0 are NOT manageable (per-client
+#                             endpoints live in /panel/api/clients/* since
+#                             v3.1.0).
 #
 # ── Why upstream scripts are pinned by commit SHA, not tag ──────────────────
 # Both upstream installer URLs below resolve to a **commit SHA**, not a
@@ -69,6 +65,8 @@
 #        curl -sf https://raw.githubusercontent.com/MHSanaei/3x-ui/v3.X.Y/install.sh | sha256sum
 #        curl -sf https://raw.githubusercontent.com/MHSanaei/3x-ui/<XUI_INSTALL_SHA>/install.sh | sha256sum
 #      → must match.
+#   5. Recompute XUI_INSTALL_SHA256 / XUI_PRO_SHA256 from the fetched
+#      scripts (`sha256sum`) — fetch_pinned refuses to run on mismatch.
 #   PANEL_PORT=<num>          Force the panel port instead of generating one.
 #                             Empty (default) → random 30000-60000.
 #   PANEL_BASEPATH=<str>      Force the panel base path. Empty → random
@@ -114,13 +112,18 @@ info() { echo -e "${BLUE}[i]${NC} $*"; }
 # ── Defaults ────────────────────────────────────────────────────────────────
 DOMAIN="${DOMAIN:-}"
 EMAIL="${EMAIL:-}"
-XUI_VERSION="${XUI_VERSION:-v3.1.0}"
+XUI_VERSION="${XUI_VERSION:-v3.6.0}"
 # Commit SHAs of the upstream installer scripts at our pinned version.
 # These freeze the downloaded scripts byte-for-byte regardless of any
 # future tag rewrite or master-branch drift. See the bump procedure in
 # the header comment above.
-XUI_INSTALL_SHA="${XUI_INSTALL_SHA:-867a145979be5724becaedfea39543c30cf67d27}"  # MHSanaei/3x-ui@v3.1.0 install.sh
-XUI_PRO_SHA="${XUI_PRO_SHA:-2d8f916526a092358b504903e01c1b3c5329293a}"        # GFW4Fun/x-ui-pro master @ 2026-05-26
+XUI_INSTALL_SHA="${XUI_INSTALL_SHA:-c377dca27c23549cdf84e0ffd2d287a16bee577c}"  # MHSanaei/3x-ui@v3.6.0 install.sh
+XUI_PRO_SHA="${XUI_PRO_SHA:-2d8f916526a092358b504903e01c1b3c5329293a}"        # GFW4Fun/x-ui-pro master @ 2026-05-26, re-verified 2026-07-30
+# Content hashes of those two scripts. The commit-SHA URL already freezes
+# the ref; the sha256 additionally catches tampering between the raw host
+# and us. fetch_pinned() enforces these.
+XUI_INSTALL_SHA256="${XUI_INSTALL_SHA256:-7bb41e811f2107a3182da9090f24893d3612b5b6310194a7dd1f9965ff29e0c8}"
+XUI_PRO_SHA256="${XUI_PRO_SHA256:-a88f6e4f3ceb29307ca3196fe13aaf09a2b5c4dac78fa84976179945992ec710}"
 PANEL_PORT="${PANEL_PORT:-}"
 PANEL_BASEPATH="${PANEL_BASEPATH:-}"
 PANEL_USER="${PANEL_USER:-}"
@@ -142,6 +145,14 @@ rand_str() {
     local s
     s=$(openssl rand -hex "$bytes")
     printf '%s' "${s:0:n}"
+}
+
+# Download a pinned upstream script and verify its content hash before
+# anything executes it.
+fetch_pinned() {  # <url> <sha256> <outfile>
+    wget -qO "$3" "$1" || err "download failed: $1"
+    echo "$2  $3" | sha256sum -c - >/dev/null 2>&1 \
+        || err "sha256 mismatch for $1 — upstream content drifted, refusing to run it"
 }
 
 # Default randomisation matches x-ui-pro's own gen_str ranges (8-12 chars
@@ -257,7 +268,16 @@ if [[ "$INSTALL_MODE" == "xui-pro" ]]; then
     # Pinned by commit SHA (XUI_PRO_SHA) rather than `/master/` so a
     # force-push or compromised commit on master can't silently
     # replace the wrapper. See header comment for the bump procedure.
-    bash <(wget -qO- "https://raw.githubusercontent.com/GFW4Fun/x-ui-pro/${XUI_PRO_SHA}/x-ui-pro.sh") \
+    PRO_SH="$(mktemp)"
+    fetch_pinned \
+        "https://raw.githubusercontent.com/GFW4Fun/x-ui-pro/${XUI_PRO_SHA}/x-ui-pro.sh" \
+        "$XUI_PRO_SHA256" "$PRO_SH"
+    # The wrapper's inner 3x-ui install.sh call inherits these. v3.6.0+
+    # install.sh is env-driven when stdin isn't a tty: keep the panel
+    # plain-HTTP (we wire the LE cert into it ourselves in section 4b)
+    # and sqlite-backed.
+    export XUI_NONINTERACTIVE=1 XUI_SSL_MODE=none XUI_DB_TYPE=sqlite
+    bash "$PRO_SH" \
         -panel 1 \
         -xuiver "$ver_for_pro" \
         -cdn off \
@@ -265,28 +285,25 @@ if [[ "$INSTALL_MODE" == "xui-pro" ]]; then
         -country xx \
         -subdomain "$DOMAIN" \
         || err "x-ui-pro installer exited non-zero"
+    rm -f "$PRO_SH"
 else
     # ── 3b. Bare upstream 3x-ui mode ────────────────────────────────────────
     log "Running upstream 3x-ui installer ($XUI_VERSION)..."
-    # Upstream v3.0.1 install.sh prompts for SSL setup (options 1-4)
-    # right after auto-rotating creds. Pick `4` (skip SSL) — bare mode
-    # serves the panel over plain HTTP and our step 4 below clears
-    # any cert paths the installer might have written. Without an
-    # explicit `4`, blank stdin gets read as "default → option 2"
-    # (LE for IP address) which then 404/rate-limits on a fresh VPS
-    # and dumps a "Failed to issue IP certificate" red herring into
-    # the log. The trailing `n\n` covers any older revisions that
-    # still ask "use default creds?" before the SSL prompt.
-    # Pinned by commit SHA (XUI_INSTALL_SHA) — same rationale as the
-    # x-ui-pro branch above. Note: the version arg ("$XUI_VERSION") is
-    # still passed positionally to the installer because that's how
-    # MHSanaei's install.sh composes the binary tarball download URL
-    # (release-download/<tag>/x-ui-linux-<arch>.tar.gz). The pin
-    # protects the SCRIPT; the positional arg protects the BINARY.
-    printf '4\nn\n' | bash <(wget -qO- \
-        "https://raw.githubusercontent.com/MHSanaei/3x-ui/${XUI_INSTALL_SHA}/install.sh") \
-        "$XUI_VERSION" \
+    # v3.6.0+ install.sh is env-driven in non-interactive mode:
+    # XUI_SSL_MODE=none keeps the panel plain-HTTP (bare mode's
+    # contract; step 4 below still clears any stray cert paths).
+    # The version arg ("$XUI_VERSION") is passed positionally because
+    # that's how install.sh composes the binary tarball download URL
+    # (release-download/<tag>/x-ui-linux-<arch>.tar.gz). The SHA-pinned
+    # URL + sha256 protect the SCRIPT; the positional arg pins the BINARY.
+    INSTALL_SH="$(mktemp)"
+    fetch_pinned \
+        "https://raw.githubusercontent.com/MHSanaei/3x-ui/${XUI_INSTALL_SHA}/install.sh" \
+        "$XUI_INSTALL_SHA256" "$INSTALL_SH"
+    XUI_NONINTERACTIVE=1 XUI_SSL_MODE=none XUI_DB_TYPE=sqlite \
+        bash "$INSTALL_SH" "$XUI_VERSION" \
         || err "3x-ui installer exited non-zero"
+    rm -f "$INSTALL_SH"
 fi
 
 # Sanity-check the install landed.
@@ -428,17 +445,15 @@ ss -tlnp 2>/dev/null | grep -q ":${PANEL_PORT}\\b" \
     || err "Panel didn't bind :$PANEL_PORT after 20s — check 'journalctl -u x-ui'"
 
 # ── 5. Bootstrap the Bearer API token ───────────────────────────────────────
-# v3.1.0 switched from a single auto-seeded token to a named-tokens model:
-#   GET  /panel/setting/apiTokens          — list rows
-#   POST /panel/setting/apiTokens/create   — body {name: "<str>"} → {token: ...}
-#   POST /panel/setting/apiTokens/delete/:id
-#   POST /panel/setting/apiTokens/setEnabled/:id
-# The legacy v3.0.x endpoints (/panel/setting/{getApiToken,regenerateApiToken})
-# are GONE in v3.1.0 and return 404 — which is exactly the symptom that
-# caught us on the first install. Name is `uniqueIndex` on the
-# ApiToken row, so re-running the script for the same panel finds the
-# existing "pitun" row instead of creating a duplicate (which would
-# error with "name already taken").
+# Named-tokens model (since v3.1.0):
+#   GET  <setting-base>/apiTokens          — list rows
+#   POST <setting-base>/apiTokens/create   — body {name: "<str>"} → {token: ...}
+# The setting controller's mount MOVED in v3.6.0: /panel/api/setting/*
+# (Bearer-capable zone); v3.1.x serves it at /panel/setting/* only, and
+# v3.6.0's SPA shell answers 200+HTML on the old path. We probe
+# new-first and keep whichever returns JSON. Name is `uniqueIndex` on
+# the ApiToken row, so re-running the script for the same panel finds
+# the existing "pitun" row instead of creating a duplicate.
 log "Bootstrapping Bearer API token..."
 
 # Stable name we use to find our token across re-runs. Anything matching
@@ -507,33 +522,46 @@ if ! echo "$LOGIN_RESP" | jq -e '.success' >/dev/null 2>&1; then
     err "Login failed (HTTP $LOGIN_CODE, csrf=$CSRF_CODE). Response: ${LOGIN_RESP:-<empty>}. URL=${API_BASE}/login user=${PANEL_USER}"
 fi
 
-# Step 1: list existing named tokens. If "pitun" already exists (re-run
-# case), reuse its token so any handed-out URI stays valid.
-LIST_TMP="$(mktemp)"
-LIST_CODE=$(curl -sk --max-time 10 -b "$COOKIE" \
-    -o "$LIST_TMP" -w "%{http_code}" \
-    "${API_BASE}/panel/setting/apiTokens" 2>/dev/null || true)
-LIST_RESP="$(cat "$LIST_TMP" 2>/dev/null || true)"
-rm -f "$LIST_TMP"
-API_TOKEN=""
-if [[ "$LIST_CODE" == "200" ]]; then
-    API_TOKEN=$(echo "$LIST_RESP" \
-        | jq -r --arg n "$PITUN_TOKEN_NAME" \
-            '.obj[]? | select(.name == $n) | .token' \
-            2>/dev/null | head -n1 || true)
-fi
+# Step 1: locate the setting mount, then list existing named tokens.
+SETTING_BASE=""
+LIST_CODE=""
+LIST_RESP=""
+for sb in "${API_BASE}/panel/api/setting" "${API_BASE}/panel/setting"; do
+    LIST_TMP="$(mktemp)"
+    LIST_CODE=$(curl -sk --max-time 10 -b "$COOKIE" \
+        -H "X-Requested-With: XMLHttpRequest" \
+        -o "$LIST_TMP" -w "%{http_code}" \
+        "${sb}/apiTokens" 2>/dev/null || true)
+    LIST_RESP="$(cat "$LIST_TMP" 2>/dev/null || true)"
+    rm -f "$LIST_TMP"
+    # JSON with success=true = the real controller; the SPA shell or a
+    # 404 page fails this test and we fall through to the next mount.
+    if [[ "$LIST_CODE" == "200" ]] \
+        && echo "$LIST_RESP" | jq -e '.success == true' >/dev/null 2>&1; then
+        SETTING_BASE="$sb"
+        break
+    fi
+done
+[[ -n "$SETTING_BASE" ]] \
+    || err "apiTokens endpoint not found on either mount (last code=$LIST_CODE resp=${LIST_RESP:0:200})"
 
-# Step 2: nothing existing → create a fresh one. /panel/setting/* goes
-# through CSRFMiddleware for cookie-auth callers; Bearer would short-
-# circuit it but we don't have a Bearer token yet (that's the whole
-# point of this call). `apiTokens/create` expects a JSON body with the
-# required `name` field; response shape is `{obj: {id, name, token,
-# enabled, createdAt}}`.
+# If "pitun" already exists (re-run case), reuse its token so any
+# handed-out URI stays valid.
+API_TOKEN=$(echo "$LIST_RESP" \
+    | jq -r --arg n "$PITUN_TOKEN_NAME" \
+        '.obj[]? | select(.name == $n) | .token' \
+        2>/dev/null | head -n1 || true)
+
+# Step 2: nothing existing → create a fresh one. Cookie-auth mutations
+# go through CSRFMiddleware; Bearer would short-circuit it but we don't
+# have a Bearer token yet (that's the whole point of this call).
+# `apiTokens/create` expects a JSON body with the required `name`
+# field; response shape is `{obj: {id, name, token, enabled, createdAt}}`.
 if [[ -z "$API_TOKEN" ]]; then
     CREATE_TMP="$(mktemp)"
     CREATE_ARGS=(-sk --max-time 10 -b "$COOKIE"
         -o "$CREATE_TMP" -w "%{http_code}"
-        -X POST "${API_BASE}/panel/setting/apiTokens/create"
+        -X POST "${SETTING_BASE}/apiTokens/create"
         -H "Content-Type: application/json"
         --data-binary "{\"name\":\"${PITUN_TOKEN_NAME}\"}")
     [[ -n "$CSRF_TOKEN" ]] && CREATE_ARGS+=(-H "X-CSRF-Token: ${CSRF_TOKEN}")

@@ -4,6 +4,178 @@ All notable user-facing changes to PiTun. Full per-release detail lives in the
 [GitHub Releases](https://github.com/DaveBugg/PiTun/releases); this file is the
 committed summary.
 
+## v1.4.8 — 2026-07-31
+
+PiTun now **updates itself from the web UI**, fetching releases through the
+active node so a throttled direct route is not a problem. The pinned 3x-ui
+panel version moves from `v3.1.0` to `v3.6.0`, with both generations managed
+side by side. The rest of the release is a sweep of logic and
+frontend-to-backend interaction bugs found in a full audit — most visibly, a
+deleted active node no longer sends the whole LAN out unproxied, a speed test
+no longer loses its result when you paginate or leave the page, and a node
+whose relay was deleted now says so instead of failing silently.
+
+### Added
+
+- **Updates from the UI.** **Settings -> Updates** checks GitHub, shows what is
+  new and applies it with progress. The backend deliberately cannot apply an
+  update itself — doing so restarts the very container serving the request —
+  so it writes a request file on the shared volume and a systemd path unit on
+  the host (`pitun-update.sh --agent`) does the work. Progress travels back the
+  same way, which is why the panel keeps reporting correctly straight through
+  the backend restart. Endpoints: `GET /api/system/update/check`,
+  `GET /api/system/update/status`, `POST /api/system/update/start`.
+  - "Could not reach GitHub" never renders as "you are up to date" — on a box
+    that TPROXYs its own traffic a dead tunnel takes GitHub with it, so the
+    reply names the route that answered (`active node` / `direct` /
+    `unreachable`).
+  - Installing a build older than 1.4.8 **removes this panel**, so a downgrade
+    is called out before it happens, with the shell command to come back.
+  - Re-installing the current version is offered as the repair path.
+  - After a verified-healthy update, superseded Docker images are dropped and
+    only the **3 most recent** DB snapshots are kept. Neither runs on failure:
+    that is exactly when the old artefacts are worth having.
+- **`scripts/pitun-update.sh` — unattended updates.** Asks GitHub for the
+  latest release, compares it with the version the backend reports, and hands
+  over to `install.sh` when there is something newer. The interesting part is
+  the network path: this box TPROXYs its own traffic, so the updater first
+  probes xray's local SOCKS inbound and fetches **through the active node**
+  (useful where GitHub is throttled), falling back to the direct route when
+  the tunnel is down — an update must never be blocked by the very tunnel it
+  might be fixing. `--check` reports without touching anything (exit 10 when
+  an update is available), `--install-timer` adds a daily systemd timer that
+  reports by default and only applies with `--apply`.
+
+### Changed
+
+- **3x-ui pin bumped to `v3.6.0`** in `setup-xui-server.sh`, for both install
+  modes (bare and x-ui-pro). The upstream installer scripts are still fetched
+  at immutable commit SHAs, and now additionally verified by **sha256 content
+  hash** before anything executes them (`fetch_pinned`) — a rewritten tag or a
+  tampered download aborts the install instead of running.
+- **Non-interactive install went env-driven.** v3.6.0's `install.sh` accepts
+  `XUI_NONINTERACTIVE=1` / `XUI_SSL_MODE` / `XUI_DB_TYPE` instead of prompt
+  feeding; both install branches export them, replacing the old
+  `printf '4\nn\n'` pipe.
+
+### Fixed
+
+- **v3.6.0 moved its UI-internal controllers** (`/panel/setting/*`,
+  `/panel/xray/*`) under `/panel/api/...`; the old paths answer with the new
+  web UI's SPA shell or 404. `XuiClient` now probes the new mount first and
+  falls back to the old one (cached per client), so API-token bootstrap and
+  chain template pushes work against both v3.1.x and v3.6.x panels.
+- **Add-inbound against a v3.6.0 panel** rejected the legacy empty-string
+  defaults (`"tgId": ""`) in the preset's embedded client — the panel now
+  parses `settings.clients[]` strictly on `inbounds/add|update`, not just on
+  the per-client endpoints. Numeric/bool fields of embedded clients are now
+  coerced before every inbound write.
+- **Creating a proxy chain broke every ordinary inbound on the relay panel.**
+  The generated `xrayTemplateConfig` declared an outbound tagged `api` and
+  placed it first. Xray's Commander already owns that tag, and `outbounds[0]`
+  is where traffic matching no routing rule goes — so plain inbounds (which
+  have no rule) had their traffic handed to the API handler and got zero bytes
+  through, while the chain itself kept working. The template now declares only
+  `direct` (first, as the default egress) and `blocked`, matching the stock
+  3x-ui layout. Re-saving an existing chain re-pushes a corrected template.
+
+#### Dataplane — routing that silently did not apply
+
+- **Deleting the active node left `active_node_id` dangling**, and the next
+  config regeneration — any rule, DNS or settings edit — quietly produced a
+  config with no proxy outbound, so everything meant for the tunnel went out
+  direct. The health checker stayed silent because there was no node left to
+  check. Deletion now re-points to a surviving node (or stops the proxy and
+  says so) and re-applies the dataplane. Same for a subscription delete that
+  takes the active node with it.
+- **A node whose relay was deleted broke silently.** `chain_node_id` has no FK
+  constraint, so the pointer survived deletion: xray skipped the outbound,
+  probes followed the dead pointer, speed tests returned nothing, and the list
+  still showed a healthy "chained" badge. The subscription paths (delete with
+  nodes, and refresh dropping nodes that vanished from the panel) now clear
+  those links and record an event naming the affected nodes, and every node
+  read reports `chain_orphan` so rows broken by an older version surface too —
+  the UI marks them **chain broken** and keeps the link visible so it can be
+  repaired.
+- **MAC rules never reached nftables.** `mac` rules are invisible to xray by
+  design — nftables owns L2 — but a rule change only reloaded xray, so a new
+  MAC bypass did nothing and, worse, a deleted one kept bypassing until the
+  next restart. Rule changes now re-apply both layers.
+- **`POST /system/mode` only wrote a setting.** Switching to Bypass on the
+  Dashboard left nftables TPROXYing and xray on the old config while the UI
+  reported the new mode. The switch now applies both layers.
+- **Subscription refresh never reloaded xray.** A panel rotating a Reality key
+  or an SNI updates the row in place — the fingerprint still matches — while
+  the running xray kept dialling with stale crypto. Health checks agreed,
+  because they connect to the address from the fresh row. Refresh now reloads
+  when it changed a node the config actually uses.
+- **`/system/start` and `/system/restart` applied nftables before xray** and
+  never rolled back, so a failed start left the LAN redirected into a TPROXY
+  port with nothing listening. Order reversed to match the routing-set path.
+- **A circle's balancer stayed on its cold-start `random` after any reload** —
+  every new connection went to a random member, including ones a failover had
+  just rejected, while the UI showed one specific node. The gRPC pin now
+  retries until xray's API is up, and warns instead of failing silently.
+- **Failover could overwrite a manual node switch** made while it was still
+  probing candidates. It now re-checks that the failed node is still active.
+- **Config writes are atomic.** Overlapping writers (scheduled rotation vs. a
+  manual reload vs. failover) truncated the same file in place, so a reader —
+  or `xray run -test` — could see half a document.
+
+#### Speed test
+
+- **The result survived neither navigation nor pagination.** It lived in page
+  state and was written from per-mutation callbacks, so leaving the page threw
+  it away, a second test stranded the first row on "testing..." forever, and
+  the spinner tracked the wrong node. Results and in-flight state now live in
+  the query cache.
+- **A pinned active node never showed its result at all** — the row that
+  renders it existed only inside the list.
+- **Speed All** dies at the reverse proxy's 120s ceiling on a large node set;
+  it now says so instead of silently stopping.
+- **A leaked xray process on startup timeout.** The timeout branch returned a
+  3-tuple where the caller unpacked four, so cleanup ran on nothing: the
+  process outlived the request, holding a temp config with the node's
+  credentials. Ports are now reserved by binding instead of guessed, so a
+  collision can no longer route one node's measurement through another's
+  tunnel.
+
+#### x-ui and chains
+
+- **A failed chain poisoned the whole relay panel.** Its channels carry empty
+  Reality material, and the combined template included them, so the next push
+  produced an outbound with an empty `publicKey` — xray refused to start and
+  every inbound on that panel went down. Only live chains are included now.
+- **Deleting a trojan / shadowsocks / socks client always failed with 502.**
+  Those clients have no `id` field, and the lookup matched on `id` alone. It
+  now matches the natural key (`id` -> `password` -> `user` -> email).
+- **Sync deleted a live trojan client's exported Node**, because the cache row
+  stored an empty key that could never match the panel. New rows store the
+  natural key, and legacy rows are adopted on the next sync instead of being
+  treated as vanished.
+- **Deleting a channel could delete another chain's Node** — the cleanup
+  matched by name suffix and relay host, which two chains can share. It now
+  uses the recorded export links.
+- **Deleting a whole chain left its exported Nodes behind**, pointing at UUIDs
+  the relay no longer knows.
+- **`degraded` was documented and rendered but never set** — drift found by a
+  chain healthcheck vanished when the dialog closed. It is persisted now.
+
+#### Deploy jobs and logs
+
+- **A failed install could show a green "Install succeeded".** A script exiting
+  non-zero still finalizes the job as `succeeded` (the runner returns the
+  failure as a result), and the modals rendered the raw status. Both now use
+  the same projection as the tasks page.
+- **A dropped WebSocket froze the deploy modal forever**, because treating the
+  drop as "finished" also switched off the polling fallback.
+- **Two open Logs tabs split the xray stream between them** — one shared queue
+  handed each line to exactly one reader, so a backgrounded tab quietly ate
+  half the lines. Each viewer now gets its own queue.
+- **Errors from system mutations were swallowed** — start/stop/mode/active
+  node/settings had no error handling anywhere, so a 400 explaining a rejected
+  `inbound_mode`, or a 503 asking you to retry, produced nothing on screen.
+
 ## v1.4.7 — 2026-07-29
 
 The User-Agent presets a subscription fetches with are no longer baked into the

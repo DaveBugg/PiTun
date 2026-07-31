@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { systemApi } from '@/api/client'
 import HostNetworkSection from '@/components/HostNetworkSection'
+import { UpdateSection } from '@/components/UpdateSection'
 import {
   Settings as SettingsIcon,
   Network,
@@ -264,6 +265,11 @@ export function Settings() {
           {error}
         </div>
       )}
+
+      {/* Updates — first block on the page: it is an action, not a
+          setting, and burying it inside a settings card made it
+          unfindable. */}
+      <UpdateSection />
 
       {/* Restart warning */}
       {hasChanges && (

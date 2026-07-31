@@ -509,3 +509,127 @@ def test_row_to_summary_handles_corrupt_result_json():
     )
     summary = _row_to_summary(j)
     assert summary.result is None  # corrupt → None, doesn't crash
+
+
+class TestSubscribeAfterFinalize:
+    """A client that attaches inside the post-finalization grace window
+    has no producer left to send it the sentinel. It used to block on
+    `q.get()` forever — leaking the coroutine, its queue and its backlog
+    (the WS handler never reads from the socket, so a client disconnect
+    didn't free it either) and never emitting `done`."""
+
+    @pytest.mark.asyncio
+    async def test_subscribe_in_grace_window_terminates(
+        self, client, admin_user, auth_headers, default_settings, session, manager
+    ):
+        job_id = await manager.start_deploy(
+            server_id=910, server_name="v910", protocol="naive",
+            config={"domain": "x", "email": "y"},
+            runner=_trivial_runner,
+        )
+        await _wait_for_status(manager, job_id, {"succeeded", "failed"})
+        # Buffer is still alive for _DRAIN_GRACE_SEC — this is exactly
+        # the window a stale `running` list row sends the user into.
+        assert job_id in manager._buffers
+
+        collected = []
+
+        async def consume():
+            async for entry in manager.subscribe(job_id):
+                collected.append(entry)
+
+        await asyncio.wait_for(consume(), timeout=2.0)
+        # Backlog is replayed and the iterator ENDS instead of hanging.
+        assert [e[1] for e in collected] == ["starting...", "done"]
+
+    @pytest.mark.asyncio
+    async def test_live_subscriber_still_gets_sentinel_on_finalize(
+        self, client, admin_user, auth_headers, default_settings, session, manager
+    ):
+        async def runner(job_id, on_line):
+            await on_line("stdout", "one")
+            await asyncio.sleep(0.05)
+            return {}
+
+        job_id = await manager.start_deploy(
+            server_id=911, server_name="v911", protocol="naive",
+            config={"domain": "x", "email": "y"},
+            runner=runner,
+        )
+
+        collected = []
+
+        async def consume():
+            async for entry in manager.subscribe(job_id):
+                collected.append(entry)
+
+        await asyncio.wait_for(consume(), timeout=3.0)
+        assert ("stdout", "one") in collected
+
+    @pytest.mark.asyncio
+    async def test_sentinel_survives_a_full_subscriber_queue(self, manager):
+        # A saturated queue used to swallow the sentinel (`except
+        # QueueFull: pass`), stranding that subscriber forever.
+        from app.core.jobs import _put_sentinel
+
+        q: asyncio.Queue = asyncio.Queue(maxsize=2)
+        q.put_nowait(("stdout", "a"))
+        q.put_nowait(("stdout", "b"))
+        assert q.full()
+
+        _put_sentinel(q)
+
+        drained = []
+        while not q.empty():
+            drained.append(q.get_nowait())
+        assert None in drained
+
+
+class TestLogFanOut:
+    """The xray log stream used to be a single shared queue: `get()`
+    hands each line to exactly ONE waiter, so two open Logs tabs each
+    saw a random half — and a background tab (the page connects even
+    while paused) quietly ate lines the foreground tab never saw."""
+
+    @pytest.mark.asyncio
+    async def test_every_subscriber_receives_every_line(self):
+        from app.core.xray import _push_log, subscribe_logs, unsubscribe_logs
+
+        a = subscribe_logs()
+        b = subscribe_logs()
+        try:
+            await _push_log("line-1")
+            await _push_log("line-2")
+
+            assert [a.get_nowait(), a.get_nowait()] == ["line-1", "line-2"]
+            assert [b.get_nowait(), b.get_nowait()] == ["line-1", "line-2"]
+        finally:
+            unsubscribe_logs(a)
+            unsubscribe_logs(b)
+
+    @pytest.mark.asyncio
+    async def test_unsubscribed_queue_stops_receiving(self):
+        from app.core.xray import _push_log, subscribe_logs, unsubscribe_logs
+
+        q = subscribe_logs()
+        unsubscribe_logs(q)
+        await _push_log("after-unsub")
+        assert q.empty()
+
+    @pytest.mark.asyncio
+    async def test_slow_consumer_drops_its_own_oldest_not_the_producer(self):
+        from app.core.xray import _push_log, subscribe_logs, unsubscribe_logs
+
+        slow = subscribe_logs(maxsize=2)
+        fast = subscribe_logs()
+        try:
+            for i in range(5):
+                # Must not block or raise even though `slow` is saturated.
+                await asyncio.wait_for(_push_log(f"l{i}"), timeout=1.0)
+
+            assert slow.qsize() == 2
+            assert slow.get_nowait() == "l3"      # oldest dropped
+            assert fast.qsize() == 5              # unaffected
+        finally:
+            unsubscribe_logs(slow)
+            unsubscribe_logs(fast)

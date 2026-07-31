@@ -25,10 +25,11 @@ Endpoint summary
 import logging
 from typing import List, Literal, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import BackgroundTasks, APIRouter, Depends, HTTPException, Query
 from sqlmodel import select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
+from app.core.dataplane import dispatch_dataplane
 from app.database import get_session
 from app.models import Device, RoutingRule, RoutingSet
 from app.schemas import (
@@ -134,7 +135,9 @@ async def _allocate_tproxy_port(session: AsyncSession) -> int:
     )
 
 
-async def _auto_reload_dataplane(session: AsyncSession) -> None:
+async def _auto_reload_dataplane(
+    session: AsyncSession, background_tasks: Optional[BackgroundTasks] = None,
+) -> None:
     """Re-apply BOTH layers after a routing-set / membership change.
 
     Per-set routing spans two layers that must stay in sync:
@@ -164,13 +167,12 @@ async def _auto_reload_dataplane(session: AsyncSession) -> None:
             _regenerate_and_write, _apply_nftables, _load_settings_map,
         )
         await _regenerate_and_write(session)
-        await xray_manager.reload()
-        # Re-apply nftables so the per-set MAC redirect matches the new
-        # membership. _apply_nftables rebuilds the whole table from
-        # current DB state (bypass macs, dsts, per-set specs, …), so it
-        # naturally picks up added/removed set members.
-        settings_map = await _load_settings_map(session)
-        await _apply_nftables(session, settings_map)
+        # Deferred when the caller has a response to protect: the reload
+        # restarts xray, dropping every connection it carries — including
+        # the browser that issued this request. `apply_dataplane` keeps
+        # the xray-then-nftables order, and rebuilding nftables from
+        # current DB state naturally picks up added/removed set members.
+        await dispatch_dataplane(background_tasks, "reload")
     except Exception as exc:
         logger.warning("Auto-reload after routing-set change failed: %s", exc)
 
@@ -283,6 +285,7 @@ async def update_routing_set(
 @router.delete("/{set_id}", status_code=204)
 async def delete_routing_set(
     set_id: int,
+    background_tasks: BackgroundTasks,
     cascade: Optional[Literal["move-to-global", "delete"]] = Query(
         None,
         description=(
@@ -350,14 +353,15 @@ async def delete_routing_set(
         set_id, len(dep_devices), len(dep_rules),
         "DELETED" if cascade == "delete" else "moved to global",
     )
-    await _auto_reload_dataplane(session)
+    await _auto_reload_dataplane(session, background_tasks)
 
 
 # ── Bulk device assignment ────────────────────────────────────────────────────
 
 @router.post("/devices/bulk", status_code=204)
 async def bulk_assign_devices(
-    body: DeviceBulkSetAssign, session: AsyncSession = Depends(get_session)
+    body: DeviceBulkSetAssign,
+    background_tasks: BackgroundTasks, session: AsyncSession = Depends(get_session)
 ):
     """Bulk-assign N devices to a routing set (or unassign with null).
 
@@ -418,4 +422,4 @@ async def bulk_assign_devices(
         "Bulk-assigned %d device(s) to routing set %s",
         updated, body.routing_set_id,
     )
-    await _auto_reload_dataplane(session)
+    await _auto_reload_dataplane(session, background_tasks)

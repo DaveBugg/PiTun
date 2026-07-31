@@ -1,14 +1,16 @@
 """System control: start/stop/status/mode/settings."""
+import asyncio
 import json
 import logging
 import subprocess
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from sqlmodel import select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
-from app.database import get_session
+from app.core.dataplane import dispatch_dataplane
+from app.database import get_async_engine, get_session
 from app.models import BalancerGroup, Device, DNSRule, Node, RoutingRule, RoutingSet, Settings as DBSettings
 from app.core.device_scanner import get_device_macs_for_mode
 from app.schemas import (
@@ -23,6 +25,9 @@ from app.schemas import (
     SystemStatus,
     SystemVersions,
     ThirdPartyVersions,
+    UpdateCheckResult,
+    UpdateStartRequest,
+    UpdateStatus,
 )
 
 logger = logging.getLogger(__name__)
@@ -451,17 +456,25 @@ async def _apply_nftables(session: AsyncSession, settings_map: dict) -> str:
 
 
 @router.post("/start", status_code=204)
-async def start_proxy(session: AsyncSession = Depends(get_session)):
-    from app.core.xray import xray_manager
-
+async def start_proxy(
+    background_tasks: BackgroundTasks,
+    session: AsyncSession = Depends(get_session),
+):
     await _regenerate_and_write(session)
     settings_map = await _load_settings_map(session)
-    inbound_mode = await _apply_nftables(session, settings_map)
 
-    if xray_manager.is_running:
-        await xray_manager.reload()
-    else:
-        await xray_manager.start()
+    # xray FIRST, nftables SECOND (same order as the routing-set path).
+    # Applying nftables first meant a failed start — busy lock, missing
+    # binary, bad config — left the whole LAN redirected into a TPROXY
+    # port nobody was listening on: total loss of internet from a state
+    # that was working a second earlier.
+    #
+    # Both run AFTER the response: starting xray drops every connection
+    # it carries, including the browser that issued this request when the
+    # UI is reached through the box. See core/dataplane.py.
+    await dispatch_dataplane(background_tasks, "start")
+
+    inbound_mode = settings_map.get("inbound_mode", "tproxy")
 
     if inbound_mode in ("tun", "both"):
         auto_route = settings_map.get("tun_auto_route", "true").lower() == "true"
@@ -479,31 +492,29 @@ async def start_proxy(session: AsyncSession = Depends(get_session)):
 
 
 @router.post("/stop", status_code=204)
-async def stop_proxy(session: AsyncSession = Depends(get_session)):
-    from app.core.xray import xray_manager
-    from app.core.nftables import nftables_manager
-
-    settings_map = await _load_settings_map(session)
-    kill_switch = settings_map.get("kill_switch", "false").lower() == "true"
-    if kill_switch:
-        vpn_ips = await _collect_vpn_server_ips(session)
-        await nftables_manager.apply_kill_switch(vpn_server_ips=vpn_ips)
-
-    await xray_manager.stop()
-
-    if not kill_switch:
-        await nftables_manager.flush()
+async def stop_proxy(
+    background_tasks: BackgroundTasks,
+    session: AsyncSession = Depends(get_session),
+):
+    # Deferred for the same reason as the other lifecycle calls: stopping
+    # xray severs the operator's own session when the UI is reached
+    # through it, so the request would die before it could answer.
+    await dispatch_dataplane(background_tasks, "stop")
 
 
 @router.post("/restart", status_code=204)
-async def restart_proxy(session: AsyncSession = Depends(get_session)):
-    from app.core.xray import xray_manager
-
+async def restart_proxy(
+    background_tasks: BackgroundTasks,
+    session: AsyncSession = Depends(get_session),
+):
     await _regenerate_and_write(session)
     settings_map = await _load_settings_map(session)
-    inbound_mode = await _apply_nftables(session, settings_map)
 
-    await xray_manager.restart()
+    # xray first, then nftables — see start_proxy — and both after the
+    # response, since a restart drops the caller's own connection.
+    await dispatch_dataplane(background_tasks, "restart")
+
+    inbound_mode = settings_map.get("inbound_mode", "tproxy")
 
     if inbound_mode in ("tun", "both"):
         auto_route = settings_map.get("tun_auto_route", "true").lower() == "true"
@@ -518,24 +529,47 @@ async def restart_proxy(session: AsyncSession = Depends(get_session)):
 
 
 @router.post("/reload-config", status_code=204)
-async def reload_config(session: AsyncSession = Depends(get_session)):
-    """Regenerate xray config, re-apply nftables, and hot-reload."""
-    from app.core.xray import xray_manager
+async def reload_config(
+    background_tasks: BackgroundTasks,
+    session: AsyncSession = Depends(get_session),
+):
+    """Regenerate xray config, then re-apply the dataplane after answering.
 
+    The regeneration (and its `xray run -test` validation) stays inside the
+    request so a bad config still fails loudly; only the process restart is
+    deferred.
+    """
     await _regenerate_and_write(session)
-    settings_map = await _load_settings_map(session)
-    await _apply_nftables(session, settings_map)
-
-    if xray_manager.is_running:
-        await xray_manager.reload()
+    await dispatch_dataplane(background_tasks, "reload")
 
 
 # ── Mode ──────────────────────────────────────────────────────────────────────
 
 @router.post("/mode", status_code=204)
-async def set_mode(body: ModeUpdate, session: AsyncSession = Depends(get_session)):
+async def set_mode(
+    body: ModeUpdate,
+    background_tasks: BackgroundTasks,
+    session: AsyncSession = Depends(get_session),
+):
+    from app.core.xray import xray_manager
+
     await _set_setting(session, "mode", body.mode)
     await session.commit()
+
+    # The mode drives BOTH layers: `bypass` flushes nftables and makes
+    # config_gen emit a catch-all direct rule. Writing the setting alone
+    # left the dataplane on the previous mode while the UI (which reads
+    # the setting back) claimed the switch had happened — the two only
+    # converged later, as a side effect of some unrelated edit.
+    if xray_manager.is_running:
+        await _regenerate_and_write(session)
+        await dispatch_dataplane(background_tasks, "reload")
+
+
+# How long to wait for xray's gRPC API after a reload before giving up on
+# pinning a circle balancer. Config parse + geo .dat load on a Pi is
+# comfortably under this.
+_PIN_API_WAIT = 8.0
 
 
 async def _pin_circle_balancer(session: AsyncSession, node_id: int) -> None:
@@ -543,23 +577,67 @@ async def _pin_circle_balancer(session: AsyncSession, node_id: int) -> None:
     balancer to it via gRPC balancerOverride. The config routes circle proxy
     traffic at a balancer over all members (cold-start strategy = random), so
     after a (re)load we must override to the actually-selected node.
-    Best-effort — silently skipped if the API isn't up."""
+
+    `reload()` returns as soon as the process is spawned, but xray needs
+    a second or two to parse its config, load the geo `.dat` files and
+    open the gRPC port — so a single `is_api_available()` probe right
+    after a reload almost always missed, the override was skipped, and
+    the balancer stayed on its cold-start `random` strategy: every new
+    connection went to a random circle member (including ones a
+    failover had just rejected) while the UI showed one specific node.
+    Retry for a few seconds instead, and log a warning if it never
+    lands — a silent debug line hid this for a whole release.
+    """
+    log = logging.getLogger(__name__)
     try:
         from app.core import xray_api
         from app.core.config_gen import resolve_active_circle
         from app.models import NodeCircle
         circles = list((await session.exec(select(NodeCircle))).all())
         cid, member_ids = resolve_active_circle(circles, node_id)
-        if cid and node_id in (member_ids or []) and await xray_api.is_api_available():
-            await xray_api.override_balancer(f"circle-{cid}", [f"node-{node_id}"])
+        if not (cid and node_id in (member_ids or [])):
+            return
+
+        deadline = asyncio.get_event_loop().time() + _PIN_API_WAIT
+        delay = 0.2
+        while True:
+            if await xray_api.is_api_available():
+                await xray_api.override_balancer(f"circle-{cid}", [f"node-{node_id}"])
+                return
+            if asyncio.get_event_loop().time() >= deadline:
+                log.warning(
+                    "circle %s balancer not pinned to node %s: xray gRPC API "
+                    "did not come up within %.0fs — traffic will spread over "
+                    "all circle members until the next rotation",
+                    cid, node_id, _PIN_API_WAIT,
+                )
+                return
+            await asyncio.sleep(delay)
+            delay = min(delay * 2, 1.0)
     except Exception as exc:
-        logging.getLogger(__name__).debug("pin circle balancer skipped: %s", exc)
+        log.warning("pin circle balancer failed: %s", exc)
+
+
+async def _pin_circle_balancer_task(node_id: int) -> None:
+    """Background-task wrapper for `_pin_circle_balancer`.
+
+    Runs after the response, so the request's session is already closed —
+    open a fresh one. Queued after the reload task, which is the order
+    that matters: the override only sticks once the new xray is up.
+    """
+    try:
+        async with AsyncSession(get_async_engine()) as session:
+            await _pin_circle_balancer(session, node_id)
+    except Exception as exc:  # noqa: BLE001
+        logging.getLogger(__name__).warning("deferred circle pin failed: %s", exc)
 
 
 @router.post("/active-node", status_code=204)
-async def set_active_node(body: ActiveNodeUpdate, session: AsyncSession = Depends(get_session)):
-    from app.core.xray import xray_manager
-
+async def set_active_node(
+    body: ActiveNodeUpdate,
+    background_tasks: BackgroundTasks,
+    session: AsyncSession = Depends(get_session),
+):
     node = await session.get(Node, body.node_id)
     if not node:
         raise HTTPException(404, "Node not found")
@@ -572,11 +650,12 @@ async def set_active_node(body: ActiveNodeUpdate, session: AsyncSession = Depend
     # activating a WireGuard chain left traffic exiting the old node and the
     # real exit IP never changed, even though the UI showed the new node.
     await _regenerate_and_write(session)
-    settings_map = await _load_settings_map(session)
-    await _apply_nftables(session, settings_map)
-    if xray_manager.is_running:
-        await xray_manager.reload()
-    await _pin_circle_balancer(session, body.node_id)
+    # Deferred: the reload restarts xray, and this very response travels
+    # through it whenever the operator reaches the UI via the box. Doing
+    # it inline made the browser show "Network Error" (nginx logged a 499)
+    # on a switch that had in fact applied.
+    await dispatch_dataplane(background_tasks, "reload")
+    background_tasks.add_task(_pin_circle_balancer_task, body.node_id)
 
 
 # ── Settings ──────────────────────────────────────────────────────────────────
@@ -1249,3 +1328,71 @@ async def _collect_naive_bypass_dsts(session: AsyncSession) -> List[str]:
             seen.add(c)
             uniq.append(c)
     return uniq
+
+
+# ── Updates ───────────────────────────────────────────────────────────────────
+#
+# Checking happens here; applying does not. The update replaces this very
+# container, so whatever process runs it dies partway through — the
+# backend can only *request* an update and report the agent's progress.
+# See `core/updater.py` for the full rationale.
+
+@router.get("/update/check", response_model=UpdateCheckResult)
+async def check_update(
+    prerelease: bool = False, session: AsyncSession = Depends(get_session),
+):
+    """Ask GitHub for the newest release. Advisory — applies nothing."""
+    from app.core.updater import check_for_update
+
+    settings_map = await _load_settings_map(session)
+    return await check_for_update(settings_map, prerelease=prerelease)
+
+
+@router.get("/update/status", response_model=UpdateStatus)
+async def update_status():
+    """Progress of an in-flight update.
+
+    Read from the agent's status file, which is why it still answers
+    correctly right after the backend was restarted by the update itself.
+    """
+    from app.core.updater import read_status, request_pending
+
+    data = dict(read_status())
+    data["request_pending"] = request_pending()
+    return UpdateStatus(**data)
+
+
+@router.post("/update/start", status_code=202, response_model=UpdateStatus)
+async def start_update(body: UpdateStartRequest):
+    """Hand an update to the host agent.
+
+    202, not 200: the work happens outside this process and outlives the
+    response. Poll `/update/status` for progress.
+    """
+    from app.core.updater import read_status, request_pending, write_request
+
+    current = read_status()
+    if current.get("state") in ("queued", "running") or request_pending():
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "an update is already in progress",
+                "hint": "Wait for the running update to finish before starting another.",
+            },
+        )
+
+    try:
+        write_request(
+            version=body.version, force=body.force, prerelease=body.prerelease,
+        )
+    except OSError as exc:
+        # The data dir is a bind mount; if it is read-only the agent
+        # could never see the request anyway. Say so plainly.
+        raise HTTPException(
+            status_code=500,
+            detail=f"Could not queue the update request: {exc}",
+        )
+
+    data = dict(read_status())
+    data["request_pending"] = request_pending()
+    return UpdateStatus(**data)

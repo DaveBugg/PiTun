@@ -30,7 +30,23 @@ export function useScanDevices() {
   const qc = useQueryClient()
   return useMutation({
     mutationFn: () => devicesApi.scan(),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['devices'] }),
+    onSuccess: (summary) => {
+      qc.invalidateQueries({ queryKey: ['devices'] })
+      // Park the summary in the cache so leaving the page mid-scan
+      // doesn't swallow it — mutation state dies with the observer.
+      qc.setQueryData(['devices', 'last-scan'], summary)
+    },
+  })
+}
+
+/** Result of the most recent LAN scan, surviving navigation. */
+export function useLastScanSummary() {
+  return useQuery<Awaited<ReturnType<typeof devicesApi.scan>> | null>({
+    queryKey: ['devices', 'last-scan'],
+    queryFn: async () => null,
+    initialData: null,
+    staleTime: Infinity,
+    gcTime: Infinity,
   })
 }
 

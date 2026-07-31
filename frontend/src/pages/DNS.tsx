@@ -531,10 +531,23 @@ function XrayServerLabel({ server }: { server: string }) {
 
 function DnsTestSection() {
   const t = useT()
+  const qc = useQueryClient()
   const [domain, setDomain] = useState('')
   const [server, setServer] = useState('')
   const [viaXray, setViaXray] = useState(false)
-  const [result, setResult] = useState<DnsTestResult | null>(null)
+
+  // Kept in the query cache, not in section state: a via-xray resolve can
+  // take seconds, and switching tabs mid-test used to throw the answer
+  // away (the section remounts with a blank result).
+  const { data: result = null } = useQuery<DnsTestResult | null>({
+    queryKey: ['dns', 'test-result'],
+    queryFn: async () => null,
+    initialData: null,
+    staleTime: Infinity,
+    gcTime: Infinity,
+  })
+  const setResult = (data: DnsTestResult | null) =>
+    qc.setQueryData(['dns', 'test-result'], data)
 
   const testMutation = useMutation({
     mutationFn: () =>

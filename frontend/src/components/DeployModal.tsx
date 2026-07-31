@@ -12,6 +12,7 @@ import { ModalShell } from '@/components/ModalShell'
 import { TemplatePicker } from '@/components/TemplatePicker'
 import { SshPortField } from '@/components/SshPortField'
 import { useT } from '@/hooks/useT'
+import { effectiveJobStatus } from '@/lib/jobStatus'
 import { useDeployments } from '@/hooks/useServers'
 import {
   useCancelServerTask,
@@ -510,11 +511,20 @@ function DeployRunning({
   const t = useT()
   const qc = useQueryClient()
   const { frames, done, error: wsError } = useServerTaskStream(jobId)
-  // Poll the detail row while the WS is still open — once `done` is set
-  // we stop polling and use the final detail snapshot for the result
-  // banner (node_id, parsed_uri, error).
-  const isRunning = done === null
-  const { data: jobRow } = useServerTask(jobId, { polling: isRunning })
+  // Keep polling until the DETAIL ROW itself reports a terminal status.
+  //
+  // Two failure modes this closes. (1) `done === 'unknown'` means the
+  // socket dropped without a done frame — treating that as finished
+  // switched off the only remaining channel, so a deploy that kept
+  // running server-side left the modal spinning forever. (2) the backend
+  // commits the terminal row microseconds before it emits `done`, so
+  // stopping at the frame left `jobRow` on a `running` snapshot with
+  // result=null — no node link on success, no reason on failure, and a
+  // script that exited non-zero rendered as a green "Install succeeded".
+  const { data: jobRow } = useServerTask(jobId, { polling: true })
+  const rowTerminal =
+    jobRow != null && jobRow.status !== 'running'
+  const isRunning = !rowTerminal && (done === null || done === 'unknown')
 
   const cancel = useCancelServerTask()
   const onCancel = () => cancel.mutate(jobId)
@@ -523,14 +533,16 @@ function DeployRunning({
   // + servers (new ServerDeployment) + WG clients (new peer added on
   // first WG install — Clients modal cache should pick it up
   // immediately on next open).
+  // Keyed off the persisted row, not the WS frame: a dropped socket
+  // (`done === 'unknown'`) used to skip these entirely, so a deploy that
+  // actually succeeded left the Nodes/Servers lists stale.
   useEffect(() => {
-    if (done && done !== 'unknown') {
-      qc.invalidateQueries({ queryKey: ['nodes'] })
-      qc.invalidateQueries({ queryKey: ['servers'] })
-      qc.invalidateQueries({ queryKey: ['servers', server.id, 'deployments'] })
-      qc.invalidateQueries({ queryKey: ['servers', server.id, 'wg-clients'] })
-    }
-  }, [done, qc, server.id])
+    if (!rowTerminal) return
+    qc.invalidateQueries({ queryKey: ['nodes'] })
+    qc.invalidateQueries({ queryKey: ['servers'] })
+    qc.invalidateQueries({ queryKey: ['servers', server.id, 'deployments'] })
+    qc.invalidateQueries({ queryKey: ['servers', server.id, 'wg-clients'] })
+  }, [rowTerminal, qc, server.id])
 
   const result = useMemo<DeployJobResult | null>(() => {
     const r = jobRow?.result
@@ -538,16 +550,15 @@ function DeployRunning({
     return r as DeployJobResult
   }, [jobRow])
 
-  // The WS `done` frame is authoritative — polling stops the moment
-  // it arrives, so the last `jobRow.status` we polled is often still
-  // `running` even though the job already finalized. Prefer the WS
-  // signal when it's a real terminal state, fall back to jobRow only
-  // when WS hasn't reported yet (or reported `unknown` due to a
-  // dropped connection).
-  const finalStatus =
-    done && done !== 'unknown'
-      ? done
-      : (jobRow?.status ?? (done === null ? 'running' : done))
+  // The persisted row wins once it reaches a terminal state, and it is
+  // read through the same projection the tasks page uses: a script that
+  // exited non-zero finalizes the JOB as `succeeded` while its RESULT
+  // says failed. Without the projection this modal painted a green
+  // "Install succeeded" over a broken install. The WS frame is only a
+  // fallback for the window before the row lands.
+  const finalStatus = rowTerminal && jobRow
+    ? effectiveJobStatus(jobRow)
+    : (done && done !== 'unknown' ? done : 'running')
 
   return (
     <div>

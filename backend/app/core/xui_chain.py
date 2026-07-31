@@ -425,8 +425,10 @@ def build_xray_template_config(
         xhttp+reality client config pointing at the exit panel's
         matching inbound (same UUID, public_key, shortId we just
         created in step 1 of orchestrate_create).
-      * `direct` + `blocked` outbounds as a baseline (any rule that
-        doesn't hit a chain outbound falls through to `direct`).
+      * `direct` FIRST, then the chain outbounds, then `blocked`.
+        Xray sends traffic that matches no rule to `outbounds[0]`, and
+        a chain panel also hosts ordinary inbounds that have no rule —
+        so the head of this list must be a working egress.
       * Routing rules:
           - inboundTag=["api"]            → outboundTag=api
           - inboundTag=[<relay-tag>]      → outboundTag=chain-<name>
@@ -437,8 +439,17 @@ def build_xray_template_config(
     # don't churn it. Stays in the well-known free range above 50000.
     api_port = 50000 + (chain.id or 0) % 9999
 
+    # Never declare an outbound tagged `api`: Xray's Commander owns that
+    # tag and registers its own handler for it, so a freedom carrying it
+    # is shadowed — and as outbounds[0] it would swallow every unmatched
+    # inbound's traffic (0 bytes through, panel looks fine). The stock
+    # 3x-ui template likewise declares only direct + blocked and relies
+    # on the Commander for the api rule below.
     outbounds: List[Dict[str, Any]] = [
-        {"tag": "api", "protocol": "freedom", "settings": {}},
+        {
+            "tag": "direct", "protocol": "freedom",
+            "settings": {"domainStrategy": "AsIs"},
+        },
     ]
     routing_rules: List[Dict[str, Any]] = [
         {"type": "field", "inboundTag": ["api"], "outboundTag": "api"},
@@ -489,13 +500,9 @@ def build_xray_template_config(
             "outboundTag": chain_tag,
         })
 
-    # Tail: direct + blocked baseline + the bittorrent block rule
-    # from the reference scripts (matches user expectation that BT
-    # never leaks through the chain).
-    outbounds.append({
-        "tag": "direct", "protocol": "freedom",
-        "settings": {"domainStrategy": "AsIs"},
-    })
+    # Tail: blocked + the bittorrent block rule from the reference
+    # scripts (matches user expectation that BT never leaks through
+    # the chain). `direct` is already at the head of the list.
     outbounds.append({
         "tag": "blocked", "protocol": "blackhole", "settings": {},
     })
@@ -542,6 +549,7 @@ async def build_combined_relay_template(
     session: AsyncSession,
     relay_xui_server_id: int,
     exclude_chain_id: Optional[int] = None,
+    include_chain_id: Optional[int] = None,
 ) -> Dict[str, Any]:
     """Build a single xrayTemplateConfig that covers EVERY chain
     currently bound to this relay panel.
@@ -567,12 +575,30 @@ async def build_combined_relay_template(
         q = q.where(ProxyChain.id != exclude_chain_id)
     chains_for_panel = list((await session.exec(q)).all())
 
+    # Only live chains belong in the template. A row left behind by a
+    # failed create carries channels with empty exit_uuid/exit_pbk —
+    # a REALITY outbound with an empty publicKey fails xray's config
+    # validation, so one poisoned row used to take down EVERY inbound
+    # on the relay at the next push. `include_chain_id` whitelists the
+    # chain a caller is deploying right now (still 'pending' at push
+    # time).
+    chains_for_panel = [
+        c for c in chains_for_panel
+        if c.status in ("deployed", "degraded") or c.id == include_chain_id
+    ]
+
     # Synthesise a template that aggregates every chain's outbounds /
     # rules. Easiest path: build per-chain and stitch the lists. We
     # use the first chain (sorted by id) as the "owner" for the
     # api-inbound port nonce so re-pushes stay deterministic.
+    # `direct` heads the list — see build_xray_template_config for why
+    # outbounds[0] must be a working egress and why `api` is never
+    # declared as an outbound here.
     aggregated_outbounds: List[Dict[str, Any]] = [
-        {"tag": "api", "protocol": "freedom", "settings": {}},
+        {
+            "tag": "direct", "protocol": "freedom",
+            "settings": {"domainStrategy": "AsIs"},
+        },
     ]
     aggregated_rules: List[Dict[str, Any]] = [
         {"type": "field", "inboundTag": ["api"], "outboundTag": "api"},
@@ -583,6 +609,16 @@ async def build_combined_relay_template(
     for ch_idx, c in enumerate(chains_for_panel):
         channels_q = _select(ChainChannel).where(ChainChannel.chain_id == c.id)
         chs = list((await session.exec(channels_q)).all())
+        # Belt and braces on top of the status filter: never emit an
+        # outbound whose REALITY material is empty — it would fail
+        # xray validation and kill the whole relay.
+        skipped = [ch.name for ch in chs if not (ch.exit_uuid and ch.exit_pbk)]
+        if skipped:
+            logger.warning(
+                "combined relay template: chain %s channels %s have empty "
+                "exit uuid/pbk — skipped", c.id, skipped,
+            )
+            chs = [ch for ch in chs if ch.exit_uuid and ch.exit_pbk]
         if not chs:
             continue
         # Need exit_host for the per-chain outbound. Each chain can
@@ -612,12 +648,8 @@ async def build_combined_relay_template(
             # api_port is derived from the chain id; first chain wins.
             api_port = 50000 + (c.id or 0) % 9999
 
-    # Tail outbounds + the bittorrent block rule. Same as a single-
-    # chain template.
-    aggregated_outbounds.append({
-        "tag": "direct", "protocol": "freedom",
-        "settings": {"domainStrategy": "AsIs"},
-    })
+    # Tail outbound + the bittorrent block rule. Same as a single-
+    # chain template; `direct` already heads the list.
     aggregated_outbounds.append({
         "tag": "blocked", "protocol": "blackhole", "settings": {},
     })
@@ -1028,6 +1060,7 @@ async def orchestrate_create(
             template = await build_combined_relay_template(
                 session=session,
                 relay_xui_server_id=chain.relay_xui_server_id,
+                include_chain_id=chain.id,  # still 'pending' at this point
             )
             await _push_xray_template(
                 relay_client=relay_client, template=template,
@@ -1156,6 +1189,20 @@ async def orchestrate_delete_channel(
     siblings = list((await session.exec(siblings_q)).all())
     has_siblings = bool(siblings)
 
+    # Collect the Nodes exported from THIS channel up front: the channel
+    # row is deleted further down and takes its ChainClientChannel rows
+    # with it (FK CASCADE), so the authoritative `exported_node_id` links
+    # must be read before that happens.
+    exported_node_ids = {
+        pair.exported_node_id
+        for pair in (await session.exec(
+            _select(ChainClientChannel).where(
+                ChainClientChannel.channel_id == channel.id,
+            )
+        )).all()
+        if pair.exported_node_id
+    }
+
     # 1. Exit-side inbound.
     if exit_xs and exit_srv and channel.exit_inbound_remote_id:
         try:
@@ -1198,6 +1245,7 @@ async def orchestrate_delete_channel(
                     template = await build_combined_relay_template(
                         session=session,
                         relay_xui_server_id=chain.relay_xui_server_id,
+                        include_chain_id=chain.id,
                     )
                     try:
                         await _push_xray_template(
@@ -1240,21 +1288,20 @@ async def orchestrate_delete_channel(
             relay_srv, [channel.relay_port], action="delete-allow",
         )
 
-    # 5. Cascade-clean Node rows that were exported from this
-    # channel's ChainClientChannel pairs. The FK ChainClientChannel
-    # → Node is ON DELETE SET NULL, so the link rows vanish with
-    # the channel cascade but the Nodes survive — match them by
-    # name suffix (`-<channel.name>`, the convention from
-    # `export_chain_client_nodes`) and address (relay host) so we
-    # never collateral-delete an unrelated Node.
+    # 5. Cascade-clean Node rows exported from this channel. The FK
+    # ChainClientChannel → Node is ON DELETE SET NULL, so the link rows
+    # vanish with the channel cascade but the Nodes survive.
+    #
+    # Match by the exported_node_id we captured up front, NOT by name.
+    # Channel names are unique only WITHIN a chain, and export names all
+    # end in `-<channel.name>` on the same relay host — so the old
+    # `LIKE '%-<name>'` + host filter also matched a different chain's
+    # Node and deleted a working route along with this one.
     from app.models import Node
-    suffix = f"-{channel.name}"
-    orphan_nodes = list((await session.exec(
-        _select(Node).where(Node.name.like(f"%{suffix}"))
-    )).all())
-    for n in orphan_nodes:
-        if relay_srv and n.address == relay_srv.host:
-            await session.delete(n)
+    for node_id in exported_node_ids:
+        node = await session.get(Node, node_id)
+        if node is not None:
+            await session.delete(node)
 
     await session.commit()
     return has_siblings
@@ -1376,6 +1423,35 @@ async def orchestrate_delete(
             action="delete-allow",
         )
 
+    # Nodes exported from this chain's clients. The FK
+    # ChainClientChannel → Node is ON DELETE SET NULL, so the cascade
+    # below would leave them behind as orphans whose UUID no longer
+    # authenticates on the relay — traffic routed through them just
+    # black-holes. Every other delete path (channel, client, server
+    # uninstall) already cleans these; the whole-chain delete didn't.
+    from sqlmodel import select as _select
+    from app.models import Node
+
+    chain_client_ids = [
+        cc.id for cc in (await session.exec(
+            _select(ChainClient).where(ChainClient.chain_id == chain.id)
+        )).all()
+    ]
+    if chain_client_ids:
+        exported_node_ids = {
+            pair.exported_node_id
+            for pair in (await session.exec(
+                _select(ChainClientChannel).where(
+                    ChainClientChannel.chain_client_id.in_(chain_client_ids)  # type: ignore[union-attr]
+                )
+            )).all()
+            if pair.exported_node_id
+        }
+        for node_id in exported_node_ids:
+            node = await session.get(Node, node_id)
+            if node is not None:
+                await session.delete(node)
+
     # DB cleanup — channels + clients + client-channels cascade from
     # the chain row via ON DELETE CASCADE in the migration.
     await session.delete(chain)
@@ -1475,6 +1551,19 @@ async def orchestrate_add_client(
                                 "rollback: del_client (%s,%s) failed: %s",
                                 inbound_id, uuid, e,
                             )
+                    # The panel doesn't reload Xray on delete either.
+                    # If the failure happened ON restart_xray (a slow VPS
+                    # timing out after the restart actually took), the
+                    # rolled-back UUIDs were already live — without this
+                    # they keep authenticating even though neither PiTun
+                    # nor the panel DB knows them. Same treatment as
+                    # orchestrate_delete_client.
+                    try:
+                        await c2.restart_xray()
+                    except Exception as e:  # noqa: BLE001
+                        logger.warning(
+                            "rollback: restart_xray failed: %s", e,
+                        )
             except Exception as e:  # noqa: BLE001
                 logger.warning(
                     "rollback: relay panel unreachable during client cleanup: %s",

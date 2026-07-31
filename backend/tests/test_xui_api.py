@@ -434,3 +434,298 @@ class TestXuiClient:
             assert ctx is c
             assert c._http is not None
         assert c._http is None
+
+
+# ── Admin-mount fallback (/panel/api vs /panel) ───────────────────────────
+
+
+def _make_cookie_client(transport: httpx.MockTransport) -> XuiClient:
+    """Client with cookie credentials for UI-internal endpoints."""
+    c = XuiClient(
+        base_url="http://panel.test:1234/p",
+        api_token="TESTTOKEN",
+        verify_tls=False,
+        panel_user="admin",
+        panel_pass="secret",
+    )
+    c._http = httpx.AsyncClient(
+        base_url=c.base_url,
+        headers={"Authorization": f"Bearer {c.api_token}"},
+        transport=transport,
+    )
+    return c
+
+
+def _cookie_session_handler(req):
+    """Serve the csrf + login legs of the cookie flow; None otherwise."""
+    if req.url.path == "/p/csrf-token":
+        return _ok("csrf-tok")
+    if req.url.path == "/p/login":
+        return httpx.Response(
+            200,
+            json={"success": True, "msg": "", "obj": None},
+            headers={"set-cookie": "3x-ui=sess; Path=/"},
+        )
+    return None
+
+
+_SPA_SHELL = "<!doctype html><html><body>spa</body></html>"
+
+
+class TestAdminMountFallback:
+    @pytest.mark.asyncio
+    async def test_v3_6_panel_uses_panel_api_mount(self):
+        paths = []
+
+        def handler(req):
+            hit = _cookie_session_handler(req)
+            if hit is not None:
+                return hit
+            paths.append(req.url.path)
+            if req.url.path == "/p/panel/api/xray/update":
+                return _ok(None)
+            # Old mount answers with the SPA shell on a v3.6.0 panel.
+            return httpx.Response(200, text=_SPA_SHELL)
+
+        c = _make_cookie_client(_mock(handler))
+        try:
+            await c.push_xray_setting({"outbounds": []})
+        finally:
+            await c.aclose()
+        assert paths == ["/p/panel/api/xray/update"]
+        assert c._admin_prefix == "/panel/api"
+
+    @pytest.mark.asyncio
+    async def test_v3_1_panel_falls_back_to_panel_mount_and_caches(self):
+        paths = []
+
+        def handler(req):
+            hit = _cookie_session_handler(req)
+            if hit is not None:
+                return hit
+            paths.append(req.url.path)
+            if req.url.path == "/p/panel/xray/update":
+                return _ok(None)
+            return httpx.Response(404, text="404 page not found")
+
+        c = _make_cookie_client(_mock(handler))
+        try:
+            await c.push_xray_setting({"outbounds": []})
+            # Second call must go straight to the cached old mount.
+            await c.push_xray_setting({"outbounds": []})
+        finally:
+            await c.aclose()
+        assert paths == [
+            "/p/panel/api/xray/update",
+            "/p/panel/xray/update",
+            "/p/panel/xray/update",
+        ]
+        assert c._admin_prefix == "/panel"
+
+    @pytest.mark.asyncio
+    async def test_real_api_error_does_not_trigger_fallback(self):
+        paths = []
+
+        def handler(req):
+            hit = _cookie_session_handler(req)
+            if hit is not None:
+                return hit
+            paths.append(req.url.path)
+            return _fail("boom")
+
+        c = _make_cookie_client(_mock(handler))
+        try:
+            with pytest.raises(XuiAPIError) as exc:
+                await c.push_xray_setting({"outbounds": []})
+        finally:
+            await c.aclose()
+        assert exc.value.kind == "api"
+        assert paths == ["/p/panel/api/xray/update"]
+        assert c._admin_prefix is None
+
+
+# ── Embedded-client coercion on add/update-inbound (v3.6.0 strictness) ────
+
+
+class TestInboundClientCoercion:
+    @pytest.mark.asyncio
+    async def test_add_inbound_coerces_clients_in_string_settings(self):
+        captured = {}
+
+        def handler(req):
+            captured["body"] = json.loads(req.content)
+            return _ok({"id": 7})
+
+        payload = {
+            "remark": "t", "port": 443, "protocol": "vless",
+            "settings": json.dumps({
+                "clients": [{
+                    "id": "u-u-i-d", "email": "e",
+                    "limitIp": 0, "totalGB": 0, "expiryTime": 0,
+                    "enable": True, "tgId": "", "subId": "",
+                }],
+                "decryption": "none",
+            }),
+        }
+        c = _make_client(_mock(handler))
+        try:
+            await c.add_inbound(payload)
+        finally:
+            await c.aclose()
+        sent = captured["body"]["settings"]
+        assert isinstance(sent, str)  # original shape preserved
+        client0 = json.loads(sent)["clients"][0]
+        assert client0["tgId"] == 0
+        assert client0["enable"] is True
+        assert client0["id"] == "u-u-i-d"
+        assert json.loads(sent)["decryption"] == "none"
+
+    @pytest.mark.asyncio
+    async def test_update_inbound_coerces_clients_in_dict_settings(self):
+        captured = {}
+
+        def handler(req):
+            captured["body"] = json.loads(req.content)
+            return _ok({})
+
+        payload = {
+            "remark": "t",
+            "settings": {
+                "clients": [{"email": "e", "tgId": "", "limitIp": "3",
+                             "enable": "true"}],
+            },
+        }
+        c = _make_client(_mock(handler))
+        try:
+            await c.update_inbound(7, payload)
+        finally:
+            await c.aclose()
+        sent = captured["body"]["settings"]
+        assert isinstance(sent, dict)  # original shape preserved
+        assert sent["clients"][0]["tgId"] == 0
+        assert sent["clients"][0]["limitIp"] == 3
+        assert sent["clients"][0]["enable"] is True
+
+    @pytest.mark.asyncio
+    async def test_add_inbound_without_clients_untouched(self):
+        captured = {}
+
+        def handler(req):
+            captured["body"] = json.loads(req.content)
+            return _ok({})
+
+        payload = {"remark": "socks", "settings": {"auth": "password"}}
+        c = _make_client(_mock(handler))
+        try:
+            await c.add_inbound(payload)
+        finally:
+            await c.aclose()
+        assert captured["body"]["settings"] == {"auth": "password"}
+
+
+class TestResolveClientEmailNaturalIds:
+    """`del_client` / `update_client` take the client's NATURAL id, which
+    is `id` only for vless/vmess. Trojan and shadowsocks clients have no
+    `id` at all — the UI sends `password` (or `user`), exactly as the
+    export path already accepts. Matching on `id` alone made every
+    delete of a non-vless client fail with a 502."""
+
+    def _inbound_with(self, client: dict):
+        def handler(req: httpx.Request) -> httpx.Response:
+            if "/inbounds/get/" in req.url.path:
+                return _ok({"id": 7, "settings": json.dumps({"clients": [client]})})
+            return _ok(None)
+        return handler
+
+    @pytest.mark.asyncio
+    async def test_vless_client_matched_by_id(self):
+        captured: dict = {}
+
+        def handler(req: httpx.Request) -> httpx.Response:
+            if "/inbounds/get/" in req.url.path:
+                return _ok({"id": 7, "settings": json.dumps({"clients": [
+                    {"id": "uuid-1", "email": "pi-vless"},
+                ]})})
+            captured["path"] = req.url.path
+            return _ok(None)
+
+        c = _make_client(_mock(handler))
+        try:
+            await c.del_client(7, "uuid-1")
+        finally:
+            await c.aclose()
+        assert captured["path"].endswith("/panel/api/clients/del/pi-vless")
+
+    @pytest.mark.asyncio
+    async def test_trojan_client_matched_by_password(self):
+        captured: dict = {}
+
+        def handler(req: httpx.Request) -> httpx.Response:
+            if "/inbounds/get/" in req.url.path:
+                return _ok({"id": 7, "settings": json.dumps({"clients": [
+                    {"password": "s3cret", "email": "pi-trojan"},
+                ]})})
+            captured["path"] = req.url.path
+            return _ok(None)
+
+        c = _make_client(_mock(handler))
+        try:
+            await c.del_client(7, "s3cret")
+        finally:
+            await c.aclose()
+        assert captured["path"].endswith("/panel/api/clients/del/pi-trojan")
+
+    @pytest.mark.asyncio
+    async def test_socks_client_matched_by_user(self):
+        captured: dict = {}
+
+        def handler(req: httpx.Request) -> httpx.Response:
+            if "/inbounds/get/" in req.url.path:
+                return _ok({"id": 7, "settings": json.dumps({"clients": [
+                    {"user": "alice", "email": "pi-socks"},
+                ]})})
+            captured["path"] = req.url.path
+            return _ok(None)
+
+        c = _make_client(_mock(handler))
+        try:
+            await c.del_client(7, "alice")
+        finally:
+            await c.aclose()
+        assert captured["path"].endswith("/panel/api/clients/del/pi-socks")
+
+    @pytest.mark.asyncio
+    async def test_client_matched_by_email(self):
+        captured: dict = {}
+
+        def handler(req: httpx.Request) -> httpx.Response:
+            if "/inbounds/get/" in req.url.path:
+                return _ok({"id": 7, "settings": json.dumps({"clients": [
+                    {"password": "pw", "email": "pi-by-email"},
+                ]})})
+            captured["path"] = req.url.path
+            return _ok(None)
+
+        c = _make_client(_mock(handler))
+        try:
+            await c.del_client(7, "pi-by-email")
+        finally:
+            await c.aclose()
+        assert captured["path"].endswith("/panel/api/clients/del/pi-by-email")
+
+    @pytest.mark.asyncio
+    async def test_unknown_client_still_raises_not_found(self):
+        def handler(req: httpx.Request) -> httpx.Response:
+            if "/inbounds/get/" in req.url.path:
+                return _ok({"id": 7, "settings": json.dumps({"clients": [
+                    {"id": "uuid-1", "email": "pi-vless"},
+                ]})})
+            return _ok(None)
+
+        c = _make_client(_mock(handler))
+        try:
+            with pytest.raises(XuiAPIError) as exc:
+                await c.del_client(7, "nope")
+        finally:
+            await c.aclose()
+        assert exc.value.kind == "not_found"

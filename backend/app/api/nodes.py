@@ -3,12 +3,13 @@ import asyncio
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from sqlalchemy import func
 from sqlmodel import select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.config import APP_VERSION
+from app.core.dataplane import dispatch_dataplane
 from app.database import get_session
 from app.models import BalancerGroup, Node, RoutingRule
 from app.schemas import (
@@ -91,6 +92,53 @@ async def _refresh_naive_tproxy_bypass(session: AsyncSession) -> None:
         )
 
 
+async def clear_chain_refs(session: AsyncSession, deleted_ids: set) -> list:
+    """NULL every `chain_node_id` pointing at a node that just went away.
+
+    `chain_node_id` carries no FK constraint (a self-FK is painful on
+    SQLite), so a dangling pointer survives deletion happily. The chained
+    node then stops working with no visible cause: config_gen skips the
+    relay, health probes follow the dead pointer, speed tests come back
+    empty. Manual node deletion has always done this; the subscription
+    paths (refresh dropping vanished nodes, or deleting a subscription
+    with its nodes) did not, which is how it bit in the wild.
+
+    Returns the ids that were unchained, so callers can report them.
+    """
+    if not deleted_ids:
+        return []
+    rows = (await session.exec(
+        select(Node).where(Node.chain_node_id.in_(deleted_ids))  # type: ignore[union-attr]
+    )).all()
+    unchained = []
+    for row in rows:
+        unchained.append(row.id)
+        row.chain_node_id = None
+        session.add(row)
+    return unchained
+
+
+async def mark_chain_orphans(session: AsyncSession, nodes: list) -> list:
+    """Return NodeRead rows with `chain_orphan` filled in.
+
+    Converts rather than mutating: `chain_orphan` is not a column, and a
+    SQLModel table instance rejects attributes it has no field for. One
+    query resolves the whole batch.
+    """
+    reads = [NodeRead.model_validate(n, from_attributes=True) for n in nodes]
+    wanted = {r.chain_node_id for r in reads if r.chain_node_id}
+    if not wanted:
+        return reads
+    # `select(Node.id)` yields plain ints, not rows.
+    alive = set((await session.exec(
+        select(Node.id).where(Node.id.in_(wanted))  # type: ignore[union-attr]
+    )).all())
+    for r in reads:
+        if r.chain_node_id and r.chain_node_id not in alive:
+            r.chain_orphan = True
+    return reads
+
+
 # ── CRUD ──────────────────────────────────────────────────────────────────────
 
 @router.get("", response_model=List[NodeRead])
@@ -104,7 +152,7 @@ async def list_nodes(
         stmt = stmt.where(Node.enabled == enabled)
     if group is not None:
         stmt = stmt.where(Node.group == group)
-    return list((await session.exec(stmt)).all())
+    return await mark_chain_orphans(session, list((await session.exec(stmt)).all()))
 
 
 @router.get("/page", response_model=NodePage)
@@ -207,7 +255,7 @@ async def list_nodes_paginated(
         stmt = stmt.limit(limit).offset(offset)
     elif offset > 0:
         stmt = stmt.offset(offset)
-    items = list((await session.exec(stmt)).all())
+    items = await mark_chain_orphans(session, list((await session.exec(stmt)).all()))
 
     return NodePage(items=items, total=int(total), limit=limit, offset=offset)
 
@@ -261,7 +309,7 @@ async def get_node(node_id: int, session: AsyncSession = Depends(get_session)):
     node = await session.get(Node, node_id)
     if not node:
         raise HTTPException(404, "Node not found")
-    return node
+    return (await mark_chain_orphans(session, [node]))[0]
 
 
 @router.patch("/{node_id:int}", response_model=NodeRead)
@@ -303,8 +351,128 @@ async def update_node(node_id: int, data: NodeUpdate, session: AsyncSession = De
     return node
 
 
+async def _heal_active_node_after_delete(
+    session: AsyncSession,
+    deleted_ids: set,
+    background_tasks: Optional[BackgroundTasks] = None,
+) -> None:
+    """Re-point (or clear) ``active_node_id`` after node rows were deleted.
+
+    Deleting the active node used to leave the setting dangling: the NEXT
+    config regeneration (any rule/DNS/settings edit) silently produced a
+    proxy-less config and all LAN traffic fell through to direct — the same
+    incident class the boot-time heal in main.py was written for, except it
+    could happen mid-flight with no reboot involved. Deletion paths call this
+    right after their commit.
+
+    Best-effort: the node rows are already gone, so a dataplane hiccup here
+    must not fail the DELETE — it is logged and surfaced as an event instead.
+    """
+    import logging
+
+    from app.core.events import record_event
+    from app.models import Settings as DBSettings
+
+    log = logging.getLogger(__name__)
+
+    row = (await session.exec(
+        select(DBSettings).where(DBSettings.key == "active_node_id")
+    )).first()
+    if not row or not row.value:
+        return
+    try:
+        active_id = int(row.value)
+    except (TypeError, ValueError):
+        return  # unparsable values are the boot-time heal's problem
+    if active_id not in deleted_ids:
+        return
+
+    from app.core.xray import xray_manager
+
+    survivors = (await session.exec(
+        select(Node)
+        .where(Node.enabled == True)  # noqa: E712
+        .order_by(Node.is_online.desc(), Node.id)  # type: ignore[union-attr]
+    )).all()
+
+    if survivors:
+        # Snapshot before the commit: the request session expires ORM
+        # attributes on commit, and re-reading them here would lazy-load
+        # inside async code (MissingGreenlet). Same reason the boot-time
+        # heal in main.py snapshots first.
+        new_id = survivors[0].id
+        new_name = survivors[0].name
+        row.value = str(new_id)
+        session.add(row)
+        await session.commit()
+        log.warning(
+            "active_node_id healed after delete: %d -> %d (%r)",
+            active_id, new_id, new_name,
+        )
+        await record_event(
+            category="node.active_healed",
+            severity="warning",
+            title="Active node was deleted",
+            details=(
+                f"Node {active_id} was the active node; switched to "
+                f"{new_id} ({new_name})."
+            ),
+        )
+        if xray_manager.is_running:
+            try:
+                from app.api.system import (
+                    _pin_circle_balancer_task,
+                    _regenerate_and_write,
+                )
+                await _regenerate_and_write(session)
+                # Deferred: the reload restarts xray and would drop this
+                # DELETE's own response when the UI is reached through the
+                # box. See core/dataplane.py.
+                await dispatch_dataplane(background_tasks, "reload")
+                if background_tasks is not None:
+                    background_tasks.add_task(_pin_circle_balancer_task, new_id)
+                else:
+                    await _pin_circle_balancer_task(new_id)
+            except Exception as exc:  # noqa: BLE001
+                log.error("active-node heal: config re-apply failed: %s", exc)
+                await record_event(
+                    category="node.active_healed",
+                    severity="error",
+                    title="Active node replaced but config not applied",
+                    details=f"Restart the proxy manually. Reason: {exc}",
+                )
+        return
+
+    # No enabled nodes remain. Leaving xray on the old config keeps the trap
+    # armed (next regenerate silently routes everything direct), so stop the
+    # proxy honestly — kill-switch semantics included — and tell the operator.
+    row.value = ""
+    session.add(row)
+    await session.commit()
+    log.warning("active_node_id cleared after delete: no enabled nodes remain")
+    await record_event(
+        category="node.active_cleared",
+        severity="error",
+        title="Active node deleted — proxy stopped",
+        details=(
+            "The deleted node was active and no enabled nodes remain. "
+            "The proxy was stopped; add or enable a node and start it again."
+        ),
+    )
+    if xray_manager.is_running:
+        try:
+            # Also deferred — stopping xray severs this response too.
+            await dispatch_dataplane(background_tasks, "stop")
+        except Exception as exc:  # noqa: BLE001
+            log.error("active-node heal: proxy stop failed: %s", exc)
+
+
 @router.delete("/{node_id:int}", status_code=204)
-async def delete_node(node_id: int, session: AsyncSession = Depends(get_session)):
+async def delete_node(
+    node_id: int,
+    background_tasks: BackgroundTasks,
+    session: AsyncSession = Depends(get_session),
+):
     import json
     import logging
 
@@ -379,15 +547,12 @@ async def delete_node(node_id: int, session: AsyncSession = Depends(get_session)
     # `chain_node_id` has no FK constraint (SQLite self-FK is painful), so we
     # NULL the refs manually — otherwise chained probes break on next health
     # check as `_resolve_probe_target` follows a dangling pointer.
-    chained = (await session.exec(
-        select(Node).where(Node.chain_node_id == node_id)
-    )).all()
-    for ch in chained:
-        ch.chain_node_id = None
-        session.add(ch)
-        log.info("Cleared chain_node_id on node %d (was pointing at deleted %d)", ch.id, node_id)
+    for ch_id in await clear_chain_refs(session, {node_id}):
+        log.info("Cleared chain_node_id on node %d (was pointing at deleted %d)", ch_id, node_id)
 
     await session.commit()
+
+    await _heal_active_node_after_delete(session, {node_id}, background_tasks)
 
     # Refresh nftables so the deleted naive server's IP drops out of the
     # bypass set — otherwise we'd leave a stale exception.

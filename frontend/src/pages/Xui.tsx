@@ -221,10 +221,23 @@ function ServerDetail({ server }: { server: XuiServer }) {
   // Node rows whose backing client vanished.
   const syncMut = useMutation({
     mutationFn: () => xuiApi.syncServer(server.id),
-    onSuccess: () => {
+    onSuccess: (summary) => {
       qc.invalidateQueries({ queryKey: ['xui', 'inbounds', server.id] })
       qc.invalidateQueries({ queryKey: ['nodes'] })
+      // ServerDetail remounts on `key={server.id}`, so switching panels
+      // mid-sync used to discard the summary — including the fact that
+      // orphan Nodes were cascade-deleted. Park it per panel instead.
+      qc.setQueryData(['xui', 'sync-result', server.id], summary)
     },
+  })
+
+  // Last sync summary for THIS panel, surviving a panel switch.
+  const { data: syncSummary } = useQuery<Awaited<ReturnType<typeof xuiApi.syncServer>> | null>({
+    queryKey: ['xui', 'sync-result', server.id],
+    queryFn: async () => null,
+    initialData: null,
+    staleTime: Infinity,
+    gcTime: Infinity,
   })
 
   // Fakesite rotation — xui-pro only. The "rotate" button just calls
@@ -309,13 +322,13 @@ function ServerDetail({ server }: { server: XuiServer }) {
               <span>{t('Fakesite uploaded', 'Фейк-сайт загружен')}</span>
             </div>
           )}
-          {syncMut.data && (
+          {syncSummary && (
             <div className="mt-2 rounded-md bg-blue-900/20 border border-blue-700/40 px-2 py-1 text-[11px] text-blue-200 flex items-start gap-1.5">
               <Check className="h-3 w-3 mt-0.5 shrink-0" />
               <span>
                 {t(
-                  `Sync: +${syncMut.data.added} added · ${syncMut.data.updated} updated · -${syncMut.data.removed} removed${syncMut.data.orphan_nodes_removed ? ` · ${syncMut.data.orphan_nodes_removed} orphan Node(s) cleaned` : ''}${syncMut.data.chain_skipped ? ` · ${syncMut.data.chain_skipped} chain inbound(s) skipped` : ''}`,
-                  `Синхронизация: +${syncMut.data.added} добавлено · ${syncMut.data.updated} обновлено · -${syncMut.data.removed} удалено${syncMut.data.orphan_nodes_removed ? ` · ${syncMut.data.orphan_nodes_removed} осиротевших Node убрано` : ''}${syncMut.data.chain_skipped ? ` · ${syncMut.data.chain_skipped} chain-инбаунда пропущено` : ''}`,
+                  `Sync: +${syncSummary.added} added · ${syncSummary.updated} updated · -${syncSummary.removed} removed${syncSummary.orphan_nodes_removed ? ` · ${syncSummary.orphan_nodes_removed} orphan Node(s) cleaned` : ''}${syncSummary.chain_skipped ? ` · ${syncSummary.chain_skipped} chain inbound(s) skipped` : ''}`,
+                  `Синхронизация: +${syncSummary.added} добавлено · ${syncSummary.updated} обновлено · -${syncSummary.removed} удалено${syncSummary.orphan_nodes_removed ? ` · ${syncSummary.orphan_nodes_removed} осиротевших Node убрано` : ''}${syncSummary.chain_skipped ? ` · ${syncSummary.chain_skipped} chain-инбаунда пропущено` : ''}`,
                 )}
               </span>
             </div>

@@ -185,27 +185,44 @@ export function Routing() {
 
   const createRule = useMutation({
     mutationFn: (data: RoutingRuleCreate) => routingApi.createRule(data),
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ['routing'] }); setModal('none') },
+    onSuccess: () => { setModal('none') },
+    onSettled: () => { qc.invalidateQueries({ queryKey: ['routing'] }) },
   })
   const updateRule = useMutation({
     mutationFn: ({ id, data }: { id: number; data: Partial<RoutingRuleCreate> }) =>
       routingApi.updateRule(id, data),
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ['routing'] }); setModal('none') },
+    onSuccess: () => { setModal('none') },
+    onSettled: () => { qc.invalidateQueries({ queryKey: ['routing'] }) },
   })
   const deleteRule = useMutation({
-    mutationFn: (id: number) => routingApi.deleteRule(id),
+    // DELETE is idempotent: a 404 means the rule is ALREADY gone, which is
+    // exactly what the operator asked for. Reporting it as a failure also
+    // skipped `onSuccess`, so the stale row stayed on screen and the next
+    // click 404'd again — a loop that made every later action look broken.
+    mutationFn: async (id: number) => {
+      try {
+        await routingApi.deleteRule(id)
+      } catch (err) {
+        if (isAxiosError(err) && err.response?.status === 404) return
+        throw err
+      }
+    },
     onSuccess: (_data, deletedId) => {
-      qc.invalidateQueries({ queryKey: ['routing'] })
       setSelectedIds(prev => { const n = new Set(prev); n.delete(deletedId); return n })
     },
+    // Always re-sync, success or failure — a view that disagrees with the
+    // server is what got us here.
+    onSettled: () => { qc.invalidateQueries({ queryKey: ['routing'] }) },
   })
   const deleteAll = useMutation({
     mutationFn: () => routingApi.deleteAllRules(),
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ['routing'] }); setSelectedIds(new Set()) },
+    onSuccess: () => { setSelectedIds(new Set()) },
+    onSettled: () => { qc.invalidateQueries({ queryKey: ['routing'] }) },
   })
   const deleteBatch = useMutation({
     mutationFn: (ids: number[]) => routingApi.deleteBatchRules(ids),
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ['routing'] }); setSelectedIds(new Set()) },
+    onSuccess: () => { setSelectedIds(new Set()) },
+    onSettled: () => { qc.invalidateQueries({ queryKey: ['routing'] }) },
   })
   const bulkCreate = useMutation({
     mutationFn: (data: BulkRuleCreate) => routingApi.bulkCreate(data),

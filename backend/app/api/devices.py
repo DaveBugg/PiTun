@@ -2,7 +2,7 @@
 import logging
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import BackgroundTasks, APIRouter, Depends, HTTPException, Query
 from sqlmodel import select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
@@ -58,7 +58,8 @@ async def get_device(device_id: int, session: AsyncSession = Depends(get_session
 
 @router.patch("/{device_id}", response_model=DeviceRead)
 async def update_device(
-    device_id: int, data: DeviceUpdate, session: AsyncSession = Depends(get_session)
+    device_id: int, data: DeviceUpdate,
+    background_tasks: BackgroundTasks, session: AsyncSession = Depends(get_session)
 ):
     dev = await session.get(Device, device_id)
     if not dev:
@@ -111,7 +112,7 @@ async def update_device(
     # we only need to handle the routing_set_id case here.
     if routing_membership_changed:
         from app.api.routing_sets import _auto_reload_dataplane
-        await _auto_reload_dataplane(session)
+        await _auto_reload_dataplane(session, background_tasks)
 
     return dev
 
@@ -127,7 +128,8 @@ async def delete_device(device_id: int, session: AsyncSession = Depends(get_sess
 
 @router.post("/bulk-policy", status_code=204)
 async def bulk_update_policy(
-    body: DeviceBulkUpdate, session: AsyncSession = Depends(get_session)
+    body: DeviceBulkUpdate,
+    background_tasks: BackgroundTasks, session: AsyncSession = Depends(get_session)
 ):
     membership_changes = 0
     for did in body.device_ids:
@@ -149,7 +151,7 @@ async def bulk_update_policy(
     # affected MACs disappear from the per-set redirect.
     if membership_changes > 0:
         from app.api.routing_sets import _auto_reload_dataplane
-        await _auto_reload_dataplane(session)
+        await _auto_reload_dataplane(session, background_tasks)
 
 
 @router.post("/scan", response_model=DeviceScanResult)

@@ -18,10 +18,16 @@ own per their threat model. See memory/feedback_chain_naming_opsec.
 """
 from __future__ import annotations
 
+import asyncio
 import json
+from unittest import mock
+from unittest.mock import AsyncMock
 
 import pytest
+from sqlmodel import select
+from sqlmodel.ext.asyncio.session import AsyncSession
 
+from app.database import get_async_engine
 from app.core.xui_chain import (
     ChannelDraft,
     _build_exit_inbound_payload,
@@ -166,15 +172,19 @@ class TestBuildXrayTemplate:
             exit_host="1.2.3.4",
         )
 
-        # Chain outbounds — one per channel + api + direct + blocked.
+        # Chain outbounds — one per channel + direct + blocked.
         # Tag is `chain-<chain_id>-<channel_name>` so two chains
         # sharing the same channel name on one relay don't collide.
         tags = [o["tag"] for o in tpl["outbounds"]]
         assert "chain-3-alpha" in tags
         assert "chain-3-beta" in tags
-        assert "api" in tags
         assert "direct" in tags
         assert "blocked" in tags
+        # `api` is the Commander's own tag — declaring an outbound for
+        # it shadows the real handler, and at outbounds[0] it swallows
+        # every unmatched inbound's traffic.
+        assert "api" not in tags
+        assert tags[0] == "direct"
 
         # Alpha outbound: vless+xhttp+reality dialing the exit host
         # on the exit-port with our UUID + Reality material.
@@ -225,10 +235,12 @@ class TestBuildXrayTemplate:
         )
         chain_tags = [o["tag"] for o in tpl["outbounds"] if o["tag"].startswith("chain-")]
         assert chain_tags == []
-        # api + direct + blocked still present so the relay xray
-        # boots cleanly.
-        baseline = {o["tag"] for o in tpl["outbounds"]}
-        assert {"api", "direct", "blocked"} <= baseline
+        # direct + blocked still present so the relay xray boots
+        # cleanly, with direct first as the default egress.
+        baseline = [o["tag"] for o in tpl["outbounds"]]
+        assert baseline[0] == "direct"
+        assert {"direct", "blocked"} <= set(baseline)
+        assert "api" not in baseline
 
 
 # ── Port allocation ────────────────────────────────────────────────────────
@@ -415,3 +427,341 @@ class TestPickPortExhaustion:
                 low=10000, high=10004,
                 max_tries=10,
             )
+
+
+class TestDefaultOutboundIsUsableEgress:
+    """Regression pin for the 2026-07-30 incident: a chain push left
+    every ordinary inbound on the relay panel with 0 bytes through.
+
+    Xray routes traffic matching no rule to `outbounds[0]`. A chain
+    panel also hosts plain inbounds (which get no rule), so the head
+    of the list has to be a real egress — and it must not carry the
+    `api` tag, which Xray's Commander already owns.
+    """
+
+    def _chain(self):
+        return ProxyChain(
+            id=7, name="c",
+            exit_xui_server_id=1, relay_xui_server_id=2,
+            exit_sni="cover.example.net",
+        )
+
+    def _channel(self):
+        return ChainChannel(
+            id=1, chain_id=7, name="alpha", order=0,
+            exit_port=10443, relay_port=8443,
+            exit_xhttp_path="/p",
+            client_sni="example.org",
+            exit_uuid="U", exit_pbk="P", exit_pvk="PV", exit_sid="S",
+            relay_pbk="rp", relay_pvk="rpv", relay_sid="rs",
+        )
+
+    def test_first_outbound_is_direct_freedom(self):
+        tpl = build_xray_template_config(
+            chain=self._chain(), channels=[self._channel()],
+            exit_host="1.2.3.4",
+        )
+        first = tpl["outbounds"][0]
+        assert first["tag"] == "direct"
+        assert first["protocol"] == "freedom"
+
+    def test_no_outbound_claims_the_api_tag(self):
+        tpl = build_xray_template_config(
+            chain=self._chain(), channels=[self._channel()],
+            exit_host="1.2.3.4",
+        )
+        assert all(o["tag"] != "api" for o in tpl["outbounds"])
+        # The api ROUTING rule stays — the Commander serves it.
+        assert {
+            "type": "field", "inboundTag": ["api"], "outboundTag": "api",
+        } in tpl["routing"]["rules"]
+
+    def test_plain_inbound_tags_have_no_rule_so_they_hit_direct(self):
+        # PiTun names ordinary inbounds `in-<port>-<net>`; none of the
+        # chain rules may capture them, so they fall to outbounds[0].
+        tpl = build_xray_template_config(
+            chain=self._chain(), channels=[self._channel()],
+            exit_host="1.2.3.4",
+        )
+        captured = set()
+        for r in tpl["routing"]["rules"]:
+            for t in r.get("inboundTag") or []:
+                captured.add(t)
+        assert "in-38055-tcp" not in captured
+        assert tpl["outbounds"][0]["tag"] == "direct"
+
+
+class TestCombinedRelayTemplateStatusFilter:
+    """A ProxyChain row left behind by a failed create carries channels with
+    empty exit_uuid/exit_pbk. A REALITY outbound with an empty publicKey
+    fails xray's config validation, so one poisoned row used to take down
+    EVERY inbound on the relay panel at the next combined-template push."""
+
+    def _seed_panel(self, session):
+        from app.models import Server, XuiServer
+
+        srv = Server(
+            name="relay-srv", host="1.2.3.4", port=22,
+            user="root", auth_type="key",
+        )
+        session.add(srv)
+        session.commit()
+        session.refresh(srv)
+        xs = XuiServer(
+            server_id=srv.id, api_token="tok", panel_user="u",
+            panel_pass="p", panel_port=12345,
+            panel_basepath="/test", mode="bare",
+        )
+        session.add(xs)
+        session.commit()
+        session.refresh(xs)
+        return xs
+
+    def _seed_chain(self, session, xs, *, name, status, uuid, pbk):
+        from app.models import ChainChannel
+
+        chain = ProxyChain(
+            name=name, relay_xui_server_id=xs.id,
+            exit_xui_server_id=xs.id, status=status,
+        )
+        session.add(chain)
+        session.commit()
+        session.refresh(chain)
+        ch = ChainChannel(
+            chain_id=chain.id, name="alpha", client_sni="example.com",
+            relay_port=443, exit_port=8443,
+            relay_inbound_remote_id=1, exit_inbound_remote_id=2,
+            relay_pbk="rpbk", relay_sid="rsid", relay_pvk="rprv",
+            exit_uuid=uuid, exit_pbk=pbk, exit_sid="esid",
+        )
+        session.add(ch)
+        session.commit()
+        return chain
+
+    def _build(self, xs_id, include_chain_id=None):
+        import asyncio
+        from sqlmodel.ext.asyncio.session import AsyncSession
+        from app.database import get_async_engine
+        from app.core.xui_chain import build_combined_relay_template
+
+        async def _run():
+            async with AsyncSession(get_async_engine()) as s:
+                return await build_combined_relay_template(
+                    session=s, relay_xui_server_id=xs_id,
+                    include_chain_id=include_chain_id,
+                )
+        return asyncio.run(_run())
+
+    @staticmethod
+    def _chain_tags(tpl):
+        return [
+            o["tag"] for o in tpl["outbounds"]
+            if (o.get("tag") or "").startswith("chain-")
+        ]
+
+    def test_failed_chain_excluded_from_template(self, client, session):
+        xs = self._seed_panel(session)
+        bad = self._seed_chain(
+            session, xs, name="poisoned", status="failed", uuid="", pbk="",
+        )
+        good = self._seed_chain(
+            session, xs, name="live", status="deployed", uuid="u2", pbk="p2",
+        )
+        tpl = self._build(xs.id)
+        tags = self._chain_tags(tpl)
+        assert tags == [f"chain-{good.id}-alpha"]
+        assert all(f"chain-{bad.id}-" not in t for t in tags)
+
+    def test_pending_chain_included_only_via_include_chain_id(
+        self, client, session,
+    ):
+        xs = self._seed_panel(session)
+        pending = self._seed_chain(
+            session, xs, name="mid-create", status="pending",
+            uuid="u1", pbk="p1",
+        )
+        assert self._chain_tags(self._build(xs.id)) == []
+        assert self._chain_tags(self._build(xs.id, include_chain_id=pending.id)) \
+            == [f"chain-{pending.id}-alpha"]
+
+    def test_degraded_chain_stays_in_template(self, client, session):
+        xs = self._seed_panel(session)
+        deg = self._seed_chain(
+            session, xs, name="drifted", status="degraded",
+            uuid="u1", pbk="p1",
+        )
+        assert self._chain_tags(self._build(xs.id)) == [f"chain-{deg.id}-alpha"]
+
+    def test_empty_material_channel_skipped_even_when_deployed(
+        self, client, session,
+    ):
+        from app.models import ChainChannel
+
+        xs = self._seed_panel(session)
+        chain = self._seed_chain(
+            session, xs, name="half-good", status="deployed",
+            uuid="u1", pbk="p1",
+        )
+        session.add(ChainChannel(
+            chain_id=chain.id, name="beta", client_sni="example.org",
+            relay_port=444, exit_port=8444,
+            relay_inbound_remote_id=3, exit_inbound_remote_id=4,
+            relay_pbk="rpbk", relay_sid="rsid", relay_pvk="rprv",
+            exit_uuid="", exit_pbk="", exit_sid="",
+        ))
+        session.commit()
+        tags = self._chain_tags(self._build(xs.id))
+        assert tags == [f"chain-{chain.id}-alpha"]
+        # No REALITY outbound may carry an empty publicKey.
+        for o in self._build(xs.id)["outbounds"]:
+            reality = (o.get("streamSettings") or {}).get("realitySettings")
+            if reality is not None:
+                assert reality.get("publicKey")
+
+
+class TestChainDeleteNodeCleanup:
+    """Every delete path must drop the Nodes exported from the rows it
+    removes — an orphan Node keeps a UUID that no longer authenticates on
+    the relay, so traffic routed through it silently black-holes — and it
+    must drop ONLY those Nodes."""
+
+    def _seed(self, session):
+        """Two chains on one relay, each with a channel named 'alpha'
+        and an exported Node. Channel names are unique per chain, and
+        export names all end in `-<channel>` on the same relay host, so
+        the old LIKE heuristic matched both."""
+        from app.models import (
+            ChainClient, ChainClientChannel, Node, Server, XuiServer,
+        )
+
+        srv = Server(name="relay", host="1.2.3.4", port=22,
+                     user="root", auth_type="key")
+        session.add(srv)
+        session.commit()
+        session.refresh(srv)
+        xs = XuiServer(
+            server_id=srv.id, api_token="tok", panel_user="u",
+            panel_pass="p", panel_port=12345, panel_basepath="/t", mode="bare",
+        )
+        session.add(xs)
+        session.commit()
+        session.refresh(xs)
+
+        made = {}
+        for tag in ("X", "Y"):
+            chain = ProxyChain(
+                name=f"chain-{tag}", relay_xui_server_id=xs.id,
+                exit_xui_server_id=xs.id, status="deployed",
+            )
+            session.add(chain)
+            session.commit()
+            session.refresh(chain)
+            ch = ChainChannel(
+                chain_id=chain.id, name="alpha", client_sni="a.example",
+                relay_port=443, exit_port=8443,
+                relay_inbound_remote_id=0, exit_inbound_remote_id=0,
+                relay_pbk="rp", relay_sid="rs", relay_pvk="rv",
+                exit_uuid="u", exit_pbk="p", exit_sid="s",
+            )
+            session.add(ch)
+            session.commit()
+            session.refresh(ch)
+            node = Node(
+                name=f"{tag}-user1-alpha", protocol="vless",
+                address="1.2.3.4", port=443, uuid=f"uuid-{tag}",
+                transport="tcp", enabled=True,
+            )
+            session.add(node)
+            session.commit()
+            session.refresh(node)
+            cc = ChainClient(chain_id=chain.id, label=f"{tag}-user1")
+            session.add(cc)
+            session.commit()
+            session.refresh(cc)
+            pair = ChainClientChannel(
+                chain_client_id=cc.id, channel_id=ch.id,
+                client_uuid=f"uuid-{tag}", exported_node_id=node.id,
+            )
+            session.add(pair)
+            session.commit()
+            made[tag] = {"chain": chain.id, "channel": ch.id, "node": node.id}
+        return made
+
+    @staticmethod
+    def _run(coro_factory):
+        loop = asyncio.new_event_loop()
+        try:
+            loop.run_until_complete(coro_factory())
+        finally:
+            loop.close()
+
+    def test_delete_channel_spares_other_chains_node(self, client, session):
+        from app.core.xui_chain import orchestrate_delete_channel
+        from app.models import Node
+        from sqlmodel import Session as SyncSession
+
+        made = self._seed(session)
+        bind = session.get_bind()
+        session.close()
+
+        with mock.patch("app.core.xui_chain.XuiClient") as MC:
+            inst = MC.return_value.__aenter__.return_value
+            inst.del_inbound = AsyncMock(return_value=None)
+            inst.restart_xray = AsyncMock(return_value=None)
+
+            async def run():
+                async with AsyncSession(get_async_engine()) as s:
+                    chain = await s.get(ProxyChain, made["X"]["chain"])
+                    channel = await s.get(ChainChannel, made["X"]["channel"])
+                    await orchestrate_delete_channel(
+                        chain=chain, channel=channel, session=s,
+                    )
+            self._run(run)
+
+        with SyncSession(bind) as s:
+            assert s.get(Node, made["X"]["node"]) is None, \
+                "the deleted channel's own exported Node must go"
+            assert s.get(Node, made["Y"]["node"]) is not None, (
+                "a same-named channel in ANOTHER chain shared the relay host "
+                "and used to be collateral-deleted by the LIKE heuristic"
+            )
+
+    def test_delete_chain_removes_its_exported_nodes(self, client, session):
+        from app.core.xui_chain import orchestrate_delete
+        from app.models import Node
+        from sqlmodel import Session as SyncSession
+
+        made = self._seed(session)
+        bind = session.get_bind()
+        session.close()
+
+        with (
+            mock.patch("app.core.xui_chain.XuiClient") as MC,
+            mock.patch("app.core.xui_chain._ufw_chain_ports",
+                       new_callable=AsyncMock),
+            mock.patch("app.core.xui_chain._clear_xray_template_via_ssh",
+                       new_callable=AsyncMock),
+        ):
+            inst = MC.return_value.__aenter__.return_value
+            inst.del_inbound = AsyncMock(return_value=None)
+            inst.restart_xray = AsyncMock(return_value=None)
+
+            async def run():
+                async with AsyncSession(get_async_engine()) as s:
+                    chain = await s.get(ProxyChain, made["X"]["chain"])
+                    channels = list((await s.exec(
+                        select(ChainChannel).where(
+                            ChainChannel.chain_id == chain.id),
+                    )).all())
+                    await orchestrate_delete(
+                        chain=chain, channels=channels, session=s,
+                    )
+            self._run(run)
+
+        with SyncSession(bind) as s:
+            assert s.get(ProxyChain, made["X"]["chain"]) is None
+            assert s.get(Node, made["X"]["node"]) is None, (
+                "whole-chain delete used to leave exported Nodes behind "
+                "with a UUID the relay no longer knows"
+            )
+            assert s.get(Node, made["Y"]["node"]) is not None

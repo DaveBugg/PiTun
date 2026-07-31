@@ -13,6 +13,9 @@ import {
   useCheckNodeHealth,
   useCheckAllNodes,
   useSpeedtest,
+  useSpeedtestAll,
+  useSpeedResults,
+  useSpeedPending,
 } from '@/hooks/useNodes'
 import { nodesApi } from '@/api/client'
 import { useSystemStatus, useSetActiveNode } from '@/hooks/useSystem'
@@ -24,6 +27,7 @@ import { NodeFilterPopup, type NodeFilterState } from '@/components/NodeFilterPo
 import { Pagination } from '@/components/Pagination'
 import { useConfirm } from '@/components/ConfirmModal'
 import { ModalShell } from '@/components/ModalShell'
+import { apiErrorText } from '@/lib/apiError'
 import type { Node, NodeCreate, NodePageParams } from '@/types'
 
 type Modal = 'none' | 'add' | 'edit' | 'import'
@@ -154,20 +158,14 @@ export function Nodes() {
   const speedtest = useSpeedtest()
   const setActive = useSetActiveNode()
 
-  const [speedResults, setSpeedResults] = useState<Record<number, string>>({})
+  // Results and in-flight ids come from the query cache so they survive
+  // pagination, filtering and leaving the page mid-test.
+  const { data: speedResults } = useSpeedResults()
+  const { data: speedPending } = useSpeedPending()
   const [dragId, setDragId] = useState<number | null>(null)
   const qc = useQueryClient()
 
-  const speedAll = useMutation({
-    mutationFn: () => nodesApi.speedtestAll(),
-    onSuccess: (results) => {
-      const map: Record<number, string> = {}
-      for (const r of results) {
-        map[r.node_id] = r.download_mbps != null ? `${r.download_mbps} Mbps` : r.error ?? 'failed'
-      }
-      setSpeedResults(map)
-    },
-  })
+  const speedAll = useSpeedtestAll()
 
   // Reorder via useMutation so it follows the same pattern as other CRUD
   // operations (toast hooks, optimistic update later, error surface via
@@ -186,19 +184,11 @@ export function Nodes() {
     }
   }
 
-  const handleSpeedtest = async (node: Node) => {
-    setSpeedResults((r) => ({ ...r, [node.id]: 'testing…' }))
-    speedtest.mutate(node.id, {
-      onSuccess: (r) => {
-        setSpeedResults((prev) => ({
-          ...prev,
-          [node.id]: r.download_mbps != null ? `${r.download_mbps} Mbps` : r.error ?? 'failed',
-        }))
-      },
-      onError: () => {
-        setSpeedResults((prev) => ({ ...prev, [node.id]: 'error' }))
-      },
-    })
+  // No per-mutate callbacks: the hook writes the result into the query
+  // cache itself, so it lands even if this page is unmounted by then.
+  const handleSpeedtest = (node: Node) => {
+    if (speedPending.includes(node.id)) return
+    speedtest.mutate(node.id)
   }
 
   const handleDrop = (targetId: number) => {
@@ -343,6 +333,18 @@ export function Nodes() {
         </button>
       </div>
 
+      {/* Speed All runs synchronously and the reverse proxy cuts the
+          request at 120s, so on a large node set it WILL fail. Without
+          this banner the spinner just stopped and the operator was left
+          wondering whether anything happened. */}
+      {speedAll.isError && (
+        <div className="rounded-lg border border-red-900/50 bg-red-950/30 px-3 py-2 text-xs text-red-300">
+          Speed All failed: {apiErrorText(speedAll.error, 'request timed out')}.
+          Results for individual nodes are still available via the per-node
+          speed test.
+        </div>
+      )}
+
       {/* Pinned active node — shown only when the active node is NOT
           already in the current page (filters/pagination would hide
           it). Surfaces "which Node am I currently routing through"
@@ -376,8 +378,16 @@ export function Nodes() {
                   onSpeedtest={() => handleSpeedtest(activeNode)}
                   onSelect={() => setActive.mutate(activeNode.id)}
                   checkLoading={checkHealth.isPending && checkHealth.variables === activeNode.id}
-                  speedLoading={speedtest.isPending && speedtest.variables === activeNode.id}
+                  speedLoading={speedPending.includes(activeNode.id)}
                 />
+                {/* The pinned card is only rendered when the active node
+                    is NOT in the list, so without this row its speed-test
+                    result had nowhere to appear at all. */}
+                {speedResults[activeNode.id] && (
+                  <div className="text-xs text-gray-500 mt-1 pl-4 font-mono">
+                    Speed: {speedResults[activeNode.id]}
+                  </div>
+                )}
               </div>
             </div>
           </div>
@@ -449,7 +459,7 @@ export function Nodes() {
                   onSpeedtest={() => handleSpeedtest(node)}
                   onSelect={() => setActive.mutate(node.id)}
                   checkLoading={checkHealth.isPending && checkHealth.variables === node.id}
-                  speedLoading={speedtest.isPending && speedtest.variables === node.id}
+                  speedLoading={speedPending.includes(node.id)}
                 />
                 {speedResults[node.id] && (
                   <div className="text-xs text-gray-500 mt-1 pl-4 font-mono">

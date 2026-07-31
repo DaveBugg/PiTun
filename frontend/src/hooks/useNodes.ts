@@ -104,8 +104,97 @@ export function useCheckAllNodes() {
   })
 }
 
+/**
+ * Speed-test results and in-flight ids live in the query cache, NOT in
+ * page state.
+ *
+ * A test takes 30–80s server-side and the backend persists nothing. With
+ * the result held in `Nodes.tsx` state and written from per-`mutate()`
+ * callbacks, three things went wrong: navigating away unmounted the page
+ * (v5 drops per-mutate callbacks of an unmounted observer, so the result
+ * vanished), starting a second test detached the first one's callbacks
+ * (its row was stuck on "testing…" forever), and `mutation.variables`
+ * only ever described the LAST call, so the spinner and the disabled
+ * button tracked the wrong node.
+ *
+ * Cache entries survive unmount, so a test started on the Nodes page is
+ * still there after a round trip to the Dashboard, and every node gets
+ * its own pending flag.
+ */
+export type SpeedResults = Record<number, string>
+
+const SPEED_RESULTS_KEY = ['speedtest', 'results']
+const SPEED_PENDING_KEY = ['speedtest', 'pending']
+
+export function useSpeedResults() {
+  return useQuery<SpeedResults>({
+    queryKey: SPEED_RESULTS_KEY,
+    queryFn: async () => ({}),
+    initialData: {},
+    staleTime: Infinity,
+    gcTime: Infinity,
+  })
+}
+
+export function useSpeedPending() {
+  return useQuery<number[]>({
+    queryKey: SPEED_PENDING_KEY,
+    queryFn: async () => [],
+    initialData: [],
+    staleTime: Infinity,
+    gcTime: Infinity,
+  })
+}
+
+function formatSpeed(r: { download_mbps?: number | null; error?: string | null }): string {
+  return r.download_mbps != null ? `${r.download_mbps} Mbps` : r.error || 'failed'
+}
+
 export function useSpeedtest() {
+  const qc = useQueryClient()
   return useMutation({
     mutationFn: (id: number) => nodesApi.speedtest(id),
+    // Hook-level callbacks (unlike per-mutate ones) fire for every
+    // mutation even if the component that started it is gone.
+    onMutate: (id) => {
+      qc.setQueryData<number[]>(SPEED_PENDING_KEY, (p = []) =>
+        p.includes(id) ? p : [...p, id],
+      )
+      qc.setQueryData<SpeedResults>(SPEED_RESULTS_KEY, (r = {}) => ({
+        ...r,
+        [id]: 'testing…',
+      }))
+    },
+    onSuccess: (res, id) => {
+      qc.setQueryData<SpeedResults>(SPEED_RESULTS_KEY, (r = {}) => ({
+        ...r,
+        [id]: formatSpeed(res),
+      }))
+    },
+    onError: (_err, id) => {
+      qc.setQueryData<SpeedResults>(SPEED_RESULTS_KEY, (r = {}) => ({
+        ...r,
+        [id]: 'error',
+      }))
+    },
+    onSettled: (_res, _err, id) => {
+      qc.setQueryData<number[]>(SPEED_PENDING_KEY, (p = []) =>
+        p.filter((x) => x !== id),
+      )
+    },
+  })
+}
+
+export function useSpeedtestAll() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: () => nodesApi.speedtestAll(),
+    onSuccess: (results) => {
+      qc.setQueryData<SpeedResults>(SPEED_RESULTS_KEY, (prev = {}) => {
+        const next = { ...prev }
+        for (const r of results) next[r.node_id] = formatSpeed(r)
+        return next
+      })
+    },
   })
 }

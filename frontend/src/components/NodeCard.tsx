@@ -103,9 +103,22 @@ export function NodeCard({
                   tls
                 </span>
               )}
-              {node.chain_node_id && (
+              {node.chain_node_id && !node.chain_orphan && (
                 <span className="text-xs text-blue-400 font-mono flex items-center gap-1">
                   🔗 chained
+                </span>
+              )}
+              {/* The relay this node hops through is gone. It keeps its
+                  link but silently stops carrying traffic — xray skips
+                  the outbound, probes and speed tests come back empty —
+                  so the list has to say so instead of showing a healthy
+                  "chained" badge. */}
+              {node.chain_orphan && (
+                <span
+                  className="text-xs text-red-300 font-mono flex items-center gap-1 rounded border border-red-800/50 bg-red-950/30 px-1.5 py-0.5"
+                  title={`Chained through node #${node.chain_node_id}, which no longer exists — edit the node to pick a live relay or clear the chain.`}
+                >
+                  ⛓️‍💥 chain broken
                 </span>
               )}
             </div>

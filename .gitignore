@@ -121,6 +121,10 @@ memory/
 # Stray directory created by a malformed shell redirect on Windows.
 frontend;C/
 
+# IDE session worktrees land here — scratchpads only; final state goes
+# into the main checkout. Keep the directory itself out of git.
+/pitun/
+
 # ── Misc ─────────────────────────────────────────────────────────────────────
 /tmp/
 *.tmp

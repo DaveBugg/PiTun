@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import {
   Download, Fingerprint, Link, Plus, RefreshCw, Rss, Trash2, Upload, Zap,
 } from 'lucide-react'
@@ -244,10 +244,36 @@ export function Subscriptions() {
   const confirm = useConfirm()
   const t = useT()
 
+  // `refreshing` holds the ids whose background refresh we're waiting on.
+  // The endpoint answers 202 and does the fetch AFTER the response, so a
+  // one-shot invalidate on success only ever re-read the OLD rows — and
+  // with refetchOnMount/refetchOnWindowFocus off, nothing refreshed them
+  // afterwards. We poll until `last_updated` moves (or we give up).
+  const [refreshing, setRefreshing] = useState<Record<number, string | null>>({})
+
   const { data: subs = [] } = useQuery({
     queryKey: ['subscriptions'],
     queryFn: () => subsApi.list(),
+    refetchInterval: Object.keys(refreshing).length > 0 ? 2000 : false,
   })
+
+  // Drop ids whose row has moved on — `last_updated` changed, so the
+  // background job finished.
+  useEffect(() => {
+    if (Object.keys(refreshing).length === 0) return
+    setRefreshing((prev) => {
+      const next = { ...prev }
+      let changed = false
+      for (const sub of subs) {
+        if (!(sub.id in next)) continue
+        if ((sub.last_updated ?? null) !== next[sub.id]) {
+          delete next[sub.id]
+          changed = true
+        }
+      }
+      return changed ? next : prev
+    })
+  }, [subs, refreshing])
 
   // Same key as the templates modal, so a save there repaints this list.
   const { data: uaTemplates = [] } = useQuery({
@@ -358,14 +384,27 @@ export function Subscriptions() {
   })
   const refresh = useMutation({
     mutationFn: (id: number) => subsApi.refresh(id),
-    // Backend `refresh` blocks until the fetch+parse+upsert is fully
-    // committed, so by the time this resolves the DB is consistent. The
-    // previous `setTimeout(..., 2000)` was always either too early (fast
-    // backend → stale UI for 1.8s) or too late (slow backend → invalidate
-    // fired before data was ready).
+    // The endpoint returns 202 and runs the fetch in a background task,
+    // so nothing is committed yet when this resolves. Remember the row's
+    // pre-refresh `last_updated` and poll the list until it moves; the
+    // effect above clears the marker and stops the polling.
+    onMutate: (id) => {
+      const before = subs.find((s) => s.id === id)?.last_updated ?? null
+      setRefreshing((prev) => ({ ...prev, [id]: before }))
+    },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['subscriptions'] })
       qc.invalidateQueries({ queryKey: ['nodes'] })
+    },
+    onError: (_err, id) => {
+      // 409 from the in-flight mutex, or a plain network failure —
+      // either way we're not waiting on this one. The global toast
+      // renders the message (including the backend's hint).
+      setRefreshing((prev) => {
+        const next = { ...prev }
+        delete next[id]
+        return next
+      })
     },
   })
 
@@ -450,7 +489,7 @@ export function Subscriptions() {
           {subs.length > 0 && (
             <button
               onClick={refreshAll}
-              disabled={refresh.isPending}
+              disabled={refresh.isPending || Object.keys(refreshing).length > 0}
               className="flex items-center gap-1.5 rounded-lg bg-gray-800 px-3 py-2 text-sm text-gray-300 hover:bg-gray-700 transition-colors disabled:opacity-50"
             >
               <RefreshCw className={clsx('h-4 w-4', refresh.isPending && 'animate-spin')} />
@@ -574,11 +613,11 @@ export function Subscriptions() {
                   <div className="flex items-center gap-1 flex-shrink-0">
                     <button
                       onClick={() => refresh.mutate(sub.id)}
-                      disabled={refresh.isPending && refresh.variables === sub.id}
+                      disabled={sub.id in refreshing}
                       title="Refresh now"
                       className="rounded p-1.5 text-gray-500 hover:text-gray-200 hover:bg-gray-800 transition-colors"
                     >
-                      <RefreshCw className={clsx('h-4 w-4', refresh.isPending && refresh.variables === sub.id && 'animate-spin')} />
+                      <RefreshCw className={clsx('h-4 w-4', sub.id in refreshing && 'animate-spin')} />
                     </button>
                     <button
                       onClick={() => { setEditSub(sub); setModal('edit') }}

@@ -7,7 +7,7 @@ import {
 import { isAxiosError } from 'axios'
 import { useConfirm } from '@/components/ConfirmModal'
 import { clsx } from 'clsx'
-import { useDevices, useUpdateDevice, useDeleteDevice, useScanDevices, useBulkPolicy, useResetAllPolicies } from '@/hooks/useDevices'
+import { useDevices, useUpdateDevice, useDeleteDevice, useScanDevices, useBulkPolicy, useResetAllPolicies, useLastScanSummary } from '@/hooks/useDevices'
 import { useRoutingSets, useBulkAssignDevices } from '@/hooks/useRoutingSets'
 import { useSystemSettings, useUpdateSettings } from '@/hooks/useSystem'
 import { useT } from '@/hooks/useT'
@@ -62,6 +62,7 @@ export function Devices() {
   const updateDevice = useUpdateDevice()
   const deleteDevice = useDeleteDevice()
   const scanDevices = useScanDevices()
+  const { data: lastScan } = useLastScanSummary()
   const bulkPolicy = useBulkPolicy()
   const bulkAssignSet = useBulkAssignDevices()
   const resetAll = useResetAllPolicies()
@@ -223,10 +224,11 @@ export function Devices() {
         </div>
       </div>
 
-      {/* Scan result toast */}
-      {scanDevices.isSuccess && scanDevices.data && (
+      {/* Scan result toast — read from the cache, so a scan started
+          before navigating away still reports its summary on return. */}
+      {lastScan && (
         <div className="rounded-lg bg-brand-900/30 border border-brand-700/50 px-4 py-2 text-sm text-brand-300">
-          Scan complete: {scanDevices.data.discovered} discovered, {scanDevices.data.updated} updated, {scanDevices.data.total} total
+          Scan complete: {lastScan.discovered} discovered, {lastScan.updated} updated, {lastScan.total} total
         </div>
       )}
 

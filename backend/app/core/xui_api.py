@@ -129,6 +129,10 @@ class XuiClient:
     panel_pass: Optional[str] = None
     _http: Optional[httpx.AsyncClient] = None
     _csrf_token: Optional[str] = None
+    # UI-internal controller mount point. v3.6.0 moved /panel/xray/* and
+    # /panel/setting/* under /panel/api/; older panels only serve the old
+    # mount. Probed lazily by _admin_request, cached per instance.
+    _admin_prefix: Optional[str] = None
 
     def __post_init__(self) -> None:
         # Hard scheme allowlist — `base_url` comes from a XuiServer DB
@@ -411,6 +415,43 @@ class XuiClient:
         # unreachable — loop either returns or raises on second iter
         raise XuiAPIError(f"unreachable cookie retry exhausted on {path}", kind="api")
 
+    async def _admin_request(
+        self,
+        method: str,
+        path: str,
+        *,
+        form: Optional[Dict[str, Any]] = None,
+        timeout: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        """Cookie request against a UI-internal controller, tolerant of
+        the mount-point move: `path` is relative to the controller root
+        (e.g. `/xray/update`). Tries `/panel/api` first (v3.6.0+); a 404
+        or an HTML (SPA-shell) response means an older panel, retry at
+        `/panel`. The winning prefix is cached for the client's lifetime.
+        """
+        if self._admin_prefix is not None:
+            return await self._cookie_request(
+                method, self._admin_prefix + path, form=form, timeout=timeout,
+            )
+        try:
+            body = await self._cookie_request(
+                method, "/panel/api" + path, form=form, timeout=timeout,
+            )
+        except XuiAPIError as exc:
+            wrong_mount = (
+                (exc.kind == "http" and exc.status == 404)
+                or exc.kind == "format"
+            )
+            if not wrong_mount:
+                raise
+            body = await self._cookie_request(
+                method, "/panel" + path, form=form, timeout=timeout,
+            )
+            self._admin_prefix = "/panel"
+            return body
+        self._admin_prefix = "/panel/api"
+        return body
+
     # ── High-level API ─────────────────────────────────────────────────
     async def probe(self) -> None:
         """Smoke-test the token + base URL.
@@ -449,7 +490,7 @@ class XuiClient:
         these dicts from a higher-level pick + user input."""
         body = await self._request(
             "POST", "/panel/api/inbounds/add",
-            json=payload,
+            json=_coerce_inbound_payload(payload),
             timeout=_LARGE_PAYLOAD_TIMEOUT,
         )
         obj = body.get("obj")
@@ -460,7 +501,7 @@ class XuiClient:
     ) -> Dict[str, Any]:
         body = await self._request(
             "POST", f"/panel/api/inbounds/update/{inbound_id}",
-            json=payload,
+            json=_coerce_inbound_payload(payload),
             timeout=_LARGE_PAYLOAD_TIMEOUT,
         )
         obj = body.get("obj")
@@ -585,14 +626,24 @@ class XuiClient:
         )
         obj = body.get("obj") or {}
         settings = parse_inbound_field(obj.get("settings"))
+        # `client_uuid` is really a natural id: vless/vmess clients are
+        # keyed by `id`, but trojan/shadowsocks/socks clients have no
+        # `id` at all — their identity is `password` (or `user`), and
+        # that's what the UI sends. Matching on `id` alone made every
+        # delete/update of a non-vless client fail with a 502.
+        needle = (client_uuid or "").lower()
         for client in (settings.get("clients") or []):
-            if str(client.get("id") or "").lower() == client_uuid.lower():
+            candidates = (
+                client.get("id"), client.get("email"),
+                client.get("password"), client.get("user"),
+            )
+            if any(str(c or "").lower() == needle for c in candidates):
                 email = client.get("email")
                 if email:
                     return str(email)
                 break
         raise XuiAPIError(
-            f"client uuid={client_uuid!r} not found in inbound "
+            f"client id={client_uuid!r} not found in inbound "
             f"{inbound_id} (cannot resolve email for v3.1.0 endpoint)",
             kind="not_found",
         )
@@ -649,12 +700,11 @@ class XuiClient:
 
         Returns the parsed `obj` dict — keys typically include
         `xraySetting` (the full xray config dict), `outboundTestUrl`,
-        `inboundTags`, `clientReverseTags`. Cookie+CSRF auth: the
-        `/panel/xray/*` namespace is the v3.0.1 XraySettingController
-        (separate from `/panel/setting/*` which has no xray bits).
+        `inboundTags`, `clientReverseTags`. Cookie+CSRF auth against
+        the XraySettingController (mount handled by _admin_request).
         """
-        body = await self._cookie_request(
-            "POST", "/panel/xray/", timeout=_LARGE_PAYLOAD_TIMEOUT,
+        body = await self._admin_request(
+            "POST", "/xray/", timeout=_LARGE_PAYLOAD_TIMEOUT,
         )
         obj = body.get("obj")
         # The panel double-encodes: `obj` is a JSON STRING. Parse once.
@@ -701,8 +751,8 @@ class XuiClient:
             form["allOutbounds"] = _json.dumps(
                 all_outbounds, separators=(",", ":"),
             )
-        body = await self._cookie_request(
-            "POST", "/panel/xray/testOutbound",
+        body = await self._admin_request(
+            "POST", "/xray/testOutbound",
             form=form, timeout=_LARGE_PAYLOAD_TIMEOUT,
         )
         obj = body.get("obj")
@@ -729,8 +779,8 @@ class XuiClient:
                 or "https://www.google.com/generate_204"
             ),
         }
-        await self._cookie_request(
-            "POST", "/panel/xray/update",
+        await self._admin_request(
+            "POST", "/xray/update",
             form=form, timeout=_LARGE_PAYLOAD_TIMEOUT,
         )
 
@@ -805,6 +855,70 @@ def parse_inbound_field(value: Any) -> Dict[str, Any]:
     return {}
 
 
+# Fields whose Go type is int64 / bool on model.Client and ClientRecord.
+# Legacy PiTun payloads ship empty-string defaults ("tgId": "") which the
+# strict Go json decoder rejects; coerce before any write to the panel.
+_NUMERIC_CLIENT_FIELDS = ("limitIp", "totalGB", "expiryTime", "tgId", "reset")
+_BOOL_CLIENT_FIELDS = ("enable",)
+
+
+def _coerce_int(v: Any) -> int:
+    if v is None or v == "":
+        return 0
+    if isinstance(v, bool):
+        return int(v)
+    if isinstance(v, int):
+        return v
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _coerce_bool(v: Any) -> bool:
+    if isinstance(v, bool):
+        return v
+    if isinstance(v, (int, float)):
+        return bool(v)
+    if isinstance(v, str):
+        return v.lower() in ("true", "1", "yes", "y", "on")
+    return False
+
+
+def _coerce_inbound_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Normalise clients embedded in an add/update-inbound payload.
+
+    v3.1.0 only type-checked clients on the /panel/api/clients/* writes;
+    v3.6.0 also parses `settings.clients[]` into model.Client structs on
+    inbounds/add|update, so the legacy `""` defaults reject the whole
+    inbound. Handles `settings` as dict or JSON string and preserves
+    whichever shape the caller built.
+    """
+    import json as _json
+    settings = payload.get("settings")
+    parsed = parse_inbound_field(settings)
+    clients = parsed.get("clients")
+    if not isinstance(clients, list) or not clients:
+        return payload
+    coerced = []
+    for cl in clients:
+        if isinstance(cl, dict):
+            cl = dict(cl)
+            for k in _NUMERIC_CLIENT_FIELDS:
+                if k in cl:
+                    cl[k] = _coerce_int(cl[k])
+            for k in _BOOL_CLIENT_FIELDS:
+                if k in cl:
+                    cl[k] = _coerce_bool(cl[k])
+        coerced.append(cl)
+    parsed = {**parsed, "clients": coerced}
+    out = dict(payload)
+    out["settings"] = (
+        _json.dumps(parsed) if isinstance(settings, str) else parsed
+    )
+    return out
+
+
 def _to_client_record(settings: Dict[str, Any]) -> Dict[str, Any]:
     """Translate a v3.0.x-style client dict into a v3.1.0 ClientRecord.
 
@@ -822,33 +936,6 @@ def _to_client_record(settings: Dict[str, Any]) -> Dict[str, Any]:
     Unknown keys are dropped silently so callers that include legacy
     fields (e.g. `subscription_url`) don't poison the request body.
     """
-    # Fields the v3.1.0 ClientRecord declares as numeric. Coerce
-    # empty-string / None / stringified-int to a real int(0) so the
-    # Go json decoder doesn't reject the body.
-    _NUMERIC_FIELDS = ("limitIp", "totalGB", "expiryTime", "tgId", "reset")
-    _BOOL_FIELDS = ("enable",)
-
-    def _coerce_int(v: Any) -> int:
-        if v is None or v == "":
-            return 0
-        if isinstance(v, bool):
-            return int(v)
-        if isinstance(v, int):
-            return v
-        try:
-            return int(v)
-        except (TypeError, ValueError):
-            return 0
-
-    def _coerce_bool(v: Any) -> bool:
-        if isinstance(v, bool):
-            return v
-        if isinstance(v, (int, float)):
-            return bool(v)
-        if isinstance(v, str):
-            return v.lower() in ("true", "1", "yes", "y", "on")
-        return False
-
     out: Dict[str, Any] = {}
     # Both legacy v3.0.x payloads and the v3.1.0 model.Client JSON shape
     # use `id` for the UUID. If a caller hand-shipped `uuid` (because
@@ -863,9 +950,9 @@ def _to_client_record(settings: Dict[str, Any]) -> Dict[str, Any]:
         if k not in settings:
             continue
         v = settings[k]
-        if k in _NUMERIC_FIELDS:
+        if k in _NUMERIC_CLIENT_FIELDS:
             out[k] = _coerce_int(v)
-        elif k in _BOOL_FIELDS:
+        elif k in _BOOL_CLIENT_FIELDS:
             out[k] = _coerce_bool(v)
         else:
             out[k] = v
