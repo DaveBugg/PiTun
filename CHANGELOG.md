@@ -4,6 +4,24 @@ All notable user-facing changes to PiTun. Full per-release detail lives in the
 [GitHub Releases](https://github.com/DaveBugg/PiTun/releases); this file is the
 committed summary.
 
+## v1.4.9 — 2026-08-02
+
+Hotfix.
+
+### Fixed
+
+- **A single node with the `raw` transport 500'd the whole node list.**
+  Xray (v25.x) renamed the plain `tcp` transport to `raw`, and panels emit
+  `type=raw` in share links. A subscription imported such a node verbatim,
+  and because the `/api/nodes` response validates every row, that one
+  unknown value made the entire list endpoint fail — the dashboard then
+  showed "No active node selected" even though the active node was set and
+  routing fine. `raw` is now recognised as the alias for `tcp` it is:
+  folded on import (URI / Clash / JSON), accepted on read, and generated as
+  `tcp` in the xray config so every bundled xray version accepts it. The
+  paginated `/api/nodes/page` was unaffected, which is why only the
+  Dashboard's node picker broke.
+
 ## v1.4.8 — 2026-07-31
 
 PiTun now **updates itself from the web UI**, fetching releases through the

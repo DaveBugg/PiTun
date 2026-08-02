@@ -90,9 +90,15 @@ class NodeBase(BaseModel):
             raise ValueError(f"protocol must be one of {valid}")
         return v
 
-    @field_validator("transport")
+    @field_validator("transport", mode="before")
     @classmethod
     def validate_transport(cls, v: str) -> str:
+        # Xray renamed the plain "tcp" transport to "raw" (v25.x). A
+        # subscription importing a node with type=raw stored it verbatim,
+        # and this validator then rejected it on read — 500ing the WHOLE
+        # /nodes list off one node. They are the same transport.
+        if v == "raw":
+            v = "tcp"
         valid = {"tcp", "ws", "grpc", "h2", "xhttp", "httpupgrade", "kcp", "quic"}
         if v not in valid:
             raise ValueError(f"transport must be one of {valid}")
@@ -132,6 +138,8 @@ class NodeUpdate(NodeBase):
     def validate_transport(cls, v: Optional[str]) -> Optional[str]:  # type: ignore[override]
         if v is None:
             return v
+        if v == "raw":  # Xray's new name for the "tcp" transport
+            v = "tcp"
         valid = {"tcp", "ws", "grpc", "h2", "xhttp", "httpupgrade", "kcp", "quic"}
         if v not in valid:
             raise ValueError(f"transport must be one of {valid}")

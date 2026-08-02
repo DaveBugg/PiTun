@@ -111,7 +111,11 @@ def _tls_settings(node: Node) -> Optional[Dict[str, Any]]:
 
 
 def _stream_settings(node: Node) -> Dict[str, Any]:
-    stream: Dict[str, Any] = {"network": node.transport}
+    # A node imported before the schema learned Xray's "raw" alias may be
+    # stored with transport="raw". It is the "tcp" transport under a newer
+    # name; emit "tcp" so every bundled xray version accepts the config.
+    network = "tcp" if node.transport == "raw" else node.transport
+    stream: Dict[str, Any] = {"network": network}
 
     if node.transport == "ws":
         # xray deprecated "Host" inside "headers" — use top-level "host" field instead

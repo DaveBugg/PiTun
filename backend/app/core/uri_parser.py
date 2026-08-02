@@ -360,13 +360,25 @@ _PARSERS = {
 }
 
 
+def _normalize_transport(node: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """Fold Xray's "raw" transport back to its canonical name "tcp".
+
+    Xray renamed the plain TCP transport to "raw"; panels emit `type=raw`
+    in share links. Storing the canonical "tcp" keeps the DB consistent and
+    matches what the rest of PiTun expects.
+    """
+    if node and node.get("transport") == "raw":
+        node["transport"] = "tcp"
+    return node
+
+
 def parse_uri(uri: str) -> Optional[Dict[str, Any]]:
     """Parse a single proxy URI. Returns a node dict or None."""
     uri = uri.strip()
     for prefix, parser in _PARSERS.items():
         if uri.lower().startswith(prefix):
             try:
-                return parser(uri)
+                return _normalize_transport(parser(uri))
             except Exception as exc:
                 logger.debug("Failed to parse %s: %s", uri[:60], exc)
                 return None
@@ -393,13 +405,13 @@ def parse_uri_list(text: str) -> List[Dict[str, Any]]:
             obj = json.loads(text)
             nodes = _parse_xray_json(obj)
             if nodes:
-                return nodes
+                return [_normalize_transport(n) for n in nodes]
         except (json.JSONDecodeError, ValueError):
             pass  # not JSON, continue to other parsers
 
     # Try Clash YAML
     if re.search(r"proxies\s*:", text):
-        return _parse_clash_yaml(text)
+        return [_normalize_transport(n) for n in _parse_clash_yaml(text)]
 
     # Try base64 decode if it looks like a single base64 blob
     if "\n" not in text and len(text) > 20 and not text.startswith(tuple(_PARSERS)):
