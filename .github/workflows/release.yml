@@ -272,10 +272,13 @@ jobs:
       - name: Extract changelog section for this tag
         if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
         run: |
-          awk -v tag="${{ github.ref_name }}" '
-            $0 ~ ("^## " tag "([ \t]|$)") {f=1; print; next}
-            f && /^## v/ {f=0}
-            f {print}
+          # Literal-prefix match via index() (no dynamic regex) so this
+          # works under mawk on the runner as well as gawk. Header format
+          # is `## <tag> — <date>`, so the tag is always followed by a space.
+          awk -v hdr="## ${{ github.ref_name }} " '
+            index($0, hdr) == 1 { f = 1; print; next }
+            f && /^## v/ { exit }
+            f { print }
           ' CHANGELOG.md > RELEASE_NOTES.md
           echo "---- release notes for ${{ github.ref_name }} ----"
           cat RELEASE_NOTES.md
