@@ -460,7 +460,10 @@ After=network-online.target docker.service
 
 [Service]
 Type=oneshot
-ExecStart=${self} --agent
+# Invoke via bash, not a direct exec: the repo ships scripts non-executable
+# (100644) and a source re-extraction on update drops any +x bit, which would
+# otherwise brick the agent with status=203/EXEC on the next update.
+ExecStart=/bin/bash ${self} --agent
 EOF
     cat >"/etc/systemd/system/pitun-update-agent.path" <<EOF
 [Unit]

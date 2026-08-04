@@ -4,6 +4,23 @@ All notable user-facing changes to PiTun. Full per-release detail lives in the
 [GitHub Releases](https://github.com/DaveBugg/PiTun/releases); this file is the
 committed summary.
 
+## v1.4.12 — 2026-08-04
+
+Hotfix.
+
+### Fixed
+
+- **Self-update could brick itself after the first update.** The update
+  agent's systemd unit executed `pitun-update.sh` directly, but the repo
+  ships its scripts non-executable (`100644`) and a source re-extraction on
+  update drops any `+x` bit — so the *next* update failed to spawn the agent
+  with `status=203/EXEC` (`Permission denied`) and the UI Update button went
+  dead. The unit now invokes the script via `bash` (no `+x` needed, matching
+  every other script here), and `pitun-update.sh` is additionally tracked
+  executable so extraction preserves the bit. Already-affected boxes need a
+  one-time `chmod +x /opt/pitun/scripts/pitun-update.sh` (or the bash-unit
+  edit) before they can update again.
+
 ## v1.4.11 — 2026-08-04
 
 Hotfix.
