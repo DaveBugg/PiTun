@@ -72,6 +72,53 @@ export const authApi = {
 
 // ── Nodes ─────────────────────────────────────────────────────────────────────
 
+export interface SpeedEvent {
+  phase: 'start' | 'connecting' | 'progress' | 'target_failed' | 'done' | 'error'
+  host?: string
+  mbps?: number
+  mbps_max?: number
+  elapsed?: number
+  bytes?: number
+  error?: string
+  node_id?: number
+}
+
+/**
+ * Live speed test — streams NDJSON progress from the backend so the UI can
+ * show "via Cachefly · 45.2 Mbps" ticking up. Uses `fetch` (not axios) for the
+ * streaming body reader; auth rides the normal Bearer header, so no token in
+ * the query string. `onEvent` fires per line; resolves when the stream ends.
+ */
+export async function speedtestStream(
+  id: number,
+  onEvent: (e: SpeedEvent) => void,
+  signal?: AbortSignal,
+): Promise<void> {
+  const token = localStorage.getItem('pitun_token')
+  const resp = await fetch(`${BASE}/nodes/${id}/speedtest/stream`, {
+    method: 'POST',
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+    signal,
+  })
+  if (!resp.ok || !resp.body) throw new Error(`speedtest stream ${resp.status}`)
+  const reader = resp.body.getReader()
+  const decoder = new TextDecoder()
+  let buf = ''
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (done) break
+    buf += decoder.decode(value, { stream: true })
+    let nl: number
+    while ((nl = buf.indexOf('\n')) >= 0) {
+      const line = buf.slice(0, nl).trim()
+      buf = buf.slice(nl + 1)
+      if (line) {
+        try { onEvent(JSON.parse(line) as SpeedEvent) } catch { /* skip partial */ }
+      }
+    }
+  }
+}
+
 export const nodesApi = {
   list: (params?: { enabled?: boolean; group?: string }) =>
     http.get<Node[]>('/nodes', { params }).then(r => r.data),
@@ -113,6 +160,16 @@ export const nodesApi = {
 
   speedtestAll: () =>
     http.post<SpeedTestResult[]>('/nodes/speedtest-all').then(r => r.data),
+
+  /** Real internet check through the node (fetches Google's 204). */
+  reachability: (id: number) =>
+    http.post<{ ok: boolean; latency_ms: number | null; detail: string }>(
+      `/nodes/${id}/reachability`,
+    ).then(r => r.data),
+
+  /** Share URL for a single node (vless:// etc.). */
+  uri: (id: number) =>
+    http.get<{ uri: string }>(`/nodes/${id}/uri`).then(r => r.data.uri),
 
   /** Plain-text URI export. Sister to the JSON bundle but emits a
    *  shareable `.txt` file with one `vless://` / `trojan://` / `ss://`
@@ -546,7 +603,21 @@ export const updateApi = {
     http.post<UpdateStatus>('/system/update/start', body).then(r => r.data),
 }
 
+export interface SniScanResult {
+  ok: boolean
+  tls13?: boolean
+  http2?: boolean
+  status?: number | null
+  via: string
+  detail: string
+}
+
 export const diagnosticsApi = {
+  /** Check whether a domain is a viable REALITY dest (TLS 1.3 + ALPN h2),
+   *  probed through the active node when one is set. */
+  sniScan: (domain: string) =>
+    http.post<SniScanResult>('/diagnostics/sni-scan', { domain }).then(r => r.data),
+
   healthChecks: () =>
     http.get<{ checks: Array<{ name: string; ok: boolean; detail: string; info?: boolean }> }>('/diagnostics/health-checks').then(r => r.data),
 
@@ -656,10 +727,10 @@ export const serversApi = {
   update: (id: number, data: ServerUpdate) =>
     http.patch<Server>(`/servers/${id}`, data).then(r => r.data),
   delete: (id: number) => http.delete(`/servers/${id}`),
-  test: (id: number) =>
-    http.post<ServerTestResult>(`/servers/${id}/test`).then(r => r.data),
-  testAll: () =>
-    http.post<ServerTestAllResult>('/servers/test-all').then(r => r.data),
+  test: (id: number, direct = false) =>
+    http.post<ServerTestResult>(`/servers/${id}/test`, null, { params: { direct } }).then(r => r.data),
+  testAll: (direct = false) =>
+    http.post<ServerTestAllResult>('/servers/test-all', null, { params: { direct } }).then(r => r.data),
 
   // Fetch the generated naive-install bash script as text, then trigger
   // a file download via an in-memory Blob URL. We deliberately don't
@@ -739,8 +810,9 @@ export const serversApi = {
   deploy: (
     serverId: number,
     body: { protocol: ServerDeploymentProtocol; config: Record<string, unknown> },
+    direct = false,
   ) =>
-    http.post<DeployJobAccepted>(`/servers/${serverId}/deploy`, body).then(r => r.data),
+    http.post<DeployJobAccepted>(`/servers/${serverId}/deploy`, body, { params: { direct } }).then(r => r.data),
 
   // ── WireGuard server-side clients (since v1.3.0-beta.4) ──────────────────
   // CRUD over the multi-client peer layer. All endpoints scoped to one
@@ -752,33 +824,39 @@ export const serversApi = {
       `/servers/${serverId}/deployments/wireguard/clients`,
     ).then(r => r.data),
 
-  addClient: (serverId: number, body: DeploymentClientCreate) =>
+  addClient: (serverId: number, body: DeploymentClientCreate, direct = false) =>
     http.post<DeploymentClient>(
       `/servers/${serverId}/deployments/wireguard/clients`,
       body,
+      { params: { direct } },
     ).then(r => r.data),
 
-  removeClient: (serverId: number, name: string) =>
+  removeClient: (serverId: number, name: string, direct = false) =>
     http.delete(
       `/servers/${serverId}/deployments/wireguard/clients/${encodeURIComponent(name)}`,
+      { params: { direct } },
     ),
 
-  syncClients: (serverId: number) =>
+  syncClients: (serverId: number, direct = false) =>
     http.post<DeploymentClientSyncResult>(
       `/servers/${serverId}/deployments/wireguard/clients/sync`,
+      null,
+      { params: { direct } },
     ).then(r => r.data),
 
-  getClientConf: (serverId: number, name: string) =>
+  getClientConf: (serverId: number, name: string, direct = false) =>
     http.get<DeploymentClientConf>(
       `/servers/${serverId}/deployments/wireguard/clients/${encodeURIComponent(name)}/conf`,
+      { params: { direct } },
     ).then(r => r.data),
 
   exportClientToNode: (
-    serverId: number, name: string, body: ExportClientToNodeRequest = {},
+    serverId: number, name: string, body: ExportClientToNodeRequest = {}, direct = false,
   ) =>
     http.post<Node>(
       `/servers/${serverId}/deployments/wireguard/clients/${encodeURIComponent(name)}/export-node`,
       body,
+      { params: { direct } },
     ).then(r => r.data),
 
   // JSON backup. `includeSecrets=false` (default) strips passwords and
@@ -960,8 +1038,8 @@ export const xuiApi = {
   /** POST /api/xui/servers/{id}/probe — re-test the Bearer token.
    *  Persisted `last_check` / `last_check_error` come back on the
    *  response so the UI can update the badge in one round-trip. */
-  probeServer: async (id: number): Promise<XuiServer> => {
-    const r = await http.post(`/xui/servers/${id}/probe`)
+  probeServer: async (id: number, direct = false): Promise<XuiServer> => {
+    const r = await http.post(`/xui/servers/${id}/probe`, null, { params: { direct } })
     return r.data
   },
 
@@ -969,7 +1047,7 @@ export const xuiApi = {
    *  `XuiClient` cache with what's actually on the panel right now.
    *  Counts what was added / updated / removed; cascade-cleans Node
    *  rows whose backing client vanished from the panel. */
-  syncServer: async (id: number): Promise<{
+  syncServer: async (id: number, direct = false): Promise<{
     xui_server_id: number
     added: number
     updated: number
@@ -977,42 +1055,43 @@ export const xuiApi = {
     chain_skipped: number
     orphan_nodes_removed: number
   }> => {
-    const r = await http.post(`/xui/servers/${id}/sync`)
+    const r = await http.post(`/xui/servers/${id}/sync`, null, { params: { direct } })
     return r.data
   },
 
   /** POST /api/xui/servers/{id}/healthcheck — multi-layer probe
    *  (panel API, xray state, SSH-checked nginx / ufw / cert / disk).
    *  Returns the same `{ok, checks}` shape as the chain healthcheck. */
-  healthcheckServer: async (id: number): Promise<{
+  healthcheckServer: async (id: number, direct = false): Promise<{
     xui_server_id: number
     ok: boolean
     checks: Array<{ name: string; status: 'ok' | 'warn' | 'fail'; detail?: string | null }>
   }> => {
-    const r = await http.post(`/xui/servers/${id}/healthcheck`)
+    const r = await http.post(`/xui/servers/${id}/healthcheck`, null, { params: { direct } })
     return r.data
   },
 
   /** POST /api/xui/servers/{id}/fakesite/rotate — pick a random
    *  template from /root/randomfakehtml-master and swap into nginx
    *  /var/www/html. Only valid for xui-pro panels. */
-  rotateFakesite: async (id: number): Promise<{
+  rotateFakesite: async (id: number, direct = false): Promise<{
     ok: boolean; name?: string | null; detail?: string | null
   }> => {
-    const r = await http.post(`/xui/servers/${id}/fakesite/rotate`)
+    const r = await http.post(`/xui/servers/${id}/fakesite/rotate`, null, { params: { direct } })
     return r.data
   },
 
   /** POST /api/xui/servers/{id}/fakesite/upload — multipart .zip
    *  archive that replaces the served fakesite root. Zip must
    *  contain an index.html within the first two levels. ≤100 MB. */
-  uploadFakesite: async (id: number, zip: File): Promise<{
+  uploadFakesite: async (id: number, zip: File, direct = false): Promise<{
     ok: boolean; name?: string | null; detail?: string | null
   }> => {
     const fd = new FormData()
     fd.append('file', zip)
     const r = await http.post(`/xui/servers/${id}/fakesite/upload`, fd, {
       headers: { 'Content-Type': 'multipart/form-data' },
+      params: { direct },
     })
     return r.data
   },
@@ -1026,13 +1105,14 @@ export const xuiApi = {
   createInbound: async (
     serverId: number,
     body: { preset_id: string; values: Record<string, unknown>; remark?: string },
+    direct = false,
   ): Promise<XuiInbound> => {
-    const r = await http.post(`/xui/servers/${serverId}/inbounds`, body)
+    const r = await http.post(`/xui/servers/${serverId}/inbounds`, body, { params: { direct } })
     return r.data
   },
 
-  deleteInbound: async (serverId: number, inboundId: number): Promise<void> => {
-    await http.delete(`/xui/servers/${serverId}/inbounds/${inboundId}`)
+  deleteInbound: async (serverId: number, inboundId: number, direct = false): Promise<void> => {
+    await http.delete(`/xui/servers/${serverId}/inbounds/${inboundId}`, { params: { direct } })
   },
 
   // ── Clients ─────────────────────────────────────────────────────────────
@@ -1040,19 +1120,22 @@ export const xuiApi = {
     serverId: number,
     inboundId: number,
     body: { label?: string; extras?: Record<string, unknown> } = {},
+    direct = false,
   ): Promise<XuiClientType> => {
     const r = await http.post(
       `/xui/servers/${serverId}/inbounds/${inboundId}/clients`,
       body,
+      { params: { direct } },
     )
     return r.data
   },
 
   deleteClient: async (
-    serverId: number, inboundId: number, clientUuid: string,
+    serverId: number, inboundId: number, clientUuid: string, direct = false,
   ): Promise<void> => {
     await http.delete(
       `/xui/servers/${serverId}/inbounds/${inboundId}/clients/${encodeURIComponent(clientUuid)}`,
+      { params: { direct } },
     )
   },
 
@@ -1107,13 +1190,13 @@ export const xuiApi = {
     relay_xui_server_id: number
     exit_sni: string
     channels: ChainCreateChannelInput[]
-  }): Promise<ChainRead> => {
-    const r = await http.post('/xui/chains', params)
+  }, direct = false): Promise<ChainRead> => {
+    const r = await http.post('/xui/chains', params, { params: { direct } })
     return r.data
   },
 
-  deleteChain: async (id: number): Promise<void> => {
-    await http.delete(`/xui/chains/${id}`)
+  deleteChain: async (id: number, direct = false): Promise<void> => {
+    await http.delete(`/xui/chains/${id}`, { params: { direct } })
   },
 
   /** DELETE /api/xui/chains/{id}/channels/{cid} — remove one channel.
@@ -1121,19 +1204,19 @@ export const xuiApi = {
    *  Nodes exported from this channel. If it was the last channel,
    *  the whole chain is dropped. */
   deleteChainChannel: async (
-    chainId: number, channelId: number,
+    chainId: number, channelId: number, direct = false,
   ): Promise<void> => {
-    await http.delete(`/xui/chains/${chainId}/channels/${channelId}`)
+    await http.delete(`/xui/chains/${chainId}/channels/${channelId}`, { params: { direct } })
   },
 
   /** Run a read-only diagnostic sweep over both panels + the live
    *  xray config. Returns a list of pass/fail/warn checks. */
-  healthcheckChain: async (id: number): Promise<{
+  healthcheckChain: async (id: number, direct = false): Promise<{
     chain_id: number
     ok: boolean
     checks: { name: string; status: 'ok' | 'warn' | 'fail'; detail?: string }[]
   }> => {
-    const r = await http.post(`/xui/chains/${id}/healthcheck`)
+    const r = await http.post(`/xui/chains/${id}/healthcheck`, null, { params: { direct } })
     return r.data
   },
 
@@ -1146,16 +1229,16 @@ export const xuiApi = {
   /** Spawns N panel-side clients (one per channel). Backend label
    *  default = `pi-XXXXXXXX` (8 hex). */
   addChainClient: async (
-    chainId: number, body: { label?: string } = {},
+    chainId: number, body: { label?: string } = {}, direct = false,
   ): Promise<ChainClientRead> => {
-    const r = await http.post(`/xui/chains/${chainId}/clients`, body)
+    const r = await http.post(`/xui/chains/${chainId}/clients`, body, { params: { direct } })
     return r.data
   },
 
   deleteChainClient: async (
-    chainId: number, chainClientId: number,
+    chainId: number, chainClientId: number, direct = false,
   ): Promise<void> => {
-    await http.delete(`/xui/chains/${chainId}/clients/${chainClientId}`)
+    await http.delete(`/xui/chains/${chainId}/clients/${chainClientId}`, { params: { direct } })
   },
 
   /** Convert N (chain-client × channel) pairs into N Node rows.
@@ -1163,11 +1246,12 @@ export const xuiApi = {
    *  channels that were already exported (skipped silently). */
   exportChainClientNodes: async (
     chainId: number, chainClientId: number,
-    body: { channel_ids?: number[]; name_prefix?: string } = {},
+    body: { channel_ids?: number[]; name_prefix?: string } = {}, direct = false,
   ): Promise<{ exported_node_ids: number[] }> => {
     const r = await http.post(
       `/xui/chains/${chainId}/clients/${chainClientId}/export-nodes`,
       body,
+      { params: { direct } },
     )
     return r.data
   },

@@ -21,6 +21,7 @@ import { ManageClientsModal } from '@/components/ManageClientsModal'
 import { TemplatePicker } from '@/components/TemplatePicker'
 import { SshPortField } from '@/components/SshPortField'
 import { UninstallModal } from '@/components/UninstallModal'
+import { DirectToggle } from '@/components/DirectToggle'
 import {
   useServers,
   useCreateServer,
@@ -55,6 +56,12 @@ export function Servers() {
   const deleteServer = useDeleteServer()
   const testServer = useTestServer()
   const testAll = useTestAllServers()
+
+  // Page-level "Direct connection" — governs every server op launched
+  // from this page (test, test-all, deploy, uninstall, WG clients).
+  // Off = through the active node (default); on = SO_MARK bypass, for
+  // reaching a box while the active node is down.
+  const [direct, setDirect] = useState(false)
 
   const [showForm, setShowForm] = useState(false)
   const [editing, setEditing] = useState<Server | null>(null)
@@ -145,8 +152,11 @@ export function Servers() {
               {t('Tasks', 'Задачи')}
             </Link>
           )}
+          {servers.length > 0 && (
+            <DirectToggle checked={direct} onChange={setDirect} className="px-1" />
+          )}
           <button
-            onClick={() => testAll.mutate()}
+            onClick={() => testAll.mutate(direct)}
             disabled={testAll.isPending || servers.length === 0}
             className="rounded-lg border border-gray-700 px-3 py-1.5 text-sm text-gray-300 hover:bg-gray-800 disabled:opacity-50 transition-colors flex items-center gap-1.5"
             title={t('Test SSH connection on every server', 'Проверить SSH-соединение со всеми серверами')}
@@ -221,8 +231,8 @@ export function Servers() {
                 <ServerRow
                   key={s.id}
                   server={s}
-                  testing={testServer.isPending && testServer.variables === s.id}
-                  onTest={() => testServer.mutate(s.id)}
+                  testing={testServer.isPending && testServer.variables?.id === s.id}
+                  onTest={() => testServer.mutate({ id: s.id, direct })}
                   onEdit={() => openEdit(s)}
                   onDelete={() => handleDelete(s)}
                   onShowScript={() => setScriptModal({ kind: 'server', server: s })}
@@ -254,6 +264,7 @@ export function Servers() {
       {deployTarget && (
         <DeployModal
           server={deployTarget}
+          initialDirect={direct}
           onClose={() => setDeployTarget(null)}
         />
       )}
@@ -261,6 +272,7 @@ export function Servers() {
       {clientsTarget && (
         <ManageClientsModal
           server={clientsTarget}
+          direct={direct}
           onClose={() => setClientsTarget(null)}
         />
       )}
@@ -269,6 +281,7 @@ export function Servers() {
         <UninstallModal
           server={uninstallTarget.server}
           protocol={uninstallTarget.protocol}
+          direct={direct}
           onClose={() => setUninstallTarget(null)}
           onRedeploy={() => {
             // After successful uninstall, jump straight into deploy

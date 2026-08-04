@@ -280,15 +280,26 @@ def _outbound_wireguard(node: Node) -> Dict[str, Any]:
 
     # xray's wireguard outbound requires interface addresses to be /32 (IPv4)
     # or /128 (IPv6). Standard WG configs often use /24 or /64 — normalize.
-    local_addrs: List[str] = []
+    #
+    # Keep only IPv4 when an IPv4 address is present. A commercial WG config
+    # almost always hands out both (`10.x/32, fdxx::/128`); passing the IPv6
+    # interface address makes xray's userspace WG bring up an IPv6 netstack,
+    # which fails with "failed to find available ipv6 table" on an IPv4-only
+    # host — and PiTun is IPv4-first anyway (queryStrategy UseIPv4). Fall back
+    # to IPv6 only if that's all the config gives us.
+    ipv4_addrs: List[str] = []
+    ipv6_addrs: List[str] = []
     if node.wg_local_address:
         for raw in node.wg_local_address.split(","):
             a = raw.strip()
             if not a:
                 continue
             ip_part = a.split("/", 1)[0]
-            mask = "/128" if ":" in ip_part else "/32"
-            local_addrs.append(ip_part + mask)
+            if ":" in ip_part:
+                ipv6_addrs.append(ip_part + "/128")
+            else:
+                ipv4_addrs.append(ip_part + "/32")
+    local_addrs: List[str] = ipv4_addrs or ipv6_addrs
 
     reserved = [0, 0, 0]
     if node.wg_reserved:
@@ -472,6 +483,64 @@ def _apply_chain(
     # per branch → cycles truncate; `_depth` caps runaway nesting.
     _apply_chain(chain, chain_ob, outbounds, used_ids, all_nodes,
                  _seen | {chain.id}, _depth + 1)
+
+
+def _apply_fragment(outbounds: List[Dict[str, Any]], settings_map: Dict[str, str]) -> None:
+    """Route every proxy ENTRY hop through a TLS-fragmenting freedom outbound.
+
+    Client-side anti-DPI: xray's `freedom` outbound with a `fragment` block
+    splits the TLS ClientHello into pieces so a censor's SNI/keyword filter
+    can't match it in one packet. The server is unaware — it reassembles the
+    stream normally — so this is entirely PiTun's (the client's) call.
+
+    Wiring: a real proxy dials through the fragment outbound via
+    `sockopt.dialerProxy`. We only touch ENTRY hops — outbounds that dial the
+    internet directly (no `proxySettings`). A chained node's own outbound has
+    `proxySettings` (it dials through its relay), so it is skipped; the relay
+    outbound at the bottom of the chain IS the entry hop and gets fragmented.
+    freedom/blackhole/dns and the reserved direct/block/dns-out tags are never
+    touched.
+
+    Off by default. Enable with Settings `xray_fragment_enabled=true`.
+    """
+    if settings_map.get("xray_fragment_enabled", "false").lower() != "true":
+        return
+
+    packets = settings_map.get("xray_fragment_packets", "tlshello") or "tlshello"
+    length = settings_map.get("xray_fragment_length", "100-200") or "100-200"
+    interval = settings_map.get("xray_fragment_interval", "10-20") or "10-20"
+
+    _NON_PROXY = {"freedom", "blackhole", "dns"}
+    _RESERVED_TAGS = {"direct", "block", "blocked", "dns-out", "fragment", "api"}
+
+    touched = False
+    for ob in outbounds:
+        if ob.get("protocol") in _NON_PROXY or ob.get("tag") in _RESERVED_TAGS:
+            continue
+        # Only the hop that actually dials out — a hop with proxySettings
+        # tunnels through another outbound, so fragmenting it is a no-op at
+        # best and a double-dialer conflict at worst.
+        if ob.get("proxySettings"):
+            continue
+        stream = ob.setdefault("streamSettings", {})
+        sockopt = stream.setdefault("sockopt", {})
+        sockopt["dialerProxy"] = "fragment"
+        touched = True
+
+    if not touched:
+        return
+
+    # The fragment outbound is the one that now makes the real connection,
+    # so it carries the SO_MARK that keeps it out of the TPROXY loop.
+    outbounds.append({
+        "tag": "fragment",
+        "protocol": "freedom",
+        "settings": {
+            "domainStrategy": "AsIs",
+            "fragment": {"packets": packets, "length": length, "interval": interval},
+        },
+        "streamSettings": {"sockopt": {"mark": 255}},
+    })
 
 
 def _build_outbound(node: Node) -> Dict[str, Any]:
@@ -1105,6 +1174,8 @@ def generate_config(
                             used_ids.add(nid)
                         except Exception as exc:
                             logger.warning("Balancer node %d skip: %s", nid, exc)
+
+    _apply_fragment(outbounds, settings_map)
 
     outbounds += [
         {"tag": "direct", "protocol": "freedom", "settings": {"domainStrategy": "UseIP"}, "streamSettings": {"sockopt": {"mark": 255}}},

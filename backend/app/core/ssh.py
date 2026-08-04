@@ -169,6 +169,41 @@ def _connect_marked(ip: str, port: int, timeout: float) -> Tuple[socket.socket, 
     return sock, rtt_ms
 
 
+class _ResolveError(Exception):
+    """DNS resolution failed on the marked (direct) path. A distinct type
+    so callers can label it `DNS:` and keep it apart from a `TCP:` connect
+    failure — the same phase distinction the pre-refactor code surfaced."""
+
+
+async def _maybe_marked_sock(host: str, port: int, timeout: float, direct=None):
+    """Return (sock, rtt_ms) for the SSH connection target.
+
+    `direct=True` → resolve via bypass DNS and open a SO_MARK=0xFF socket so
+    the whole SSH session skips TPROXY (reach the box even over a dead VPN).
+    `direct=False` → return (None, None); the caller lets asyncssh dial
+    `host:port` itself, so the connection is TPROXY'd through the active node.
+    `direct=None` (default) → fall back to the request-scoped flag, so a
+    caller that didn't thread `direct` still honours `?direct=`.
+
+    Raises `_ResolveError` on a DNS failure and `OSError` / `socket.timeout`
+    on a TCP failure so callers can label the phase.
+    """
+    if direct is None:
+        from app.core.net import direct_active
+        direct = direct_active()
+    if not direct:
+        return None, None
+    try:
+        ip = await _resolve_direct(host)
+    except (OSError, socket.timeout) as exc:
+        raise _ResolveError(str(exc)) from exc
+    loop = asyncio.get_event_loop()
+    sock, rtt_ms = await loop.run_in_executor(
+        None, _connect_marked, ip, port, timeout,
+    )
+    return sock, rtt_ms
+
+
 # ── Public API ───────────────────────────────────────────────────────────────
 
 async def test_ssh_connection(
@@ -179,6 +214,7 @@ async def test_ssh_connection(
     password: Optional[str] = None,
     private_key: Optional[str] = None,
     passphrase: Optional[str] = None,
+    direct: Optional[bool] = None,
 ) -> SSHTestResult:
     """Connect to `host:port` over SSH with TPROXY bypass, run a cheap
     `uname -a` probe, and return latency + remote info.
@@ -202,13 +238,6 @@ async def test_ssh_connection(
     if not (private_key or password):
         return SSHTestResult(ok=False, error="no credentials configured")
 
-    # Resolve hostname (or pass IP through). DNS goes via marked UDP so
-    # an in-host TPROXY rule for :53 doesn't catch us.
-    try:
-        ip = await _resolve_direct(host)
-    except Exception as exc:  # noqa: BLE001 — surface DNS errors verbatim
-        return SSHTestResult(ok=False, error=f"DNS: {exc}")
-
     # Lazy-import asyncssh so a missing wheel doesn't break the rest of
     # the API surface.
     try:
@@ -216,26 +245,29 @@ async def test_ssh_connection(
     except ImportError as exc:
         return SSHTestResult(ok=False, error=f"asyncssh not installed: {exc}")
 
-    # TCP connect with SO_MARK — measure latency here, pass marked sock
-    # to asyncssh below so the SSH session continues to bypass TPROXY.
-    loop = asyncio.get_event_loop()
+    # `direct` → marked bypass socket; otherwise asyncssh dials host:port
+    # itself and the connection is TPROXY'd through the active node.
     try:
-        sock, tcp_rtt_ms = await loop.run_in_executor(
-            None, _connect_marked, ip, port, _CONNECT_TIMEOUT_S
+        sock, tcp_rtt_ms = await _maybe_marked_sock(
+            host, port, _CONNECT_TIMEOUT_S, direct,
         )
+    except _ResolveError as exc:
+        return SSHTestResult(ok=False, error=f"DNS: {exc}")
     except (OSError, socket.timeout) as exc:
         return SSHTestResult(ok=False, error=f"TCP: {exc}")
+    except Exception as exc:  # noqa: BLE001 — DNS etc.
+        return SSHTestResult(ok=False, error=f"connect: {exc}")
 
-    # Build asyncssh kwargs. The `sock=` parameter tells asyncssh to use
-    # an already-connected socket instead of opening a new one — this
-    # is the trick that preserves SO_MARK across the SSH session.
     connect_kwargs: dict = {
-        "host": host,            # used for SSH host-key bookkeeping only
+        "host": host,            # dial target (and host-key bookkeeping)
         "port": port,
         "username": username,
         "known_hosts": None,     # admin trust boundary, see SECURITY.md
-        "sock": sock,
     }
+    if sock is not None:
+        # `sock=` tells asyncssh to reuse our already-connected marked
+        # socket, preserving SO_MARK across the SSH session.
+        connect_kwargs["sock"] = sock
     if private_key:
         try:
             key_obj = asyncssh.import_private_key(
@@ -243,7 +275,8 @@ async def test_ssh_connection(
                 passphrase=passphrase or None,
             )
         except Exception as exc:  # noqa: BLE001 — asyncssh raises various subtypes
-            sock.close()
+            if sock is not None:
+                sock.close()
             return SSHTestResult(
                 ok=False,
                 latency_ms=tcp_rtt_ms,
@@ -368,6 +401,7 @@ async def exec_remote_script(
     script_content: str,
     env: Optional[dict[str, str]] = None,
     timeout: float = _DEFAULT_DEPLOY_TIMEOUT_S,
+    direct: Optional[bool] = None,
 ) -> DeployResult:
     """Upload `script_content` to the remote host via SFTP, exec it
     under the supplied user (typically root), capture stdout/stderr,
@@ -400,32 +434,32 @@ async def exec_remote_script(
     env = env or {}
     started_at = time.monotonic()
 
-    # DNS bypass — same plumbing as test_ssh_connection.
-    try:
-        ip = await _resolve_direct(host)
-    except Exception as exc:  # noqa: BLE001
-        return DeployResult(ok=False, error=f"DNS: {exc}")
-
     try:
         import asyncssh  # type: ignore
     except ImportError as exc:
         return DeployResult(ok=False, error=f"asyncssh not installed: {exc}")
 
-    loop = asyncio.get_event_loop()
+    # `direct` → marked bypass socket; else asyncssh dials host:port itself
+    # (TPROXY'd through the active node).
     try:
-        sock, tcp_rtt_ms = await loop.run_in_executor(
-            None, _connect_marked, ip, port, _CONNECT_TIMEOUT_S
+        sock, tcp_rtt_ms = await _maybe_marked_sock(
+            host, port, _CONNECT_TIMEOUT_S, direct,
         )
+    except _ResolveError as exc:
+        return DeployResult(ok=False, error=f"DNS: {exc}")
     except (OSError, socket.timeout) as exc:
         return DeployResult(ok=False, error=f"TCP: {exc}")
+    except Exception as exc:  # noqa: BLE001
+        return DeployResult(ok=False, error=f"connect: {exc}")
 
     connect_kwargs: dict = {
         "host": host,
         "port": port,
         "username": username,
         "known_hosts": None,
-        "sock": sock,
     }
+    if sock is not None:
+        connect_kwargs["sock"] = sock
     if private_key:
         try:
             key_obj = asyncssh.import_private_key(
@@ -433,7 +467,8 @@ async def exec_remote_script(
                 passphrase=passphrase or None,
             )
         except Exception as exc:  # noqa: BLE001
-            sock.close()
+            if sock is not None:
+                sock.close()
             return DeployResult(
                 ok=False,
                 connect_latency_ms=tcp_rtt_ms,
@@ -571,6 +606,7 @@ async def upload_file_to_remote(
     remote_path: str,
     content: bytes,
     timeout: float = 120.0,
+    direct: Optional[bool] = None,
 ) -> None:
     """Push `content` bytes to `remote_path` via SFTP.
 
@@ -588,16 +624,14 @@ async def upload_file_to_remote(
     except Exception as exc:  # noqa: BLE001
         raise RuntimeError(f"asyncssh not installed: {exc}") from exc
 
-    ip = await _resolve_direct(host)
-    loop = asyncio.get_event_loop()
-    sock, _ = await loop.run_in_executor(
-        None, _connect_marked, ip, port, _CONNECT_TIMEOUT_S,
-    )
+    sock, _ = await _maybe_marked_sock(host, port, _CONNECT_TIMEOUT_S, direct)
 
     connect_kwargs: dict = {
         "host": host, "port": port, "username": username,
-        "known_hosts": None, "sock": sock,
+        "known_hosts": None,
     }
+    if sock is not None:
+        connect_kwargs["sock"] = sock
     if private_key:
         key_obj = asyncssh.import_private_key(
             private_key, passphrase=passphrase or None,
@@ -631,6 +665,7 @@ async def exec_remote_script_streaming(
     timeout: float = _DEFAULT_DEPLOY_TIMEOUT_S,
     on_line: Callable[[str, str], "asyncio.Future[Any] | Any"],
     extra_files: Optional[dict[str, bytes]] = None,
+    direct: Optional[bool] = None,
 ) -> DeployResult:
     """Same contract as `exec_remote_script` but invokes
     `on_line(kind, line)` on every full output line as it arrives.
@@ -661,30 +696,31 @@ async def exec_remote_script_streaming(
     started_at = time.monotonic()
 
     try:
-        ip = await _resolve_direct(host)
-    except Exception as exc:  # noqa: BLE001
-        return DeployResult(ok=False, error=f"DNS: {exc}")
-
-    try:
         import asyncssh  # type: ignore
     except ImportError as exc:
         return DeployResult(ok=False, error=f"asyncssh not installed: {exc}")
 
-    loop = asyncio.get_event_loop()
+    # `direct` → marked bypass socket; else asyncssh dials host:port itself
+    # (TPROXY'd through the active node).
     try:
-        sock, tcp_rtt_ms = await loop.run_in_executor(
-            None, _connect_marked, ip, port, _CONNECT_TIMEOUT_S
+        sock, tcp_rtt_ms = await _maybe_marked_sock(
+            host, port, _CONNECT_TIMEOUT_S, direct,
         )
+    except _ResolveError as exc:
+        return DeployResult(ok=False, error=f"DNS: {exc}")
     except (OSError, socket.timeout) as exc:
         return DeployResult(ok=False, error=f"TCP: {exc}")
+    except Exception as exc:  # noqa: BLE001
+        return DeployResult(ok=False, error=f"connect: {exc}")
 
     connect_kwargs: dict = {
         "host": host,
         "port": port,
         "username": username,
         "known_hosts": None,
-        "sock": sock,
     }
+    if sock is not None:
+        connect_kwargs["sock"] = sock
     if private_key:
         try:
             key_obj = asyncssh.import_private_key(
@@ -692,7 +728,8 @@ async def exec_remote_script_streaming(
                 passphrase=passphrase or None,
             )
         except Exception as exc:  # noqa: BLE001
-            sock.close()
+            if sock is not None:
+                sock.close()
             return DeployResult(
                 ok=False,
                 connect_latency_ms=tcp_rtt_ms,

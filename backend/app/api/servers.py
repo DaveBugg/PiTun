@@ -55,7 +55,13 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/servers", tags=["servers"])
+from app.core.net import read_direct
+
+# `read_direct` latches `?direct=` per request → every SSH op honours the
+# "Direct connection" toggle, even endpoints that don't thread it explicitly.
+router = APIRouter(
+    prefix="/servers", tags=["servers"], dependencies=[Depends(read_direct)],
+)
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -170,7 +176,9 @@ async def delete_server(
 
 # ── Connection test ──────────────────────────────────────────────────────────
 
-async def _probe_one(server: Server, session: AsyncSession) -> ServerTestResult:
+async def _probe_one(
+    server: Server, session: AsyncSession, *, direct: bool = False,
+) -> ServerTestResult:
     """Run the SSH probe and persist the outcome on the row.
 
     Note: snapshot `server.id` BEFORE `await session.commit()`. The async
@@ -186,6 +194,7 @@ async def _probe_one(server: Server, session: AsyncSession) -> ServerTestResult:
         password=server.password if server.auth_type == "password" else None,
         private_key=server.private_key if server.auth_type == "key" else None,
         passphrase=server.passphrase if server.auth_type == "key" else None,
+        direct=direct,
     )
 
     server_id = server.id  # snapshot before commit (see docstring)
@@ -208,12 +217,14 @@ async def _probe_one(server: Server, session: AsyncSession) -> ServerTestResult:
 
 @router.post("/{server_id:int}/test", response_model=ServerTestResult)
 async def test_server(
-    server_id: int, session: AsyncSession = Depends(get_session)
+    server_id: int,
+    direct: bool = False,
+    session: AsyncSession = Depends(get_session),
 ):
     server = await session.get(Server, server_id)
     if not server:
         raise HTTPException(status_code=404, detail="Server not found")
-    return await _probe_one(server, session)
+    return await _probe_one(server, session, direct=direct)
 
 
 @router.post(
@@ -224,6 +235,7 @@ async def test_server(
 async def deploy_to_server(
     server_id: int,
     body: ServerDeployRequest,
+    direct: bool = False,
     session: AsyncSession = Depends(get_session),
 ):
     """Auto-deploy a proxy install script over SSH (since v1.3.0).
@@ -407,6 +419,7 @@ async def deploy_to_server(
             env=plan.env,
             on_line=on_line,
             extra_files=extra_files,
+            direct=direct,
         )
 
         parsed_uri: Optional[str] = None
@@ -724,6 +737,7 @@ async def deploy_to_server(
 async def uninstall_server(
     server_id: int,
     protocol: str,
+    direct: bool = False,
     session: AsyncSession = Depends(get_session),
 ):
     """Wipe the server-side state for `protocol` on `server_id` over
@@ -797,6 +811,7 @@ async def uninstall_server(
             env={"YES": "1"},  # non-interactive: skip confirm prompt
             timeout=300.0,     # 5 min hard cap; uninstall is fast
             on_line=on_line,
+            direct=direct,
         )
 
         # Whether the script's exit code says "ok" or not, drop the

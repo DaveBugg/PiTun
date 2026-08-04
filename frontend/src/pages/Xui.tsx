@@ -11,6 +11,7 @@ import { useT } from '@/hooks/useT'
 import { useConfirm } from '@/components/ConfirmModal'
 import { ModalShell } from '@/components/ModalShell'
 import { ClientQrModal } from '@/components/ClientQrModal'
+import { DirectToggle } from '@/components/DirectToggle'
 import { copyToClipboard } from '@/lib/clipboard'
 import type { InboundPreset, XuiClient, XuiInbound, XuiServer } from '@/types'
 
@@ -197,6 +198,12 @@ function ServerDetail({ server }: { server: XuiServer }) {
   const qc = useQueryClient()
   const confirm = useConfirm()
 
+  // "Direct connection" — when on, panel operations dial the panel OFF the
+  // active node's tunnel (SO_MARK bypass). Default off = through the active
+  // node, like all other backend egress. Handy to reach a panel while the
+  // active node is down. Off by default so we never silently leave the VPN.
+  const [direct, setDirect] = useState(false)
+
   const { data: inbounds = [], isLoading, error, refetch } = useQuery<XuiInbound[]>({
     queryKey: ['xui', 'inbounds', server.id],
     queryFn: () => xuiApi.listInbounds(server.id),
@@ -211,7 +218,7 @@ function ServerDetail({ server }: { server: XuiServer }) {
   // just want a token re-test (sidebar list-refresh, etc.).
   const [showHealth, setShowHealth] = useState(false)
   const healthMut = useMutation({
-    mutationFn: () => xuiApi.healthcheckServer(server.id),
+    mutationFn: () => xuiApi.healthcheckServer(server.id, direct),
   })
 
   // Reconcile the panel ↔ PiTun cache. Refresh-button does the local
@@ -220,7 +227,7 @@ function ServerDetail({ server }: { server: XuiServer }) {
   // clients the operator made via the panel UI and cascades any
   // Node rows whose backing client vanished.
   const syncMut = useMutation({
-    mutationFn: () => xuiApi.syncServer(server.id),
+    mutationFn: () => xuiApi.syncServer(server.id, direct),
     onSuccess: (summary) => {
       qc.invalidateQueries({ queryKey: ['xui', 'inbounds', server.id] })
       qc.invalidateQueries({ queryKey: ['nodes'] })
@@ -244,16 +251,16 @@ function ServerDetail({ server }: { server: XuiServer }) {
   // the backend (random template from the bundled archive); upload
   // is gated by a hidden <input type=file> wired to a button.
   const rotateMut = useMutation({
-    mutationFn: () => xuiApi.rotateFakesite(server.id),
+    mutationFn: () => xuiApi.rotateFakesite(server.id, direct),
   })
   const uploadMut = useMutation({
-    mutationFn: (zip: File) => xuiApi.uploadFakesite(server.id, zip),
+    mutationFn: (zip: File) => xuiApi.uploadFakesite(server.id, zip, direct),
   })
   const fileInputRef = useRef<HTMLInputElement | null>(null)
   const isXuiPro = server.mode === 'xui-pro'
 
   const delInboundMut = useMutation({
-    mutationFn: (id: number) => xuiApi.deleteInbound(server.id, id),
+    mutationFn: (id: number) => xuiApi.deleteInbound(server.id, id, direct),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['xui', 'inbounds', server.id] })
     },
@@ -411,6 +418,11 @@ function ServerDetail({ server }: { server: XuiServer }) {
               : <RefreshCw className="h-3.5 w-3.5" />}
             {t('Sync', 'Синхронизация')}
           </button>
+          {/* Direct-connection toggle: dial the panel off the active node's
+              tunnel (SO_MARK bypass). Off = through the active node. Applies
+              to every panel op on this server (probe, sync, add-client,
+              create-inbound, fakesite) via the ?direct= flag. */}
+          <DirectToggle checked={direct} onChange={setDirect} className="px-1" />
           {/* Fakesite controls — xui-pro only. Bare panels run no
               nginx fronting, so there's no /var/www/html to rotate. */}
           {isXuiPro && (
@@ -493,6 +505,7 @@ function ServerDetail({ server }: { server: XuiServer }) {
         <InboundCard
           key={ib.id}
           serverId={server.id}
+          direct={direct}
           inbound={ib}
           onAddClient={() => setShowAddClientFor(ib.id)}
           onDelete={async () => {
@@ -514,6 +527,7 @@ function ServerDetail({ server }: { server: XuiServer }) {
       {showAddInbound && (
         <AddInboundModal
           server={server}
+          direct={direct}
           onClose={() => setShowAddInbound(false)}
           onCreated={() => {
             setShowAddInbound(false)
@@ -526,6 +540,7 @@ function ServerDetail({ server }: { server: XuiServer }) {
         <AddClientModal
           serverId={server.id}
           inboundId={showAddClientFor}
+          direct={direct}
           onClose={() => setShowAddClientFor(null)}
           onCreated={() => {
             setShowAddClientFor(null)
@@ -664,9 +679,10 @@ function HealthCheckModal({
 // ── Inbound card ────────────────────────────────────────────────────────────
 
 function InboundCard({
-  serverId, inbound, onAddClient, onDelete, removing,
+  serverId, direct, inbound, onAddClient, onDelete, removing,
 }: {
   serverId: number
+  direct: boolean
   inbound: XuiInbound
   onAddClient: () => void
   onDelete: () => void
@@ -758,7 +774,7 @@ function InboundCard({
   })
   const delClientMut = useMutation({
     mutationFn: (clientUuid: string) =>
-      xuiApi.deleteClient(serverId, inbound.id, clientUuid),
+      xuiApi.deleteClient(serverId, inbound.id, clientUuid, direct),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['xui', 'inbounds', serverId] })
     },
@@ -1032,9 +1048,10 @@ function InboundCard({
 // ── Add inbound modal ──────────────────────────────────────────────────────
 
 function AddInboundModal({
-  server, onClose, onCreated,
+  server, direct, onClose, onCreated,
 }: {
   server: XuiServer
+  direct: boolean
   onClose: () => void
   onCreated: () => void
 }) {
@@ -1076,7 +1093,7 @@ function AddInboundModal({
       return xuiApi.createInbound(server.id, {
         preset_id: preset.id,
         values: { ...values },
-      })
+      }, direct)
     },
     onSuccess: onCreated,
     onError: (err: unknown) => {
@@ -1234,10 +1251,11 @@ function AddInboundModal({
 // ── Add client modal ───────────────────────────────────────────────────────
 
 function AddClientModal({
-  serverId, inboundId, onClose, onCreated,
+  serverId, inboundId, direct, onClose, onCreated,
 }: {
   serverId: number
   inboundId: number
+  direct: boolean
   onClose: () => void
   onCreated: () => void
 }) {
@@ -1251,7 +1269,7 @@ function AddClientModal({
     mutationFn: () =>
       xuiApi.addClient(serverId, inboundId, {
         label: label.trim() || undefined,
-      }),
+      }, direct),
     onSuccess: (data) => setCreated(data),
     onError: (err: unknown) => {
       let msg = 'Add client failed'

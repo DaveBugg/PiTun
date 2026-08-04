@@ -1043,9 +1043,9 @@ if [[ "$USE_BUILD" != "1" ]]; then
         # while the release tarball itself was bit-perfect — see the
         # post-mortem in notes.md). The Dockerfile also pins these at
         # build-time; this is the runtime check on the target device.
-        XRAY_SHA_AMD64="${PITUN_XRAY_SHA_AMD64:-8255dd939c34cf966cc91517b6324dd3c8d0bcf49ffac8beca049a38c46845ed}"
-        XRAY_SHA_ARM64="${PITUN_XRAY_SHA_ARM64:-c2d20a7045250497083afea0d79db0672f6c89a25aaaf37c92de034d6b764b04}"
-        XRAY_SHA_ARM="${PITUN_XRAY_SHA_ARM:-b7ea2a82185f0f7a59510b01b24a93cc3c45529dabbf3c97970ad66c49c6b882}"
+        XRAY_SHA_AMD64="${PITUN_XRAY_SHA_AMD64:-64d46afb80adea1bf97a0d467e83f4a9ac1ebd0995891e84bca3f1a1d1affb1d}"
+        XRAY_SHA_ARM64="${PITUN_XRAY_SHA_ARM64:-4b8af237444801bf17b3dc10a1c5c24581fbe3d433eba3d78c6c3a0da1df56fc}"
+        XRAY_SHA_ARM="${PITUN_XRAY_SHA_ARM:-63a2fb09b928d1bde3a0df9b663d1936f13b53cd0db40c8ce85e4accdc779860}"
 
         # Wrap docker load + xray-sha verification in a retry loop. Each
         # attempt: nuke any stale tag, load fresh, run sha256sum on the

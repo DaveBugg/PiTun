@@ -1313,6 +1313,12 @@ class SettingsRead(BaseModel):
     fakedns_pool_size: Optional[int] = None
     dns_sniffing: Optional[bool] = None
     bypass_cn_dns: Optional[bool] = None
+    # TLS-ClientHello fragmentation (anti-DPI, client-side). See
+    # config_gen._apply_fragment. Off by default.
+    xray_fragment_enabled: Optional[bool] = None
+    xray_fragment_packets: Optional[str] = None
+    xray_fragment_length: Optional[str] = None
+    xray_fragment_interval: Optional[str] = None
     bypass_ru_dns: Optional[bool] = None
     bypass_private: bool
     log_level: str
@@ -1385,6 +1391,12 @@ class SettingsUpdate(BaseModel):
     fakedns_pool_size: Optional[int] = None
     dns_sniffing: Optional[bool] = None
     bypass_cn_dns: Optional[bool] = None
+    # TLS-ClientHello fragmentation (anti-DPI, client-side). See
+    # config_gen._apply_fragment. Off by default.
+    xray_fragment_enabled: Optional[bool] = None
+    xray_fragment_packets: Optional[str] = None
+    xray_fragment_length: Optional[str] = None
+    xray_fragment_interval: Optional[str] = None
     bypass_ru_dns: Optional[bool] = None
     bypass_private: Optional[bool] = None
     log_level: Optional[str] = None

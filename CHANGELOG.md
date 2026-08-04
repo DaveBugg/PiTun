@@ -4,6 +4,61 @@ All notable user-facing changes to PiTun. Full per-release detail lives in the
 [GitHub Releases](https://github.com/DaveBugg/PiTun/releases); this file is the
 committed summary.
 
+## v1.4.10 — 2026-08-04
+
+Bundled **xray-core moves to 26.7.28**, and every server / panel operation can
+now be run **through the active node or straight past it** with a per-page
+**Direct** switch. New node diagnostics land on the dashboard — a live
+streaming speed test, a one-tap reachability check, single-node URI export —
+plus an SNI scanner in the node form and a fix for the WireGuard speed test on
+IPv4-only hosts.
+
+### Added
+
+- **TLS ClientHello fragmentation (anti-DPI).** A **Settings → TLS Fragment**
+  toggle splits the outgoing TLS ClientHello across several packets so a DPI
+  box cannot match the SNI in a single read. Entirely client-side — the server
+  is unaware and reassembles the stream normally. Off by default; when on, only
+  proxy entry hops are routed through a `fragment` freedom outbound (chain relay
+  hops, `freedom` / `blackhole` / `dns` and reserved tags are never touched),
+  with tunable packet mode / length / interval. Needs a bundled xray 26.x.
+- **Direct-connection switch, everywhere.** By default every SSH / panel
+  operation (server test, deploy, uninstall, WireGuard clients, x-ui sync /
+  healthcheck / inbounds / clients, chain create / healthcheck / clients /
+  export) now dials **through the active node** — the same tunnel the LAN
+  uses — instead of straight off the host. A themed **Direct** toggle in each
+  page header (Servers, x-ui, Chains) and in the Deploy modal flips a single
+  operation back to a direct dial (SO_MARK bypass) for reaching a box while the
+  active node is down. Backend honours `?direct=` on every `/servers` and
+  `/xui` route.
+- **Live speed test.** The node speed test now streams Mbps as it runs, reports
+  the **average after a 2 s warmup** and the **peak**, and runs over a longer
+  time-box against a multi-CDN target list for a more honest number.
+- **Reachability check.** One tap confirms a node actually carries traffic to
+  the internet (204 through the live tunnel), separate from raw link speed.
+- **Single-node URI export.** Copy a node's `vless://` (etc.) share link to the
+  clipboard straight from its card.
+- **SNI / REALITY-dest scanner in the node form.** Probe a candidate host for
+  TLS 1.3 + HTTP/2 before saving it as the REALITY masquerade target, routed
+  through the active node.
+
+### Changed
+
+- **xray-core bumped to 26.7.28** (baked into the backend image). The runtime
+  SHA-256 pins in `install.sh` are kept in lock-step with the Dockerfile so the
+  in-UI updater's post-load integrity check passes on the new binary.
+- **Clearer node-card actions** — distinct icons for activate (highlighted when
+  active), speed, reachability and URI export.
+
+### Fixed
+
+- **WireGuard speed test failing with "failed to find available ipv6 table".**
+  Commercial WG configs ship both an IPv4 and an IPv6 interface address; xray's
+  WireGuard netstack could not bring up the IPv6 side on an IPv4-only host and
+  aborted the whole outbound. The IPv6 interface address is now dropped when
+  generating the config, so WG nodes test (and route) cleanly. Only WireGuard
+  was affected — vless / vmess / trojan / ss carry no interface address.
+
 ## v1.4.9 — 2026-08-02
 
 Hotfix.

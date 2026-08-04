@@ -370,6 +370,7 @@ async def test_streaming_dns_failure():
             host="bogus.invalid", password="x",
             script_content="echo hi",
             on_line=lambda k, l: None,
+            direct=True,   # DNS bypass only runs on the marked path
         )
     assert result.ok is False
     assert (result.error or "").startswith("DNS:")
@@ -385,6 +386,7 @@ async def test_streaming_tcp_failure():
             host="example.com", password="x",
             script_content="echo hi",
             on_line=lambda k, l: None,
+            direct=True,   # marked connect only runs on the direct path
         )
     assert result.ok is False
     assert (result.error or "").startswith("TCP:")

@@ -1,15 +1,17 @@
 import { useState } from 'react'
+import { clsx } from 'clsx'
 import type { Node, NodeCreate, Protocol, Transport, TlsMode } from '@/types'
 import { InfoTip } from '@/components/InfoTip'
 import { useT } from '@/hooks/useT'
 import { useServers } from '@/hooks/useServers'
+import { diagnosticsApi } from '@/api/client'
 
 type FormData = Omit<NodeCreate, 'order'>
 
 const PROTOCOLS: Protocol[] = ['vless', 'vmess', 'trojan', 'ss', 'wireguard', 'socks', 'hy2', 'naive']
 const TRANSPORTS: Transport[] = ['tcp', 'ws', 'grpc', 'h2', 'xhttp', 'httpupgrade', 'kcp', 'quic']
 const TLS_MODES: TlsMode[] = ['none', 'tls', 'reality']
-const FINGERPRINTS = ['chrome', 'firefox', 'safari', 'ios', 'android', 'edge', 'random', 'randomized']
+const FINGERPRINTS = ['chrome', 'firefox', 'safari', 'ios', 'android', 'edge', '360', 'qq', 'random', 'randomized', 'randomizedalpn']
 
 const DEFAULTS: FormData = {
   name: '',
@@ -75,6 +77,40 @@ export function NodeForm({ initial, onSave, onCancel, loading, nodes = [] }: Pro
 
   const set = <K extends keyof FormData>(key: K, value: FormData[K]) =>
     setForm((f) => ({ ...f, [key]: value }))
+
+  // SNI / REALITY-dest suitability check (TLS 1.3 + ALPN h2), routed through
+  // the active node when one is set so the verdict matches the exit's view.
+  const [sniCheck, setSniCheck] = useState<{ loading: boolean; ok: boolean | null; text: string }>(
+    { loading: false, ok: null, text: '' },
+  )
+  const checkSni = async () => {
+    const domain = (form.sni || form.address || '').trim()
+    if (!domain) return
+    setSniCheck({ loading: true, ok: null, text: '' })
+    try {
+      const r = await diagnosticsApi.sniScan(domain)
+      setSniCheck({ loading: false, ok: r.ok, text: `${r.detail} · via ${r.via}` })
+    } catch {
+      setSniCheck({ loading: false, ok: false, text: 'check failed' })
+    }
+  }
+  const sniCheckRow = (
+    <div className="mt-1 flex items-center gap-2">
+      <button
+        type="button"
+        onClick={checkSni}
+        disabled={sniCheck.loading || !(form.sni || form.address)}
+        className="rounded bg-gray-800 px-2 py-1 text-[11px] text-gray-300 hover:bg-gray-700 disabled:opacity-50"
+      >
+        {sniCheck.loading ? t('Checking…', 'Проверка…') : t('Check SNI', 'Проверить SNI')}
+      </button>
+      {sniCheck.text && (
+        <span className={clsx('text-[11px]', sniCheck.ok ? 'text-green-400' : 'text-red-400')}>
+          {sniCheck.ok ? '✓ ' : '✗ '}{sniCheck.text}
+        </span>
+      )}
+    </div>
+  )
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault()
@@ -205,6 +241,7 @@ export function NodeForm({ initial, onSave, onCancel, loading, nodes = [] }: Pro
           </h3>
           <div className="grid grid-cols-2 gap-3">
             {fld('SNI', inp('sni', 'text', 'example.com'), t('Optional — defaults to Address', 'Опционально — по умолчанию совпадает с Address'))}
+            {sniCheckRow}
             <div className="flex items-center gap-2 mt-5">
               <input
                 type="checkbox"
@@ -241,6 +278,7 @@ export function NodeForm({ initial, onSave, onCancel, loading, nodes = [] }: Pro
           {showTls && (
             <div className="grid grid-cols-2 gap-3">
               {fld('SNI', inp('sni', 'text', 'example.com'))}
+              {sniCheckRow}
               {fld('Fingerprint', sel('fingerprint', FINGERPRINTS))}
               {fld('ALPN', inp('alpn', 'text', 'h2,http/1.1'), 'comma-separated')}
               <div className="flex items-center gap-2 mt-5">

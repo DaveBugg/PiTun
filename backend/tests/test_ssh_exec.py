@@ -174,6 +174,7 @@ async def test_happy_path():
             password="hunter2",
             script_content="#!/usr/bin/env bash\necho hi\n",
             env={"DOMAIN": "x.example.com", "EMAIL": "me@x"},
+            direct=True,   # exercise the SO_MARK / marked-connect path
         )
 
     assert isinstance(result, DeployResult)
@@ -293,6 +294,7 @@ async def test_dns_failure():
             host="bogus.invalid",
             password="x",
             script_content="echo hi",
+            direct=True,   # DNS bypass only runs on the marked path
         )
     assert result.ok is False
     assert (result.error or "").startswith("DNS:")
@@ -308,6 +310,7 @@ async def test_tcp_failure():
             host="example.com",
             password="x",
             script_content="echo hi",
+            direct=True,   # marked connect only runs on the direct path
         )
     assert result.ok is False
     assert (result.error or "").startswith("TCP:")

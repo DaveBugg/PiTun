@@ -12,7 +12,8 @@ import {
   useDeleteNode,
   useCheckNodeHealth,
   useCheckAllNodes,
-  useSpeedtest,
+  useSpeedtestStream,
+  useReachability,
   useSpeedtestAll,
   useSpeedResults,
   useSpeedPending,
@@ -26,6 +27,7 @@ import { NaiveSidecarPanel } from '@/components/NaiveSidecarPanel'
 import { NodeFilterPopup, type NodeFilterState } from '@/components/NodeFilterPopup'
 import { Pagination } from '@/components/Pagination'
 import { useConfirm } from '@/components/ConfirmModal'
+import { copyToClipboard } from '@/lib/clipboard'
 import { ModalShell } from '@/components/ModalShell'
 import { apiErrorText } from '@/lib/apiError'
 import type { Node, NodeCreate, NodePageParams } from '@/types'
@@ -155,7 +157,8 @@ export function Nodes() {
   const deleteNode = useDeleteNode()
   const checkHealth = useCheckNodeHealth()
   const checkAll = useCheckAllNodes()
-  const speedtest = useSpeedtest()
+  const speedStream = useSpeedtestStream()
+  const reachability = useReachability()
   const setActive = useSetActiveNode()
 
   // Results and in-flight ids come from the query cache so they survive
@@ -184,11 +187,25 @@ export function Nodes() {
     }
   }
 
-  // No per-mutate callbacks: the hook writes the result into the query
-  // cache itself, so it lands even if this page is unmounted by then.
+  // Streaming test: writes live progress into the query cache itself, so it
+  // ticks in place and survives leaving the page.
   const handleSpeedtest = (node: Node) => {
     if (speedPending.includes(node.id)) return
-    speedtest.mutate(node.id)
+    speedStream.run(node.id)
+  }
+
+  const handleReachability = (node: Node) => {
+    if (speedPending.includes(node.id)) return
+    reachability.run(node.id)
+  }
+
+  const handleExportUri = async (node: Node) => {
+    try {
+      const uri = await nodesApi.uri(node.id)
+      await copyToClipboard(uri)
+    } catch {
+      /* protocol without a URL form (e.g. wireguard) — nothing to copy */
+    }
   }
 
   const handleDrop = (targetId: number) => {
@@ -376,9 +393,12 @@ export function Nodes() {
                   }}
                   onCheck={() => checkHealth.mutate(activeNode.id)}
                   onSpeedtest={() => handleSpeedtest(activeNode)}
+                  onReachability={() => handleReachability(activeNode)}
+                  onExportUri={() => handleExportUri(activeNode)}
                   onSelect={() => setActive.mutate(activeNode.id)}
                   checkLoading={checkHealth.isPending && checkHealth.variables === activeNode.id}
                   speedLoading={speedPending.includes(activeNode.id)}
+                  reachLoading={speedPending.includes(activeNode.id)}
                 />
                 {/* The pinned card is only rendered when the active node
                     is NOT in the list, so without this row its speed-test
@@ -457,9 +477,12 @@ export function Nodes() {
                   }}
                   onCheck={() => checkHealth.mutate(node.id)}
                   onSpeedtest={() => handleSpeedtest(node)}
+                  onReachability={() => handleReachability(node)}
+                  onExportUri={() => handleExportUri(node)}
                   onSelect={() => setActive.mutate(node.id)}
                   checkLoading={checkHealth.isPending && checkHealth.variables === node.id}
                   speedLoading={speedPending.includes(node.id)}
+                  reachLoading={speedPending.includes(node.id)}
                 />
                 {speedResults[node.id] && (
                   <div className="text-xs text-gray-500 mt-1 pl-4 font-mono">

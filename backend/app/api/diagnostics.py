@@ -823,3 +823,33 @@ async def _probe_via_socks(settings_map: dict, target: str, port: int) -> tuple:
             await asyncio.wait_for(writer.wait_closed(), timeout=2)
         except Exception:
             pass
+
+
+@router.post("/sni-scan")
+async def sni_scan_endpoint(body: dict, session=Depends(get_session)):
+    """Check whether a domain is a viable REALITY dest (TLS 1.3 + ALPN h2).
+
+    Probes THROUGH the active node when one is set — so the verdict reflects
+    what the exit sees (censorship/geo differ per exit), not the box's own
+    network — and falls back to a direct probe otherwise. Body: {"domain": ...}.
+    """
+    from app.core.speedtest import sni_scan
+    from app.models import Node, Settings as DBSettings
+    from sqlmodel import select
+
+    domain = (body or {}).get("domain") or ""
+
+    active: Node | None = None
+    row = (await session.exec(
+        select(DBSettings).where(DBSettings.key == "active_node_id")
+    )).first()
+    if row and row.value:
+        try:
+            active = await session.get(Node, int(row.value))
+        except (TypeError, ValueError):
+            active = None
+    # Only route through it if it's actually usable as an exit.
+    if active is not None and not active.enabled:
+        active = None
+
+    return await sni_scan(domain, active)

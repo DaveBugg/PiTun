@@ -69,7 +69,14 @@ from app.models import (
 )
 
 logger = logging.getLogger(__name__)
-router = APIRouter(prefix="/xui", tags=["xui"])
+from app.core.net import read_direct
+
+# `read_direct` latches `?direct=` into a request-scoped flag, so every
+# XuiClient built while serving an /xui request honours the "Direct
+# connection" toggle — even endpoints that don't pass `direct` explicitly.
+router = APIRouter(
+    prefix="/xui", tags=["xui"], dependencies=[Depends(read_direct)],
+)
 
 
 # ── Schemas ─────────────────────────────────────────────────────────────────
@@ -410,16 +417,19 @@ async def delete_xui_server(
 
 @router.post("/servers/{xui_server_id}/probe", response_model=XuiServerRead)
 async def probe_xui_server(
-    xui_server_id: int, session: AsyncSession = Depends(get_session),
+    xui_server_id: int,
+    direct: bool = False,
+    session: AsyncSession = Depends(get_session),
 ):
     """Re-test the Bearer token. Updates last_check / last_check_error
     on the row regardless of outcome so the UI badge reflects the
-    truth."""
+    truth. `direct=true` dials the panel off the active node's tunnel."""
     xs, srv = await _get_xs_or_404(xui_server_id, session)
     base_url = _api_base_url(xs, srv)
     now = datetime.now(timezone.utc)
     async with XuiClient(
         base_url=base_url, api_token=xs.api_token, verify_tls=False,
+        direct=direct,
     ) as client:
         try:
             await client.probe()
@@ -1037,7 +1047,9 @@ class XuiServerSyncResponse(BaseModel):
     response_model=XuiServerSyncResponse,
 )
 async def sync_xui_server(
-    xui_server_id: int, session: AsyncSession = Depends(get_session),
+    xui_server_id: int,
+    direct: bool = False,
+    session: AsyncSession = Depends(get_session),
 ):
     """Reconcile PiTun's `XuiClient` cache with the panel's live state.
 
@@ -1072,6 +1084,7 @@ async def sync_xui_server(
     base_url = _api_base_url(xs, srv)
     async with XuiClient(
         base_url=base_url, api_token=xs.api_token, verify_tls=False,
+        direct=direct,
     ) as client:
         try:
             inbounds = await client.list_inbounds()
@@ -1267,6 +1280,7 @@ async def list_inbounds(
 async def create_inbound(
     xui_server_id: int,
     body: InboundCreateBody,
+    direct: bool = False,
     session: AsyncSession = Depends(get_session),
 ):
     """Create an inbound from a preset + user-provided values.
@@ -1314,6 +1328,7 @@ async def create_inbound(
     base_url = _api_base_url(xs, srv)
     async with XuiClient(
         base_url=base_url, api_token=xs.api_token, verify_tls=False,
+        direct=direct,
     ) as client:
         # Resolve server-generated values via the panel itself so
         # the frontend never handles the private key.
@@ -1496,16 +1511,19 @@ async def delete_inbound(
 async def add_client(
     xui_server_id: int, inbound_id: int,
     body: ClientCreateBody,
+    direct: bool = False,
     session: AsyncSession = Depends(get_session),
 ):
     """Add a client to an existing inbound + cache the row in
-    `xuiclient` for /sync + node-export bookkeeping."""
+    `xuiclient` for /sync + node-export bookkeeping. `direct=true` dials
+    the panel off the active node's tunnel."""
     xs, srv = await _get_xs_or_404(xui_server_id, session)
     label = body.label or f"pi-{secrets.token_hex(4)}"
 
     base_url = _api_base_url(xs, srv)
     async with XuiClient(
         base_url=base_url, api_token=xs.api_token, verify_tls=False,
+        direct=direct,
     ) as client:
         # Look up the inbound to know its protocol — the panel doesn't
         # mind a flow on a non-vless inbound but the resulting client

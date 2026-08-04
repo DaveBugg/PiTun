@@ -1,5 +1,5 @@
 import {
-  Server, Pencil, Trash2, Activity, Zap, ChevronRight, AlertCircle,
+  Server, Pencil, Trash2, Activity, Gauge, Power, Globe, Link2, AlertCircle,
 } from 'lucide-react'
 import { clsx } from 'clsx'
 import type { Node } from '@/types'
@@ -13,9 +13,12 @@ interface Props {
   onDelete?: () => void
   onCheck?: () => void
   onSpeedtest?: () => void
+  onReachability?: () => void
+  onExportUri?: () => void
   onSelect?: () => void
   checkLoading?: boolean
   speedLoading?: boolean
+  reachLoading?: boolean
 }
 
 export function NodeCard({
@@ -25,9 +28,12 @@ export function NodeCard({
   onDelete,
   onCheck,
   onSpeedtest,
+  onReachability,
+  onExportUri,
   onSelect,
   checkLoading,
   speedLoading,
+  reachLoading,
 }: Props) {
   // Look up the source server for the "from <name>" label. Cached query —
   // shared with the Servers page, no extra cost when both are mounted.
@@ -160,20 +166,35 @@ export function NodeCard({
           {onSelect && (
             <button
               onClick={onSelect}
-              title="Set as active"
-              className="rounded p-1.5 text-gray-500 hover:bg-gray-800 hover:text-brand-400 transition-colors"
+              title={isActive ? 'Active node' : 'Activate this node'}
+              className={clsx(
+                'rounded p-1.5 transition-colors',
+                isActive
+                  ? 'bg-brand-600/20 text-brand-400 ring-1 ring-brand-500/40'
+                  : 'text-gray-500 hover:bg-gray-800 hover:text-brand-400',
+              )}
             >
-              <ChevronRight className="h-4 w-4" />
+              <Power className="h-4 w-4" />
             </button>
           )}
           {onCheck && (
             <button
               onClick={onCheck}
-              title="Health check"
+              title="Health check (TCP)"
               disabled={checkLoading}
               className="rounded p-1.5 text-gray-500 hover:bg-gray-800 hover:text-green-400 transition-colors disabled:opacity-50"
             >
               <Activity className={clsx('h-4 w-4', checkLoading && 'animate-pulse')} />
+            </button>
+          )}
+          {onReachability && (
+            <button
+              onClick={onReachability}
+              title="Internet check — open google.com through this node"
+              disabled={reachLoading}
+              className="rounded p-1.5 text-gray-500 hover:bg-gray-800 hover:text-sky-400 transition-colors disabled:opacity-50"
+            >
+              <Globe className={clsx('h-4 w-4', reachLoading && 'animate-pulse')} />
             </button>
           )}
           {onSpeedtest && (
@@ -183,7 +204,7 @@ export function NodeCard({
               disabled={speedLoading}
               className="rounded p-1.5 text-gray-500 hover:bg-gray-800 hover:text-yellow-400 transition-colors disabled:opacity-50"
             >
-              <Zap className={clsx('h-4 w-4', speedLoading && 'animate-pulse')} />
+              <Gauge className={clsx('h-4 w-4', speedLoading && 'animate-pulse')} />
             </button>
           )}
           {onEdit && (
@@ -193,6 +214,15 @@ export function NodeCard({
               className="rounded p-1.5 text-gray-500 hover:bg-gray-800 hover:text-gray-100 transition-colors"
             >
               <Pencil className="h-4 w-4" />
+            </button>
+          )}
+          {onExportUri && (
+            <button
+              onClick={onExportUri}
+              title="Copy share URL"
+              className="rounded p-1.5 text-gray-500 hover:bg-gray-800 hover:text-gray-100 transition-colors"
+            >
+              <Link2 className="h-4 w-4" />
             </button>
           )}
           {onDelete && (

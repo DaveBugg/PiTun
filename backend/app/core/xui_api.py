@@ -65,10 +65,12 @@ who put their own cert chain in front of the panel can override.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
 import httpx
+
+from app.core.net import direct_active as _direct_active
 
 logger = logging.getLogger(__name__)
 
@@ -121,6 +123,13 @@ class XuiClient:
     api_token: str
     verify_tls: bool = False
     timeout: float = _DEFAULT_TIMEOUT
+    # When True, panel HTTP goes DIRECT (SO_MARK bypass), off the active
+    # node's tunnel — the operator's "Direct connection" toggle. Defaults
+    # to the request-scoped flag (`net.read_direct` dependency), so an
+    # endpoint that doesn't pass `direct` still honours `?direct=`. Outside
+    # a request (schedulers, background jobs) the factory returns False =
+    # through the active node.
+    direct: bool = field(default_factory=lambda: _direct_active())
     # Cookie+CSRF credentials. Optional because the vast majority of
     # call sites only need Bearer (inbounds/clients/server-utils). The
     # chain orchestrator's relay client passes them so it can update
@@ -173,7 +182,7 @@ class XuiClient:
             # api/inbounds/list` collapses to `https://h:port/panel/...`,
             # missing the basepath and getting a 307 redirect back from
             # the panel. Building full URLs in `_request` instead.
-            self._http = httpx.AsyncClient(
+            client_kwargs: Dict[str, Any] = dict(
                 headers={
                     "Authorization": f"Bearer {self.api_token}",
                     # The panel responds JSON either way, but being
@@ -192,6 +201,14 @@ class XuiClient:
                 # is wasted on a one-shot RPC client.
                 http2=False,
             )
+            if self.direct:
+                # SO_MARK bypass — dial the panel off the active node's
+                # tunnel. `transport` carries verify itself, so drop the
+                # top-level verify to avoid httpx's "both set" error.
+                from app.core.net import httpx_direct_transport
+                client_kwargs.pop("verify", None)
+                client_kwargs["transport"] = httpx_direct_transport()
+            self._http = httpx.AsyncClient(**client_kwargs)
         return self._http
 
     async def _request(

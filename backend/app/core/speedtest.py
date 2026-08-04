@@ -44,6 +44,24 @@ _XRAY_STARTUP_WAIT = 2.5      # seconds to wait for temp xray to bind SOCKS
 _KILL_GRACE = 5               # seconds to wait after SIGTERM before SIGKILL
 _MIN_BYTES = 65_536           # anything smaller is not a valid measurement
 
+# Streaming speed test (live progress). Targets are tried in order until one
+# streams data; Cloudflare heads the list because it is anycast and reachable
+# from almost any exit (the single hardcoded ISP host was the whole reason the
+# legacy test returned 0B when that host was blocked). `bytes=` is large enough
+# that even a gigabit link won't exhaust it before the time box; on a slow link
+# we simply stop at `_STREAM_SECS` having pulled a few MB.
+_STREAM_TARGETS = [
+    ("Cachefly", "https://cachefly.cachefly.net/100mb.test"),
+    ("OVH", "https://proof.ovh.net/files/100Mb.dat"),
+    ("Hetzner", "https://speed.hetzner.de/100MB.bin"),
+    ("Tele2", "https://speedtest.tele2.net/100MB.zip"),
+]
+# Some CDNs (Cloudflare's __down among them) 403 a request with no/blank
+# User-Agent. Present as a browser.
+_STREAM_UA = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36"
+_STREAM_SECS = 14.0           # time box: measure for at most this long
+_STREAM_WARMUP = 2.0          # ignore the ramp-up (TCP slow-start / TLS) in the numbers
+
 
 async def speedtest_node(node: Node) -> Dict:
     """Run a download speed test through a freshly-spawned xray for `node`."""
@@ -101,6 +119,281 @@ async def speedtest_node(node: Node) -> Dict:
         return _result(node, error=str(exc))
     finally:
         await _cleanup(proc, tmp_path)
+
+
+async def speedtest_stream(node: Node):
+    """Async generator yielding live speed-test progress events.
+
+    Same throwaway-xray setup as `speedtest_node`, but instead of a single
+    curl at the end it streams the download itself (httpx over the node's
+    SOCKS) and emits a progress event ~twice a second with the host and the
+    current Mbps, so the UI shows "via Cloudflare · 45.2 Mbps" ticking up
+    rather than a blank spinner. Time-boxed to `_STREAM_SECS`.
+
+    Event shapes (dicts): {phase:"start"}, {phase:"connecting",host},
+    {phase:"progress",host,mbps,elapsed,bytes}, {phase:"done",host,mbps,...},
+    {phase:"error",error}. On a target failure it emits {phase:"target_failed"}
+    and moves to the next target.
+    """
+    proc: Optional[asyncio.subprocess.Process] = None
+    tmp_path: Optional[str] = None
+    try:
+        yield {"phase": "start", "node_id": node.id}
+        try:
+            chain = await _resolve_chain(node)
+        except Exception as exc:  # noqa: BLE001
+            yield {"phase": "error", "error": f"chain resolve: {exc}"}
+            return
+
+        entry = chain[0]
+        entry_ip: Optional[str] = None
+        if entry.protocol != "naive":
+            try:
+                entry_ip = await HealthChecker._resolve_direct(entry.address)
+            except Exception as exc:  # noqa: BLE001
+                yield {"phase": "error", "error": f"dns entry: {exc}"}
+                return
+        if node.protocol == "naive":
+            if not node.internal_port:
+                yield {"phase": "error", "error": "naive sidecar port not allocated"}
+                return
+            if not await _port_open("127.0.0.1", int(node.internal_port)):
+                yield {"phase": "error", "error": f"naive sidecar not on :{node.internal_port}"}
+                return
+
+        yield {"phase": "connecting", "host": "starting xray"}
+        socks_port, proc, tmp_path, start_err = await _start_temp_xray(node, chain, entry_ip)
+        if proc is None or start_err:
+            yield {"phase": "error", "error": start_err or "failed to start temp xray"}
+            return
+
+        last_error = "no targets reachable"
+        for label, url in _STREAM_TARGETS:
+            yield {"phase": "connecting", "host": label}
+            got_data = False
+            try:
+                async for ev in _stream_download(socks_port, label, url):
+                    if ev["phase"] in ("progress", "done"):
+                        got_data = True
+                    yield ev
+                if got_data:
+                    return  # first working target wins
+            except Exception as exc:  # noqa: BLE001
+                last_error = f"{label}: {str(exc)[:120]}"
+                yield {"phase": "target_failed", "host": label, "error": last_error}
+                continue
+        yield {"phase": "error", "error": last_error}
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Speedtest stream node %d error: %s", node.id, exc)
+        yield {"phase": "error", "error": str(exc)}
+    finally:
+        await _cleanup(proc, tmp_path)
+
+
+async def reachability_check(node: Node) -> Dict:
+    """Quick "does the internet work through this node" probe.
+
+    Spins the same throwaway xray, then fetches a tiny always-on endpoint
+    (Google's generate_204) through it — a real proxied HTTP round trip,
+    unlike the health check's bare TCP connect to the server. Returns
+    {ok, latency_ms, detail}.
+    """
+    proc: Optional[asyncio.subprocess.Process] = None
+    tmp_path: Optional[str] = None
+    try:
+        try:
+            chain = await _resolve_chain(node)
+        except Exception as exc:  # noqa: BLE001
+            return {"ok": False, "latency_ms": None, "detail": f"chain: {exc}"}
+        entry = chain[0]
+        entry_ip: Optional[str] = None
+        if entry.protocol != "naive":
+            try:
+                entry_ip = await HealthChecker._resolve_direct(entry.address)
+            except Exception as exc:  # noqa: BLE001
+                return {"ok": False, "latency_ms": None, "detail": f"dns: {exc}"}
+        if node.protocol == "naive" and (
+            not node.internal_port
+            or not await _port_open("127.0.0.1", int(node.internal_port))
+        ):
+            return {"ok": False, "latency_ms": None, "detail": "naive sidecar down"}
+
+        socks_port, proc, tmp_path, start_err = await _start_temp_xray(node, chain, entry_ip)
+        if proc is None or start_err:
+            return {"ok": False, "latency_ms": None, "detail": start_err or "xray failed"}
+
+        import httpx
+        loop = asyncio.get_event_loop()
+        proxy = f"socks5://127.0.0.1:{socks_port}"
+        t0 = loop.time()
+        try:
+            async with httpx.AsyncClient(
+                proxy=proxy, timeout=httpx.Timeout(8.0, connect=8.0),
+                headers={"User-Agent": _STREAM_UA},
+            ) as client:
+                resp = await client.get("https://www.google.com/generate_204")
+            latency = int((loop.time() - t0) * 1000)
+            ok = resp.status_code in (204, 200)
+            return {
+                "ok": ok, "latency_ms": latency,
+                "detail": "reachable" if ok else f"HTTP {resp.status_code}",
+            }
+        except Exception as exc:  # noqa: BLE001
+            return {"ok": False, "latency_ms": None, "detail": str(exc)[:120] or "no response"}
+    finally:
+        await _cleanup(proc, tmp_path)
+
+
+async def sni_scan(domain: str, node: Optional[Node] = None) -> Dict:
+    """Is `domain` a viable REALITY dest? Checks TLS 1.3 + ALPN h2 + that it
+    actually answers. Routed THROUGH the active node when one is given (so the
+    verdict reflects what the exit sees, not the box's own network), else
+    probed directly. Returns {ok, tls13, http2, status, via, detail}."""
+    import re
+
+    domain = (domain or "").strip()
+    for pfx in ("https://", "http://"):
+        if domain.lower().startswith(pfx):
+            domain = domain[len(pfx):]
+    domain = domain.split("/", 1)[0].split(":", 1)[0].strip()
+    if not domain:
+        return {"ok": False, "detail": "empty domain", "via": "direct"}
+
+    proc: Optional[asyncio.subprocess.Process] = None
+    tmp_path: Optional[str] = None
+    socks_port: Optional[int] = None
+    via = "direct"
+    try:
+        if node is not None:
+            try:
+                chain = await _resolve_chain(node)
+            except Exception as exc:  # noqa: BLE001
+                return {"ok": False, "detail": f"chain: {exc}", "via": via}
+            entry = chain[0]
+            entry_ip: Optional[str] = None
+            if entry.protocol != "naive":
+                try:
+                    entry_ip = await HealthChecker._resolve_direct(entry.address)
+                except Exception as exc:  # noqa: BLE001
+                    return {"ok": False, "detail": f"dns: {exc}", "via": via}
+            socks_port, proc, tmp_path, start_err = await _start_temp_xray(
+                node, chain, entry_ip,
+            )
+            if proc is None or start_err:
+                return {"ok": False, "detail": start_err or "xray failed", "via": via}
+            via = "active node"
+
+        cmd = ["curl", "-sS", "-v", "-o", "/dev/null", "--max-time", "10",
+               "--http2", "-A", _STREAM_UA]
+        if socks_port:
+            cmd += ["-x", f"socks5h://127.0.0.1:{socks_port}"]
+        cmd.append(f"https://{domain}")
+        p = await asyncio.create_subprocess_exec(
+            *cmd, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE,
+        )
+        _, stderr = await asyncio.wait_for(p.communicate(), timeout=14)
+        txt = stderr.decode(errors="replace")
+
+        tls13 = "TLSv1.3" in txt
+        # curl prints e.g. "* ALPN: server accepted h2" (or "...to use h2").
+        m_alpn = re.search(r"ALPN[^\n]*accepted[^\n]*\bh2\b", txt)
+        http2 = bool(m_alpn) or "using HTTP/2" in txt
+        m_status = re.search(r"< HTTP/[\d.]+ (\d{3})", txt)
+        status = int(m_status.group(1)) if m_status else None
+        reachable = status is not None
+
+        ok = bool(tls13 and http2 and reachable and status < 400)
+        if ok:
+            detail = "good REALITY dest"
+        else:
+            reasons = []
+            if not reachable:
+                reasons.append("no response")
+            else:
+                if not tls13:
+                    reasons.append("no TLS 1.3")
+                if not http2:
+                    reasons.append("no HTTP/2 (ALPN h2)")
+                if status and status >= 400:
+                    reasons.append(f"HTTP {status}")
+            detail = ", ".join(reasons) or "unsuitable"
+        return {
+            "ok": ok, "tls13": tls13, "http2": http2,
+            "status": status, "via": via, "detail": detail,
+        }
+    except asyncio.TimeoutError:
+        return {"ok": False, "detail": "timed out", "via": via}
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "detail": str(exc)[:120], "via": via}
+    finally:
+        await _cleanup(proc, tmp_path)
+
+
+async def _stream_download(socks_port: int, label: str, url: str):
+    """Stream `url` through the SOCKS proxy, yielding live-speed events.
+
+    Speed is measured over a rolling half-second window for the live number;
+    the final figure is total bytes over the measured window with a short
+    warm-up discarded (TCP slow-start + TLS would otherwise drag it down).
+    """
+    import httpx
+
+    loop = asyncio.get_event_loop()
+    proxy = f"socks5://127.0.0.1:{socks_port}"
+    started = loop.time()
+    total = 0
+    warmup_bytes = 0
+    win_bytes = 0
+    win_start = started
+    last_emit = started
+    peak_mbps = 0.0  # highest sustained (post-warmup) window seen
+
+    timeout = httpx.Timeout(_STREAM_SECS + 5, connect=8.0)
+    async with httpx.AsyncClient(
+        proxy=proxy, timeout=timeout, verify=False,
+        headers={"User-Agent": _STREAM_UA},
+    ) as client:
+        async with client.stream("GET", url) as resp:
+            resp.raise_for_status()
+            async for chunk in resp.aiter_bytes(65536):
+                now = loop.time()
+                n = len(chunk)
+                total += n
+                win_bytes += n
+                if now - started < _STREAM_WARMUP:
+                    warmup_bytes += n
+                if now - last_emit >= 0.5:
+                    win = now - win_start
+                    mbps = (win_bytes * 8 / win / 1e6) if win > 0 else 0.0
+                    # Peak ignores the warm-up windows so a spurious ramp
+                    # blip doesn't win — it's the best STEADY window.
+                    if now - started >= _STREAM_WARMUP:
+                        peak_mbps = max(peak_mbps, mbps)
+                    yield {
+                        "phase": "progress", "host": label,
+                        "mbps": round(mbps, 1),
+                        "elapsed": round(now - started, 1),
+                        "bytes": total,
+                    }
+                    last_emit = now
+                    win_bytes = 0
+                    win_start = now
+                if now - started >= _STREAM_SECS:
+                    break
+
+    elapsed = loop.time() - started
+    measured = max(elapsed - _STREAM_WARMUP, 0.001)
+    if total < _MIN_BYTES:
+        raise RuntimeError(f"too little data ({total}B)")
+    # Average over the post-warmup window; peak is the best steady window.
+    avg = (total - warmup_bytes) * 8 / measured / 1e6
+    yield {
+        "phase": "done", "host": label,
+        "mbps": round(avg, 1),
+        "mbps_max": round(max(peak_mbps, avg), 1),
+        "elapsed": round(elapsed, 1),
+        "bytes": total,
+    }
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────

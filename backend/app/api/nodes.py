@@ -996,6 +996,63 @@ async def speedtest_node(node_id: int, session: AsyncSession = Depends(get_sessi
     return SpeedTestResult(**result)
 
 
+@router.post("/{node_id:int}/speedtest/stream")
+async def speedtest_node_stream(node_id: int, session: AsyncSession = Depends(get_session)):
+    """Live speed test — streams NDJSON progress (host + current Mbps).
+
+    Consumed by the frontend with `fetch` + a stream reader (so the normal
+    Bearer header carries auth — no token in the query string). Each line is
+    one JSON event; see `speedtest.speedtest_stream` for the shapes.
+    """
+    from fastapi.responses import StreamingResponse
+
+    from app.core.speedtest import speedtest_stream
+
+    node = await session.get(Node, node_id)
+    if not node:
+        raise HTTPException(404, "Node not found")
+
+    async def _gen():
+        import json
+        async for event in speedtest_stream(node):
+            yield json.dumps(event) + "\n"
+
+    return StreamingResponse(
+        _gen(),
+        media_type="application/x-ndjson",
+        # Defeat any proxy buffering so the ticks arrive live, not in one dump.
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+@router.post("/{node_id:int}/reachability")
+async def node_reachability(node_id: int, session: AsyncSession = Depends(get_session)):
+    """Does the internet actually work through this node? Fetches Google's
+    generate_204 over the tunnel — a real proxied round trip, distinct from
+    the TCP-only health check. Returns {ok, latency_ms, detail}."""
+    from app.core.speedtest import reachability_check
+
+    node = await session.get(Node, node_id)
+    if not node:
+        raise HTTPException(404, "Node not found")
+    return await reachability_check(node)
+
+
+@router.get("/{node_id:int}/uri")
+async def node_uri(node_id: int, session: AsyncSession = Depends(get_session)):
+    """Share URL for a single node (vless:// etc.) — the per-node echo of
+    the bulk `/export-uris`, for a quick copy from the node's row."""
+    from app.core.uri_formatter import node_to_uri
+
+    node = await session.get(Node, node_id)
+    if not node:
+        raise HTTPException(404, "Node not found")
+    uri = node_to_uri(node)
+    if not uri:
+        raise HTTPException(422, f"Cannot build a share URL for protocol {node.protocol!r}")
+    return {"uri": uri}
+
+
 @router.post("/speedtest-all", response_model=List[SpeedTestResult])
 async def speedtest_all_nodes(session: AsyncSession = Depends(get_session)):
     """Run speed test on all enabled nodes sequentially (each spawns its own xray)."""

@@ -514,6 +514,8 @@ export interface SystemSettings {
   health_timeout?: number
   health_fail_threshold?: number
   health_full_check_interval?: number
+  // TLS-ClientHello fragmentation (anti-DPI, client-side)
+  xray_fragment_enabled?: boolean
   // Misc
   disable_ipv6?: boolean
   dns_over_tcp?: boolean

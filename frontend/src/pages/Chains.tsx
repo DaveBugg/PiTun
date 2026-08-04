@@ -10,6 +10,7 @@ import { useT } from '@/hooks/useT'
 import { useConfirm } from '@/components/ConfirmModal'
 import { ModalShell } from '@/components/ModalShell'
 import { ClientQrModal } from '@/components/ClientQrModal'
+import { DirectToggle } from '@/components/DirectToggle'
 import { copyToClipboard } from '@/lib/clipboard'
 import type {
   ChainClientRead,
@@ -68,6 +69,10 @@ export default function ChainsPage() {
 
   const [selectedId, setSelectedId] = useState<number | null>(null)
   const [showCreate, setShowCreate] = useState(false)
+  // Page-level "Direct connection" — every chain op (create, healthcheck,
+  // add/delete client, export, delete) dials the panels directly (SO_MARK
+  // bypass) when on; off = through the active node (default).
+  const [direct, setDirect] = useState(false)
 
   useEffect(() => {
     if (selectedId == null && chains.length > 0) {
@@ -93,7 +98,8 @@ export default function ChainsPage() {
             'Двухзвенные прокси-цепочки на двух x-ui панелях — exit + relay',
           )}
         </p>
-        <div className="ml-auto flex gap-2 flex-wrap">
+        <div className="ml-auto flex items-center gap-2 flex-wrap">
+          <DirectToggle checked={direct} onChange={setDirect} className="px-1" />
           <button
             type="button"
             onClick={() => qc.invalidateQueries({ queryKey: ['xui', 'chains'] })}
@@ -145,7 +151,7 @@ export default function ChainsPage() {
               onSelect={setSelectedId}
             />
             {selected && (
-              <ChainDetail key={selected.id} chain={selected} />
+              <ChainDetail key={selected.id} chain={selected} direct={direct} />
             )}
           </div>
         )}
@@ -154,6 +160,7 @@ export default function ChainsPage() {
       {showCreate && (
         <CreateChainModal
           servers={servers}
+          direct={direct}
           onClose={() => setShowCreate(false)}
           onCreated={(c) => {
             setShowCreate(false)
@@ -273,7 +280,7 @@ function ChainStatusBadge({ status }: { status: ChainRead['status'] }) {
 
 // ── Chain detail (right pane) ───────────────────────────────────────────────
 
-function ChainDetail({ chain }: { chain: ChainRead }) {
+function ChainDetail({ chain, direct }: { chain: ChainRead; direct: boolean }) {
   const t = useT()
   const qc = useQueryClient()
   const confirm = useConfirm()
@@ -285,14 +292,14 @@ function ChainDetail({ chain }: { chain: ChainRead }) {
   })
 
   const addClientMut = useMutation({
-    mutationFn: () => xuiApi.addChainClient(chain.id),
+    mutationFn: () => xuiApi.addChainClient(chain.id, {}, direct),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['xui', 'chains', chain.id, 'clients'] })
     },
   })
 
   const delChainMut = useMutation({
-    mutationFn: () => xuiApi.deleteChain(chain.id),
+    mutationFn: () => xuiApi.deleteChain(chain.id, direct),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['xui', 'chains'] })
     },
@@ -300,7 +307,7 @@ function ChainDetail({ chain }: { chain: ChainRead }) {
 
   const delChannelMut = useMutation({
     mutationFn: (channelId: number) =>
-      xuiApi.deleteChainChannel(chain.id, channelId),
+      xuiApi.deleteChainChannel(chain.id, channelId, direct),
     onSuccess: () => {
       // Channel delete may also fold the chain away (last-channel
       // branch) — invalidate both lists so the UI reflects either
@@ -316,7 +323,7 @@ function ChainDetail({ chain }: { chain: ChainRead }) {
   // outbound + matching routing rule. Result panel stays mounted
   // until the user closes or re-runs.
   const healthMut = useMutation({
-    mutationFn: () => xuiApi.healthcheckChain(chain.id),
+    mutationFn: () => xuiApi.healthcheckChain(chain.id, direct),
   })
 
   return (
@@ -533,6 +540,7 @@ function ChainDetail({ chain }: { chain: ChainRead }) {
           <ChainClientCard
             key={cc.id}
             chainId={chain.id}
+            direct={direct}
             client={cc}
             onChanged={() => qc.invalidateQueries({
               queryKey: ['xui', 'chains', chain.id, 'clients'],
@@ -548,9 +556,10 @@ function ChainDetail({ chain }: { chain: ChainRead }) {
 // ── Chain client card ──────────────────────────────────────────────────────
 
 function ChainClientCard({
-  chainId, client, onChanged,
+  chainId, direct, client, onChanged,
 }: {
   chainId: number
+  direct: boolean
   client: ChainClientRead
   onChanged: () => void
 }) {
@@ -565,14 +574,14 @@ function ChainClientCard({
   } | null>(null)
 
   const delMut = useMutation({
-    mutationFn: () => xuiApi.deleteChainClient(chainId, client.id),
+    mutationFn: () => xuiApi.deleteChainClient(chainId, client.id, direct),
     onSuccess: onChanged,
   })
   const exportMut = useMutation({
     mutationFn: (channelIds: number[]) =>
       xuiApi.exportChainClientNodes(chainId, client.id, {
         channel_ids: channelIds,
-      }),
+      }, direct),
     onSuccess: onChanged,
   })
 
@@ -727,9 +736,10 @@ function makeEmptyChannel(): ChannelDraftRow {
 }
 
 function CreateChainModal({
-  servers, onClose, onCreated,
+  servers, direct, onClose, onCreated,
 }: {
   servers: XuiServer[]
+  direct: boolean
   onClose: () => void
   onCreated: (chain: ChainRead) => void
 }) {
@@ -766,7 +776,7 @@ function CreateChainModal({
         relay_remark: c.relay_remark?.trim() || '',
         exit_remark: c.exit_remark?.trim() || '',
       })),
-    }),
+    }, direct),
     onSuccess: onCreated,
     onError: (err: unknown) => {
       // A failed create still leaves a `failed` ProxyChain row behind

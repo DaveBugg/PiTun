@@ -47,9 +47,13 @@ import type {
  */
 export function ManageClientsModal({
   server,
+  direct = false,
   onClose,
 }: {
   server: Server
+  /** Route the WG-client SSH ops directly (SO_MARK bypass) instead of
+   * through the active node. Inherited from the Servers page toggle. */
+  direct?: boolean
   onClose: () => void
 }) {
   const t = useT()
@@ -77,7 +81,7 @@ export function ManageClientsModal({
       return
     }
     try {
-      await addClient.mutateAsync({ serverId: server.id, body: { name: newName.trim() } })
+      await addClient.mutateAsync({ serverId: server.id, body: { name: newName.trim() }, direct })
       setNewName('')
     } catch (err: unknown) {
       setActionError(extractAxiosError(err))
@@ -88,7 +92,7 @@ export function ManageClientsModal({
     setActionError('')
     setLastSync(null)
     try {
-      const r = await syncClients.mutateAsync(server.id)
+      const r = await syncClients.mutateAsync({ serverId: server.id, direct })
       setLastSync(r)
     } catch (err: unknown) {
       setActionError(extractAxiosError(err))
@@ -117,7 +121,7 @@ export function ManageClientsModal({
     if (!ok) return
     setActionError('')
     try {
-      await removeClient.mutateAsync({ serverId: server.id, name: c.name })
+      await removeClient.mutateAsync({ serverId: server.id, name: c.name, direct })
     } catch (err: unknown) {
       setActionError(extractAxiosError(err))
     }
@@ -128,7 +132,7 @@ export function ManageClientsModal({
     try {
       // Pass an empty body — backend defaults node_name=client_name and
       // enabled=true. Future iteration can offer a small picker form.
-      await exportToNode.mutateAsync({ serverId: server.id, name: c.name, body: {} })
+      await exportToNode.mutateAsync({ serverId: server.id, name: c.name, body: {}, direct })
     } catch (err: unknown) {
       setActionError(extractAxiosError(err))
     }
@@ -137,7 +141,7 @@ export function ManageClientsModal({
   const onDownloadConf = async (c: DeploymentClient) => {
     setActionError('')
     try {
-      const conf = await serversApi.getClientConf(server.id, c.name)
+      const conf = await serversApi.getClientConf(server.id, c.name, direct)
       // Trigger a browser download — `<server>-<client>.conf` is the
       // typical naming used by wg-quick / mobile apps.
       const blob = new Blob([conf.wg_conf], { type: 'text/plain;charset=utf-8' })

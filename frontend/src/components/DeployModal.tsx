@@ -11,6 +11,7 @@ import { serversApi } from '@/api/client'
 import { ModalShell } from '@/components/ModalShell'
 import { TemplatePicker } from '@/components/TemplatePicker'
 import { SshPortField } from '@/components/SshPortField'
+import { DirectToggle } from '@/components/DirectToggle'
 import { useT } from '@/hooks/useT'
 import { effectiveJobStatus } from '@/lib/jobStatus'
 import { useDeployments } from '@/hooks/useServers'
@@ -52,9 +53,11 @@ import type {
  */
 export function DeployModal({
   server,
+  initialDirect = false,
   onClose,
 }: {
   server: Server
+  initialDirect?: boolean
   onClose: () => void
 }) {
   const t = useT()
@@ -149,6 +152,10 @@ export function DeployModal({
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState('')
   const [jobId, setJobId] = useState<string | null>(null)
+  // Off = install runs THROUGH the active node (default); on = dial the
+  // server directly (SO_MARK bypass) — reach it even over a dead tunnel.
+  // Seeded from the Servers page toggle so the choice carries into deploy.
+  const [direct, setDirect] = useState(initialDirect)
   const [submittedProtocol, setSubmittedProtocol] = useState<
     ServerDeploymentProtocol
   >('naive')
@@ -206,7 +213,7 @@ export function DeployModal({
       const accepted = await serversApi.deploy(server.id, {
         protocol,
         config: params,
-      })
+      }, direct)
       setSubmittedProtocol(protocol)
       setJobId(accepted.job_id)
     } catch (err: unknown) {
@@ -263,6 +270,8 @@ export function DeployModal({
             wgAllowedIps={wgAllowedIps}
             error={error}
             submitting={submitting}
+            direct={direct}
+            setDirect={setDirect}
             setDomain={setDomain}
             setEmail={setEmail}
             setNaiveUser={setNaiveUser}
@@ -314,6 +323,7 @@ function DeployForm(props: {
   wgClientName: string; wgServerPort: string; wgDns1: string
   wgDns2: string; wgAllowedIps: string
   error: string; submitting: boolean
+  direct: boolean; setDirect: (v: boolean) => void
   setDomain: (v: string) => void
   setEmail: (v: string) => void
   setNaiveUser: (v: string) => void
@@ -468,6 +478,7 @@ function DeployForm(props: {
         >
           {t('Cancel', 'Отмена')}
         </button>
+        <DirectToggle checked={props.direct} onChange={props.setDirect} className="px-1" />
         <button
           type="submit"
           disabled={props.submitting || xuiProConflict}

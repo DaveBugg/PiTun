@@ -35,11 +35,15 @@ import type { DeployJobAccepted, DeployJobResult, Server, ServerDeploymentProtoc
 export function UninstallModal({
   server,
   protocol,
+  direct = false,
   onClose,
   onRedeploy,
 }: {
   server: Server
   protocol: ServerDeploymentProtocol
+  /** Route the SSH uninstall directly (SO_MARK bypass) instead of
+   * through the active node. Inherited from the Servers page toggle. */
+  direct?: boolean
   onClose: () => void
   /** Optional: called when the user clicks "Re-deploy now" after a
    * successful uninstall. Parent typically opens the DeployModal. */
@@ -55,7 +59,9 @@ export function UninstallModal({
     setSubmitting(true)
     try {
       const accepted = await http
-        .post<DeployJobAccepted>(`/servers/${server.id}/uninstall/${protocol}`)
+        .post<DeployJobAccepted>(`/servers/${server.id}/uninstall/${protocol}`, null, {
+          params: { direct },
+        })
         .then((r) => r.data)
       setJobId(accepted.job_id)
     } catch (err: unknown) {

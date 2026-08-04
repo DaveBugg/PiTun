@@ -94,6 +94,68 @@ class TestSockoptMark:
         assert ob is not None
         assert ob["streamSettings"]["sockopt"]["mark"] == 255
 
+    def test_wireguard_drops_ipv6_interface_address(self):
+        # A commercial WG config hands out both an IPv4 and an IPv6
+        # interface address. Passing the IPv6 one makes xray's userspace
+        # WG bring up an IPv6 netstack that errors with "failed to find
+        # available ipv6 table" on an IPv4-only host — so we keep only IPv4.
+        node = _make_node(
+            protocol="wireguard", transport="tcp", tls="none",
+            wg_private_key="privkey", wg_public_key="pubkey",
+            wg_local_address="10.65.58.254/32,fc00:bbbb:bbbb:bb01::2:3afd/128",
+        )
+        cfg = generate_config(node, [node], [], "global", _default_settings())
+        ob = _find_outbound(cfg, "node-1")
+        assert ob is not None
+        addrs = ob["settings"]["address"]
+        assert addrs == ["10.65.58.254/32"], addrs
+        assert all(":" not in a for a in addrs)
+
+    def test_wireguard_keeps_ipv6_when_no_ipv4(self):
+        # A rare IPv6-only WG config still gets its address — better a
+        # possibly-failing v6 tunnel than none at all.
+        node = _make_node(
+            protocol="wireguard", transport="tcp", tls="none",
+            wg_private_key="privkey", wg_public_key="pubkey",
+            wg_local_address="fc00:bbbb::2/128",
+        )
+        cfg = generate_config(node, [node], [], "global", _default_settings())
+        ob = _find_outbound(cfg, "node-1")
+        assert ob["settings"]["address"] == ["fc00:bbbb::2/128"]
+
+    @pytest.mark.parametrize("kwargs", [
+        {"protocol": "vless", "uuid": "u", "tls": "none"},
+        {"protocol": "vmess", "uuid": "u", "tls": "none"},
+        {"protocol": "trojan", "password": "p"},
+        {"protocol": "ss", "password": "p"},
+    ])
+    def test_only_wireguard_has_an_interface_address(self, kwargs):
+        # The "failed to find available ipv6 table" failure comes from
+        # xray's userspace WireGuard bringing up a netstack for the
+        # `settings.address` interface CIDRs. NO other protocol has that
+        # field — they dial the server via vnext/servers — so the failure
+        # mode is WG-exclusive. Guard that it stays that way.
+        node = _make_node(transport="tcp", **kwargs)
+        cfg = generate_config(node, [node], [], "global", _default_settings())
+        ob = _find_outbound(cfg, "node-1")
+        assert ob is not None
+        assert "address" not in ob["settings"], (
+            f"{kwargs['protocol']} grew a WG-style interface address"
+        )
+
+    def test_vless_ipv6_server_address_is_not_an_interface_table(self):
+        # An IPv6 SERVER address is a dial target (goes in vnext), not an
+        # interface address — it can fail to connect on an IPv4-only box,
+        # but never with the WG "ipv6 table" error.
+        node = _make_node(
+            protocol="vless", uuid="u", tls="none",
+            address="2001:db8::1",
+        )
+        cfg = generate_config(node, [node], [], "global", _default_settings())
+        ob = _find_outbound(cfg, "node-1")
+        assert "address" not in ob["settings"]
+        assert ob["settings"]["vnext"][0]["address"] == "2001:db8::1"
+
     def test_hy2_outbound_has_mark_255(self):
         node = _make_node(protocol="hy2", password="secret")
         cfg = generate_config(node, [node], [], "global", _default_settings())
