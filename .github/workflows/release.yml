@@ -264,12 +264,31 @@ jobs:
             echo "Tag ${{ github.ref_name }} → publishing as stable release (Latest)."
           fi
 
+      # Pull the human-written section for this exact tag out of
+      # CHANGELOG.md (from `## v<tag>` to the next `## v…` header) so the
+      # Releases page shows real notes, not just the auto compare-link.
+      # Empty file if the tag isn't in CHANGELOG — `generate_release_notes`
+      # still supplies the compare link, so nothing breaks.
+      - name: Extract changelog section for this tag
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+        run: |
+          awk -v tag="${{ github.ref_name }}" '
+            $0 ~ ("^## " tag "([ \t]|$)") {f=1; print; next}
+            f && /^## v/ {f=0}
+            f {print}
+          ' CHANGELOG.md > RELEASE_NOTES.md
+          echo "---- release notes for ${{ github.ref_name }} ----"
+          cat RELEASE_NOTES.md
+
       - name: Create / update GitHub Release with assets
         if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@b4309332981a82ec1c5618f44dd2e27cc8bfbfda # v3.0.0
         with:
           tag_name: ${{ github.ref_name }}
           name: ${{ github.ref_name }}
+          # CHANGELOG section first; generate_release_notes appends the
+          # auto compare-link / PR list below it.
+          body_path: RELEASE_NOTES.md
           generate_release_notes: true
           fail_on_unmatched_files: true
           files: release/*
