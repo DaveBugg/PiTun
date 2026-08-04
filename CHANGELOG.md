@@ -4,6 +4,21 @@ All notable user-facing changes to PiTun. Full per-release detail lives in the
 [GitHub Releases](https://github.com/DaveBugg/PiTun/releases); this file is the
 committed summary.
 
+## v1.4.11 — 2026-08-04
+
+Hotfix.
+
+### Fixed
+
+- **In-UI update reported "failed" right after it succeeded.** The update
+  agent (`pitun-update.sh`) runs under `set -u`, and its temp-dir cleanup
+  `trap 'rm -rf "$tmp"' RETURN` could re-fire on a later function return —
+  after `$tmp` had gone out of scope — aborting the script with
+  `tmp: unbound variable`. This happened *after* the update had already
+  applied and written an `ok` status, so the box ended up on the new version
+  while the systemd unit went to `failed`. The trap now guards with
+  `${tmp:-}`, so a clean update ends clean.
+
 ## v1.4.10 — 2026-08-04
 
 Bundled **xray-core moves to 26.7.28**, and every server / panel operation can

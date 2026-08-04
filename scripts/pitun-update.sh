@@ -343,7 +343,11 @@ warn_if_losing_update_ui() {
 apply_update() {
     local tag="$1"
     local tmp; tmp="$(mktemp -d /tmp/pitun-update.XXXXXX)"
-    trap 'rm -rf "$tmp"' RETURN
+    # `${tmp:-}` guard: this RETURN trap can re-fire on a later function's
+    # return (after `tmp` has gone out of scope), and `set -u` would then
+    # abort with "tmp: unbound variable" — right after a successful update,
+    # flipping the systemd unit to failed even though the update applied.
+    trap 'rm -rf "${tmp:-}"' RETURN
 
     STATE_TO="$tag"
     status_write running 5 fetch-installer "Fetching installer for ${tag}"
