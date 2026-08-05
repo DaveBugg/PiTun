@@ -122,7 +122,7 @@ export function NodeFilterPopup({ value, onChange, protocols, groups = [] }: Nod
         className={clsx(
           'flex items-center gap-1.5 rounded-lg border px-2.5 py-2 text-sm transition-colors',
           activeCount > 0
-            ? 'border-brand-700/60 bg-brand-900/30 text-brand-300 hover:bg-brand-900/50'
+            ? 'border-brand-700/60 bg-brand-50 text-brand-700 dark:bg-brand-500/15 dark:text-brand-200 hover:bg-brand-50 dark:hover:bg-brand-900/50'
             : 'border-gray-800 bg-gray-900 text-gray-400 hover:text-gray-200 hover:border-gray-700',
         )}
         title={t('Filters', 'Фильтры')}
@@ -149,7 +149,7 @@ export function NodeFilterPopup({ value, onChange, protocols, groups = [] }: Nod
               <button
                 type="button"
                 onClick={clearAll}
-                className="text-[11px] text-brand-400 hover:text-brand-300 inline-flex items-center gap-1"
+                className="text-[11px] text-brand-400 hover:text-brand-700 dark:hover:text-brand-300 inline-flex items-center gap-1"
               >
                 <X className="h-3 w-3" />
                 {t('Clear', 'Сбросить')}
@@ -167,7 +167,7 @@ export function NodeFilterPopup({ value, onChange, protocols, groups = [] }: Nod
             <select
               value={sourceValue}
               onChange={(e) => handleSourceChange(e.target.value)}
-              className="w-full rounded-md border border-gray-800 bg-gray-900 px-2 py-1.5 text-sm text-gray-200 focus:border-brand-600 focus:outline-none"
+              className="w-full rounded-md border border-gray-800 bg-gray-900 px-2 py-1.5 text-sm text-gray-200 focus:border-brand-400 focus:outline-hidden"
             >
               <option value="">{t('All sources', 'Все источники')}</option>
               <option value="local">
@@ -241,7 +241,7 @@ export function NodeFilterPopup({ value, onChange, protocols, groups = [] }: Nod
               <select
                 value={value.group ?? ''}
                 onChange={(e) => set('group', e.target.value === '' ? undefined : e.target.value)}
-                className="w-full rounded-md border border-gray-800 bg-gray-900 px-2 py-1.5 text-sm text-gray-200 focus:border-brand-600 focus:outline-none"
+                className="w-full rounded-md border border-gray-800 bg-gray-900 px-2 py-1.5 text-sm text-gray-200 focus:border-brand-400 focus:outline-hidden"
               >
                 <option value="">{t('All groups', 'Все группы')}</option>
                 {groups.map((g) => (
@@ -262,7 +262,7 @@ function FilterChip({ active, onClick, label }: { active: boolean; onClick: () =
       type="button"
       onClick={onClick}
       className={clsx(
-        'rounded px-2 py-1 text-xs font-medium transition-colors',
+        'rounded-sm px-2 py-1 text-xs font-medium transition-colors',
         active
           ? 'bg-brand-600 text-white'
           : 'bg-gray-800 text-gray-400 hover:bg-gray-700',

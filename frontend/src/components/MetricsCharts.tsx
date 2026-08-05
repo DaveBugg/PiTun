@@ -105,13 +105,13 @@ export function MetricsCharts() {
                 icon={Cpu}
                 label="CPU"
                 value={`${latest.cpu.toFixed(1)}%`}
-                color="text-yellow-400"
+                color="text-yellow-600 dark:text-yellow-400"
               />
               <SummaryCard
                 icon={MemoryStick}
                 label="RAM"
                 value={`${latest.ram_used.toFixed(0)} / ${latest.ram_total.toFixed(0)} MB`}
-                color="text-blue-400"
+                color="text-blue-600 dark:text-blue-400"
               />
               <SummaryCard
                 icon={HardDrive}
@@ -125,7 +125,7 @@ export function MetricsCharts() {
                 value={netData.length > 0
                   ? `↓${formatKbps(netData[netData.length - 1].recv_rate)} ↑${formatKbps(netData[netData.length - 1].sent_rate)}`
                   : '—'}
-                color="text-green-400"
+                color="text-green-600 dark:text-green-400"
               />
             </div>
           )}

@@ -72,7 +72,7 @@ function Input({
         value={value}
         onChange={(e) => onChange(e.target.value)}
         placeholder={placeholder}
-        className="w-full rounded bg-gray-800 border border-gray-700 px-3 py-1.5 text-sm text-gray-100 font-mono focus:border-brand-500 focus:outline-none"
+        className="w-full rounded-sm bg-gray-800 border border-gray-700 px-3 py-1.5 text-sm text-gray-100 font-mono focus:border-brand-500 focus:outline-hidden"
       />
     </div>
   )
@@ -118,7 +118,7 @@ function DnsSettingsSection({
         <select
           value={form.dns_mode}
           onChange={(e) => set('dns_mode', e.target.value)}
-          className="rounded bg-gray-800 border border-gray-700 px-3 py-1.5 text-sm text-gray-100 focus:border-brand-500 focus:outline-none"
+          className="rounded-sm bg-gray-800 border border-gray-700 px-3 py-1.5 text-sm text-gray-100 focus:border-brand-500 focus:outline-hidden"
         >
           <option value="plain">Plain DNS (UDP)</option>
           <option value="doh">DNS-over-HTTPS (DoH) — encrypted</option>
@@ -232,7 +232,7 @@ function DnsSettingsSection({
           <select
             value={form.dns_query_strategy ?? 'UseIPv4'}
             onChange={(e) => set('dns_query_strategy', e.target.value)}
-            className="w-full rounded bg-gray-800 border border-gray-700 px-3 py-1.5 text-sm text-gray-100 focus:border-brand-500 focus:outline-none"
+            className="w-full rounded-sm bg-gray-800 border border-gray-700 px-3 py-1.5 text-sm text-gray-100 focus:border-brand-500 focus:outline-hidden"
           >
             <option value="UseIPv4">UseIPv4 — IPv4 only (recommended, no leak)</option>
             <option value="UseIP">UseIP — IPv4 + IPv6 (may leak)</option>
@@ -338,7 +338,7 @@ function RuleForm({
           <select
             value={form.dns_type}
             onChange={(e) => set('dns_type', e.target.value as DnsRuleCreate['dns_type'])}
-            className="w-full rounded bg-gray-800 border border-gray-700 px-3 py-1.5 text-sm text-gray-100 focus:border-brand-500 focus:outline-none"
+            className="w-full rounded-sm bg-gray-800 border border-gray-700 px-3 py-1.5 text-sm text-gray-100 focus:border-brand-500 focus:outline-hidden"
           >
             <option value="plain">Plain (UDP)</option>
             <option value="doh">DoH (encrypted)</option>
@@ -355,7 +355,7 @@ function RuleForm({
         <div className="ml-auto flex gap-2">
           <button
             onClick={onCancel}
-            className="flex items-center gap-1 rounded px-3 py-1.5 text-xs bg-gray-700 text-gray-300 hover:bg-gray-600 transition-colors"
+            className="flex items-center gap-1 rounded-sm px-3 py-1.5 text-xs bg-gray-700 text-gray-300 hover:bg-gray-600 transition-colors"
           >
             <X className="h-3.5 w-3.5" />
             Cancel
@@ -363,7 +363,7 @@ function RuleForm({
           <button
             onClick={() => onSubmit(form)}
             disabled={submitting || !form.domain_match || !form.dns_server}
-            className="flex items-center gap-1 rounded px-3 py-1.5 text-xs bg-brand-600 text-white hover:bg-brand-500 disabled:opacity-50 transition-colors"
+            className="flex items-center gap-1 rounded-sm px-3 py-1.5 text-xs bg-brand-600 text-white hover:bg-brand-500 disabled:opacity-50 transition-colors"
           >
             <Save className="h-3.5 w-3.5" />
             {submitting ? 'Saving…' : 'Save Rule'}
@@ -471,7 +471,7 @@ function DnsRulesSection({
                     </td>
                     <td className="py-2 pr-4">
                       {rule.enabled
-                        ? <CheckCircle className="h-3.5 w-3.5 text-green-400" />
+                        ? <CheckCircle className="h-3.5 w-3.5 text-green-600 dark:text-green-400" />
                         : <XCircle className="h-3.5 w-3.5 text-gray-600" />
                       }
                     </td>
@@ -479,14 +479,14 @@ function DnsRulesSection({
                       <div className="flex items-center justify-end gap-1">
                         <button
                           onClick={() => setEditId(rule.id)}
-                          className="rounded p-1 text-gray-500 hover:text-gray-200 hover:bg-gray-700 transition-colors"
+                          className="rounded-sm p-1 text-gray-500 hover:text-gray-200 hover:bg-gray-700 transition-colors"
                           title="Edit"
                         >
                           <Pencil className="h-3.5 w-3.5" />
                         </button>
                         <button
                           onClick={() => onDelete(rule.id)}
-                          className="rounded p-1 text-gray-500 hover:text-red-400 hover:bg-gray-700 transition-colors"
+                          className="rounded-sm p-1 text-gray-500 hover:text-red-400 hover:bg-gray-700 transition-colors"
                           title="Delete"
                         >
                           <Trash2 className="h-3.5 w-3.5" />
@@ -520,11 +520,11 @@ function XrayServerLabel({ server }: { server: string }) {
   if (isCache)
     return <span className="font-mono text-gray-400">cache hit</span>
   if (isFakeDns)
-    return <span className="font-mono text-purple-400">fakedns</span>
+    return <span className="font-mono text-purple-600 dark:text-purple-400">fakedns</span>
   return (
     <span className="inline-flex items-center gap-1.5">
-      <CheckCircle className="h-3.5 w-3.5 text-green-400 flex-shrink-0" />
-      <span className="font-mono text-green-400">{server}</span>
+      <CheckCircle className="h-3.5 w-3.5 text-green-600 dark:text-green-400 shrink-0" />
+      <span className="font-mono text-green-600 dark:text-green-400">{server}</span>
     </span>
   )
 }
@@ -612,13 +612,13 @@ function DnsTestSection() {
       {result && (
         <div className="rounded-lg border border-gray-700 bg-gray-800/50 p-4 text-xs space-y-2">
           {result.error ? (
-            <div className="flex items-center gap-2 text-red-400">
+            <div className="flex items-center gap-2 text-red-600 dark:text-red-400">
               <XCircle className="h-4 w-4" />
               <span>{result.error}</span>
             </div>
           ) : (
             <>
-              <div className="flex items-center gap-2 text-green-400">
+              <div className="flex items-center gap-2 text-green-600 dark:text-green-400">
                 <CheckCircle className="h-4 w-4" />
                 <span className="font-mono">{result.resolved_ips.join(', ')}</span>
               </div>
@@ -692,7 +692,7 @@ function DnsQueryLogSection({
   const showDebugWarning = enabled && logLevel && logLevel !== 'debug'
 
   const rowColor = (entry: DnsQueryLog): string => {
-    if (entry.server_used === 'fakedns') return 'text-purple-300'
+    if (entry.server_used === 'fakedns') return 'text-purple-700 dark:text-purple-300'
     if (entry.cache_hit) return 'text-gray-500'
     return 'text-gray-200'
   }
@@ -719,7 +719,7 @@ function DnsQueryLogSection({
           <button
             onClick={() => clearLogs.mutate()}
             disabled={clearLogs.isPending || !enabled}
-            className="flex items-center gap-1 rounded px-2.5 py-1.5 text-xs bg-gray-700 text-gray-300 hover:bg-red-900/40 hover:text-red-300 disabled:opacity-40 transition-colors"
+            className="flex items-center gap-1 rounded-sm px-2.5 py-1.5 text-xs bg-gray-700 text-gray-300 hover:bg-red-50 dark:hover:bg-red-900/40 hover:text-red-700 dark:hover:text-red-300 disabled:opacity-40 transition-colors"
           >
             <Trash2 className="h-3.5 w-3.5" />
             Clear
@@ -727,7 +727,7 @@ function DnsQueryLogSection({
           <button
             onClick={() => { refetchLogs(); refetchStats() }}
             disabled={!enabled}
-            className="flex items-center gap-1 rounded px-2.5 py-1.5 text-xs bg-gray-700 text-gray-300 hover:bg-gray-600 disabled:opacity-40 transition-colors"
+            className="flex items-center gap-1 rounded-sm px-2.5 py-1.5 text-xs bg-gray-700 text-gray-300 hover:bg-gray-600 disabled:opacity-40 transition-colors"
           >
             <RefreshCw className="h-3.5 w-3.5" />
             Refresh
@@ -737,8 +737,8 @@ function DnsQueryLogSection({
 
       {/* Debug level warning */}
       {showDebugWarning && (
-        <div className="flex items-center gap-2 rounded-lg bg-yellow-900/20 border border-yellow-700/40 px-3 py-2 text-xs text-yellow-300">
-          <AlertTriangle className="h-3.5 w-3.5 flex-shrink-0" />
+        <div className="flex items-center gap-2 rounded-lg bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-700/40 px-3 py-2 text-xs text-yellow-700 dark:text-yellow-300">
+          <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
           DNS query logging requires log_level=debug. Current level: <span className="font-mono font-bold ml-1">{logLevel}</span>.
           Change it in System → Settings.
         </div>
@@ -785,7 +785,7 @@ function DnsQueryLogSection({
                 value={domainFilter}
                 onChange={(e) => { setDomainFilter(e.target.value); setOffset(0) }}
                 placeholder="Filter domain…"
-                className="w-full rounded bg-gray-800 border border-gray-700 px-3 py-1.5 text-xs text-gray-100 font-mono focus:border-brand-500 focus:outline-none"
+                className="w-full rounded-sm bg-gray-800 border border-gray-700 px-3 py-1.5 text-xs text-gray-100 font-mono focus:border-brand-500 focus:outline-hidden"
               />
             </div>
             <Toggle
@@ -819,7 +819,7 @@ function DnsQueryLogSection({
                       <td className="py-1.5 pr-3 font-mono whitespace-nowrap">{formatTime(entry.timestamp)}</td>
                       <td className="py-1.5 pr-3 font-mono max-w-48 truncate">{entry.domain}</td>
                       <td className="py-1.5 pr-3">
-                        <span className="rounded px-1.5 py-0.5 bg-gray-800 text-gray-400">{entry.query_type}</span>
+                        <span className="rounded-sm px-1.5 py-0.5 bg-gray-800 text-gray-400">{entry.query_type}</span>
                       </td>
                       <td className="py-1.5 pr-3 font-mono max-w-40 truncate">
                         {entry.resolved_ips.join(', ') || '—'}
@@ -829,7 +829,7 @@ function DnsQueryLogSection({
                           entry.server_used === 'cache'
                             ? 'text-gray-500'
                             : entry.server_used === 'fakedns'
-                            ? 'text-purple-400'
+                            ? 'text-purple-600 dark:text-purple-400'
                             : 'text-gray-300'
                         }>
                           {entry.server_used}
@@ -848,7 +848,7 @@ function DnsQueryLogSection({
               {offset > 0 && (
                 <button
                   onClick={() => setOffset((o) => Math.max(0, o - LIMIT))}
-                  className="rounded px-3 py-1.5 text-xs bg-gray-700 text-gray-300 hover:bg-gray-600 transition-colors"
+                  className="rounded-sm px-3 py-1.5 text-xs bg-gray-700 text-gray-300 hover:bg-gray-600 transition-colors"
                 >
                   ← Previous
                 </button>
@@ -856,7 +856,7 @@ function DnsQueryLogSection({
               {logs.length === LIMIT && (
                 <button
                   onClick={() => setOffset((o) => o + LIMIT)}
-                  className="rounded px-3 py-1.5 text-xs bg-gray-700 text-gray-300 hover:bg-gray-600 transition-colors"
+                  className="rounded-sm px-3 py-1.5 text-xs bg-gray-700 text-gray-300 hover:bg-gray-600 transition-colors"
                 >
                   Load More →
                 </button>

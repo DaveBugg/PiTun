@@ -35,8 +35,8 @@ const FORBIDDEN_HEADERS = new Set([
 const HEADER_NAME_PATTERN = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/
 
 const INPUT_CLASS =
-  'w-full rounded bg-gray-800 border border-gray-700 px-3 py-1.5 text-sm ' +
-  'text-gray-100 focus:border-brand-500 focus:outline-none'
+  'w-full rounded-sm bg-gray-800 border border-gray-700 px-3 py-1.5 text-sm ' +
+  'text-gray-100 focus:border-brand-500 focus:outline-hidden'
 
 /** A headers row while it's being edited — order-preserving, name may be blank. */
 interface HeaderRow {
@@ -346,7 +346,7 @@ function TemplateForm({
           <button
             type="button"
             onClick={() => setRows((rs) => [...rs, { name: '', value: '' }])}
-            className="flex items-center gap-1 rounded px-2 py-1 text-xs text-brand-400 hover:bg-gray-800 transition-colors"
+            className="flex items-center gap-1 rounded-sm px-2 py-1 text-xs text-brand-400 hover:bg-gray-800 transition-colors"
           >
             <Plus className="h-3.5 w-3.5" />
             {t('Add header', 'Добавить заголовок')}
@@ -383,7 +383,7 @@ function TemplateForm({
                   onClick={() => setRows((rs) => rs.filter((_, idx) => idx !== i))}
                   title={t('Remove header', 'Убрать заголовок')}
                   aria-label={t(`Remove header ${i + 1}`, `Убрать заголовок ${i + 1}`)}
-                  className="rounded p-1.5 text-gray-500 hover:text-red-400 hover:bg-gray-800 transition-colors flex-shrink-0"
+                  className="rounded-sm p-1.5 text-gray-500 hover:text-red-400 hover:bg-gray-800 transition-colors shrink-0"
                 >
                   <X className="h-4 w-4" />
                 </button>
@@ -396,9 +396,9 @@ function TemplateForm({
       {error && (
         <div
           role="alert"
-          className="flex items-start gap-2 rounded-lg bg-red-900/30 border border-red-700/50 p-3 text-sm text-red-300"
+          className="flex items-start gap-2 rounded-lg bg-red-50 dark:bg-red-900/30 border border-red-200 dark:border-red-700/50 p-3 text-sm text-red-700 dark:text-red-300"
         >
-          <AlertCircle className="h-4 w-4 mt-0.5 flex-shrink-0" />
+          <AlertCircle className="h-4 w-4 mt-0.5 shrink-0" />
           <span>{error}</span>
         </div>
       )}
@@ -466,7 +466,7 @@ function TemplateTable({
                   <div className="flex items-center gap-1.5">
                     <span className="text-gray-100">{tpl.name}</span>
                     {tpl.builtin && (
-                      <span className="rounded bg-gray-800 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-gray-500">
+                      <span className="rounded-sm bg-gray-800 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-gray-500">
                         {t('default', 'станд.')}
                       </span>
                     )}
@@ -494,7 +494,7 @@ function TemplateTable({
                       title={Object.entries(tpl.headers)
                         .map(([k, v]) => `${k}: ${v || '(removed)'}`)
                         .join('\n')}
-                      className="rounded bg-brand-600/20 px-1.5 py-0.5 text-xs text-brand-300"
+                      className="rounded-sm bg-brand-50 dark:bg-brand-600/20 px-1.5 py-0.5 text-xs text-brand-300"
                     >
                       +{headerCount}
                     </span>
@@ -511,7 +511,7 @@ function TemplateTable({
                       onClick={() => onEdit(tpl)}
                       title={t('Edit', 'Изменить')}
                       aria-label={t(`Edit ${tpl.name}`, `Изменить ${tpl.name}`)}
-                      className="rounded p-1.5 text-gray-500 hover:text-gray-200 hover:bg-gray-800 transition-colors"
+                      className="rounded-sm p-1.5 text-gray-500 hover:text-gray-200 hover:bg-gray-800 transition-colors"
                     >
                       <Pencil className="h-4 w-4" />
                     </button>
@@ -520,7 +520,7 @@ function TemplateTable({
                       disabled={deletingId === tpl.id}
                       title={t('Delete', 'Удалить')}
                       aria-label={t(`Delete ${tpl.name}`, `Удалить ${tpl.name}`)}
-                      className="rounded p-1.5 text-gray-500 hover:text-red-400 hover:bg-gray-800 transition-colors disabled:opacity-50"
+                      className="rounded-sm p-1.5 text-gray-500 hover:text-red-400 hover:bg-gray-800 transition-colors disabled:opacity-50"
                     >
                       {deletingId === tpl.id
                         ? <Loader2 className="h-4 w-4 animate-spin" />
@@ -632,12 +632,12 @@ export function UserAgentTemplatesModal({
                 onClick={() => setView('list')}
                 title={t('Back to list', 'Назад к списку')}
                 aria-label={t('Back to list', 'Назад к списку')}
-                className="rounded p-1 text-gray-500 hover:text-gray-200 hover:bg-gray-800 transition-colors"
+                className="rounded-sm p-1 text-gray-500 hover:text-gray-200 hover:bg-gray-800 transition-colors"
               >
                 <ArrowLeft className="h-4 w-4" />
               </button>
             ) : (
-              <Fingerprint className="h-5 w-5 text-brand-400 flex-shrink-0" />
+              <Fingerprint className="h-5 w-5 text-brand-400 shrink-0" />
             )}
             <h2 id={titleId} className="text-base font-semibold text-gray-100 truncate">
               {view === 'list'
@@ -650,7 +650,7 @@ export function UserAgentTemplatesModal({
           {view === 'list' && (
             <button
               onClick={() => { setEditing(undefined); setView('form') }}
-              className="flex items-center gap-1.5 rounded-lg bg-brand-600 px-3 py-2 text-sm font-medium text-white hover:bg-brand-500 transition-colors flex-shrink-0"
+              className="flex items-center gap-1.5 rounded-lg bg-brand-600 px-3 py-2 text-sm font-medium text-white hover:bg-brand-500 transition-colors shrink-0"
             >
               <Plus className="h-4 w-4" />
               {t('Add', 'Добавить')}
@@ -676,9 +676,9 @@ export function UserAgentTemplatesModal({
             {listError && (
               <div
                 role="alert"
-                className="flex items-start gap-2 rounded-lg bg-red-900/30 border border-red-700/50 p-3 text-sm text-red-300"
+                className="flex items-start gap-2 rounded-lg bg-red-50 dark:bg-red-900/30 border border-red-200 dark:border-red-700/50 p-3 text-sm text-red-700 dark:text-red-300"
               >
-                <AlertCircle className="h-4 w-4 mt-0.5 flex-shrink-0" />
+                <AlertCircle className="h-4 w-4 mt-0.5 shrink-0" />
                 <span>{listError}</span>
               </div>
             )}

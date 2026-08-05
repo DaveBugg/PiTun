@@ -42,6 +42,8 @@ export interface GeoProfile {
   id: 'loyalsoldier' | 'runetfreedom' | 'v2fly'
   label: string
   description: string
+  /** Russian translation of `description` (code/category names stay EN). */
+  descriptionRu: string
   /** Approximate geosite size hint shown to the user. */
   geositeSize: string
   urls: {
@@ -173,6 +175,8 @@ export const GEO_PROFILES: GeoProfile[] = [
     label: 'Loyalsoldier',
     description:
       'Community-standard CN-focused list with a decent RU base. Adds `geosite:gfw`, `geoip:telegram`, and other shortcuts on top of v2fly upstream. Good baseline for users routing both RU and CN traffic.',
+    descriptionRu:
+      'Стандартный community-список с уклоном в CN и неплохой базой по RU. Добавляет `geosite:gfw`, `geoip:telegram` и другие шорткаты поверх upstream v2fly. Хорошая база для маршрутизации и RU, и CN трафика.',
     geositeSize: '~10 MB',
     urls: {
       geoip_url:
@@ -188,6 +192,8 @@ export const GEO_PROFILES: GeoProfile[] = [
     label: 'v2fly upstream',
     description:
       'Pure upstream from the v2fly maintainers — the canonical source that both Loyalsoldier and runetfreedom build on. Smallest download (~2 MB geosite). Same `category-ru`, `tld-ru`, `cn`, `category-ads-all` names work, but without the curated extras (no `gfw`, no `geoip:telegram`).',
+    descriptionRu:
+      'Чистый upstream от мейнтейнеров v2fly — канонический источник, на котором строятся и Loyalsoldier, и runetfreedom. Самая маленькая загрузка (~2 MB geosite). Работают те же `category-ru`, `tld-ru`, `cn`, `category-ads-all`, но без кураторских дополнений (нет `gfw`, нет `geoip:telegram`).',
     geositeSize: '~2 MB',
     urls: {
       geoip_url:
@@ -203,6 +209,8 @@ export const GEO_PROFILES: GeoProfile[] = [
     label: 'runetfreedom (RU-focused)',
     description:
       'Russia-focused list with extensive RU coverage and daily updates. Includes blocked-in-RU site lists (`ru-blocked`, `ru-blocked-all`) and Russian telecom categories (`mts-ru`, `t2-ru`, `tbank-ru`). Larger download (~67 MB geosite, 6× Loyalsoldier).',
+    descriptionRu:
+      'Список с уклоном в Россию: обширное покрытие RU и ежедневные обновления. Включает списки заблокированных в РФ сайтов (`ru-blocked`, `ru-blocked-all`) и категории телекомов (`mts-ru`, `t2-ru`, `tbank-ru`). Большая загрузка (~67 MB geosite, в 6× больше Loyalsoldier).',
     geositeSize: '~67 MB',
     urls: {
       geoip_url:

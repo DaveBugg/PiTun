@@ -75,13 +75,13 @@ export function UninstallModal({
     <ModalShell onClose={onClose} labelledBy="uninstall-modal-title">
       <div className="w-full max-w-3xl rounded-2xl bg-gray-950/95 border border-gray-800 p-6 m-4 max-h-[90vh] overflow-y-auto">
         <div className="flex items-start gap-3 mb-4">
-          <div className="rounded-lg bg-red-600/15 p-2 text-red-400">
+          <div className="rounded-lg bg-red-600/15 p-2 text-red-600 dark:text-red-400">
             <Trash2 className="h-5 w-5" />
           </div>
           <div className="flex-1 min-w-0">
             <h2 id="uninstall-modal-title" className="text-lg font-semibold text-gray-100">
               {t('Uninstall', 'Удалить')}{' '}
-              <span className="text-red-300">{
+              <span className="text-red-700 dark:text-red-300">{
                 protocol === 'naive' ? 'NaiveProxy'
                   : protocol === 'wireguard' ? 'WireGuard'
                   : 'x-ui'
@@ -156,21 +156,21 @@ function ConfirmView(props: {
   return (
     <div>
       {props.error && (
-        <div className="mb-3 rounded-lg bg-red-900/30 border border-red-700/50 px-3 py-2 text-sm text-red-300 flex items-start gap-2">
-          <AlertTriangle className="h-4 w-4 mt-0.5 flex-shrink-0" />
+        <div className="mb-3 rounded-lg bg-red-50 dark:bg-red-900/30 border border-red-200 dark:border-red-700/50 px-3 py-2 text-sm text-red-700 dark:text-red-300 flex items-start gap-2">
+          <AlertTriangle className="h-4 w-4 mt-0.5 shrink-0" />
           <span>{props.error}</span>
         </div>
       )}
 
-      <div className="rounded-xl border border-red-700/50 bg-red-900/15 px-4 py-3 mb-4">
-        <div className="flex items-start gap-2 text-sm text-red-200 mb-2">
-          <AlertTriangle className="h-4 w-4 mt-0.5 flex-shrink-0 text-red-400" />
+      <div className="rounded-xl border border-red-200 dark:border-red-700/50 bg-red-50 dark:bg-red-900/15 px-4 py-3 mb-4">
+        <div className="flex items-start gap-2 text-sm text-red-800 dark:text-red-200 mb-2">
+          <AlertTriangle className="h-4 w-4 mt-0.5 shrink-0 text-red-600 dark:text-red-400" />
           <strong>{t('This will wipe:', 'Будет удалено:')}</strong>
         </div>
-        <ul className="text-xs text-red-200/90 space-y-1 ml-6 list-disc list-outside">
+        <ul className="text-xs text-red-800 dark:text-red-200/90 space-y-1 ml-6 list-disc list-outside">
           {wipeList.map((line) => <li key={line}>{line}</li>)}
         </ul>
-        <p className="mt-3 text-[11px] text-red-300/70 ml-6">
+        <p className="mt-3 text-[11px] text-red-700 dark:text-red-300/70 ml-6">
           {t(
             'SSH hardening / firewall rules from earlier installs are NOT touched. Idempotent — safe to re-run on partially-cleaned systems.',
             'Изменения SSH-hardening и firewall, сделанные ранее, не затрагиваются. Идемпотентно — безопасно перезапускать на частично-очищенной системе.',
@@ -263,7 +263,7 @@ function UninstallRunning({
         <div className="flex items-center gap-2 px-3 py-1.5 border-b border-gray-800/60 bg-gray-900/50 text-xs text-gray-500">
           <Terminal className="h-3.5 w-3.5" />
           <span className="font-mono">job {jobId.slice(0, 12)}…</span>
-          {isRunning && <Loader2 className="h-3 w-3 animate-spin text-red-400 ml-1" />}
+          {isRunning && <Loader2 className="h-3 w-3 animate-spin text-red-600 dark:text-red-400 ml-1" />}
           <Link
             to={`/server-tasks?server_id=${server.id}`}
             className="ml-auto text-[11px] text-gray-500 hover:text-brand-400 inline-flex items-center gap-1"
@@ -280,7 +280,7 @@ function UninstallRunning({
             type="button"
             onClick={onCancel}
             disabled={cancel.isPending}
-            className="rounded-lg border border-red-800/60 bg-red-900/20 hover:bg-red-900/30 text-red-300 px-3 py-1.5 text-sm flex items-center gap-1.5 disabled:opacity-50 transition-colors"
+            className="rounded-lg border border-red-200 dark:border-red-800/60 bg-red-50 dark:bg-red-900/20 hover:bg-red-50 dark:hover:bg-red-900/30 text-red-700 dark:text-red-300 px-3 py-1.5 text-sm flex items-center gap-1.5 disabled:opacity-50 transition-colors"
             title={t(
               'Cancel local stream — remote script keeps running on the VPS',
               'Отменить локальный поток — скрипт продолжит работу на VPS',
@@ -323,7 +323,7 @@ function StatusBanner({
   const t = useT()
   if (status === 'running') {
     return (
-      <div className="rounded-lg border border-red-700/40 bg-red-900/10 px-3 py-2 text-sm text-red-300 flex items-center gap-2">
+      <div className="rounded-lg border border-red-200 dark:border-red-700/40 bg-red-50 dark:bg-red-900/10 px-3 py-2 text-sm text-red-700 dark:text-red-300 flex items-center gap-2">
         <Loader2 className="h-4 w-4 animate-spin" />
         <span>{t('Running uninstaller…', 'Идёт удаление…')}</span>
       </div>
@@ -331,11 +331,11 @@ function StatusBanner({
   }
   if (status === 'cancelled') {
     return (
-      <div className="rounded-lg border border-yellow-700/40 bg-yellow-900/10 px-3 py-2 text-sm text-yellow-300 flex items-start gap-2">
+      <div className="rounded-lg border border-yellow-200 dark:border-yellow-700/40 bg-yellow-50 dark:bg-yellow-900/10 px-3 py-2 text-sm text-yellow-700 dark:text-yellow-300 flex items-start gap-2">
         <Ban className="h-4 w-4 mt-0.5" />
         <div>
           <div className="font-medium">{t('Cancelled', 'Отменено')}</div>
-          <div className="text-xs text-yellow-300/80 mt-0.5">
+          <div className="text-xs text-yellow-700 dark:text-yellow-300/80 mt-0.5">
             {t(
               'The uninstall script may still be running on the VPS. Re-run when ready, or check the server manually.',
               'Скрипт удаления может всё ещё работать на VPS. Повторите запуск или проверьте сервер вручную.',
@@ -347,17 +347,17 @@ function StatusBanner({
   }
   if (status === 'failed') {
     return (
-      <div className="rounded-lg border border-red-700/40 bg-red-900/10 px-3 py-2 text-sm text-red-300 flex items-start gap-2">
+      <div className="rounded-lg border border-red-200 dark:border-red-700/40 bg-red-50 dark:bg-red-900/10 px-3 py-2 text-sm text-red-700 dark:text-red-300 flex items-start gap-2">
         <AlertTriangle className="h-4 w-4 mt-0.5" />
         <div className="min-w-0">
           <div className="font-medium">{t('Uninstall failed', 'Удаление не удалось')}</div>
-          {error && <div className="text-xs text-red-300/80 mt-0.5 break-words font-mono">{error}</div>}
+          {error && <div className="text-xs text-red-700 dark:text-red-300/80 mt-0.5 wrap-break-word font-mono">{error}</div>}
         </div>
       </div>
     )
   }
   return (
-    <div className="rounded-lg border border-emerald-700/40 bg-emerald-900/10 px-3 py-2 text-sm text-emerald-300 flex items-start gap-2">
+    <div className="rounded-lg border border-emerald-200 dark:border-emerald-700/40 bg-emerald-50 dark:bg-emerald-900/10 px-3 py-2 text-sm text-emerald-700 dark:text-emerald-300 flex items-start gap-2">
       <CheckCircle2 className="h-4 w-4 mt-0.5" />
       <div className="min-w-0">
         <div className="font-medium">
@@ -366,7 +366,7 @@ function StatusBanner({
             : t('WireGuard uninstalled', 'WireGuard удалён')}
         </div>
         {result?.duration_sec ? (
-          <div className="text-xs text-emerald-300/80 mt-0.5">
+          <div className="text-xs text-emerald-700 dark:text-emerald-300/80 mt-0.5">
             {t('Took ', 'За ')}
             <span className="font-mono">{Math.round(result.duration_sec)}s</span>
             {t('. The server is ready for a fresh install.', '. Сервер готов к свежей установке.')}
@@ -411,7 +411,7 @@ function LogPanel({
         <div className="text-gray-600">…</div>
       ) : (
         lines.map((l) => (
-          <div key={l.idx} className={l.kind === 'stderr' ? 'text-red-400' : 'text-gray-300'}>
+          <div key={l.idx} className={l.kind === 'stderr' ? 'text-red-600 dark:text-red-400' : 'text-gray-300'}>
             {l.line || ' '}
           </div>
         ))

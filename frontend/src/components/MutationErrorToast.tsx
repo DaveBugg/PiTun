@@ -52,16 +52,16 @@ export function MutationErrorToast() {
   return (
     <div
       role="alert"
-      className="fixed bottom-4 right-4 z-[100] max-w-md rounded-lg border border-red-800/60 bg-red-950/90 px-4 py-3 text-sm text-red-100 shadow-lg backdrop-blur"
+      className="fixed bottom-4 right-4 z-100 max-w-md rounded-lg border border-red-200 dark:border-red-800/60 bg-red-50 dark:bg-red-950/90 px-4 py-3 text-sm text-red-100 shadow-lg backdrop-blur-sm"
     >
       <div className="flex items-start gap-2">
-        <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-red-400" />
-        <span className="min-w-0 break-words">{message}</span>
+        <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-red-600 dark:text-red-400" />
+        <span className="min-w-0 wrap-break-word">{message}</span>
         <button
           type="button"
           onClick={() => setMessage(null)}
           aria-label="Dismiss error"
-          className="-mr-1 -mt-1 shrink-0 rounded p-1 text-red-300 hover:bg-red-900/60 hover:text-red-100"
+          className="-mr-1 -mt-1 shrink-0 rounded-sm p-1 text-red-700 dark:text-red-300 hover:bg-red-50 dark:hover:bg-red-900/60 hover:text-red-100"
         >
           <X className="h-3.5 w-3.5" />
         </button>

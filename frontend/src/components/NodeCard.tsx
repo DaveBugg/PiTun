@@ -82,7 +82,7 @@ export function NodeCard({
       className={clsx(
         'rounded-xl border p-4 transition-colors',
         isActive
-          ? 'border-brand-600 bg-brand-900/20'
+          ? 'border-brand-400 bg-brand-50 dark:bg-brand-500/12'
           : 'border-gray-800 bg-gray-900/30 hover:border-gray-700',
       )}
     >
@@ -95,8 +95,8 @@ export function NodeCard({
         <div className="flex items-start gap-3 min-w-0 flex-1">
           <div
             className={clsx(
-              'mt-0.5 flex h-8 w-8 items-center justify-center rounded-lg flex-shrink-0',
-              isActive ? 'bg-brand-600' : 'bg-gray-800',
+              'mt-0.5 flex h-8 w-8 items-center justify-center rounded-lg shrink-0',
+              isActive ? 'bg-brand-600 text-white' : 'bg-gray-800 text-gray-400',
             )}
           >
             <Server className="h-4 w-4" />
@@ -106,7 +106,7 @@ export function NodeCard({
               <span className="text-xs text-gray-500 font-mono shrink-0">#{node.id}</span>
               <span className="text-sm font-medium text-gray-100 truncate">{node.name}</span>
               {isActive && (
-                <span className="rounded-full bg-brand-600/20 px-2 py-0.5 text-xs text-brand-400">
+                <span className="rounded-full bg-brand-50 dark:bg-brand-600/20 px-2 py-0.5 text-xs text-brand-400">
                   Active
                 </span>
               )}
@@ -122,26 +122,26 @@ export function NodeCard({
               <span className="text-xs text-gray-500 font-mono">
                 {node.address}:{node.port}
               </span>
-              <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-900/30 text-blue-300 border border-blue-700/40 uppercase font-mono">
+              <span className="text-[10px] px-1.5 py-0.5 rounded-sm bg-blue-100 text-blue-700 border border-blue-200 dark:bg-blue-900/30 dark:text-blue-300 dark:border-blue-700/40 uppercase font-mono">
                 {node.protocol}
               </span>
               {node.transport !== 'tcp' && (
-                <span className="text-[10px] px-1.5 py-0.5 rounded bg-green-900/30 text-green-300 border border-green-700/40 uppercase font-mono">
+                <span className="text-[10px] px-1.5 py-0.5 rounded-sm bg-green-100 text-green-700 border border-green-200 dark:bg-green-900/30 dark:text-green-300 dark:border-green-700/40 uppercase font-mono">
                   {node.transport}
                 </span>
               )}
               {node.tls === 'reality' && (
-                <span className="text-[10px] px-1.5 py-0.5 rounded bg-purple-900/30 text-purple-300 border border-purple-700/40 uppercase font-mono">
+                <span className="text-[10px] px-1.5 py-0.5 rounded-sm bg-purple-100 text-purple-700 border border-purple-200 dark:bg-purple-900/30 dark:text-purple-300 dark:border-purple-700/40 uppercase font-mono">
                   reality
                 </span>
               )}
               {node.tls === 'tls' && (
-                <span className="text-[10px] px-1.5 py-0.5 rounded bg-orange-900/30 text-orange-300 border border-orange-700/40 uppercase font-mono">
+                <span className="text-[10px] px-1.5 py-0.5 rounded-sm bg-orange-100 text-orange-700 border border-orange-200 dark:bg-orange-900/30 dark:text-orange-300 dark:border-orange-700/40 uppercase font-mono">
                   tls
                 </span>
               )}
               {node.chain_node_id && !node.chain_orphan && (
-                <span className="text-xs text-blue-400 font-mono flex items-center gap-1">
+                <span className="text-xs text-blue-600 dark:text-blue-400 font-mono flex items-center gap-1">
                   🔗 chained
                 </span>
               )}
@@ -152,7 +152,7 @@ export function NodeCard({
                   "chained" badge. */}
               {node.chain_orphan && (
                 <span
-                  className="text-xs text-red-300 font-mono flex items-center gap-1 rounded border border-red-800/50 bg-red-950/30 px-1.5 py-0.5"
+                  className="text-xs text-red-700 dark:text-red-300 font-mono flex items-center gap-1 rounded-sm border border-red-200 dark:border-red-800/50 bg-red-50 dark:bg-red-950/30 px-1.5 py-0.5"
                   title={`Chained through node #${node.chain_node_id}, which no longer exists — edit the node to pick a live relay or clear the chain.`}
                 >
                   ⛓️‍💥 chain broken
@@ -170,9 +170,9 @@ export function NodeCard({
                 return (
                   <span
                     className={clsx(
-                      'inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-[11px]',
+                      'inline-flex items-center gap-1 rounded-sm border px-1.5 py-0.5 text-[11px]',
                       s.stale
-                        ? 'border-red-800/50 bg-red-950/30 text-red-300'
+                        ? 'border-red-200 bg-red-50 text-red-700 dark:border-red-800/50 dark:bg-red-950/30 dark:text-red-300'
                         : 'border-gray-700 bg-gray-800/40 text-gray-300',
                     )}
                     title={s.stale
@@ -201,7 +201,7 @@ export function NodeCard({
                   there's no live peer on the VPS anymore. */}
               {node.client_orphan && (
                 <span
-                  className="inline-flex items-center gap-1 rounded bg-yellow-900/30 border border-yellow-700/40 px-1.5 py-0.5 text-[11px] text-yellow-300"
+                  className="inline-flex items-center gap-1 rounded-sm bg-yellow-50 dark:bg-yellow-900/30 border border-yellow-200 dark:border-yellow-700/40 px-1.5 py-0.5 text-[11px] text-yellow-700 dark:text-yellow-300"
                   title="The server-side WireGuard peer this Node was exported from no longer exists. Remove the Node, or re-add the peer on the server and re-sync."
                 >
                   <AlertCircle className="h-3 w-3" />
@@ -216,15 +216,15 @@ export function NodeCard({
             inline on tablet+. `justify-end` on sm+ keeps the visual
             anchor where users expect (right edge of card) without
             pushing content off-screen on narrow viewports. */}
-        <div className="flex items-center gap-1 flex-wrap sm:flex-nowrap sm:flex-shrink-0 sm:justify-end">
+        <div className="flex items-center gap-1 flex-wrap sm:flex-nowrap sm:shrink-0 sm:justify-end">
           {onSelect && (
             <button
               onClick={onSelect}
               title={isActive ? 'Active node' : 'Activate this node'}
               className={clsx(
-                'rounded p-1.5 transition-colors',
+                'rounded-sm p-1.5 transition-colors',
                 isActive
-                  ? 'bg-brand-600/20 text-brand-400 ring-1 ring-brand-500/40'
+                  ? 'bg-brand-50 text-brand-700 dark:bg-brand-600/20 dark:text-brand-300 ring-1 ring-brand-500/40'
                   : 'text-gray-500 hover:bg-gray-800 hover:text-brand-400',
               )}
             >
@@ -236,7 +236,7 @@ export function NodeCard({
               onClick={onCheck}
               title="Health check (TCP)"
               disabled={checkLoading}
-              className="rounded p-1.5 text-gray-500 hover:bg-gray-800 hover:text-green-400 transition-colors disabled:opacity-50"
+              className="rounded-sm p-1.5 text-gray-500 hover:bg-gray-800 hover:text-green-400 transition-colors disabled:opacity-50"
             >
               <Activity className={clsx('h-4 w-4', checkLoading && 'animate-pulse')} />
             </button>
@@ -246,7 +246,7 @@ export function NodeCard({
               onClick={onReachability}
               title="Internet check — open google.com through this node"
               disabled={reachLoading}
-              className="rounded p-1.5 text-gray-500 hover:bg-gray-800 hover:text-sky-400 transition-colors disabled:opacity-50"
+              className="rounded-sm p-1.5 text-gray-500 hover:bg-gray-800 hover:text-sky-400 transition-colors disabled:opacity-50"
             >
               <Globe className={clsx('h-4 w-4', reachLoading && 'animate-pulse')} />
             </button>
@@ -256,7 +256,7 @@ export function NodeCard({
               onClick={onSpeedtest}
               title="Speed test"
               disabled={speedLoading}
-              className="rounded p-1.5 text-gray-500 hover:bg-gray-800 hover:text-yellow-400 transition-colors disabled:opacity-50"
+              className="rounded-sm p-1.5 text-gray-500 hover:bg-gray-800 hover:text-yellow-400 transition-colors disabled:opacity-50"
             >
               <Gauge className={clsx('h-4 w-4', speedLoading && 'animate-pulse')} />
             </button>
@@ -265,7 +265,7 @@ export function NodeCard({
             <button
               onClick={onEdit}
               title="Edit"
-              className="rounded p-1.5 text-gray-500 hover:bg-gray-800 hover:text-gray-100 transition-colors"
+              className="rounded-sm p-1.5 text-gray-500 hover:bg-gray-800 hover:text-gray-100 transition-colors"
             >
               <Pencil className="h-4 w-4" />
             </button>
@@ -274,7 +274,7 @@ export function NodeCard({
             <button
               onClick={onExportUri}
               title="Copy share URL"
-              className="rounded p-1.5 text-gray-500 hover:bg-gray-800 hover:text-gray-100 transition-colors"
+              className="rounded-sm p-1.5 text-gray-500 hover:bg-gray-800 hover:text-gray-100 transition-colors"
             >
               <Link2 className="h-4 w-4" />
             </button>
@@ -283,7 +283,7 @@ export function NodeCard({
             <button
               onClick={onDelete}
               title="Delete"
-              className="rounded p-1.5 text-gray-500 hover:bg-gray-800 hover:text-red-400 transition-colors"
+              className="rounded-sm p-1.5 text-gray-500 hover:bg-gray-800 hover:text-red-400 transition-colors"
             >
               <Trash2 className="h-4 w-4" />
             </button>

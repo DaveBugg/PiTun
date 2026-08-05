@@ -61,7 +61,7 @@ export function SshPortField({
                   'оставьте пустым — текущий порт SSH не трогаем')
           }
           className={
-            'flex-1 rounded-lg bg-gray-900 border px-3 py-2 text-sm text-gray-100 focus:outline-none ' +
+            'flex-1 rounded-lg bg-gray-900 border px-3 py-2 text-sm text-gray-100 focus:outline-hidden ' +
             (invalid
               ? 'border-red-700 focus:border-red-500'
               : 'border-gray-800 focus:border-brand-500')
@@ -77,7 +77,7 @@ export function SshPortField({
         </button>
       </div>
       {invalid && (
-        <p className="mt-1 text-[11px] text-red-400">
+        <p className="mt-1 text-[11px] text-red-600 dark:text-red-400">
           {t('Port must be 1-65535.', 'Порт должен быть 1-65535.')}
         </p>
       )}

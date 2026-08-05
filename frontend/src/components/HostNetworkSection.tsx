@@ -52,6 +52,12 @@ export default function HostNetworkSection() {
     refetchInterval: 30_000,
   })
 
+  // Self-loop = the default route points at the box's own IP. Far more
+  // severe than the amber advisories (it kills ALL outbound traffic), so
+  // it gets red styling and a flag on the gateway card. Backend already
+  // emits the explanatory warning text; this is the visual escalation.
+  const selfLoop = !!(state && state.gateway && state.ip && state.gateway === state.ip)
+
   return (
     <div className="space-y-3">
       <div className="flex items-start justify-between gap-2">
@@ -65,7 +71,7 @@ export default function HostNetworkSection() {
           type="button"
           onClick={() => refetch()}
           disabled={isFetching}
-          className="shrink-0 inline-flex items-center gap-1.5 rounded-md border border-gray-700 bg-gray-900 hover:bg-gray-800 hover:border-brand-700/40 hover:text-brand-300 px-2 py-1 text-[11px] text-gray-300 disabled:opacity-50"
+          className="shrink-0 inline-flex items-center gap-1.5 rounded-md border border-gray-700 bg-gray-900 hover:bg-gray-800 hover:border-brand-400/40 hover:text-brand-700 dark:hover:text-brand-300 px-2 py-1 text-[11px] text-gray-300 disabled:opacity-50"
           title={t('Refresh host state', 'Обновить host-состояние')}
         >
           {isFetching
@@ -83,7 +89,7 @@ export default function HostNetworkSection() {
       )}
 
       {isError && (
-        <div className="flex items-start gap-2 rounded-md border border-red-900/60 bg-red-900/20 p-3 text-[12px] text-red-200">
+        <div className="flex items-start gap-2 rounded-md border border-red-200 dark:border-red-900/60 bg-red-50 dark:bg-red-900/20 p-3 text-[12px] text-red-800 dark:text-red-200">
           <AlertTriangle className="h-4 w-4 shrink-0 mt-0.5" />
           <div>{t('Failed to read network state from backend.', 'Не удалось получить сетевое состояние с backend.')}</div>
         </div>
@@ -96,15 +102,25 @@ export default function HostNetworkSection() {
              one is the primary motivator for this whole page. */}
           {state.warnings.length > 0 && (
             <div className="space-y-2">
-              {state.warnings.map((w, i) => (
-                <div
-                  key={i}
-                  className="flex items-start gap-2 rounded-md border border-amber-900/60 bg-amber-900/20 p-3 text-[12px] text-amber-200"
-                >
-                  <AlertTriangle className="h-4 w-4 shrink-0 mt-0.5" />
-                  <div>{w}</div>
-                </div>
-              ))}
+              {state.warnings.map((w, i) => {
+                // The self-loop warning (backend emits it first) is red;
+                // the rest stay amber advisories.
+                const danger = selfLoop && i === 0
+                return (
+                  <div
+                    key={i}
+                    className={
+                      'flex items-start gap-2 rounded-md border p-3 text-[12px] ' +
+                      (danger
+                        ? 'border-red-300 dark:border-red-900/60 bg-red-50 dark:bg-red-900/20 text-red-800 dark:text-red-200'
+                        : 'border-amber-200 dark:border-amber-900/60 bg-amber-50 dark:bg-amber-900/20 text-amber-800 dark:text-amber-200')
+                    }
+                  >
+                    <AlertTriangle className="h-4 w-4 shrink-0 mt-0.5" />
+                    <div>{w}</div>
+                  </div>
+                )
+              })}
             </div>
           )}
 
@@ -140,14 +156,20 @@ export default function HostNetworkSection() {
               mono
             />
             <StateCard
-              icon={<Globe className="h-4 w-4 text-brand-400" />}
+              icon={<Globe className={`h-4 w-4 ${selfLoop ? 'text-red-500' : 'text-brand-400'}`} />}
               label={t('Default gateway', 'Default gateway')}
               value={state.gateway || '—'}
-              sub={t(
-                'Where this PiTun sends outbound traffic. Should point at your ISP router, not another PiTun.',
-                'Куда сам PiTun отправляет исходящий трафик. Должен указывать на ваш ISP-роутер, не на другой PiTun.',
-              )}
+              sub={selfLoop
+                ? t(
+                    'SELF-LOOP: this points at PiTun itself. Set it to your ISP router below.',
+                    'SELF-LOOP: указывает на сам PiTun. Задайте адрес ISP-роутера ниже.',
+                  )
+                : t(
+                    'Where this PiTun sends outbound traffic. Should point at your ISP router, not another PiTun.',
+                    'Куда сам PiTun отправляет исходящий трафик. Должен указывать на ваш ISP-роутер, не на другой PiTun.',
+                  )}
               mono
+              danger={selfLoop}
             />
           </div>
 
@@ -205,25 +227,36 @@ export default function HostNetworkSection() {
 // ── Subcomponents ────────────────────────────────────────────────────────
 
 function StateCard({
-  icon, label, value, sub, mono,
+  icon, label, value, sub, mono, danger,
 }: {
   icon: React.ReactNode
   label: string
   value: string
   sub?: string
   mono?: boolean
+  danger?: boolean
 }) {
   return (
-    <div className="rounded-lg border border-gray-800 bg-gray-900/40 p-3">
+    <div className={
+      'rounded-lg border p-3 ' +
+      (danger
+        ? 'border-red-300 dark:border-red-900/60 bg-red-50 dark:bg-red-900/15'
+        : 'border-gray-800 bg-gray-900/40')
+    }>
       <div className="flex items-center gap-2 text-[11px] uppercase tracking-wider text-gray-500 mb-1">
         {icon}
         {label}
       </div>
-      <div className={`text-sm text-gray-100 ${mono ? 'font-mono' : ''}`}>
+      <div className={
+        `text-sm ${mono ? 'font-mono ' : ''}` +
+        (danger ? 'text-red-700 dark:text-red-300' : 'text-gray-100')
+      }>
         {value}
       </div>
       {sub && (
-        <div className="text-[10px] text-gray-600 mt-1">{sub}</div>
+        <div className={'text-[10px] mt-1 ' + (danger ? 'text-red-600 dark:text-red-400' : 'text-gray-600')}>
+          {sub}
+        </div>
       )}
     </div>
   )
@@ -302,7 +335,7 @@ function ApplyForm({
           <HostDnsHelp highlight="network" />
         </div>
         {disabled && (
-          <span className="text-[10px] text-amber-300">{disabledReason}</span>
+          <span className="text-[10px] text-amber-700 dark:text-amber-300">{disabledReason}</span>
         )}
       </div>
 
@@ -320,9 +353,9 @@ function ApplyForm({
             disabled={disabled}
             placeholder={currentGateway || '192.168.1.1'}
             className={
-              'flex-1 rounded-md border bg-gray-900 px-2 py-1.5 text-[12px] font-mono text-gray-100 focus:outline-none ' +
+              'flex-1 rounded-md border bg-gray-900 px-2 py-1.5 text-[12px] font-mono text-gray-100 focus:outline-hidden ' +
               (!gatewayValid
-                ? 'border-red-700/60 focus:border-red-600'
+                ? 'border-red-200 dark:border-red-700/60 focus:border-red-600'
                 : 'border-gray-700 focus:border-brand-700')
             }
           />
@@ -330,7 +363,7 @@ function ApplyForm({
             type="button"
             onClick={() => gateway && gatewayValid && probeMut.mutate(gateway)}
             disabled={disabled || !gateway || !gatewayValid || probing}
-            className="rounded-md border border-gray-700 hover:border-brand-700/50 hover:text-brand-300 hover:bg-brand-900/20 px-2.5 py-1 text-[11px] text-gray-300 disabled:opacity-50 inline-flex items-center gap-1.5"
+            className="rounded-md border border-gray-700 hover:border-brand-400/50 hover:text-brand-700 dark:hover:text-brand-300 hover:bg-brand-50 dark:hover:bg-brand-500/12 px-2.5 py-1 text-[11px] text-gray-300 disabled:opacity-50 inline-flex items-center gap-1.5"
             title={t('Ping the candidate gateway from the host', 'Пинг кандидата с хоста')}
           >
             {probing
@@ -340,7 +373,7 @@ function ApplyForm({
           </button>
         </div>
         {!gatewayValid && (
-          <div className="text-[10px] text-red-300">
+          <div className="text-[10px] text-red-700 dark:text-red-300">
             {t('Not a valid IPv4 address.', 'Невалидный IPv4-адрес.')}
           </div>
         )}
@@ -348,8 +381,8 @@ function ApplyForm({
           <div className={
             'flex items-start gap-1.5 rounded-md border px-2 py-1 text-[11px] ' +
             (probe.reachable
-              ? 'border-emerald-700/40 bg-emerald-900/15 text-emerald-200'
-              : 'border-red-700/40 bg-red-900/15 text-red-200')
+              ? 'border-emerald-200 dark:border-emerald-700/40 bg-emerald-50 dark:bg-emerald-900/15 text-emerald-800 dark:text-emerald-200'
+              : 'border-red-200 dark:border-red-700/40 bg-red-50 dark:bg-red-900/15 text-red-800 dark:text-red-200')
           }>
             {probe.reachable
               ? <CheckCircle2 className="h-3.5 w-3.5 shrink-0 mt-0.5" />
@@ -383,9 +416,9 @@ function ApplyForm({
               disabled={disabled}
               placeholder="1.1.1.1"
               className={
-                'flex-1 rounded-md border bg-gray-900 px-2 py-1.5 text-[12px] font-mono text-gray-100 focus:outline-none ' +
+                'flex-1 rounded-md border bg-gray-900 px-2 py-1.5 text-[12px] font-mono text-gray-100 focus:outline-hidden ' +
                 (dns && !validIp(dns)
-                  ? 'border-red-700/60 focus:border-red-600'
+                  ? 'border-red-200 dark:border-red-700/60 focus:border-red-600'
                   : 'border-gray-700 focus:border-brand-700')
               }
             />
@@ -393,7 +426,7 @@ function ApplyForm({
               type="button"
               onClick={() => setDnsList(dnsList.filter((_, j) => j !== i))}
               disabled={disabled}
-              className="rounded-md border border-gray-700 hover:border-red-700/50 hover:text-red-300 px-2 py-1 text-gray-500"
+              className="rounded-md border border-gray-700 hover:border-red-700/50 hover:text-red-700 dark:hover:text-red-300 px-2 py-1 text-gray-500"
               title={t('Remove', 'Удалить')}
             >
               <X className="h-3.5 w-3.5" />
@@ -404,7 +437,7 @@ function ApplyForm({
           type="button"
           onClick={() => setDnsList([...dnsList, ''])}
           disabled={disabled}
-          className="rounded-md border border-gray-700 hover:border-brand-700/50 hover:text-brand-300 hover:bg-brand-900/20 px-2 py-1 text-[11px] text-gray-400 inline-flex items-center gap-1.5"
+          className="rounded-md border border-gray-700 hover:border-brand-400/50 hover:text-brand-700 dark:hover:text-brand-300 hover:bg-brand-50 dark:hover:bg-brand-500/12 px-2 py-1 text-[11px] text-gray-400 inline-flex items-center gap-1.5"
         >
           <Plus className="h-3 w-3" />
           {t('Add DNS server', 'Добавить DNS-сервер')}
@@ -413,13 +446,13 @@ function ApplyForm({
 
       {/* Result banners */}
       {applyOk && (
-        <div className="flex items-start gap-2 rounded-md border border-emerald-700/40 bg-emerald-900/20 p-2 text-[12px] text-emerald-200">
+        <div className="flex items-start gap-2 rounded-md border border-emerald-200 dark:border-emerald-700/40 bg-emerald-50 dark:bg-emerald-900/20 p-2 text-[12px] text-emerald-800 dark:text-emerald-200">
           <CheckCircle2 className="h-4 w-4 shrink-0 mt-0.5" />
           <div>{applyOk}</div>
         </div>
       )}
       {applyErr && (
-        <div className="flex items-start gap-2 rounded-md border border-red-700/40 bg-red-900/20 p-2 text-[12px] text-red-200">
+        <div className="flex items-start gap-2 rounded-md border border-red-200 dark:border-red-700/40 bg-red-50 dark:bg-red-900/20 p-2 text-[12px] text-red-800 dark:text-red-200">
           <XCircle className="h-4 w-4 shrink-0 mt-0.5" />
           <div>{applyErr}</div>
         </div>
@@ -536,7 +569,7 @@ function BackupsPanel({
               }
             }}
             disabled={clearingAll}
-            className="shrink-0 inline-flex items-center gap-1 rounded-md border border-gray-700 hover:border-red-700/50 hover:text-red-300 hover:bg-red-900/20 px-2 py-1 text-[10px] text-gray-400 disabled:opacity-50"
+            className="shrink-0 inline-flex items-center gap-1 rounded-md border border-gray-700 hover:border-red-700/50 hover:text-red-700 dark:hover:text-red-300 hover:bg-red-50 dark:hover:bg-red-900/20 px-2 py-1 text-[10px] text-gray-400 disabled:opacity-50"
             title={t('Delete every backup', 'Удалить все бэкапы')}
           >
             {clearingAll
@@ -547,7 +580,7 @@ function BackupsPanel({
         )}
       </div>
       {err && (
-        <div className="flex items-start gap-2 rounded-md border border-red-700/40 bg-red-900/20 p-2 text-[12px] text-red-200">
+        <div className="flex items-start gap-2 rounded-md border border-red-200 dark:border-red-700/40 bg-red-50 dark:bg-red-900/20 p-2 text-[12px] text-red-800 dark:text-red-200">
           <XCircle className="h-4 w-4 shrink-0 mt-0.5" />
           <div>{err}</div>
         </div>
@@ -566,7 +599,7 @@ function BackupsPanel({
                 <div className="flex items-center gap-2">
                   <span className="text-[12px] text-gray-100 font-mono">{b.id}</span>
                   {isNewest && (
-                    <span className="text-[9px] uppercase tracking-wider text-emerald-400 bg-emerald-900/30 border border-emerald-700/40 px-1 py-0.5 rounded">
+                    <span className="text-[9px] uppercase tracking-wider text-emerald-600 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-900/30 border border-emerald-200 dark:border-emerald-700/40 px-1 py-0.5 rounded-sm">
                       {t('newest', 'свежий')}
                     </span>
                   )}
@@ -605,7 +638,7 @@ function BackupsPanel({
                     }
                   }}
                   disabled={isRolling || isDeleting}
-                  className="inline-flex items-center gap-1 rounded-md border border-gray-700 hover:border-amber-700/50 hover:text-amber-300 hover:bg-amber-900/20 px-2 py-1 text-[11px] text-gray-300 disabled:opacity-50"
+                  className="inline-flex items-center gap-1 rounded-md border border-gray-700 hover:border-amber-700/50 hover:text-amber-700 dark:hover:text-amber-300 hover:bg-amber-50 dark:hover:bg-amber-900/20 px-2 py-1 text-[11px] text-gray-300 disabled:opacity-50"
                 >
                   {isRolling
                     ? <Loader2 className="h-3 w-3 animate-spin" />
@@ -642,7 +675,7 @@ function BackupsPanel({
                     }
                   }}
                   disabled={isRolling || isDeleting || (isNewest && backups.length === 1)}
-                  className="rounded-md border border-gray-700 hover:border-red-700/50 hover:text-red-300 hover:bg-red-900/20 p-1 text-gray-500 disabled:opacity-30 disabled:cursor-not-allowed"
+                  className="rounded-md border border-gray-700 hover:border-red-700/50 hover:text-red-700 dark:hover:text-red-300 hover:bg-red-50 dark:hover:bg-red-900/20 p-1 text-gray-500 disabled:opacity-30 disabled:cursor-not-allowed"
                   title={isNewest && backups.length === 1
                     ? t('Cannot delete your only backup', 'Нельзя удалить единственный бэкап')
                     : t('Delete this backup', 'Удалить этот бэкап')}

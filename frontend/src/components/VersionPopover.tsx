@@ -107,17 +107,17 @@ export function VersionPopover({ shortVersion }: Props) {
             top: coords.top,
             transform: 'translateY(-100%)',
           }}
-          className="z-[9999] w-72 rounded-lg border border-gray-700 bg-gray-900 p-3 shadow-2xl"
+          className="z-9999 w-72 rounded-lg border border-gray-700 bg-gray-900 p-3 shadow-2xl"
         >
           <div className="flex items-center justify-between mb-2">
             <h3 className="text-xs font-semibold text-gray-200 uppercase tracking-wide">System versions</h3>
             <button
               onClick={copyAll}
               disabled={!data}
-              className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-xs text-gray-400 hover:text-gray-200 hover:bg-gray-800 disabled:opacity-50 transition-colors"
+              className="inline-flex items-center gap-1 rounded-sm px-1.5 py-0.5 text-xs text-gray-400 hover:text-gray-200 hover:bg-gray-800 disabled:opacity-50 transition-colors"
               title="Copy to clipboard"
             >
-              {copied ? (<><Check className="h-3 w-3 text-green-400" /> copied</>) : (<><Copy className="h-3 w-3" /> copy</>)}
+              {copied ? (<><Check className="h-3 w-3 text-green-600 dark:text-green-400" /> copied</>) : (<><Copy className="h-3 w-3" /> copy</>)}
             </button>
           </div>
 

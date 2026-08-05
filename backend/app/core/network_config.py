@@ -555,6 +555,23 @@ def read_state() -> NetworkState:
     mode = detect_mode(manager, ifname or "")
 
     warnings: List[str] = []
+    # Self-loop takes top billing: the default route points at THIS box's
+    # own IP, so every off-LAN packet is handed straight back to us and
+    # dies. This is the "new device set its PiTun gateway to itself"
+    # footgun on a fresh install left on DHCP in gateway mode — the box
+    # gets its own address as option 3. Checked BEFORE _upstream_is_pitun
+    # because a self-loop also matches PiTun's own /health fingerprint and
+    # would otherwise be mislabelled as a *different* PiTun upstream.
+    self_loop = bool(gateway and ip and gateway == ip)
+    if self_loop:
+        warnings.append(
+            f"Default gateway {gateway} is THIS PiTun's own IP — a routing "
+            "self-loop. Outbound traffic has nowhere to go. Set the default "
+            "route to your actual ISP router (usually 192.168.x.1) under "
+            "'Change gateway / DNS' below. If the box was installed on DHCP "
+            "in gateway mode, also give it a static IP so it stops receiving "
+            "its own address as the gateway."
+        )
     if manager == "unknown":
         warnings.append(
             "Could not detect an active network manager on the host. "
@@ -566,7 +583,7 @@ def read_state() -> NetworkState:
             f"Interface {ifname} configuration mode could not be parsed "
             f"from {manager}'s config — apply is disabled until resolved."
         )
-    if _upstream_is_pitun(gateway):
+    if not self_loop and _upstream_is_pitun(gateway):
         warnings.append(
             f"Upstream gateway {gateway} appears to be ANOTHER PiTun "
             "(matches PiTun's /health fingerprint). This creates a "

@@ -124,7 +124,7 @@ ${base}` : base,
       {/* ── In-flight update ─────────────────────────────────────── */}
       {busy && (
         <div className="rounded-lg border border-brand-800/50 bg-brand-950/30 p-3 space-y-2">
-          <div className="flex items-center gap-2 text-sm text-brand-200">
+          <div className="flex items-center gap-2 text-sm text-brand-700 dark:text-brand-200">
             <Loader2 className="h-4 w-4 animate-spin" />
             <span>
               {restarting
@@ -155,7 +155,7 @@ ${base}` : base,
 
       {/* ── Terminal state from the last run ─────────────────────── */}
       {!busy && status.data?.state === 'done' && (
-        <div className="rounded-lg border border-green-800/50 bg-green-950/30 px-3 py-2 text-sm text-green-200 flex items-start gap-2">
+        <div className="rounded-lg border border-green-200 dark:border-green-800/50 bg-green-50 dark:bg-green-950/30 px-3 py-2 text-sm text-green-800 dark:text-green-200 flex items-start gap-2">
           <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0" />
           <span>
             {t('Updated to ', 'Обновлено до ')}
@@ -165,7 +165,7 @@ ${base}` : base,
         </div>
       )}
       {!busy && status.data?.state === 'failed' && (
-        <div className="rounded-lg border border-red-900/50 bg-red-950/30 px-3 py-2 text-sm text-red-200 flex items-start gap-2">
+        <div className="rounded-lg border border-red-200 dark:border-red-900/50 bg-red-50 dark:bg-red-950/30 px-3 py-2 text-sm text-red-800 dark:text-red-200 flex items-start gap-2">
           <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
           <span>
             {t('Update failed: ', 'Обновление не удалось: ')}
@@ -181,7 +181,7 @@ ${base}` : base,
 
       {/* ── Check result ─────────────────────────────────────────── */}
       {checkError && (
-        <div className="rounded-lg border border-red-900/50 bg-red-950/30 px-3 py-2 text-xs text-red-300">
+        <div className="rounded-lg border border-red-200 dark:border-red-900/50 bg-red-50 dark:bg-red-950/30 px-3 py-2 text-xs text-red-700 dark:text-red-300">
           {checkError}
         </div>
       )}
@@ -201,7 +201,7 @@ ${base}` : base,
           </div>
 
           {unreachable ? (
-            <div className="rounded-lg border border-yellow-900/50 bg-yellow-950/20 px-3 py-2 text-xs text-yellow-200 flex items-start gap-2">
+            <div className="rounded-lg border border-yellow-200 dark:border-yellow-900/50 bg-yellow-50 dark:bg-yellow-950/20 px-3 py-2 text-xs text-yellow-800 dark:text-yellow-200 flex items-start gap-2">
               <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
               <span>
                 {result.error || t('GitHub is unreachable.', 'GitHub недоступен.')}
@@ -242,7 +242,7 @@ ${base}` : base,
           )}
 
           {losesUpdateUi && (
-            <div className="rounded-lg border border-yellow-900/50 bg-yellow-950/20 px-3 py-2 text-xs text-yellow-200 flex items-start gap-2">
+            <div className="rounded-lg border border-yellow-200 dark:border-yellow-900/50 bg-yellow-50 dark:bg-yellow-950/20 px-3 py-2 text-xs text-yellow-800 dark:text-yellow-200 flex items-start gap-2">
               <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
               <span>{downgradeWarning}</span>
             </div>
@@ -253,7 +253,7 @@ ${base}` : base,
               <summary className="cursor-pointer hover:text-gray-200">
                 {t('Release notes', 'Что нового')}
               </summary>
-              <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap rounded bg-black/40 p-2 font-mono text-[11px] leading-relaxed">
+              <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap rounded-sm bg-black/40 p-2 font-mono text-[11px] leading-relaxed">
                 {result.notes}
               </pre>
             </details>

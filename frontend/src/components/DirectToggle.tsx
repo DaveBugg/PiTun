@@ -50,7 +50,7 @@ export function DirectToggle({
       >
         <span
           className={clsx(
-            'absolute top-0.5 left-0.5 rounded-full bg-white shadow-sm transition-transform',
+            'absolute top-0.5 left-0.5 rounded-full bg-white shadow-xs transition-transform',
             knob,
             checked && shift,
           )}

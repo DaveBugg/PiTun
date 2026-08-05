@@ -278,9 +278,16 @@ Frontend is a single-page React app served by nginx.
 - QUIC (UDP/443) blocking — forces TCP fallback for protocols TPROXY
   can intercept
 - Tunnel chaining — VLESS-inside-WireGuard, etc.
+- **Recursive multi-hop chains** — `config_gen` follows `chain_node_id`
+  transitively, wiring every hop (exit → mid → entry) with cycle
+  detection and a depth cap (WireGuard is exit-hop only)
 - **Proxy Chains** (multi-panel, two-hop VLESS+Reality across two
   x-ui panels with independent channels per chain; managed clients
   + per-channel delete + live healthcheck)
+- **TLS ClientHello fragmentation (anti-DPI)** — a Settings toggle
+  splits the outgoing ClientHello across several packets so a DPI box
+  can't match the SNI in a single read; entirely client-side, tunable
+  packet mode / length / interval, off by default (needs bundled xray 26.x)
 - Kill switch — drop all forwarded traffic if xray crashes
 
 **Routing**
@@ -295,14 +302,29 @@ Frontend is a single-page React app served by nginx.
   gambling, "Work" set routes corp domains direct). Assign devices
   individually or in bulk; per-set rules apply first, then fall through
   to global rules. DHCP-resistant (MAC-based via dedicated per-set
-  loopback TPROXY ports + xray `inboundTag` matching)
+  loopback TPROXY ports + xray `inboundTag` matching). Set-aware
+  **export/import** — pick scopes, resolve conflicts, import into
+  Global / an existing / a new set
+- **Route Explainer** — paste a domain, URL or IP and see which rule
+  wins and whether it exits proxied, direct or blocked
 
 **Health & resilience**
 - Background liveness probe with two-tier auto-failover: if the failed
   node belongs to an enabled NodeCircle, the failover handler delegates
   recovery to the circle (which skips dead siblings via pre-ping +
   retry); otherwise it walks a configurable fallback list
-- Speed test per node via short-lived isolated xray instance
+- **Unified speed test** — gates on reachability first (Google /
+  Cloudflare 204 with a retry, so a dead node fails in ~1s instead of
+  grinding every fallback), then measures the **average after warm-up
+  plus the peak**; streams live, persists both numbers, and flags a
+  reading older than 6h as stale
+- **Automatic background speed checks** — sweep a chosen scope (all /
+  a subscription / a group / specific nodes) on an interval so `best` /
+  `min_speed` and the UI stay fresh without manual testing; sequential,
+  staleness-guarded, with per-node error isolation
+- One-tap **reachability check** — confirms a node actually carries
+  traffic to the internet (204 through the live tunnel), separate from
+  raw link speed
 - Naive sidecar supervisor — auto-restarts crashed Naive containers
   with a sliding-window rate limiter
 - Recent Events feed on Dashboard surfaces failovers, sidecar
@@ -310,16 +332,23 @@ Frontend is a single-page React app served by nginx.
 
 **Balancing & rotation**
 - Balancer groups (xray's `leastPing` or `random` strategies)
-- Node Circles — automatically rotate the active node on a schedule,
-  seamlessly via xray's gRPC API (no dropped connections); each
-  candidate is TCP-pinged with a single retry before switching, so
-  dead siblings are skipped without a connection blip
+- Node Circles — schedule seamless active-node rotation via xray's gRPC
+  API (no dropped connections). A **`best`** mode plus **`max_latency_ms`**
+  and **`min_speed_mbps`** candidate filters pick from real speed data
+  (never-tested nodes get the benefit of the doubt), and a **smart-skip**
+  keeps a scheduled rotation from moving off a healthy, low-latency node
+  — manual "rotate now" always rotates
 
 **Subscriptions**
 - Periodic refresh from VLESS / VMess / Trojan / SS / Hysteria2 /
   Clash YAML / xray JSON subscription URLs
-- Per-subscription User-Agent (v2ray, clash, sing-box, happ, …),
-  optional regex filter, configurable interval
+- **User-Agent templates** — an editable table (add / edit / delete)
+  replacing the old hardcoded presets; each row carries a UA string and
+  optional custom request headers, with catalogue export / import
+- Optional **GeoIP country flags** on imported node names (`🇳🇱 vless-nl`)
+  — opt-in and licence-clean (drop a MaxMind `GeoLite2-Country.mmdb`
+  next to the geo data; absent it's a silent no-op)
+- Optional regex filter, configurable interval
 
 **Devices & DNS**
 - LAN discovery via `arp-scan`, OUI vendor lookup
@@ -327,6 +356,10 @@ Frontend is a single-page React app served by nginx.
 - Per-domain DNS rules (plain, DoH, DoT)
 - FakeDNS pool for sniffing-friendly geoip resolution
 - DNS query log with stats
+- **Host network controls** — change the box's own gateway / DNS from
+  Settings → Network with an auto-backup + one-click rollback; warns on
+  a routing self-loop (gateway pointing at the box itself) or a
+  double-hop through another PiTun
 
 **Servers & deployments**
 - Inventory of remote VPS hosts (host, SSH credentials, tags) separate
@@ -336,22 +369,35 @@ Frontend is a single-page React app served by nginx.
 - One-click auto-deploy over SSH for **NaiveProxy**, **WireGuard**,
   **x-ui** (3x-ui / x-ui-pro) — live log streaming, status badges,
   cascade-clean on uninstall
+- **Per-page Direct switch** — every server / panel / chain SSH
+  operation runs *through the active node* by default (the same tunnel
+  the LAN uses); a Direct toggle flips one operation back to a straight
+  dial for reaching a box while the active node is down
 - Dedicated **X-ui Panels** page — full inbound + client management
   (6 wired presets covering Reality / TLS / domain modes), live
   healthcheck (panel API, xray, nginx, UFW, TLS cert, disk, mem),
   cache↔panel sync for hand-added clients, random / custom
   fakesite rotation
+- **SNI / REALITY-dest scanner** in the node form — probe a candidate
+  host for TLS 1.3 + HTTP/2 before saving it as the masquerade target
 
 **Operations**
 - One-click GeoIP / GeoSite refresh — three switchable upstream
   profiles: Loyalsoldier (CN-focused community list), runetfreedom
   (Russian-internet curated list), v2fly (vanilla baseline)
+- **In-UI self-update** — Settings → Updates checks GitHub (through the
+  active node, so a throttled direct route isn't a blocker), shows
+  what's new and applies it with live progress via a host-side agent
 - Full-fidelity JSON Export/Import for Nodes and Servers — versioned
   bundle envelope, append/replace modes, optional secret redaction
   (separate from URI/subscription import which is single-node only)
 - Plain-text URI export (`.txt`, one `vless://…` per line) — share
   your node list with any v2rayN-compatible client; symmetric
-  `Import` button auto-detects URI list vs JSON bundle
+  `Import` button auto-detects URI list vs JSON bundle. Single-node URI
+  export straight from a node card too
+- **Login lockout** — five consecutive failed logins lock an account
+  for 15 minutes (HTTP 429 + `Retry-After`); the primary LAN-only
+  brute-force guard
 - Built-in diagnostics page (DNS reachability, gateway, xray status,
   resource usage)
 - Streaming xray log viewer
@@ -411,30 +457,30 @@ curl -fsSL https://raw.githubusercontent.com/DaveBugg/PiTun/master/install.sh | 
 > ```bash
 > curl -fsSL https://raw.githubusercontent.com/DaveBugg/PiTun/master/install.sh \
 >      -o /tmp/pitun-install.sh
-> sudo bash /tmp/pitun-install.sh --version v1.3.0-beta.8
+> sudo bash /tmp/pitun-install.sh --version v1.4.12
 > ```
 >
 > **(B) Pipe with `bash -s --` separator** (the `-s --` is **required**):
 > ```bash
 > curl -fsSL https://raw.githubusercontent.com/DaveBugg/PiTun/master/install.sh \
->      | sudo bash -s -- --version v1.3.0-beta.8
+>      | sudo bash -s -- --version v1.4.12
 > ```
 >
 > **(C) Environment variable** (no `-s --` voodoo needed):
 > ```bash
 > curl -fsSL https://raw.githubusercontent.com/DaveBugg/PiTun/master/install.sh \
->      | sudo PITUN_VERSION=v1.3.0-beta.8 bash
+>      | sudo PITUN_VERSION=v1.4.12 bash
 > ```
 >
-> ❌ **Do NOT do this:** `curl ... | sudo bash --version v1.3.0-beta.8` — bash
+> ❌ **Do NOT do this:** `curl ... | sudo bash --version v1.4.12` — bash
 > swallows `--version` as its own flag (prints bash's version + exits)
 > before our installer ever runs. Common copy-paste trap.
 
 Useful flags (work via any of the three forms above; examples use form B):
 
 ```bash
-# Pin a specific version (current: v1.3.0-beta.8)
-... | sudo bash -s -- --version v1.3.0-beta.8
+# Pin a specific version (example tag — see GitHub Releases for the latest)
+... | sudo bash -s -- --version v1.4.12
 
 # Force rebuilding from source (no published release available, or
 # you're testing local changes). Slower, needs reliable internet

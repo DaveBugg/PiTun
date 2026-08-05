@@ -12,9 +12,11 @@
 set -euo pipefail
 
 GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
 RED='\033[0;31m'
 NC='\033[0m'
 log()  { echo -e "${GREEN}[+]${NC} $*"; }
+warn() { echo -e "${YELLOW}[!]${NC} $*"; }
 err()  { echo -e "${RED}[x]${NC} $*"; exit 1; }
 
 [[ $EUID -ne 0 ]] && err "Run as root: sudo $0"
@@ -55,6 +57,44 @@ if systemctl is-active --quiet avahi-daemon 2>/dev/null; then
     systemctl disable avahi-daemon.socket 2>/dev/null || true
     systemctl mask avahi-daemon 2>/dev/null || true
     log "avahi-daemon disabled"
+fi
+
+# ── 1c. Free DNS ports (53 / 5353) and remove systemd-resolved ──
+# xray's DNS engine binds 127.0.0.1:5353 and PiTun redirects all :53 to it
+# via nftables TPROXY. Two native services fight for these ports:
+#   • avahi-daemon      → udp/5353 (mDNS)        — handled in 1b above
+#   • systemd-resolved  → 127.0.0.53:53 stub     — handled here
+# systemd-resolved also OWNS /etc/resolv.conf (a symlink to its stub) and
+# rewrites it, clobbering the resolvers PiTun sets — that's the root of the
+# "hostname stops resolving on the box" symptom. Per the install policy we
+# remove it entirely and make /etc/resolv.conf a plain, PiTun-owned file.
+log "Checking DNS ports 53 / 5353..."
+if command -v ss >/dev/null 2>&1; then
+    listeners=$(ss -lntuH 2>/dev/null | grep -E ':(53|5353)[[:space:]]' || true)
+    [ -n "$listeners" ] && { warn "listeners on DNS ports before cleanup:"; echo "$listeners"; }
+fi
+if systemctl is-active --quiet systemd-resolved 2>/dev/null \
+   || systemctl is-enabled --quiet systemd-resolved 2>/dev/null; then
+    warn "systemd-resolved holds 127.0.0.53:53 and manages resolv.conf — removing it..."
+    systemctl stop systemd-resolved 2>/dev/null || true
+    systemctl disable systemd-resolved 2>/dev/null || true
+    systemctl mask systemd-resolved 2>/dev/null || true
+    # Replace the resolved stub symlink with a real, static file so nothing
+    # rewrites the box's resolvers out from under PiTun. Public resolvers
+    # match what 01-first-boot.sh sets on the interface. Left writable —
+    # PiTun's own runtime toggles (dns_over_tcp, host-fallback) edit it.
+    if [ -L /etc/resolv.conf ] || ! grep -q '^nameserver' /etc/resolv.conf 2>/dev/null; then
+        rm -f /etc/resolv.conf
+        printf 'nameserver 1.1.1.1\nnameserver 8.8.8.8\n' > /etc/resolv.conf
+    fi
+    log "systemd-resolved removed; /etc/resolv.conf is now static"
+fi
+# Sanity: can the box resolve names now? (its own hostname + a public name)
+if getent hosts "$(hostname)" >/dev/null 2>&1 \
+   && timeout 5 getent hosts github.com >/dev/null 2>&1; then
+    log "DNS/hostname resolution OK"
+else
+    warn "Name resolution still failing — check /etc/resolv.conf and connectivity"
 fi
 
 # ── 2. Docker ──

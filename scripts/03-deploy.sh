@@ -61,6 +61,29 @@ if systemctl is-active --quiet avahi-daemon 2>/dev/null; then
     log "avahi-daemon disabled"
 fi
 
+# ── 1b-2. Free port 53 / remove systemd-resolved (idempotent self-heal) ──
+# Runs on every deploy so already-installed boxes get healed too. Mirrors
+# 02-install-stack.sh §1c: systemd-resolved's 127.0.0.53:53 stub AND its
+# ownership of /etc/resolv.conf (a symlink it keeps rewriting) are the root
+# of the "hostname stops resolving on the box" symptom. Remove it and make
+# /etc/resolv.conf a plain, PiTun-owned file. No-op once already done.
+if command -v ss >/dev/null 2>&1; then
+    listeners=$(ss -lntuH 2>/dev/null | grep -E ':(53|5353)[[:space:]]' || true)
+    [ -n "$listeners" ] && { warn "listeners on DNS ports 53/5353:"; echo "$listeners"; }
+fi
+if systemctl is-active --quiet systemd-resolved 2>/dev/null \
+   || systemctl is-enabled --quiet systemd-resolved 2>/dev/null; then
+    warn "systemd-resolved holds 127.0.0.53:53 and manages resolv.conf — removing it..."
+    sudo systemctl stop systemd-resolved 2>/dev/null || true
+    sudo systemctl disable systemd-resolved 2>/dev/null || true
+    sudo systemctl mask systemd-resolved 2>/dev/null || true
+    if [ -L /etc/resolv.conf ] || ! grep -q '^nameserver' /etc/resolv.conf 2>/dev/null; then
+        sudo rm -f /etc/resolv.conf
+        printf 'nameserver 1.1.1.1\nnameserver 8.8.8.8\n' | sudo tee /etc/resolv.conf >/dev/null
+    fi
+    log "systemd-resolved removed; /etc/resolv.conf is now static"
+fi
+
 # ── 1c. Ensure Docker Hub is reachable, add mirror if not ──
 DAEMON_JSON="/etc/docker/daemon.json"
 if ! curl -sI --max-time 5 https://registry-1.docker.io/v2/ | grep -q "HTTP"; then

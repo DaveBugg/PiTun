@@ -68,6 +68,38 @@ if systemctl is-active --quiet avahi-daemon 2>/dev/null; then
     systemctl mask avahi-daemon 2>/dev/null || true
 fi
 
+# Free DNS ports (53 / 5353) and remove systemd-resolved.
+# Debian 12 / Ubuntu 22.04+ ship systemd-resolved ACTIVE by default — it
+# holds the 127.0.0.53:53 stub AND owns /etc/resolv.conf (a symlink it keeps
+# rewriting), clobbering the resolvers PiTun sets. That's the root of the
+# "hostname stops resolving on the box" symptom, and it bites VM installs
+# harder than the RPi. Remove it and make /etc/resolv.conf a plain,
+# PiTun-owned file. Mirror of 02-install-stack.sh §1c / 03-deploy.sh §1b-2.
+log "Checking DNS ports 53 / 5353..."
+if command -v ss >/dev/null 2>&1; then
+    listeners=$(ss -lntuH 2>/dev/null | grep -E ':(53|5353)[[:space:]]' || true)
+    [ -n "$listeners" ] && { warn "listeners on DNS ports before cleanup:"; echo "$listeners"; }
+fi
+if systemctl is-active --quiet systemd-resolved 2>/dev/null \
+   || systemctl is-enabled --quiet systemd-resolved 2>/dev/null; then
+    warn "systemd-resolved holds 127.0.0.53:53 and manages resolv.conf — removing it..."
+    systemctl stop systemd-resolved 2>/dev/null || true
+    systemctl disable systemd-resolved 2>/dev/null || true
+    systemctl mask systemd-resolved 2>/dev/null || true
+    if [ -L /etc/resolv.conf ] || ! grep -q '^nameserver' /etc/resolv.conf 2>/dev/null; then
+        rm -f /etc/resolv.conf
+        printf 'nameserver 1.1.1.1\nnameserver 8.8.8.8\n' > /etc/resolv.conf
+    fi
+    log "systemd-resolved removed; /etc/resolv.conf is now static"
+fi
+# Sanity: can the box resolve names now? (its own hostname + a public name)
+if getent hosts "$(hostname)" >/dev/null 2>&1 \
+   && timeout 5 getent hosts github.com >/dev/null 2>&1; then
+    log "DNS/hostname resolution OK"
+else
+    warn "Name resolution still failing — check /etc/resolv.conf and connectivity"
+fi
+
 # Disable desktop GUI if running (saves ~200MB RAM)
 if systemctl get-default | grep -q graphical; then
     log "Disabling desktop GUI (not needed for proxy server)..."

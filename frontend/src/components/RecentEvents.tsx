@@ -61,8 +61,8 @@ const SEVERITY_DOT: Record<EventSeverity, string> = {
 
 const SEVERITY_TEXT: Record<EventSeverity, string> = {
   info:    'text-brand-400',
-  warning: 'text-amber-400',
-  error:   'text-red-400',
+  warning: 'text-amber-600 dark:text-amber-400',
+  error:   'text-red-600 dark:text-red-400',
 }
 
 /** "5 min ago" / "2 h ago" / "3 d ago" / "just now". UTC-aware. */
@@ -126,7 +126,7 @@ export function RecentEvents({ limit = 8 }: { limit?: number }) {
           <button
             onClick={handleClear}
             disabled={clear.isPending}
-            className="flex items-center gap-1 rounded px-2 py-1 text-xs text-gray-500 hover:text-gray-300 hover:bg-gray-800 transition-colors disabled:opacity-50"
+            className="flex items-center gap-1 rounded-sm px-2 py-1 text-xs text-gray-500 hover:text-gray-300 hover:bg-gray-800 transition-colors disabled:opacity-50"
             title={t('Clear all events', 'Очистить все')}
           >
             <Trash2 className="h-3 w-3" />
@@ -198,7 +198,7 @@ function EventRow({
         )}
       </button>
       {expanded && hasDetails && (
-        <div className="px-4 pb-3 pl-[7.5rem] text-xs text-gray-500 font-mono whitespace-pre-wrap break-words">
+        <div className="px-4 pb-3 pl-30 text-xs text-gray-500 font-mono whitespace-pre-wrap wrap-break-word">
           {ev.details}
         </div>
       )}

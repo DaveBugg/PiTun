@@ -157,12 +157,12 @@ export function TemplatePicker({
   }
   if (error || !templates) {
     return (
-      <div className="rounded-lg border border-red-800/40 bg-red-950/20 px-3 py-2 text-xs text-red-300 flex items-center justify-between">
+      <div className="rounded-lg border border-red-200 dark:border-red-800/40 bg-red-50 dark:bg-red-950/20 px-3 py-2 text-xs text-red-700 dark:text-red-300 flex items-center justify-between">
         <span>{t('Failed to load templates', 'Не удалось загрузить шаблоны')}</span>
         <button
           type="button"
           onClick={() => refetch()}
-          className="rounded bg-gray-800 px-2 py-0.5 hover:bg-gray-700 text-gray-300"
+          className="rounded-sm bg-gray-800 px-2 py-0.5 hover:bg-gray-700 text-gray-300"
         >
           {t('Retry', 'Повторить')}
         </button>
@@ -216,7 +216,7 @@ export function TemplatePicker({
       {showUploadForm && (
         <form
           onSubmit={handleSubmitUpload}
-          className="rounded-lg border border-brand-700/40 bg-brand-900/10 px-3 py-3 space-y-2"
+          className="rounded-lg border border-brand-700/40 bg-brand-50 dark:bg-brand-900/10 px-3 py-3 space-y-2"
         >
           <div className="text-xs text-brand-300 font-medium flex items-center gap-1.5">
             <Upload className="h-3.5 w-3.5" />
@@ -224,8 +224,8 @@ export function TemplatePicker({
           </div>
 
           {uploadError && (
-            <div className="rounded bg-red-900/30 border border-red-700/40 px-2 py-1.5 text-xs text-red-300 flex items-start gap-1.5">
-              <AlertTriangle className="h-3.5 w-3.5 mt-0.5 flex-shrink-0" />
+            <div className="rounded-sm bg-red-50 dark:bg-red-900/30 border border-red-200 dark:border-red-700/40 px-2 py-1.5 text-xs text-red-700 dark:text-red-300 flex items-start gap-1.5">
+              <AlertTriangle className="h-3.5 w-3.5 mt-0.5 shrink-0" />
               <span>{uploadError}</span>
             </div>
           )}
@@ -236,7 +236,7 @@ export function TemplatePicker({
               value={uploadLabel}
               onChange={(e) => setUploadLabel(e.target.value)}
               placeholder={t('Label, e.g. "My company"', 'Имя, напр. "Моя компания"')}
-              className="rounded-lg bg-gray-900 border border-gray-800 px-2.5 py-1.5 text-xs text-gray-100 focus:border-brand-500 focus:outline-none"
+              className="rounded-lg bg-gray-900 border border-gray-800 px-2.5 py-1.5 text-xs text-gray-100 focus:border-brand-500 focus:outline-hidden"
               maxLength={80}
               required
             />
@@ -245,7 +245,7 @@ export function TemplatePicker({
               value={uploadDescription}
               onChange={(e) => setUploadDescription(e.target.value)}
               placeholder={t('Short description (optional)', 'Краткое описание (необязательно)')}
-              className="rounded-lg bg-gray-900 border border-gray-800 px-2.5 py-1.5 text-xs text-gray-100 focus:border-brand-500 focus:outline-none"
+              className="rounded-lg bg-gray-900 border border-gray-800 px-2.5 py-1.5 text-xs text-gray-100 focus:border-brand-500 focus:outline-hidden"
               maxLength={500}
             />
           </div>
@@ -344,7 +344,7 @@ function TemplateCard({
       className={
         'rounded-lg border transition-colors relative ' +
         (active
-          ? 'border-brand-500/60 bg-brand-600/10'
+          ? 'border-brand-500/60 bg-brand-50 dark:bg-brand-600/10'
           : 'border-gray-800 bg-gray-900/40 hover:border-gray-700')
       }
     >
@@ -353,7 +353,7 @@ function TemplateCard({
         onClick={onClick}
         className={
           'w-full px-3 py-2 text-left flex items-start gap-2 ' +
-          (active ? 'text-brand-200' : 'text-gray-400 hover:text-gray-200')
+          (active ? 'text-brand-700 dark:text-brand-200' : 'text-gray-400 hover:text-gray-200')
         }
       >
         <div className={active ? 'text-brand-400 mt-0.5' : 'text-gray-500 mt-0.5'}>
@@ -367,7 +367,7 @@ function TemplateCard({
             </span>
             {template.requires_php && (
               <span
-                className="text-[10px] uppercase tracking-wider text-amber-300 bg-amber-900/30 border border-amber-700/40 rounded px-1 py-px font-mono shrink-0 inline-flex items-center gap-0.5"
+                className="text-[10px] uppercase tracking-wider text-amber-700 dark:text-amber-300 bg-amber-50 dark:bg-amber-900/30 border border-amber-200 dark:border-amber-700/40 rounded-sm px-1 py-px font-mono shrink-0 inline-flex items-center gap-0.5"
                 title="Selecting this template provisions a hardened php-fpm jail on the VPS so the decoy can roundtrip POSTs."
               >
                 <ShieldAlert className="h-2.5 w-2.5" />php
@@ -385,7 +385,7 @@ function TemplateCard({
           onClick={(e) => { e.stopPropagation(); onDelete() }}
           disabled={removing}
           title="Delete custom template"
-          className="absolute top-1 right-1 rounded p-1 text-gray-600 hover:text-red-400 hover:bg-red-900/20 transition-colors disabled:opacity-50"
+          className="absolute top-1 right-1 rounded-sm p-1 text-gray-600 hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors disabled:opacity-50"
         >
           {removing
             ? <Loader2 className="h-3.5 w-3.5 animate-spin" />

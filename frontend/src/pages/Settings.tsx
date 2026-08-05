@@ -126,7 +126,7 @@ export function Settings() {
 
   if (isLoading) return (
     <div className="p-6">
-      <div className="h-8 w-48 rounded bg-gray-800 animate-pulse mb-4" />
+      <div className="h-8 w-48 rounded-sm bg-gray-800 animate-pulse mb-4" />
       <div className="space-y-4">
         {[1, 2, 3].map(i => <div key={i} className="h-40 rounded-xl bg-gray-800/50 animate-pulse" />)}
       </div>
@@ -142,7 +142,7 @@ export function Settings() {
         onChange={(e) => set(key, e.target.value)}
         placeholder={placeholder}
         className={clsx(
-          'w-full rounded-lg bg-gray-950 border px-3 py-2 text-sm text-gray-100 focus:outline-none transition-colors',
+          'w-full rounded-lg bg-gray-950 border px-3 py-2 text-sm text-gray-100 focus:outline-hidden transition-colors',
           draft[key] !== undefined ? 'border-brand-500' : 'border-gray-800 focus:border-gray-600',
         )}
       />
@@ -159,7 +159,7 @@ export function Settings() {
         min={min}
         max={max}
         className={clsx(
-          'w-full rounded-lg bg-gray-950 border px-3 py-2 text-sm text-gray-100 focus:outline-none transition-colors',
+          'w-full rounded-lg bg-gray-950 border px-3 py-2 text-sm text-gray-100 focus:outline-hidden transition-colors',
           draft[key] !== undefined ? 'border-brand-500' : 'border-gray-800 focus:border-gray-600',
         )}
       />
@@ -235,7 +235,7 @@ export function Settings() {
         </div>
         <div className="flex items-center gap-2">
           {saved && (
-            <span className="flex items-center gap-1 text-xs text-green-400">
+            <span className="flex items-center gap-1 text-xs text-green-600 dark:text-green-400">
               <CheckCircle2 className="h-3.5 w-3.5" /> Saved
             </span>
           )}
@@ -260,8 +260,8 @@ export function Settings() {
 
       {/* Error */}
       {error && (
-        <div className="flex items-center gap-2 rounded-lg bg-red-950/30 border border-red-900/50 px-4 py-2.5 text-xs text-red-300">
-          <XCircle className="h-4 w-4 text-red-400 flex-shrink-0" />
+        <div className="flex items-center gap-2 rounded-lg bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900/50 px-4 py-2.5 text-xs text-red-700 dark:text-red-300">
+          <XCircle className="h-4 w-4 text-red-600 dark:text-red-400 shrink-0" />
           {error}
         </div>
       )}
@@ -273,8 +273,8 @@ export function Settings() {
 
       {/* Restart warning */}
       {hasChanges && (
-        <div className="flex items-center gap-2 rounded-lg bg-yellow-950/30 border border-yellow-900/50 px-4 py-2.5 text-xs text-yellow-300">
-          <AlertTriangle className="h-4 w-4 text-yellow-400 flex-shrink-0" />
+        <div className="flex items-center gap-2 rounded-lg bg-yellow-50 dark:bg-yellow-950/30 border border-yellow-200 dark:border-yellow-900/50 px-4 py-2.5 text-xs text-yellow-700 dark:text-yellow-300">
+          <AlertTriangle className="h-4 w-4 text-yellow-600 dark:text-yellow-400 shrink-0" />
           Changes to network and ports require xray restart to take effect.
         </div>
       )}
@@ -428,7 +428,7 @@ export function Settings() {
               value={val('timezone') || 'UTC'}
               onChange={(e) => set('timezone', e.target.value)}
               className={clsx(
-                'w-full rounded-lg bg-gray-950 border px-3 py-2 text-sm text-gray-100 focus:outline-none',
+                'w-full rounded-lg bg-gray-950 border px-3 py-2 text-sm text-gray-100 focus:outline-hidden',
                 draft['timezone'] !== undefined ? 'border-brand-500' : 'border-gray-800',
               )}
             >
@@ -446,7 +446,7 @@ export function Settings() {
               value={val('log_level')}
               onChange={(e) => set('log_level', e.target.value)}
               className={clsx(
-                'w-full rounded-lg bg-gray-950 border px-3 py-2 text-sm text-gray-100 focus:outline-none',
+                'w-full rounded-lg bg-gray-950 border px-3 py-2 text-sm text-gray-100 focus:outline-hidden',
                 draft['log_level'] !== undefined ? 'border-brand-500' : 'border-gray-800',
               )}
             >
@@ -489,7 +489,7 @@ function PasswordField({
           value={value}
           onChange={(e) => onChange(e.target.value)}
           className={clsx(
-            'w-full rounded-lg bg-gray-950 border pr-9 px-3 py-2 text-sm text-gray-100 focus:outline-none transition-colors',
+            'w-full rounded-lg bg-gray-950 border pr-9 px-3 py-2 text-sm text-gray-100 focus:outline-hidden transition-colors',
             draft ? 'border-brand-500' : 'border-gray-800 focus:border-gray-600',
           )}
           autoComplete="off"
@@ -497,7 +497,7 @@ function PasswordField({
         <button
           type="button"
           onClick={() => setReveal((v) => !v)}
-          className="absolute right-1 top-1/2 -translate-y-1/2 rounded p-1.5 text-gray-500 hover:text-brand-400 hover:bg-gray-800 transition-colors"
+          className="absolute right-1 top-1/2 -translate-y-1/2 rounded-sm p-1.5 text-gray-500 hover:text-brand-400 hover:bg-gray-800 transition-colors"
           title={reveal ? 'Hide' : 'Reveal'}
         >
           {reveal ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}

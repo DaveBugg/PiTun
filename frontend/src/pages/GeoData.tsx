@@ -6,6 +6,7 @@ import {
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { geodataApi } from '@/api/client'
 import { useSystemSettings, useUpdateSettings } from '@/hooks/useSystem'
+import { useT } from '@/hooks/useT'
 import { GEO_PROFILES, detectActiveProfile, type GeoProfile } from '@/lib/geoProfiles'
 import type { GeoUpdateProgress, GeoUpdateFileProgress } from '@/types'
 
@@ -16,6 +17,7 @@ function formatSize(bytes?: number | null): string {
 }
 
 export function GeoData() {
+  const t = useT()
   const qc = useQueryClient()
   const [customGeoipUrl, setCustomGeoipUrl] = useState('')
   const [customGeositeUrl, setCustomGeositeUrl] = useState('')
@@ -127,39 +129,42 @@ export function GeoData() {
             <div className="flex items-center justify-between mb-2">
               <span className="text-xs font-medium text-gray-200 font-mono truncate pr-1">{label}</span>
               {exists
-                ? <CheckCircle className="h-4 w-4 text-green-400 flex-shrink-0" />
-                : <XCircle className="h-4 w-4 text-red-400 flex-shrink-0" />
+                ? <CheckCircle className="h-4 w-4 text-green-600 dark:text-green-400 shrink-0" />
+                : <XCircle className="h-4 w-4 text-red-600 dark:text-red-400 shrink-0" />
               }
             </div>
             <div className="text-xs text-gray-500 space-y-0.5">
-              <div>Size: {formatSize(size)}</div>
+              <div>{t('Size', 'Размер')}: {formatSize(size)}</div>
               {mtime && (
-                <div>Updated: {new Date(mtime).toLocaleString()}</div>
+                <div>{t('Updated', 'Обновлён')}: {new Date(mtime).toLocaleString()}</div>
               )}
-              {!exists && <div className="text-red-400">File not found</div>}
+              {!exists && <div className="text-red-600 dark:text-red-400">{t('File not found', 'Файл не найден')}</div>}
             </div>
             <button
               onClick={() => handleUpdateSingle(type)}
               disabled={localSubmitting || updateGeo.isPending || progress?.active}
-              className="mt-3 flex items-center gap-1 rounded px-2 py-1 text-xs bg-gray-700 text-gray-300 hover:bg-gray-600 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+              className="mt-3 flex items-center gap-1 rounded-sm px-2 py-1 text-xs bg-gray-700 text-gray-300 hover:bg-gray-600 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
             >
               <RefreshCw className={(updateGeo.isPending || progress?.active) ? 'h-3 w-3 animate-spin' : 'h-3 w-3'} />
-              Update
+              {t('Update', 'Обновить')}
             </button>
           </div>
         ))}
       </div>
 
       {/* mmdb info note */}
-      <div className="rounded-lg border border-blue-800/40 bg-blue-950/30 px-4 py-2.5 text-xs text-blue-300">
-        GeoLite2 .mmdb is used for IP geolocation queries (requires xray version with mmdb support).
+      <div className="rounded-lg border border-blue-200 dark:border-blue-800/40 bg-blue-50 dark:bg-blue-950/30 px-4 py-2.5 text-xs text-blue-700 dark:text-blue-300">
+        {t(
+          'GeoLite2 .mmdb is used for IP geolocation queries (requires xray version with mmdb support).',
+          'GeoLite2 .mmdb используется для геолокации по IP (нужна версия xray с поддержкой mmdb).',
+        )}
       </div>
 
       {/* Download section */}
       <div className="rounded-xl border border-gray-800 bg-gray-900/30 p-5 space-y-4">
         <h2 className="text-sm font-medium text-gray-300 flex items-center gap-2">
           <Download className="h-4 w-4" />
-          Download / Update
+          {t('Download / Update', 'Загрузка / Обновление')}
         </h2>
 
         <div className="space-y-3">
@@ -167,42 +172,42 @@ export function GeoData() {
             <label className="block text-xs font-medium text-gray-400 mb-1">
               GeoIP URL
               <span className="ml-2 text-gray-600 font-normal">
-                (leave empty to use default)
+                {t('(leave empty to use default)', '(пусто = по умолчанию)')}
               </span>
             </label>
             <input
               value={customGeoipUrl}
               onChange={(e) => setCustomGeoipUrl(e.target.value)}
               placeholder={sysSettings?.geoip_url || 'https://…/geoip.dat'}
-              className="w-full rounded bg-gray-800 border border-gray-700 px-3 py-1.5 text-sm text-gray-100 font-mono focus:border-brand-500 focus:outline-none"
+              className="w-full rounded-sm bg-gray-800 border border-gray-700 px-3 py-1.5 text-sm text-gray-100 font-mono focus:border-brand-500 focus:outline-hidden"
             />
           </div>
           <div>
             <label className="block text-xs font-medium text-gray-400 mb-1">
               GeoSite URL
               <span className="ml-2 text-gray-600 font-normal">
-                (leave empty to use default)
+                {t('(leave empty to use default)', '(пусто = по умолчанию)')}
               </span>
             </label>
             <input
               value={customGeositeUrl}
               onChange={(e) => setCustomGeositeUrl(e.target.value)}
               placeholder={sysSettings?.geosite_url || 'https://…/geosite.dat'}
-              className="w-full rounded bg-gray-800 border border-gray-700 px-3 py-1.5 text-sm text-gray-100 font-mono focus:border-brand-500 focus:outline-none"
+              className="w-full rounded-sm bg-gray-800 border border-gray-700 px-3 py-1.5 text-sm text-gray-100 font-mono focus:border-brand-500 focus:outline-hidden"
             />
           </div>
           <div>
             <label className="block text-xs font-medium text-gray-400 mb-1">
               GeoLite2 MMDB URL
               <span className="ml-2 text-gray-600 font-normal">
-                (leave empty to use default)
+                {t('(leave empty to use default)', '(пусто = по умолчанию)')}
               </span>
             </label>
             <input
               value={customMmdbUrl}
               onChange={(e) => setCustomMmdbUrl(e.target.value)}
               placeholder={sysSettings?.geoip_mmdb_url || 'https://git.io/GeoLite2-Country.mmdb'}
-              className="w-full rounded bg-gray-800 border border-gray-700 px-3 py-1.5 text-sm text-gray-100 font-mono focus:border-brand-500 focus:outline-none"
+              className="w-full rounded-sm bg-gray-800 border border-gray-700 px-3 py-1.5 text-sm text-gray-100 font-mono focus:border-brand-500 focus:outline-hidden"
             />
           </div>
         </div>
@@ -213,7 +218,7 @@ export function GeoData() {
           className="flex items-center gap-2 rounded-lg bg-brand-600 px-4 py-2 text-sm font-medium text-white hover:bg-brand-500 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
         >
           <RefreshCw className={(localSubmitting || progress?.active) ? 'h-4 w-4 animate-spin' : 'h-4 w-4'} />
-          {(localSubmitting || progress?.active) ? 'Downloading…' : 'Download All'}
+          {(localSubmitting || progress?.active) ? t('Downloading…', 'Загрузка…') : t('Download All', 'Загрузить всё')}
         </button>
 
         {updateGeo.isError && (() => {
@@ -226,14 +231,14 @@ export function GeoData() {
           if (err?.response?.status === 409) {
             const detail = err.response.data?.detail
             return (
-              <p className="text-xs text-amber-300">
-                {detail?.error ?? 'A geodata update is already in progress'}
-                {detail?.job_id ? ` (job ${detail.job_id})` : ''}.
-                Wait for it to finish — progress is shown below.
+              <p className="text-xs text-amber-700 dark:text-amber-300">
+                {detail?.error ?? t('A geodata update is already in progress', 'Обновление geodata уже выполняется')}
+                {detail?.job_id ? ` (job ${detail.job_id})` : ''}.{' '}
+                {t('Wait for it to finish — progress is shown below.', 'Дождитесь завершения — прогресс показан ниже.')}
               </p>
             )
           }
-          return <p className="text-xs text-red-400">Error: {String(updateGeo.error)}</p>
+          return <p className="text-xs text-red-600 dark:text-red-400">{t('Error', 'Ошибка')}: {String(updateGeo.error)}</p>
         })()}
 
         {/* Live progress — visible from the moment a job is in flight
@@ -252,13 +257,13 @@ export function GeoData() {
       <div className="rounded-xl border border-gray-800 bg-gray-900/30 p-5 space-y-4">
         <h2 className="text-sm font-medium text-gray-300 flex items-center gap-2">
           <Globe className="h-4 w-4" />
-          Default URLs
+          {t('Default URLs', 'URL по умолчанию')}
         </h2>
         <div className="space-y-3">
           {([
-            ['geoip_url', 'Default GeoIP URL'],
-            ['geosite_url', 'Default GeoSite URL'],
-            ['geoip_mmdb_url', 'Default GeoLite2 MMDB URL'],
+            ['geoip_url', t('Default GeoIP URL', 'GeoIP URL по умолчанию')],
+            ['geosite_url', t('Default GeoSite URL', 'GeoSite URL по умолчанию')],
+            ['geoip_mmdb_url', t('Default GeoLite2 MMDB URL', 'GeoLite2 MMDB URL по умолчанию')],
           ] as const).map(([key, label]) => (
             <div key={key}>
               <label className="block text-xs font-medium text-gray-400 mb-1">
@@ -269,16 +274,16 @@ export function GeoData() {
                   defaultValue={sysSettings?.[key] ?? ''}
                   key={sysSettings?.[key]}
                   id={`input-${key}`}
-                  className="flex-1 rounded bg-gray-800 border border-gray-700 px-3 py-1.5 text-sm text-gray-100 font-mono focus:border-brand-500 focus:outline-none"
+                  className="flex-1 rounded-sm bg-gray-800 border border-gray-700 px-3 py-1.5 text-sm text-gray-100 font-mono focus:border-brand-500 focus:outline-hidden"
                 />
                 <button
                   onClick={() => {
                     const el = document.getElementById(`input-${key}`) as HTMLInputElement
                     updateSettings.mutate({ [key]: el.value })
                   }}
-                  className="rounded px-3 py-1.5 text-xs bg-gray-700 text-gray-300 hover:bg-gray-600 transition-colors"
+                  className="rounded-sm px-3 py-1.5 text-xs bg-gray-700 text-gray-300 hover:bg-gray-600 transition-colors"
                 >
-                  Save
+                  {t('Save', 'Сохранить')}
                 </button>
               </div>
             </div>
@@ -303,6 +308,7 @@ function ProfilePicker({
 }: {
   sysSettings: { geoip_url?: string; geosite_url?: string; geoip_mmdb_url?: string } | null
 }) {
+  const t = useT()
   const updateSettings = useUpdateSettings()
   const active = detectActiveProfile({
     geoip_url: sysSettings?.geoip_url,
@@ -322,16 +328,16 @@ function ProfilePicker({
     <div className="rounded-xl border border-gray-800 bg-gray-900/30 p-5 space-y-3">
       <h2 className="text-sm font-medium text-gray-300 flex items-center gap-2">
         <Layers className="h-4 w-4" />
-        Geo profile
+        {t('Geo profile', 'Гео-профиль')}
         <span className="ml-auto text-[11px] font-normal text-gray-500">
-          Active: <span className="text-gray-300">{active}</span>
+          {t('Active', 'Активный')}: <span className="text-gray-300">{active}</span>
         </span>
       </h2>
       <p className="text-xs text-gray-500">
-        Switching profile updates the three URLs below. After switching, use
-        "Update all" above to download the new dataset. Quick-Add presets in
-        the Routing page automatically switch to use category names that
-        exist in the active profile's geosite.
+        {t(
+          'Switching profile updates the three URLs below. After switching, use "Download All" above to download the new dataset. Quick-Add presets in the Routing page automatically switch to use category names that exist in the active profile\'s geosite.',
+          'Смена профиля обновляет три URL ниже. После смены нажмите «Загрузить всё» выше, чтобы скачать новый набор данных. Quick-Add пресеты на странице Routing автоматически используют имена категорий из geosite активного профиля.',
+        )}
       </p>
       <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
         {GEO_PROFILES.map((p) => {
@@ -341,7 +347,7 @@ function ProfilePicker({
               key={p.id}
               className={`rounded-lg border p-3 transition-colors ${
                 isActive
-                  ? 'border-brand-600 bg-brand-600/10'
+                  ? 'border-brand-400 bg-brand-50 dark:bg-brand-600/10'
                   : 'border-gray-800 bg-gray-900/40 hover:border-gray-700'
               }`}
             >
@@ -353,13 +359,13 @@ function ProfilePicker({
                       {p.geositeSize}
                     </span>
                     {isActive && (
-                      <span className="rounded bg-brand-600/30 text-brand-300 px-1.5 py-0.5 text-[10px] uppercase tracking-wider">
-                        active
+                      <span className="rounded-sm bg-brand-50 text-brand-700 dark:bg-brand-600/30 dark:text-brand-300 px-1.5 py-0.5 text-[10px] uppercase tracking-wider">
+                        {t('active', 'активный')}
                       </span>
                     )}
                   </div>
                   <p className="text-xs text-gray-400 mt-1 leading-relaxed">
-                    {p.description}
+                    {t(p.description, p.descriptionRu)}
                   </p>
                 </div>
               </div>
@@ -367,9 +373,9 @@ function ProfilePicker({
                 <button
                   onClick={() => apply(p)}
                   disabled={updateSettings.isPending}
-                  className="mt-3 w-full rounded bg-gray-800 hover:bg-gray-700 text-gray-200 text-xs font-medium px-3 py-1.5 disabled:opacity-50 transition-colors"
+                  className="mt-3 w-full rounded-sm bg-gray-800 hover:bg-gray-700 text-gray-200 text-xs font-medium px-3 py-1.5 disabled:opacity-50 transition-colors"
                 >
-                  {updateSettings.isPending ? 'Switching…' : 'Switch to this profile'}
+                  {updateSettings.isPending ? t('Switching…', 'Переключение…') : t('Switch to this profile', 'Переключиться на профиль')}
                 </button>
               )}
             </div>
@@ -378,8 +384,10 @@ function ProfilePicker({
       </div>
       {active === 'custom' && (
         <p className="text-[11px] text-yellow-500/80">
-          ⚠ Current URLs don't match any registered profile. Quick-Add presets
-          fall back to common categories (`category-ru`, `tld-ru`, `cn`, etc.).
+          {t(
+            '⚠ Current URLs don\'t match any registered profile. Quick-Add presets fall back to common categories (category-ru, tld-ru, cn, etc.).',
+            '⚠ Текущие URL не совпадают ни с одним профилем. Quick-Add пресеты используют общие категории (category-ru, tld-ru, cn и т.д.).',
+          )}
         </p>
       )}
     </div>
@@ -437,13 +445,13 @@ function GeoProgressPanel({ progress }: { progress: GeoUpdateProgress }) {
           </>
         ) : anyFailed ? (
           <>
-            <AlertTriangle className="h-3.5 w-3.5 text-red-400" />
-            <span className="text-red-300">Update finished with errors</span>
+            <AlertTriangle className="h-3.5 w-3.5 text-red-600 dark:text-red-400" />
+            <span className="text-red-700 dark:text-red-300">Update finished with errors</span>
           </>
         ) : allDone ? (
           <>
-            <CheckCircle className="h-3.5 w-3.5 text-green-400" />
-            <span className="text-green-300">Update complete</span>
+            <CheckCircle className="h-3.5 w-3.5 text-green-600 dark:text-green-400" />
+            <span className="text-green-700 dark:text-green-300">Update complete</span>
             {progress.tag_cache_refreshed && (
               <span className="text-[10px] text-gray-500">· tag cache reloaded into xray</span>
             )}
@@ -472,8 +480,8 @@ function FileProgressRow({ name, file }: { name: string; file: GeoUpdateFileProg
     downloading: 'text-brand-300',
     verifying: 'text-brand-300',
     applying: 'text-brand-300',
-    done: 'text-green-400',
-    failed: 'text-red-400',
+    done: 'text-green-600 dark:text-green-400',
+    failed: 'text-red-600 dark:text-red-400',
   }[file.stage] || 'text-gray-400'
 
   const barColour = file.stage === 'failed'
@@ -495,7 +503,7 @@ function FileProgressRow({ name, file }: { name: string; file: GeoUpdateFileProg
           {pct !== null ? ` · ${pct}%` : ''}
         </span>
       </div>
-      <div className="h-1.5 rounded bg-gray-800 overflow-hidden">
+      <div className="h-1.5 rounded-sm bg-gray-800 overflow-hidden">
         {pct !== null ? (
           <div
             className={`h-full ${barColour} transition-all duration-300`}
@@ -507,7 +515,7 @@ function FileProgressRow({ name, file }: { name: string; file: GeoUpdateFileProg
         ) : null}
       </div>
       {file.error && (
-        <p className="mt-1 text-[11px] text-red-400 break-words">
+        <p className="mt-1 text-[11px] text-red-600 dark:text-red-400 wrap-break-word">
           {file.error}
         </p>
       )}

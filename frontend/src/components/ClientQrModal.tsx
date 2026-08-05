@@ -155,11 +155,11 @@ export function ClientQrModal({ open, onClose, title, uri, fetchUri, subtitle }:
           )}
 
           {error && !loading && (
-            <div className="flex items-start gap-2 rounded-md border border-red-900/60 bg-red-900/20 p-3 text-[12px] text-red-200">
+            <div className="flex items-start gap-2 rounded-md border border-red-200 dark:border-red-900/60 bg-red-50 dark:bg-red-900/20 p-3 text-[12px] text-red-800 dark:text-red-200">
               <AlertTriangle className="h-4 w-4 shrink-0 mt-0.5" />
               <div>
                 <div className="font-medium">{t('Failed to load URI', 'Не удалось получить URI')}</div>
-                <div className="text-red-300/80 mt-1">{error}</div>
+                <div className="text-red-700 dark:text-red-300/80 mt-1">{error}</div>
               </div>
             </div>
           )}
@@ -191,12 +191,12 @@ export function ClientQrModal({ open, onClose, title, uri, fetchUri, subtitle }:
                     type={reveal ? 'text' : 'password'}
                     value={finalUri}
                     onFocus={(e) => e.currentTarget.select()}
-                    className="flex-1 rounded-md border border-gray-800 bg-gray-900 px-2 py-1.5 text-[11px] font-mono text-gray-200 focus:border-brand-700 focus:outline-none"
+                    className="flex-1 rounded-md border border-gray-800 bg-gray-900 px-2 py-1.5 text-[11px] font-mono text-gray-200 focus:border-brand-700 focus:outline-hidden"
                   />
                   <button
                     type="button"
                     onClick={() => setReveal((v) => !v)}
-                    className="rounded-md border border-gray-700 bg-gray-900 px-2 py-1 text-[11px] text-gray-300 hover:border-brand-700/50 hover:text-brand-300"
+                    className="rounded-md border border-gray-700 bg-gray-900 px-2 py-1 text-[11px] text-gray-300 hover:border-brand-400/50 hover:text-brand-700 dark:hover:text-brand-300"
                     title={reveal ? t('Hide', 'Скрыть') : t('Reveal', 'Показать')}
                   >
                     {reveal ? t('Hide', 'Скрыть') : t('Reveal', 'Показать')}
@@ -214,7 +214,7 @@ export function ClientQrModal({ open, onClose, title, uri, fetchUri, subtitle }:
                 <button
                   type="button"
                   onClick={handleCopy}
-                  className="inline-flex items-center gap-1.5 rounded-md border border-gray-700 bg-gray-900 px-2.5 py-1.5 text-[11px] text-gray-200 hover:border-brand-700/50 hover:text-brand-300"
+                  className="inline-flex items-center gap-1.5 rounded-md border border-gray-700 bg-gray-900 px-2.5 py-1.5 text-[11px] text-gray-200 hover:border-brand-400/50 hover:text-brand-700 dark:hover:text-brand-300"
                 >
                   {copied
                     ? <><Check className="h-3 w-3" />{t('Copied', 'Скопировано')}</>
@@ -223,7 +223,7 @@ export function ClientQrModal({ open, onClose, title, uri, fetchUri, subtitle }:
                 <button
                   type="button"
                   onClick={handleDownload}
-                  className="inline-flex items-center gap-1.5 rounded-md border border-gray-700 bg-gray-900 px-2.5 py-1.5 text-[11px] text-gray-200 hover:border-brand-700/50 hover:text-brand-300"
+                  className="inline-flex items-center gap-1.5 rounded-md border border-gray-700 bg-gray-900 px-2.5 py-1.5 text-[11px] text-gray-200 hover:border-brand-400/50 hover:text-brand-700 dark:hover:text-brand-300"
                   title={t('Download QR as SVG', 'Скачать QR в SVG')}
                 >
                   <Download className="h-3 w-3" />
@@ -234,13 +234,13 @@ export function ClientQrModal({ open, onClose, title, uri, fetchUri, subtitle }:
           )}
 
           {!loading && !error && !finalUri && displayReason && (
-            <div className="flex items-start gap-2 rounded-md border border-amber-900/60 bg-amber-900/20 p-3 text-[12px] text-amber-200">
+            <div className="flex items-start gap-2 rounded-md border border-amber-200 dark:border-amber-900/60 bg-amber-50 dark:bg-amber-900/20 p-3 text-[12px] text-amber-800 dark:text-amber-200">
               <AlertTriangle className="h-4 w-4 shrink-0 mt-0.5" />
               <div>
                 <div className="font-medium">
                   {t('No QR available', 'QR недоступен')}
                 </div>
-                <div className="text-amber-300/80 mt-1">{displayReason}</div>
+                <div className="text-amber-700 dark:text-amber-300/80 mt-1">{displayReason}</div>
               </div>
             </div>
           )}

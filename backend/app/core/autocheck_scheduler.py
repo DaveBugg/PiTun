@@ -60,6 +60,9 @@ async def resolve_scope_node_ids(session: AsyncSession, kind: str, value: str) -
             return []
         stmt = stmt.where(Node.id.in_(ids))  # type: ignore[attr-defined]
     # "all" or anything unrecognised → every enabled node.
+    # Newest nodes first (highest id → down to 1): a fresh import gets
+    # measured soonest, and the oldest/most-established nodes last.
+    stmt = stmt.order_by(Node.id.desc())  # type: ignore[attr-defined]
     nodes = (await session.exec(stmt)).all()
     return [n.id for n in nodes if n.id is not None]
 
@@ -110,9 +113,19 @@ class AutoCheckScheduler:
                 return  # not due yet
         await self.run_sweep()
 
-    async def run_sweep(self) -> dict:
+    async def run_sweep(
+        self, scope_kind: Optional[str] = None, scope_value: Optional[str] = None,
+        force: bool = False,
+    ) -> dict:
         """Speed-test every scoped node (sequential, staleness-guarded).
-        Returns a summary dict. Safe to call directly (API 'run now')."""
+        Returns a summary dict. Safe to call directly (API 'run now').
+
+        `scope_kind`/`scope_value` override the saved config scope for this
+        run — the Nodes "Speed All" button passes `"all"` so it always sweeps
+        every node regardless of the auto-check config. The scheduler passes
+        None to use the saved scope. Either way we stamp `last_sweep`, so a
+        manual run pushes the next scheduled sweep out by one interval and the
+        two never collide."""
         if self._sweeping:
             return {"status": "already_running"}
         self._sweeping = True
@@ -124,14 +137,15 @@ class AutoCheckScheduler:
                 # Read the fields we need BEFORE committing — `await commit()`
                 # expires the ORM attributes, and touching them afterwards would
                 # trigger a sync lazy-load on the async connection (MissingGreenlet).
-                scope_kind, scope_value = cfg.scope_kind, cfg.scope_value
+                eff_kind = scope_kind if scope_kind is not None else cfg.scope_kind
+                eff_value = scope_value if scope_value is not None else cfg.scope_value
                 interval = timedelta(minutes=max(1, cfg.interval_minutes))
                 # Stamp the sweep start up front so a concurrent tick sees
                 # "not due" and we never double-schedule.
                 cfg.last_sweep = started
                 session.add(cfg)
                 await session.commit()
-                node_ids = await resolve_scope_node_ids(session, scope_kind, scope_value)
+                node_ids = await resolve_scope_node_ids(session, eff_kind, eff_value)
 
             from app.core.speedtest import speedtest_node as _speedtest
             for nid in node_ids:
@@ -140,8 +154,9 @@ class AutoCheckScheduler:
                     if not node or not node.enabled:
                         continue
                     # Staleness guard: skip a node measured within the interval
-                    # (e.g. tested manually a moment ago).
-                    if node.speed_tested_at is not None and \
+                    # (e.g. tested manually a moment ago). `force` (manual
+                    # "Speed All") bypasses it so every node is re-tested.
+                    if not force and node.speed_tested_at is not None and \
                             datetime.now(timezone.utc) < _as_utc(node.speed_tested_at) + interval:
                         skipped += 1
                         continue

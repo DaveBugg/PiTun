@@ -1,4 +1,4 @@
-import { useState, useEffect, FormEvent } from 'react'
+import { useState, useEffect, Fragment, FormEvent } from 'react'
 import { Link, NavLink, Outlet } from 'react-router-dom'
 import {
   LayoutDashboard,
@@ -12,6 +12,7 @@ import {
   Shield,
   Network,
   Layers,
+  Scale,
   Circle,
   BookOpen,
   User,
@@ -46,22 +47,25 @@ function getUsername(): string {
 
 const NAV = [
   { to: '/',             icon: LayoutDashboard, label: 'Dashboard'     },
+  { to: '/routing',      icon: GitBranch,       label: 'Routing'       },
   { to: '/nodes',        icon: Server,          label: 'Nodes'         },
+  { to: '/circles',      icon: Circle,          label: 'NodeCircle'    },
+  { to: '/balancers',    icon: Scale,           label: 'Balancers'     },
+  { to: '/subscriptions',icon: Rss,             label: 'Subscriptions' },
   { to: '/servers',      icon: Cloud,           label: 'Servers'       },
   { to: '/xui',          icon: Layers,          label: 'X-ui'          },
   { to: '/chains',       icon: GitBranch,       label: 'Chains'        },
-  { to: '/circles',      icon: Circle,          label: 'NodeCircle'    },
-  { to: '/routing',      icon: GitBranch,       label: 'Routing'       },
-  { to: '/devices',      icon: Monitor,         label: 'Devices'       },
-  { to: '/balancers',    icon: Layers,          label: 'Balancers'     },
-  { to: '/subscriptions',icon: Rss,             label: 'Subscriptions' },
   { to: '/dns',          icon: Network,         label: 'DNS'           },
   { to: '/geodata',      icon: Globe,           label: 'GeoData'       },
+  { to: '/devices',      icon: Monitor,         label: 'Devices'       },
   { to: '/logs',         icon: ScrollText,      label: 'Logs'          },
-  { to: '/settings',     icon: Settings2,       label: 'Settings'      },
   { to: '/diagnostics',  icon: Activity,        label: 'Diagnostics'   },
+  { to: '/settings',     icon: Settings2,       label: 'Settings'      },
   { to: '/kb',           icon: BookOpen,        label: 'Knowledge Base'},
 ]
+
+// Routes after which a thin separator line groups the nav visually.
+const DIVIDE_AFTER = new Set(['/routing', '/subscriptions', '/chains', '/devices', '/settings'])
 
 export function Layout() {
   const {
@@ -190,7 +194,7 @@ export function Layout() {
       {mobileMenuOpen && (
         <div
           onClick={() => setMobileMenuOpen(false)}
-          className="fixed inset-0 z-30 bg-black/60 backdrop-blur-sm md:hidden"
+          className="fixed inset-0 z-30 bg-black/60 backdrop-blur-xs md:hidden"
           aria-hidden="true"
         />
       )}
@@ -209,9 +213,8 @@ export function Layout() {
             toggles between icon-only (`w-16`) and labeled (`w-56`).
             The mobile drawer flag has no effect at this breakpoint. */}
       <aside
-        style={{ backgroundImage: 'var(--sidebar-bg)' }}
         className={clsx(
-          // Base — flex column with gradient + right border.
+          // Base — flex column, themed panel surface + right border.
           'flex flex-col border-r border-gray-800/70 transition-all duration-200',
           // Mobile (< md): fixed overlay, animated slide-in/out via
           // translate-x. Width fixed at w-72 for legibility.
@@ -224,7 +227,7 @@ export function Layout() {
       >
         {/* Logo */}
         <div className="flex items-center gap-2 px-4 py-4 border-b border-gray-800">
-          <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-brand-600 flex-shrink-0">
+          <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-brand-600 shrink-0">
             <Shield className="h-5 w-5 text-white" />
           </div>
           {/* `text-gray-100` instead of `text-white` so the logo flips
@@ -244,10 +247,10 @@ export function Layout() {
         </div>
 
         {/* Nav */}
-        <nav className="flex-1 px-2 py-3 space-y-0.5">
+        <nav className="flex-1 min-h-0 overflow-y-auto px-2 py-3 space-y-0.5">
           {NAV.map(({ to, icon: Icon, label }) => (
+            <Fragment key={to}>
             <NavLink
-              key={to}
               to={to}
               end={to === '/'}
               onClick={() => {
@@ -266,17 +269,21 @@ export function Layout() {
                 clsx(
                   'flex items-center gap-3 rounded-lg px-2 py-2 text-sm font-medium transition-colors',
                   isActive
-                    ? 'bg-brand-600/20 text-brand-400'
+                    ? 'bg-brand-50 text-brand-700 dark:bg-brand-600/20 dark:text-brand-300'
                     : 'text-gray-400 hover:bg-gray-800 hover:text-gray-100',
                 )
               }
             >
-              <Icon className="h-4 w-4 flex-shrink-0" />
+              <Icon className="h-4 w-4 shrink-0" />
               {/* Same rule as the logo: label disappears only when
                   desktop sidebar is collapsed; mobile drawer always
                   shows labels. */}
               <span className={clsx(sidebarCollapsed && 'md:hidden')}>{label}</span>
             </NavLink>
+            {DIVIDE_AFTER.has(to) && (
+              <div className="my-1.5 mx-2 border-t border-gray-800/60" aria-hidden="true" />
+            )}
+            </Fragment>
           ))}
         </nav>
 
@@ -291,7 +298,7 @@ export function Layout() {
           <button
             onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
             title={theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'}
-            className="rounded p-1 text-gray-600 hover:text-gray-400 hover:bg-gray-800/60 transition-colors"
+            className="rounded-sm p-1 text-gray-600 hover:text-gray-400 hover:bg-gray-800/60 transition-colors"
           >
             {theme === 'dark' ? <Sun className="h-3.5 w-3.5" /> : <Moon className="h-3.5 w-3.5" />}
           </button>
@@ -304,9 +311,9 @@ export function Layout() {
                   key={l}
                   onClick={() => setLang(l)}
                   className={clsx(
-                    'rounded px-2 py-0.5 text-xs font-medium uppercase transition-colors',
+                    'rounded-sm px-2 py-0.5 text-xs font-medium uppercase transition-colors',
                     lang === l
-                      ? 'bg-brand-600/30 text-brand-300'
+                      ? 'bg-brand-50 text-brand-700 dark:bg-brand-600/30 dark:text-brand-300'
                       : 'text-gray-600 hover:text-gray-400',
                   )}
                 >
@@ -352,14 +359,14 @@ export function Layout() {
               <button
                 onClick={openChangePw}
                 className="flex items-center justify-center rounded-lg p-2 text-gray-400 hover:bg-gray-800 hover:text-gray-100 transition-colors"
-                title="Change Password"
+                title={t('Change Password', 'Смена пароля')}
               >
                 <Key className="h-4 w-4" />
               </button>
               <button
                 onClick={handleLogout}
                 className="flex items-center justify-center rounded-lg p-2 text-gray-400 hover:bg-gray-800 hover:text-red-400 transition-colors"
-                title="Logout"
+                title={t('Logout', 'Выход')}
               >
                 <LogOut className="h-4 w-4" />
               </button>
@@ -367,20 +374,20 @@ export function Layout() {
           ) : (
             <>
               <div className="flex items-center gap-2 flex-1 min-w-0 pl-1">
-                <User className="h-4 w-4 text-gray-500 flex-shrink-0" />
+                <User className="h-4 w-4 text-gray-500 shrink-0" />
                 <span className="text-xs text-gray-400 truncate">{getUsername()}</span>
               </div>
               <button
                 onClick={openChangePw}
                 className="flex items-center justify-center rounded-lg p-1.5 text-gray-500 hover:bg-gray-800 hover:text-gray-300 transition-colors"
-                title="Change Password"
+                title={t('Change Password', 'Смена пароля')}
               >
                 <Key className="h-3.5 w-3.5" />
               </button>
               <button
                 onClick={handleLogout}
                 className="flex items-center justify-center rounded-lg p-1.5 text-gray-500 hover:bg-gray-800 hover:text-red-400 transition-colors"
-                title="Logout"
+                title={t('Logout', 'Выход')}
               >
                 <LogOut className="h-3.5 w-3.5" />
               </button>
@@ -431,7 +438,7 @@ export function Layout() {
           `min-width: 0` lets main shrink to its parent's allotted
           width and child overflows are contained by the explicit
           `overflow-x-hidden` below. */}
-      <main className="flex-1 min-w-0 overflow-x-hidden overflow-y-auto pb-20 md:pb-0">
+      <main className="flex-1 min-w-0 overflow-x-hidden overflow-y-auto pb-20 md:pb-0 bg-gray-900">
         {/* Validation-error banner — shown at the top of every page when
             the most recent xray config write failed validation. The hint
             string is composed by `config_gen._explain_xray_stderr()` and
@@ -441,7 +448,7 @@ export function Layout() {
         {status?.last_xray_validation_error && (
           <div
             role="alert"
-            className="mx-4 mt-4 mb-0 rounded-lg border border-red-700/60 bg-red-950/40 px-4 py-3 text-sm text-red-200"
+            className="mx-4 mt-4 mb-0 rounded-lg border border-red-200 dark:border-red-700/60 bg-red-50 dark:bg-red-950/40 px-4 py-3 text-sm text-red-800 dark:text-red-200"
           >
             <div className="flex items-start gap-3">
               <span className="text-lg leading-none mt-0.5">⚠</span>
@@ -449,11 +456,11 @@ export function Layout() {
                 <div className="font-semibold text-red-100">
                   {t('Xray configuration validation failed', 'Валидация конфигурации Xray не прошла')}
                 </div>
-                <div className="mt-1 leading-snug break-words">
+                <div className="mt-1 leading-snug wrap-break-word">
                   {status.last_xray_validation_error}
                 </div>
                 <div className="mt-2 flex gap-3 text-xs">
-                  <Link to="/routing" className="text-red-300 hover:text-red-100 underline">
+                  <Link to="/routing" className="text-red-700 dark:text-red-300 hover:text-red-100 underline">
                     {t('Open Routing →', 'Открыть Routing →')}
                   </Link>
                 </div>
@@ -484,7 +491,7 @@ export function Layout() {
           'fixed bottom-4 right-4 z-30 md:hidden',
           'flex items-center justify-center',
           'h-12 w-12 rounded-full',
-          'bg-brand-600/85 text-white shadow-lg backdrop-blur',
+          'bg-brand-50 dark:bg-brand-600/85 text-white shadow-lg backdrop-blur-sm',
           'hover:bg-brand-500 active:scale-95 transition-all',
           'border border-brand-400/40',
           mobileMenuOpen && 'opacity-0 pointer-events-none',
@@ -517,12 +524,12 @@ export function Layout() {
             </div>
 
             {pwError && (
-              <div className="rounded-lg bg-red-900/30 border border-red-700/50 px-3 py-2 text-sm text-red-300">
+              <div className="rounded-lg bg-red-50 dark:bg-red-900/30 border border-red-200 dark:border-red-700/50 px-3 py-2 text-sm text-red-700 dark:text-red-300">
                 {pwError}
               </div>
             )}
             {pwSuccess && (
-              <div className="rounded-lg bg-green-900/30 border border-green-700/50 px-3 py-2 text-sm text-green-300">
+              <div className="rounded-lg bg-green-50 dark:bg-green-900/30 border border-green-200 dark:border-green-700/50 px-3 py-2 text-sm text-green-700 dark:text-green-300">
                 {pwSuccess}
               </div>
             )}
@@ -534,7 +541,7 @@ export function Layout() {
                   type="password"
                   value={currentPw}
                   onChange={(e) => setCurrentPw(e.target.value)}
-                  className="w-full rounded-lg bg-gray-950 border border-gray-800 px-3 py-2 text-sm text-gray-100 focus:border-brand-500 focus:outline-none"
+                  className="w-full rounded-lg bg-gray-950 border border-gray-800 px-3 py-2 text-sm text-gray-100 focus:border-brand-500 focus:outline-hidden"
                   required
                   autoFocus
                 />
@@ -545,7 +552,7 @@ export function Layout() {
                   type="password"
                   value={newPw}
                   onChange={(e) => setNewPw(e.target.value)}
-                  className="w-full rounded-lg bg-gray-950 border border-gray-800 px-3 py-2 text-sm text-gray-100 focus:border-brand-500 focus:outline-none"
+                  className="w-full rounded-lg bg-gray-950 border border-gray-800 px-3 py-2 text-sm text-gray-100 focus:border-brand-500 focus:outline-hidden"
                   required
                 />
               </div>
@@ -555,7 +562,7 @@ export function Layout() {
                   type="password"
                   value={confirmPw}
                   onChange={(e) => setConfirmPw(e.target.value)}
-                  className="w-full rounded-lg bg-gray-950 border border-gray-800 px-3 py-2 text-sm text-gray-100 focus:border-brand-500 focus:outline-none"
+                  className="w-full rounded-lg bg-gray-950 border border-gray-800 px-3 py-2 text-sm text-gray-100 focus:border-brand-500 focus:outline-hidden"
                   required
                 />
               </div>

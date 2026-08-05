@@ -583,6 +583,34 @@ nftables TPROXY -> xray-core -> правила маршрутизации
     },
   },
 
+  /* 6b. Host Network (gateway / DNS / self-loop) */
+  {
+    id: 'host-network',
+    title: { en: 'Host Network (gateway / DNS)', ru: 'Host-сеть (gateway / DNS)' },
+    content: {
+      en: (
+        <>
+          <P><B>Settings &rarr; Network</B> changes the PiTun box's OWN gateway and DNS — the host's default route and <code className="text-gray-400">/etc/resolv.conf</code> — without SSHing in. This is distinct from the routing rules, which decide where <em>LAN clients'</em> traffic exits.</P>
+          <P><B>Auto-backup + rollback.</B> Every apply snapshots the current config first; a one-click rollback (last 10 kept) restores both the persistent manager config (so it survives a reboot) and the live route via <code className="text-gray-400">ip route replace</code>.</P>
+          <P><B>Self-loop guard.</B> A fresh box left on DHCP in "gateway mode" can receive its OWN IP as the default gateway — every off-LAN packet is handed back to itself and dies. The page flags this in red ("gateway is THIS PiTun's own IP — a routing self-loop") and refuses to apply a gateway equal to the box's own address. Set it to your ISP router (usually <code className="text-gray-400">192.168.x.1</code>); if the box was on DHCP, give it a static IP too.</P>
+          <P><B>Double-hop warning.</B> If the upstream gateway is <em>another</em> PiTun (it matches PiTun's <code className="text-gray-400">/health</code> fingerprint), the page warns — your traffic would go you &rarr; this PiTun &rarr; other PiTun &rarr; router.</P>
+          <P><B>Probe before apply.</B> A candidate gateway is pinged (ICMP, then ARP) and must be on the host's subnet; the box's own address is rejected outright.</P>
+          <P><B>Installer note.</B> On install/deploy PiTun removes the native <code className="text-gray-400">systemd-resolved</code> and makes <code className="text-gray-400">/etc/resolv.conf</code> a static file it owns, so the box's own name resolution stays reliable (it frees port 53; avahi is disabled to free port 5353 for xray's DNS).</P>
+        </>
+      ),
+      ru: (
+        <>
+          <P><B>Settings &rarr; Network</B> меняет СОБСТВЕННЫЙ gateway и DNS бокса PiTun — default route хоста и <code className="text-gray-400">/etc/resolv.conf</code> — без захода по SSH. Это отдельно от правил маршрутизации, которые решают, куда выходит трафик <em>LAN-клиентов</em>.</P>
+          <P><B>Авто-бэкап + откат.</B> Каждый apply сначала снимает снэпшот текущей конфигурации; откат в один клик (хранятся последние 10) восстанавливает и постоянный конфиг менеджера (переживает ребут), и живой маршрут через <code className="text-gray-400">ip route replace</code>.</P>
+          <P><B>Защита от self-loop.</B> Свежий бокс, оставленный на DHCP в «gateway mode», может получить СВОЙ IP как default gateway — каждый пакет за пределы LAN возвращается ему самому и умирает. Страница помечает это красным («gateway is THIS PiTun's own IP — routing self-loop») и отказывается применять gateway, равный собственному адресу бокса. Укажи ISP-роутер (обычно <code className="text-gray-400">192.168.x.1</code>); если бокс был на DHCP, дай ему и статический IP.</P>
+          <P><B>Предупреждение о double-hop.</B> Если upstream-gateway — это <em>другой</em> PiTun (совпадает fingerprint <code className="text-gray-400">/health</code>), страница предупреждает — трафик пошёл бы ты &rarr; этот PiTun &rarr; другой PiTun &rarr; роутер.</P>
+          <P><B>Проба перед apply.</B> Кандидат-gateway пингуется (ICMP, затем ARP) и должен быть в подсети хоста; собственный адрес бокса отклоняется сразу.</P>
+          <P><B>Про установщик.</B> При установке/деплое PiTun снимает нативный <code className="text-gray-400">systemd-resolved</code> и делает <code className="text-gray-400">/etc/resolv.conf</code> статическим файлом под своим контролем, чтобы резолвинг имён самим боксом был стабильным (освобождает порт 53; avahi отключается ради порта 5353 для DNS xray).</P>
+        </>
+      ),
+    },
+  },
+
   /* 7. Balancer Groups */
   {
     id: 'balancers',
@@ -644,8 +672,11 @@ nftables TPROXY -> xray-core -> правила маршрутизации
           <Ul>
             <li><B>Sequential</B> — rotates nodes in order (1 &rarr; 2 &rarr; 3 &rarr; 1 &rarr; ...)</li>
             <li><B>Random</B> — picks a random node from the circle each time</li>
+            <li><B>Best</B> — picks the fastest eligible candidate from real speed data (lowest latency first, then highest measured speed), after applying the quality filters below</li>
           </Ul>
           <P><B>Interval:</B> set min/max minutes. In sequential mode, rotates every <code className="text-gray-400">interval_min</code> minutes. In random mode, picks a random interval between min and max.</P>
+          <P><B>Quality filters (best mode):</B> <code className="text-gray-400">max_latency_ms</code> drops candidates whose RTT is above a ceiling; <code className="text-gray-400">min_speed_mbps</code> drops any whose last speed reading is below a floor (a never-tested node gets the benefit of the doubt). These read the per-node speed history kept fresh by <B>Auto-checks</B> — see the <em>Speed Tests &amp; Node Health</em> section.</P>
+          <P><B>Smart-skip:</B> a scheduled rotation won't move off a node that's already healthy and low-latency — no point swapping a good exit for a random one. A manual "rotate now" always rotates regardless.</P>
           <P><B>Pre-ping with retry:</B> Before switching to a candidate, PiTun probes it via TCP to <code className="text-gray-400">address:port</code> using SO_MARK=0xFF (so the probe bypasses the TPROXY layer). Each candidate gets <B>2 attempts</B> with a short delay between them — this absorbs transient SYN drops without getting stuck on a truly dead node. Disabled or removed nodes are skipped automatically. If every candidate fails after retries, the rotation aborts and the active node stays put.</P>
           <P><B>Failover &harr; Circle integration:</B> When the active node fails its health checks repeatedly AND it belongs to an enabled circle, the failover handler delegates recovery to the circle by triggering an immediate <code className="text-gray-400">rotate_circle()</code> instead of using the legacy fallback list. If the circle has no live siblings, PiTun falls through to the Tier-2 fallback list configured in the NodeCircles page (Auto-failover toggle).</P>
           <P><B>Auto-failover toggle (NodeCircles page):</B> Globally enables/disables the failover behavior. When ON you can also pick a <B>fallback nodes list</B> — used only when the failed node is NOT in any circle (or all siblings are dead). Leave the list empty if you only use circles.</P>
@@ -673,8 +704,11 @@ nftables TPROXY -> xray-core -> правила маршрутизации
           <Ul>
             <li><B>Sequential</B> — ротация по порядку (1 &rarr; 2 &rarr; 3 &rarr; 1 &rarr; ...)</li>
             <li><B>Random</B> — случайный выбор ноды из круга каждый раз</li>
+            <li><B>Best</B> — выбирает самого быстрого подходящего кандидата по реальным данным скорости (сначала минимальный пинг, затем максимальная измеренная скорость), после применения фильтров качества ниже</li>
           </Ul>
           <P><B>Интервал:</B> задайте мин/макс минуты. В sequential режиме ротация каждые <code className="text-gray-400">interval_min</code> минут. В random режиме — случайный интервал между min и max.</P>
+          <P><B>Фильтры качества (режим best):</B> <code className="text-gray-400">max_latency_ms</code> отсекает кандидатов с RTT выше потолка; <code className="text-gray-400">min_speed_mbps</code> отсекает тех, чей последний замер скорости ниже порога (не тестированная нода получает презумпцию невиновности). Они читают историю скорости по нодам, которую держат свежей <B>Авто-проверки</B> — см. раздел <em>Speed-тесты и здоровье нод</em>.</P>
+          <P><B>Smart-skip:</B> плановая ротация не уйдёт со здоровой ноды с низким пингом — нет смысла менять хороший выход на случайный. Ручная «rotate now» крутит всегда.</P>
           <P><B>Pre-ping с повтором:</B> Перед переключением на кандидата PiTun проверяет TCP-доступность <code className="text-gray-400">address:port</code> с SO_MARK=0xFF (зонд минует TPROXY). На каждого кандидата даётся <B>2 попытки</B> с короткой паузой — это нивелирует случайные пропуски SYN, но не позволит зависнуть на реально мёртвой ноде. Отключённые или удалённые ноды пропускаются. Если все кандидаты падают — ротация отменяется, активная нода остаётся прежней.</P>
           <P><B>Связь Failover &harr; Circle:</B> Когда активная нода стабильно падает по health check И она входит в активный circle, обработчик failover делегирует восстановление кругу — запускается немедленный <code className="text-gray-400">rotate_circle()</code> вместо старого списка fallback. Если в круге нет живых соседей, PiTun переходит к Tier-2 fallback-списку со страницы NodeCircles (тогл Auto-failover).</P>
           <P><B>Тогл Auto-failover (страница NodeCircles):</B> Глобально включает/выключает поведение failover. При включении можно выбрать <B>список fallback-нод</B> — используется только когда упавшая нода НЕ входит ни в один круг (или все соседи мертвы). Если используете только круги — оставьте список пустым.</P>
@@ -686,6 +720,36 @@ nftables TPROXY -> xray-core -> правила маршрутизации
             <li>Автоматическое переключение со skip-dead-candidates</li>
           </Ul>
           <P>Также можно вручную запустить ротацию на странице NodeCircles кнопкой rotate.</P>
+        </>
+      ),
+    },
+  },
+
+  /* 8c. Speed Tests & Node Health */
+  {
+    id: 'speed-tests',
+    title: { en: 'Speed Tests & Node Health', ru: 'Speed-тесты и здоровье нод' },
+    content: {
+      en: (
+        <>
+          <P>Every node carries a live speed reading and a reachability status, measured through the real tunnel — the same data the <em>best</em> NodeCircle mode filters on.</P>
+          <P><B>Unified speed test.</B> One measurement path backs the per-node button, "Speed all", the live stream and the auto-check. It <B>gates on reachability first</B> — two 204 endpoints (Google, Cloudflare) with a retry — so a dead node fails in ~1s instead of grinding every download fallback. The number is the <B>average after a warm-up plus the peak</B> steady window; both are saved.</P>
+          <P><B>Live streaming.</B> The per-node test streams Mbps as it runs (<code className="text-gray-400">cachefly · 45.2 Mbps</code>), survives navigating away and pagination (state lives in the query cache), and persists — a reading older than 6h is flagged so a stale number never reads as current.</P>
+          <P><B>Reachability check.</B> One tap confirms the node actually carries traffic to the internet (204 through the live tunnel), separate from raw link speed.</P>
+          <P><B>Auto-checks (background sweep).</B> <B>Nodes &rarr; Auto-checks</B> speed-tests a chosen scope — <B>all / a subscription / a group / specific nodes</B> — on an interval, so <code className="text-gray-400">best</code> / <code className="text-gray-400">min_speed</code> and the UI stay fresh without manual testing. Sequential (a speed test saturates the uplink), with a per-node staleness guard and per-node error isolation — one bad node never aborts the sweep. Newest nodes are checked first, and a manual run stamps the schedule so a manual and a scheduled sweep never collide.</P>
+          <P><B>SNI / REALITY-dest scanner.</B> In the node form, probe a candidate host for TLS 1.3 + HTTP/2 (routed through the active node) before saving it as the REALITY masquerade target.</P>
+          <P><B>Single-node URI export.</B> Copy a node's <code className="text-gray-400">vless://</code> (etc.) share link straight from its card.</P>
+        </>
+      ),
+      ru: (
+        <>
+          <P>У каждой ноды есть живой замер скорости и статус достижимости, измеренные через реальный туннель — это те же данные, по которым фильтрует режим <em>best</em> в NodeCircle.</P>
+          <P><B>Единый speed-тест.</B> Один путь измерения стоит за кнопкой на ноде, «Speed all», live-стримом и авто-проверкой. Сначала <B>гейтит по достижимости</B> — два 204-эндпоинта (Google, Cloudflare) с повтором — так что мёртвая нода падает за ~1с вместо перебора всех fallback. Число — это <B>среднее после прогрева плюс пик</B> устойчивого окна; сохраняются оба.</P>
+          <P><B>Live-стриминг.</B> Тест ноды стримит Mbps по ходу (<code className="text-gray-400">cachefly · 45.2 Mbps</code>), переживает уход со страницы и пагинацию (состояние в query-кэше) и сохраняется — замер старше 6ч помечается, чтобы устаревшее число не читалось как актуальное.</P>
+          <P><B>Проверка достижимости.</B> Один тап подтверждает, что нода реально проносит трафик в интернет (204 через живой туннель), отдельно от сырой скорости.</P>
+          <P><B>Авто-проверки (фоновый прогон).</B> <B>Nodes &rarr; Auto-checks</B> тестирует скорость выбранного scope — <B>все / подписка / группа / конкретные ноды</B> — по интервалу, чтобы <code className="text-gray-400">best</code> / <code className="text-gray-400">min_speed</code> и UI были свежими без ручного теста. Последовательно (speed-тест забивает аплинк), со staleness-guard и изоляцией ошибок по каждой ноде — одна плохая нода не рвёт прогон. Новые ноды проверяются первыми, а ручной запуск сдвигает расписание, так что ручной и плановый прогоны не сталкиваются.</P>
+          <P><B>SNI / REALITY-dest сканер.</B> В форме ноды проверь хост-кандидат на TLS 1.3 + HTTP/2 (через активную ноду) перед сохранением его целью маскировки REALITY.</P>
+          <P><B>Экспорт URI одной ноды.</B> Скопируй share-ссылку <code className="text-gray-400">vless://</code> (и т.п.) прямо с карточки ноды.</P>
         </>
       ),
     },
@@ -961,8 +1025,11 @@ nftables TPROXY -> xray-core -> правила маршрутизации
           <P><B>Features:</B></P>
           <Ul>
             <li><B>Auto-update</B> — set an interval (e.g. every 6h), nodes refresh automatically</li>
-            <li><B>User-Agent</B> — customize the UA sent to subscription provider (some providers filter by UA)</li>
+            <li><B>User-Agent templates</B> — an editable table (<B>Subscriptions &rarr; UA templates</B>) replaces the old hardcoded presets. Each row has a name, key, UA string and description; bumping Happ's app version or a Chrome build when a panel starts rejecting a stale fingerprint no longer needs a redeploy. A subscription references a template by key, and an unknown key falls back to the built-in map rather than breaking a refresh.</li>
+            <li><B>Custom request headers</B> — a template can declare extra headers sent with its User-Agent (for panels that also gate on an API key, a <code className="text-gray-400">Referer</code>, or a device fingerprint). An empty value <em>removes</em> that header instead of sending it blank — that's how you drop <code className="text-gray-400">Accept-Encoding</code> for panels that mishandle gzip. CR/LF and non-ASCII values are rejected on save.</li>
+            <li><B>Export / import UA catalogue</B> — download the whole template set as JSON and restore it on another install. Import is additive; matching keys are skipped unless you overwrite in place (which keeps the row id, so subscriptions stay attached).</li>
             <li><B>Regex filter</B> — only import nodes whose names match a pattern (e.g. <code className="text-gray-400">US|UK|DE</code>)</li>
+            <li><B>GeoIP country flags (opt-in)</B> — imported node names can be prefixed with a country flag (<code className="text-gray-400">🇳🇱 vless-nl</code>). Licence-clean: nothing is shipped or downloaded — drop a MaxMind <code className="text-gray-400">GeoLite2-Country.mmdb</code> next to the geoip/geosite data and it lights up; absent it's a silent no-op.</li>
             <li>Subscription nodes are tagged and can be bulk-deleted when the subscription is removed</li>
           </Ul>
         </>
@@ -974,8 +1041,11 @@ nftables TPROXY -> xray-core -> правила маршрутизации
           <P><B>Возможности:</B></P>
           <Ul>
             <li><B>Автообновление</B> — задайте интервал (напр. каждые 6ч), ноды обновятся автоматически</li>
-            <li><B>User-Agent</B> — кастомный UA для провайдера (некоторые фильтруют по UA)</li>
+            <li><B>User-Agent шаблоны</B> — редактируемая таблица (<B>Subscriptions &rarr; UA templates</B>) вместо старых захардкоженных пресетов. У каждой строки имя, ключ, UA-строка и описание; поднять версию Happ или билд Chrome, когда панель начинает отбраковывать устаревший fingerprint, теперь можно без редеплоя. Подписка ссылается на шаблон по ключу, а неизвестный ключ откатывается на встроенную карту, а не ломает refresh.</li>
+            <li><B>Кастомные request-заголовки</B> — шаблон может объявить доп. заголовки, отправляемые вместе с User-Agent (для панелей, которые проверяют ещё и API-ключ, <code className="text-gray-400">Referer</code> или device fingerprint). Пустое значение <em>удаляет</em> заголовок, а не шлёт пустым — так убирают <code className="text-gray-400">Accept-Encoding</code> для панелей, ломающихся на gzip. CR/LF и не-ASCII значения отклоняются при сохранении.</li>
+            <li><B>Экспорт / импорт каталога UA</B> — выгрузить весь набор шаблонов в JSON и восстановить на другой установке. Импорт аддитивный; совпадающие ключи пропускаются, если не выбрать перезапись на месте (id строки сохраняется, подписки остаются привязанными).</li>
             <li><B>Regex-фильтр</B> — импортировать только ноды с именами по паттерну (напр. <code className="text-gray-400">US|UK|DE</code>)</li>
+            <li><B>Флаги стран GeoIP (opt-in)</B> — имена импортируемых нод можно префиксить флагом страны (<code className="text-gray-400">🇳🇱 vless-nl</code>). Чисто по лицензии: ничего не поставляется и не качается — положи MaxMind <code className="text-gray-400">GeoLite2-Country.mmdb</code> рядом с geoip/geosite, и оно заработает; без него — тихий no-op.</li>
             <li>Ноды подписки отмечены тегом и удаляются массово при удалении подписки</li>
           </Ul>
         </>
@@ -1200,6 +1270,28 @@ nftables TPROXY -> xray-core -> правила маршрутизации
     },
   },
 
+  /* 11b-4. Direct Connection switch */
+  {
+    id: 'direct-connection',
+    title: { en: 'Direct Connection switch', ru: 'Переключатель Direct' },
+    content: {
+      en: (
+        <>
+          <P>By default every SSH / panel operation — server test, deploy, uninstall, WireGuard clients, x-ui sync / healthcheck / inbounds / clients, chain create / healthcheck / clients / export — dials <B>through the active node</B>, the same tunnel the LAN uses.</P>
+          <P><B>Why:</B> when your ISP throttles or blocks a panel / VPS, routing the management traffic through the tunnel reaches it anyway.</P>
+          <P><B>The Direct toggle</B> in each page header (Servers, X-ui, Chains) and in the Deploy modal flips a single operation back to a straight dial off the host (SO_MARK bypass) — for reaching a box <em>while the active node is down</em>. The backend honours <code className="text-gray-400">?direct=</code> on every <code className="text-gray-400">/servers</code> and <code className="text-gray-400">/xui</code> route, so the choice is per-operation, never a global mode.</P>
+        </>
+      ),
+      ru: (
+        <>
+          <P>По умолчанию любая SSH / панельная операция — тест сервера, деплой, удаление, клиенты WireGuard, x-ui sync / healthcheck / inbounds / клиенты, создание цепочки / healthcheck / клиенты / экспорт — идёт <B>через активную ноду</B>, тот же туннель, что и LAN.</P>
+          <P><B>Зачем:</B> когда провайдер режет или блокирует панель / VPS, прогон управляющего трафика через туннель всё равно до неё достучится.</P>
+          <P><B>Тумблер Direct</B> в шапке каждой страницы (Servers, X-ui, Chains) и в модалке Deploy возвращает одну операцию на прямой дозвон с хоста (обход через SO_MARK) — чтобы достучаться до бокса, <em>пока активная нода лежит</em>. Бэкенд понимает <code className="text-gray-400">?direct=</code> на каждом роуте <code className="text-gray-400">/servers</code> и <code className="text-gray-400">/xui</code>, так что выбор — на каждую операцию, а не глобальный режим.</P>
+        </>
+      ),
+    },
+  },
+
   /* 11c. Backup & Restore (JSON Export/Import) */
   {
     id: 'backup-restore',
@@ -1356,6 +1448,32 @@ nftables TPROXY -> xray-core -> правила маршрутизации
     },
   },
 
+  /* 11e. Updates (in-UI self-update) */
+  {
+    id: 'updates',
+    title: { en: 'Updates (self-update)', ru: 'Обновления (self-update)' },
+    content: {
+      en: (
+        <>
+          <P><B>Settings &rarr; Updates</B> checks GitHub, shows what's new and applies it with live progress.</P>
+          <P><B>How it works:</B> the backend deliberately can't update itself — doing so restarts the very container serving the request — so it writes a request file on the shared volume and a host-side systemd path unit (<code className="text-gray-400">pitun-update.sh --agent</code>) does the work. Progress travels back the same way, which is why the panel keeps reporting correctly straight through the backend restart. Endpoints: <code className="text-gray-400">/api/system/update/check|status|start</code>.</P>
+          <P><B>Fetched through the active node</B> — a throttled direct route to GitHub isn't a blocker. The reply names the route that answered (active node / direct / unreachable), so "couldn't reach GitHub" never renders as "you're up to date".</P>
+          <P><B>Safety:</B> a downgrade below 1.4.8 removes the Updates panel and is called out first (with the shell command to come back). After a verified-healthy update, superseded Docker images are dropped and only the 3 most recent DB snapshots are kept — neither runs on failure, which is exactly when the old artefacts are worth having.</P>
+          <P><B>Unattended:</B> <code className="text-gray-400">scripts/pitun-update.sh --install-timer</code> adds a daily systemd timer that reports by default and only applies with <code className="text-gray-400">--apply</code>.</P>
+        </>
+      ),
+      ru: (
+        <>
+          <P><B>Settings &rarr; Updates</B> проверяет GitHub, показывает что нового и применяет с живым прогрессом.</P>
+          <P><B>Как это работает:</B> бэкенд намеренно не может обновить сам себя — это перезапустило бы тот самый контейнер, что обслуживает запрос — поэтому он пишет файл-запрос на общий том, а host-side systemd path-unit (<code className="text-gray-400">pitun-update.sh --agent</code>) делает работу. Прогресс возвращается тем же путём, поэтому панель продолжает корректно отчитываться прямо через рестарт бэкенда. Эндпоинты: <code className="text-gray-400">/api/system/update/check|status|start</code>.</P>
+          <P><B>Тянется через активную ноду</B> — урезанный прямой маршрут к GitHub не помеха. Ответ называет маршрут, который ответил (active node / direct / unreachable), так что «не достучались до GitHub» никогда не отрисуется как «у вас всё актуально».</P>
+          <P><B>Безопасность:</B> откат ниже 1.4.8 убирает панель Updates и предупреждает об этом заранее (с shell-командой, чтобы вернуться). После проверенно-здорового обновления удаляются устаревшие Docker-образы и хранятся только 3 последних снэпшота БД — ни то, ни другое не запускается при неудаче, когда старые артефакты как раз и нужны.</P>
+          <P><B>Без участия:</B> <code className="text-gray-400">scripts/pitun-update.sh --install-timer</code> добавляет ежедневный systemd-таймер, который по умолчанию только отчитывается и применяет только с <code className="text-gray-400">--apply</code>.</P>
+        </>
+      ),
+    },
+  },
+
   /* 12. Security */
   {
     id: 'security',
@@ -1365,6 +1483,7 @@ nftables TPROXY -> xray-core -> правила маршрутизации
         <>
           <Ul>
             <li><B>JWT authentication</B> — HS256, 24h token lifetime. All API endpoints protected except <code className="text-gray-400">/health</code> and <code className="text-gray-400">/auth/login</code></li>
+            <li><B>Login lockout</B> — after 5 consecutive failed logins the account is locked for 15 minutes (HTTP 429 + <code className="text-gray-400">Retry-After</code>); a successful login resets the counter. PiTun is LAN-only with no captcha, so this is the primary brute-force guard.</li>
             <li><B>WebSocket auth</B> — log stream requires JWT token via <code className="text-gray-400">?token=</code> query param</li>
             <li><B>Password</B> — bcrypt hashing, minimum 8 characters, changeable via UI (sidebar key icon)</li>
             <li><B>CLI reset</B> — <code className="text-gray-400">docker exec pitun-backend bash /app/scripts/reset-password.sh newpassword</code></li>
@@ -1379,6 +1498,7 @@ nftables TPROXY -> xray-core -> правила маршрутизации
         <>
           <Ul>
             <li><B>JWT-аутентификация</B> — HS256, время жизни токена 24ч. Все API-эндпоинты защищены кроме <code className="text-gray-400">/health</code> и <code className="text-gray-400">/auth/login</code></li>
+            <li><B>Блокировка входа</B> — после 5 подряд неудачных логинов аккаунт блокируется на 15 минут (HTTP 429 + <code className="text-gray-400">Retry-After</code>); успешный вход сбрасывает счётчик. PiTun работает только в LAN и без капчи, так что это основной защитник от перебора.</li>
             <li><B>WebSocket-авторизация</B> — поток логов требует JWT через параметр <code className="text-gray-400">?token=</code></li>
             <li><B>Пароль</B> — bcrypt-хеширование, минимум 8 символов, можно сменить через UI (иконка ключа)</li>
             <li><B>CLI-сброс</B> — <code className="text-gray-400">docker exec pitun-backend bash /app/scripts/reset-password.sh newpassword</code></li>
@@ -1419,6 +1539,28 @@ nftables TPROXY -> xray-core -> правила маршрутизации
             <li>Переключатель на Dashboard: <B>Block QUIC (UDP/443)</B></li>
             <li>Отображается только в режиме TPROXY или Both</li>
           </Ul>
+        </>
+      ),
+    },
+  },
+
+  /* 13b. TLS Fragment (anti-DPI) */
+  {
+    id: 'tls-fragment',
+    title: { en: 'TLS Fragment (anti-DPI)', ru: 'TLS Fragment (anti-DPI)' },
+    content: {
+      en: (
+        <>
+          <P><B>Settings &rarr; TLS Fragment</B> splits the outgoing TLS ClientHello across several packets, so a DPI box can't match the SNI in a single read.</P>
+          <P>Entirely client-side — the server is unaware and reassembles the stream normally. Off by default. When on, only proxy <em>entry</em> hops are routed through a <code className="text-gray-400">fragment</code> freedom outbound; chain relay hops and the <code className="text-gray-400">freedom</code> / <code className="text-gray-400">blackhole</code> / <code className="text-gray-400">dns</code> / reserved tags are never touched.</P>
+          <P><B>Tunables:</B> packet mode (e.g. <code className="text-gray-400">tlshello</code>), length range, interval range. Needs a bundled xray 26.x. Complements QUIC blocking — force TCP first, then fragment the ClientHello that rides on it.</P>
+        </>
+      ),
+      ru: (
+        <>
+          <P><B>Settings &rarr; TLS Fragment</B> бьёт исходящий TLS ClientHello на несколько пакетов, чтобы DPI не поймал SNI за одно чтение.</P>
+          <P>Полностью на стороне клиента — сервер об этом не знает и штатно собирает поток. По умолчанию выключено. При включении через <code className="text-gray-400">fragment</code> freedom-outbound идут только <em>входные</em> прокси-хопы; relay-хопы цепочек и теги <code className="text-gray-400">freedom</code> / <code className="text-gray-400">blackhole</code> / <code className="text-gray-400">dns</code> / зарезервированные не трогаются.</P>
+          <P><B>Настройки:</B> режим пакетов (напр. <code className="text-gray-400">tlshello</code>), диапазон длины, диапазон интервала. Нужен bundled xray 26.x. Дополняет блокировку QUIC — сначала форсируем TCP, затем фрагментируем ClientHello, который по нему едет.</P>
         </>
       ),
     },
@@ -1526,7 +1668,7 @@ nftables TPROXY -> xray-core -> правила маршрутизации
             <li>RPi4's own gateway must point to the real router (192.168.1.1)</li>
             <li>Enable IP forwarding on RPi4 (done by setup script)</li>
           </Ul>
-          <div className="rounded-lg bg-red-900/20 border border-red-700/40 px-3 py-2 text-xs text-red-300 mt-2">
+          <div className="rounded-lg bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-700/40 px-3 py-2 text-xs text-red-700 dark:text-red-300 mt-2">
             <B>Warning: RPi4 must NOT use itself as gateway!</B> If RPi4 gets its gateway via DHCP (like other devices), and you set DHCP gateway=192.168.1.109, RPi4 will route its own traffic to itself — infinite loop, network dies. RPi4 must have a <B>static configuration</B> with gateway=192.168.1.1 (your real router). The setup script does this automatically. nftables also marks RPi4's own traffic with mark=255 to skip TPROXY interception.
           </div>
           <Code>{`# RPi4 static config (done by setup script):
@@ -1571,7 +1713,7 @@ nmcli con mod "Wired connection 1" \\
             <li>Шлюз самого RPi4 должен указывать на реальный роутер (192.168.1.1)</li>
             <li>IP-форвардинг на RPi4 должен быть включён (делается скриптом установки)</li>
           </Ul>
-          <div className="rounded-lg bg-red-900/20 border border-red-700/40 px-3 py-2 text-xs text-red-300 mt-2">
+          <div className="rounded-lg bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-700/40 px-3 py-2 text-xs text-red-700 dark:text-red-300 mt-2">
             <B>Внимание: RPi4 НЕ должен использовать себя как шлюз!</B> Если RPi4 получает шлюз через DHCP (как остальные устройства), и вы поставите DHCP gateway=192.168.1.109, RPi4 будет маршрутизировать свой трафик на себя — бесконечная петля, сеть ляжет. RPi4 должен иметь <B>статическую конфигурацию</B> с gateway=192.168.1.1 (ваш реальный роутер). Скрипт установки делает это автоматически. nftables также помечает собственный трафик RPi4 меткой mark=255 чтобы пропускать его мимо TPROXY.
           </div>
           <Code>{`# Статическая конфигурация RPi4 (делается скриптом установки):
@@ -1927,7 +2069,7 @@ export function KnowledgeBase() {
               className={clsx(
                 'w-full text-left rounded-lg px-3 py-1.5 text-xs transition-colors truncate',
                 openSections.has(s.id)
-                  ? 'text-brand-400 bg-brand-900/20'
+                  ? 'text-brand-400 bg-brand-50 dark:bg-brand-500/12'
                   : 'text-gray-500 hover:text-gray-300 hover:bg-gray-800',
               )}
             >

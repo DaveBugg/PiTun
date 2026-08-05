@@ -367,7 +367,7 @@ function XuiUpstreamCard() {
   return (
     <div className="rounded-2xl border border-gray-800 bg-gray-900/40 p-4 flex flex-col">
       <div className="flex items-start gap-2 mb-2">
-        <div className="rounded-lg bg-purple-900/30 border border-purple-700/40 p-1.5 text-purple-300">
+        <div className="rounded-lg bg-purple-50 dark:bg-purple-900/30 border border-purple-200 dark:border-purple-700/40 p-1.5 text-purple-700 dark:text-purple-300">
           <Layers className="h-4 w-4" />
         </div>
         <div className="min-w-0 flex-1">
@@ -388,7 +388,7 @@ function XuiUpstreamCard() {
           href="https://github.com/GFW4Fun/x-ui-pro"
           target="_blank"
           rel="noopener noreferrer"
-          className="inline-flex items-center gap-1.5 text-brand-400 hover:text-brand-300"
+          className="inline-flex items-center gap-1.5 text-brand-400 hover:text-brand-700 dark:hover:text-brand-300"
         >
           <ExternalLink className="h-3.5 w-3.5" />
           GFW4Fun/x-ui-pro
@@ -398,7 +398,7 @@ function XuiUpstreamCard() {
           href="https://github.com/MHSanaei/3x-ui"
           target="_blank"
           rel="noopener noreferrer"
-          className="inline-flex items-center gap-1.5 text-brand-400 hover:text-brand-300"
+          className="inline-flex items-center gap-1.5 text-brand-400 hover:text-brand-700 dark:hover:text-brand-300"
         >
           <ExternalLink className="h-3.5 w-3.5" />
           MHSanaei/3x-ui
@@ -427,7 +427,7 @@ function ScriptCard({
   return (
     <div className="rounded-2xl border border-gray-800 bg-gray-900/40 p-4 flex flex-col">
       <div className="flex items-start gap-3">
-        <div className="rounded-lg bg-brand-600/15 p-2 text-brand-400">
+        <div className="rounded-lg bg-brand-50 dark:bg-brand-600/15 p-2 text-brand-400">
           <Icon className="h-5 w-5" />
         </div>
         <div className="flex-1 min-w-0">
@@ -515,13 +515,13 @@ function ServerRow({
         </div>
       </td>
       <td className="px-4 py-3">
-        <span className="rounded bg-gray-800 px-2 py-0.5 text-xs text-gray-400">
+        <span className="rounded-sm bg-gray-800 px-2 py-0.5 text-xs text-gray-400">
           {server.auth_type === 'password' ? t('password', 'пароль') : t('key', 'ключ')}
         </span>
       </td>
       <td className="px-4 py-3 text-xs text-gray-500">
         {server.last_check_error ? (
-          <span className="text-red-400" title={server.last_check_error}>
+          <span className="text-red-600 dark:text-red-400" title={server.last_check_error}>
             {server.last_check_error.slice(0, 40)}{server.last_check_error.length > 40 ? '…' : ''}
           </span>
         ) : lastCheck ? (
@@ -623,7 +623,7 @@ function StatusBadge({ status, latency }: { status: string; latency: number | nu
   const t = useT()
   if (status === 'online') {
     return (
-      <span className="inline-flex items-center gap-1 text-green-400 text-xs">
+      <span className="inline-flex items-center gap-1 text-green-600 dark:text-green-400 text-xs">
         <Wifi className="h-3.5 w-3.5" />
         <span>{t('online', 'онлайн')}</span>
         {latency !== null && (
@@ -634,7 +634,7 @@ function StatusBadge({ status, latency }: { status: string; latency: number | nu
   }
   if (status === 'offline') {
     return (
-      <span className="inline-flex items-center gap-1 text-red-400 text-xs">
+      <span className="inline-flex items-center gap-1 text-red-600 dark:text-red-400 text-xs">
         <WifiOff className="h-3.5 w-3.5" />
         <span>{t('offline', 'офлайн')}</span>
       </span>
@@ -671,7 +671,7 @@ function DeploymentBadge({
 
   if (deployment.last_node_id) {
     return (
-      <div className="mt-1 inline-flex items-center gap-1.5 text-[11px] text-blue-400">
+      <div className="mt-1 inline-flex items-center gap-1.5 text-[11px] text-blue-600 dark:text-blue-400">
         <Link2 className="h-3 w-3" />
         <span>
           {t('Naive deployed', 'Naive развернут')} ·{' '}
@@ -683,7 +683,7 @@ function DeploymentBadge({
 
   if (deployment.status === 'failed') {
     return (
-      <div className="mt-1 text-[11px] text-red-400">
+      <div className="mt-1 text-[11px] text-red-600 dark:text-red-400">
         {t('Naive setup failed', 'Установка Naive не удалась')}
       </div>
     )
@@ -700,7 +700,7 @@ function DeploymentBadge({
       <button
         onClick={onCreateNode}
         disabled={pending}
-        className="rounded bg-brand-600/20 hover:bg-brand-600/30 text-brand-300 px-1.5 py-0.5 text-[11px] font-medium disabled:opacity-50 transition-colors"
+        className="rounded-sm bg-brand-50 dark:bg-brand-600/20 hover:bg-brand-50 text-brand-700 dark:bg-brand-600/30 dark:text-brand-300 px-1.5 py-0.5 text-[11px] font-medium disabled:opacity-50 transition-colors"
         title={t(
           'Create a Node from this deployment (use after running the script on the VPS)',
           'Создать Node из этого deployment’а (когда скрипт уже выполнен на VPS)',
@@ -734,12 +734,12 @@ function WireGuardBadge({
         {t('WireGuard configured', 'WireGuard настроен')}
         {data && <span className="text-gray-600"> · {t(`${total} client(s)`, `${total} клиент(ов)`)}</span>}
         {orphans > 0 && (
-          <span className="text-yellow-400"> · {t(`${orphans} orphan`, `${orphans} осиротевш.`)}</span>
+          <span className="text-yellow-600 dark:text-yellow-400"> · {t(`${orphans} orphan`, `${orphans} осиротевш.`)}</span>
         )}
       </span>
       <button
         onClick={onManageClients}
-        className="rounded bg-brand-600/20 hover:bg-brand-600/30 text-brand-300 px-1.5 py-0.5 text-[11px] font-medium transition-colors"
+        className="rounded-sm bg-brand-50 dark:bg-brand-600/20 hover:bg-brand-50 text-brand-700 dark:bg-brand-600/30 dark:text-brand-300 px-1.5 py-0.5 text-[11px] font-medium transition-colors"
         title={t('Open Clients modal', 'Открыть модалку клиентов')}
       >
         {t('Clients →', 'Клиенты →')}
@@ -769,7 +769,7 @@ function XuiBadge({ deployment }: { deployment: ServerDeployment }) {
       </span>
       <Link
         to="/xui"
-        className="rounded bg-brand-600/20 hover:bg-brand-600/30 text-brand-300 px-1.5 py-0.5 text-[11px] font-medium transition-colors"
+        className="rounded-sm bg-brand-50 dark:bg-brand-600/20 hover:bg-brand-50 text-brand-700 dark:bg-brand-600/30 dark:text-brand-300 px-1.5 py-0.5 text-[11px] font-medium transition-colors"
         title={t('Open x-ui page', 'Открыть страницу x-ui')}
       >
         {t('Manage →', 'Управление →')}
@@ -801,7 +801,7 @@ function IconBtn({
       title={title}
       className={`rounded p-1.5 transition-colors disabled:opacity-50 ${
         danger
-          ? 'text-gray-500 hover:bg-red-900/30 hover:text-red-400'
+          ? 'text-gray-500 hover:bg-red-50 dark:hover:bg-red-900/30 hover:text-red-400'
           : 'text-gray-500 hover:bg-gray-800 hover:text-gray-200'
       }`}
     >
@@ -1083,7 +1083,7 @@ function ManualScriptModal({ mode, onClose }: { mode: ScriptModalMode; onClose: 
             className={
               'rounded-lg border px-3 py-2 text-left transition-colors text-sm ' +
               (protocol === 'naive'
-                ? 'border-brand-500/60 bg-brand-600/10 text-brand-200'
+                ? 'border-brand-500/60 bg-brand-50 dark:bg-brand-600/10 text-brand-700 dark:text-brand-200'
                 : 'border-gray-800 bg-gray-900/40 text-gray-400 hover:border-gray-700 hover:text-gray-200')
             }
           >
@@ -1098,7 +1098,7 @@ function ManualScriptModal({ mode, onClose }: { mode: ScriptModalMode; onClose: 
             className={
               'rounded-lg border px-3 py-2 text-left transition-colors text-sm ' +
               (protocol === 'wireguard'
-                ? 'border-brand-500/60 bg-brand-600/10 text-brand-200'
+                ? 'border-brand-500/60 bg-brand-50 dark:bg-brand-600/10 text-brand-700 dark:text-brand-200'
                 : 'border-gray-800 bg-gray-900/40 text-gray-400 hover:border-gray-700 hover:text-gray-200')
             }
           >
@@ -1110,7 +1110,7 @@ function ManualScriptModal({ mode, onClose }: { mode: ScriptModalMode; onClose: 
         </div>
 
         {error && (
-          <div className="mb-3 rounded-lg bg-red-900/30 border border-red-700/50 px-3 py-2 text-sm text-red-300">
+          <div className="mb-3 rounded-lg bg-red-50 dark:bg-red-900/30 border border-red-200 dark:border-red-700/50 px-3 py-2 text-sm text-red-700 dark:text-red-300">
             {error}
           </div>
         )}
@@ -1184,7 +1184,7 @@ function ManualScriptModal({ mode, onClose }: { mode: ScriptModalMode; onClose: 
                 type="checkbox"
                 checked={naiveInstallPhp}
                 onChange={(e) => setNaiveInstallPhp(e.target.checked)}
-                className="mt-0.5 h-3.5 w-3.5 rounded border-gray-600 bg-gray-800 text-brand-500 focus:ring-brand-500"
+                className="mt-0.5 h-3.5 w-3.5 rounded-sm border-gray-600 bg-gray-800 text-brand-500 focus:ring-brand-500"
               />
               <div className="min-w-0 flex-1">
                 <div className="text-xs font-medium text-gray-200">
@@ -1306,7 +1306,7 @@ function ManualScriptModal({ mode, onClose }: { mode: ScriptModalMode; onClose: 
             <button
               type="submit"
               disabled={downloading}
-              className="flex-1 rounded-lg border border-brand-600 bg-brand-600/15 hover:bg-brand-600/25 text-brand-300 px-4 py-2 text-sm font-medium disabled:opacity-50 transition-colors"
+              className="flex-1 rounded-lg border border-brand-400 bg-brand-50 dark:bg-brand-600/15 hover:bg-brand-600/25 text-brand-300 px-4 py-2 text-sm font-medium disabled:opacity-50 transition-colors"
               title={t(
                 'Save the deployment plan without downloading the script',
                 'Сохранить deployment без скачивания скрипта',
@@ -1336,7 +1336,7 @@ function ManualScriptModal({ mode, onClose }: { mode: ScriptModalMode; onClose: 
 }
 
 const inputCls =
-  'w-full rounded-lg bg-gray-900 border border-gray-800 px-3 py-2 text-sm text-gray-100 focus:border-brand-500 focus:outline-none'
+  'w-full rounded-lg bg-gray-900 border border-gray-800 px-3 py-2 text-sm text-gray-100 focus:border-brand-500 focus:outline-hidden'
 
 /**
  * Generate a 24-byte URL-safe random password (32 chars). Mirrors the

@@ -498,7 +498,16 @@ export const balancersApi = {
 export const autocheckApi = {
   get: () => http.get<AutoCheck>('/autocheck').then(r => r.data),
   update: (data: AutoCheckUpdate) => http.put<AutoCheck>('/autocheck', data).then(r => r.data),
-  run: () => http.post<{ status: string }>('/autocheck/run').then(r => r.data),
+  /** Trigger a background sweep now. Pass scopeKind='all' + force=true
+   *  (Nodes "Speed All") to re-test every node regardless of the saved
+   *  scope AND the staleness guard. */
+  run: (scopeKind?: string, force?: boolean) =>
+    http.post<{ status: string }>('/autocheck/run', null, {
+      params: {
+        ...(scopeKind ? { scope_kind: scopeKind } : {}),
+        ...(force ? { force: true } : {}),
+      },
+    }).then(r => r.data),
 }
 
 // ── NodeCircle ───────────────────────────────────────────────────────────────

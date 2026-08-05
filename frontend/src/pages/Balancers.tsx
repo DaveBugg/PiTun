@@ -7,6 +7,7 @@ import { balancersApi } from '@/api/client'
 import { useNodes } from '@/hooks/useNodes'
 import { useConfirm } from '@/components/ConfirmModal'
 import { ModalShell } from '@/components/ModalShell'
+import { useT } from '@/hooks/useT'
 import type { BalancerGroup, BalancerGroupCreate } from '@/types'
 
 const STRATEGY_LABELS: Record<string, string> = {
@@ -15,8 +16,8 @@ const STRATEGY_LABELS: Record<string, string> = {
 }
 
 const STRATEGY_COLORS: Record<string, string> = {
-  leastPing: 'bg-cyan-900/60 text-cyan-300',
-  random: 'bg-purple-900/60 text-purple-300',
+  leastPing: 'bg-cyan-50 dark:bg-cyan-900/60 text-cyan-700 dark:text-cyan-300',
+  random: 'bg-purple-50 dark:bg-purple-900/60 text-purple-700 dark:text-purple-300',
 }
 
 interface ModalProps {
@@ -28,6 +29,7 @@ interface ModalProps {
 }
 
 function BalancerModal({ initial, nodeOptions, onSave, onCancel, loading }: ModalProps) {
+  const t = useT()
   const [name, setName] = useState(initial?.name ?? '')
   const [strategy, setStrategy] = useState<'leastPing' | 'random'>(initial?.strategy ?? 'leastPing')
   const [enabled, setEnabled] = useState(initial?.enabled ?? true)
@@ -60,26 +62,29 @@ function BalancerModal({ initial, nodeOptions, onSave, onCancel, loading }: Moda
   return (
     <form onSubmit={handleSubmit} className="space-y-4">
       <div>
-        <label className="block text-xs font-medium text-gray-400 mb-1">Name</label>
+        <label className="block text-xs font-medium text-gray-400 mb-1">{t('Name', 'Название')}</label>
         <input
           value={name}
           onChange={(e) => setName(e.target.value)}
           required
           autoFocus
-          className="w-full rounded bg-gray-800 border border-gray-700 px-3 py-1.5 text-sm text-gray-100 focus:border-brand-500 focus:outline-none"
+          className="w-full rounded-sm bg-gray-800 border border-gray-700 px-3 py-1.5 text-sm text-gray-100 focus:border-brand-500 focus:outline-hidden"
           placeholder="My Balancer Group"
         />
       </div>
 
       <div>
         <label className="flex items-center gap-1 text-xs font-medium text-gray-400 mb-1">
-          Strategy
-          <InfoTip className="ml-0.5" text="leastPing — xray measures latency to each node and always picks the fastest one. random — distribute connections randomly across all nodes in the group. Both strategies automatically skip offline nodes." />
+          {t('Strategy', 'Стратегия')}
+          <InfoTip className="ml-0.5" text={t(
+            'leastPing — xray measures latency to each node and always picks the fastest one. random — distribute connections randomly across all nodes in the group. Both strategies automatically skip offline nodes.',
+            'leastPing — xray измеряет пинг до каждой ноды и всегда выбирает самую быструю. random — распределяет соединения случайно по всем нодам группы. Обе стратегии автоматически пропускают офлайн-ноды.',
+          )} />
         </label>
         <select
           value={strategy}
           onChange={(e) => setStrategy(e.target.value as 'leastPing' | 'random')}
-          className="w-full rounded bg-gray-800 border border-gray-700 px-3 py-1.5 text-sm text-gray-100 focus:border-brand-500 focus:outline-none"
+          className="w-full rounded-sm bg-gray-800 border border-gray-700 px-3 py-1.5 text-sm text-gray-100 focus:border-brand-500 focus:outline-hidden"
         >
           <option value="leastPing">Least Ping</option>
           <option value="random">Random</option>
@@ -88,12 +93,15 @@ function BalancerModal({ initial, nodeOptions, onSave, onCancel, loading }: Moda
 
       <div>
         <label className="flex items-center gap-1 text-xs font-medium text-gray-400 mb-1">
-          Nodes <span className="text-gray-600 font-normal">({selectedIds.size} selected)</span>
-          <InfoTip className="ml-0.5" text="Nodes included in this balancer group. All selected nodes must be reachable from RPi. Use health checks (Nodes page) to verify connectivity before adding to a balancer." />
+          {t('Nodes', 'Ноды')} <span className="text-gray-600 font-normal">({selectedIds.size} {t('selected', 'выбрано')})</span>
+          <InfoTip className="ml-0.5" text={t(
+            'Nodes included in this balancer group. All selected nodes must be reachable from RPi. Use health checks (Nodes page) to verify connectivity before adding to a balancer.',
+            'Ноды в этой группе балансировки. Все выбранные ноды должны быть доступны с RPi. Перед добавлением проверьте связность через health-check на странице Nodes.',
+          )} />
         </label>
-        <div className="rounded bg-gray-800 border border-gray-700 max-h-48 overflow-y-auto divide-y divide-gray-700/50">
+        <div className="rounded-sm bg-gray-800 border border-gray-700 max-h-48 overflow-y-auto divide-y divide-gray-700/50">
           {nodeOptions.length === 0 ? (
-            <div className="px-3 py-4 text-sm text-gray-500 text-center">No nodes available</div>
+            <div className="px-3 py-4 text-sm text-gray-500 text-center">{t('No nodes available', 'Нет доступных нод')}</div>
           ) : (
             nodeOptions.map((node) => (
               <label
@@ -104,7 +112,7 @@ function BalancerModal({ initial, nodeOptions, onSave, onCancel, loading }: Moda
                   type="checkbox"
                   checked={selectedIds.has(node.id)}
                   onChange={() => toggleNode(node.id)}
-                  className="rounded border-gray-600 bg-gray-700 text-brand-500"
+                  className="rounded-sm border-gray-600 bg-gray-700 text-brand-500"
                 />
                 <span className="text-sm text-gray-200">{node.name}</span>
                 <span className="ml-auto text-xs text-gray-600 font-mono">#{node.id}</span>
@@ -120,9 +128,9 @@ function BalancerModal({ initial, nodeOptions, onSave, onCancel, loading }: Moda
           id="balancer-enabled"
           checked={enabled}
           onChange={(e) => setEnabled(e.target.checked)}
-          className="rounded border-gray-600 bg-gray-800 text-brand-500"
+          className="rounded-sm border-gray-600 bg-gray-800 text-brand-500"
         />
-        <label htmlFor="balancer-enabled" className="text-sm text-gray-300">Enabled</label>
+        <label htmlFor="balancer-enabled" className="text-sm text-gray-300">{t('Enabled', 'Включено')}</label>
       </div>
 
       <div className="flex justify-end gap-3 pt-2 border-t border-gray-800">
@@ -131,14 +139,14 @@ function BalancerModal({ initial, nodeOptions, onSave, onCancel, loading }: Moda
           onClick={onCancel}
           className="rounded-lg px-4 py-2 text-sm text-gray-400 hover:text-gray-100 hover:bg-gray-800 transition-colors"
         >
-          Cancel
+          {t('Cancel', 'Отмена')}
         </button>
         <button
           type="submit"
           disabled={loading}
           className="rounded-lg bg-brand-600 px-4 py-2 text-sm font-medium text-white hover:bg-brand-500 disabled:opacity-50 transition-colors"
         >
-          {loading ? 'Saving…' : 'Save Group'}
+          {loading ? t('Saving…', 'Сохранение…') : t('Save Group', 'Сохранить группу')}
         </button>
       </div>
     </form>
@@ -146,6 +154,7 @@ function BalancerModal({ initial, nodeOptions, onSave, onCancel, loading }: Moda
 }
 
 export function Balancers() {
+  const t = useT()
   const [modal, setModal] = useState<'none' | 'add' | 'edit'>('none')
   const [editGroup, setEditGroup] = useState<BalancerGroup | null>(null)
   const qc = useQueryClient()
@@ -186,25 +195,25 @@ export function Balancers() {
       <div className="flex items-center justify-between flex-wrap gap-3">
         <div className="flex items-center gap-2">
           <Layers className="h-5 w-5 text-brand-400" />
-          <h1 className="text-xl font-bold text-gray-100">Balancer Groups</h1>
+          <h1 className="text-xl font-bold text-gray-100">{t('Balancer Groups', 'Группы балансировки')}</h1>
         </div>
         <button
           onClick={() => { setEditGroup(null); setModal('add') }}
           className="flex items-center gap-1.5 rounded-lg bg-brand-600 px-3 py-2 text-sm font-medium text-white hover:bg-brand-500 transition-colors"
         >
           <Plus className="h-4 w-4" />
-          Add Group
+          {t('Add Group', 'Добавить группу')}
         </button>
       </div>
 
       <p className="text-sm text-gray-500">
-        Balancer groups let you route traffic through multiple nodes with automatic selection.
-        Use <span className="font-mono text-gray-400">balancer:&lt;id&gt;</span> as the action in routing rules.
+        {t('Balancer groups let you route traffic through multiple nodes with automatic selection.', 'Группы балансировки маршрутизируют трафик через несколько нод с автоматическим выбором.')}{' '}
+        {t('Use', 'Используйте')} <span className="font-mono text-gray-400">balancer:&lt;id&gt;</span> {t('as the action in routing rules.', 'как действие в правилах маршрутизации.')}
       </p>
 
       {groups.length === 0 ? (
         <div className="text-center py-12 text-gray-500">
-          No balancer groups yet. Add a group to enable load balancing across multiple nodes.
+          {t('No balancer groups yet. Add a group to enable load balancing across multiple nodes.', 'Групп балансировки пока нет. Добавьте группу, чтобы включить балансировку нагрузки между нодами.')}
         </div>
       ) : (
         <div className="space-y-3">
@@ -221,7 +230,7 @@ export function Balancers() {
               <div className="flex items-center gap-3 flex-wrap">
                 <span
                   className={clsx(
-                    'rounded px-2 py-0.5 text-xs font-mono font-medium',
+                    'rounded-sm px-2 py-0.5 text-xs font-mono font-medium',
                     STRATEGY_COLORS[group.strategy] ?? 'bg-gray-700 text-gray-300',
                   )}
                 >
@@ -231,7 +240,7 @@ export function Balancers() {
                 <span className="flex-1 text-sm text-gray-200 font-medium">{group.name}</span>
 
                 <span className="text-xs text-gray-500 font-mono">
-                  {group.node_ids.length} node{group.node_ids.length !== 1 ? 's' : ''}
+                  {group.node_ids.length} {t('nodes', 'нод')}
                 </span>
 
                 <span className="text-xs text-gray-600 font-mono">
@@ -243,8 +252,8 @@ export function Balancers() {
                     onClick={() =>
                       updateGroup.mutate({ id: group.id, data: { enabled: !group.enabled } })
                     }
-                    title={group.enabled ? 'Disable' : 'Enable'}
-                    className="rounded p-1.5 text-gray-500 hover:text-gray-200 hover:bg-gray-800 transition-colors"
+                    title={group.enabled ? t('Disable', 'Выключить') : t('Enable', 'Включить')}
+                    className="rounded-sm p-1.5 text-gray-500 hover:text-gray-200 hover:bg-gray-800 transition-colors"
                   >
                     {group.enabled
                       ? <ToggleRight className="h-4 w-4 text-brand-400" />
@@ -252,21 +261,21 @@ export function Balancers() {
                   </button>
                   <button
                     onClick={() => { setEditGroup(group); setModal('edit') }}
-                    className="rounded p-1.5 text-gray-500 hover:text-gray-200 hover:bg-gray-800 transition-colors"
+                    className="rounded-sm p-1.5 text-gray-500 hover:text-gray-200 hover:bg-gray-800 transition-colors"
                   >
                     <Pencil className="h-4 w-4" />
                   </button>
                   <button
                     onClick={async () => {
                       const ok = await confirm({
-                        title: `Delete balancer group "${group.name}"?`,
-                        body: 'Routing rules pointing at this group will be left dangling — fix them after deletion.',
-                        confirmLabel: 'Delete',
+                        title: t(`Delete balancer group "${group.name}"?`, `Удалить группу балансировки «${group.name}»?`),
+                        body: t('Routing rules pointing at this group will be left dangling — fix them after deletion.', 'Правила маршрутизации, ссылающиеся на эту группу, останутся «висячими» — поправьте их после удаления.'),
+                        confirmLabel: t('Delete', 'Удалить'),
                         danger: true,
                       })
                       if (ok) deleteGroup.mutate(group.id)
                     }}
-                    className="rounded p-1.5 text-gray-500 hover:text-red-400 hover:bg-gray-800 transition-colors"
+                    className="rounded-sm p-1.5 text-gray-500 hover:text-red-400 hover:bg-gray-800 transition-colors"
                   >
                     <Trash2 className="h-4 w-4" />
                   </button>
@@ -297,7 +306,7 @@ export function Balancers() {
         <ModalShell onClose={() => setModal('none')} labelledBy="balancer-modal-title">
           <div className="w-full max-w-lg max-h-[90vh] overflow-y-auto rounded-2xl bg-gray-950 border border-gray-800 p-6">
             <h2 id="balancer-modal-title" className="text-base font-semibold text-gray-100 mb-5">
-              {modal === 'add' ? 'Add Balancer Group' : 'Edit Balancer Group'}
+              {modal === 'add' ? t('Add Balancer Group', 'Добавить группу балансировки') : t('Edit Balancer Group', 'Изменить группу балансировки')}
             </h2>
             <BalancerModal
               initial={editGroup ?? undefined}

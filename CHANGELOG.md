@@ -4,6 +4,52 @@ All notable user-facing changes to PiTun. Full per-release detail lives in the
 [GitHub Releases](https://github.com/DaveBugg/PiTun/releases); this file is the
 committed summary.
 
+## v1.5.0 — 2026-08-05
+
+Promotes v1.5.0-beta.1 to stable and lands a UI-framework refresh, a full
+Russian translation sweep, and hardening against the "gateway points at itself"
+install footgun. Everything from the beta — quality-aware NodeCircle rotation,
+background auto speed-checks, the unified reachability-gated speed test, login
+lockout and opt-in GeoIP flags (DB migrations 019–022) — ships here.
+
+### Added
+
+- **Routing self-loop protection (Settings → Network).** State read, apply and
+  the gateway probe now detect and refuse a default route that points at the
+  box's own IP — the "a new device set its PiTun gateway to itself" footgun.
+  The Network page flags it in red and blocks re-applying a self-referential
+  gateway; the install/deploy scripts add an `IP == GATEWAY` guard so the loop
+  can't be baked in at first boot.
+- **Knowledge Base + README refresh.** New KB sections (Speed Tests & Node
+  Health, Host Network, Direct Connection, Updates, TLS Fragment) plus updated
+  Node Circles / Subscriptions / Security sections, all bilingual EN/RU; the
+  README feature list and version pins were brought up to date.
+
+### Changed
+
+- **UI framework: Tailwind v3 → v4** (CSS-first `@theme`) with the TailAdmin
+  palette as the base, keeping PiTun's variable structure. Light-theme contrast
+  fixed page by page.
+- **Russian localisation sweep.** Pages that lacked `useT` (GeoData, Balancers,
+  Diagnostics, Logs, Login, routing / rule editors, …) are now translated, with
+  technical terms kept in English.
+- **Sidebar** reordered into logical groups with thin separators, a scrollable
+  nav that never exceeds the viewport, and distinct icons (Balancers no longer
+  shares the Nodes glyph).
+- **Install / deploy DNS hardening.** `02-install-stack.sh`, `03-deploy.sh` and
+  `setup-vm.sh` now check ports 53 / 5353, remove the native `systemd-resolved`,
+  and make `/etc/resolv.conf` a static PiTun-owned file so the box's own name
+  resolution (hostname) stays reliable; `03-deploy.sh` self-heals already-
+  installed boxes on the next deploy.
+
+### Fixed
+
+- **"Speed All" no longer 504s** — it reuses the background auto-check sweep
+  (one-off, forced scope "all"), so a large node set can't time out at the
+  reverse proxy; the sweep order now checks the newest nodes first.
+- A latent `warn: command not found` (`set -e` crash path) in
+  `02-install-stack.sh`.
+
 ## v1.5.0-beta.1 — 2026-08-04
 
 **Beta.** Smarter node-circle rotation driven by real speed data, an automatic

@@ -91,9 +91,9 @@ function ServiceStatusTile({ icon: Icon, label, status, value, sub, badge, actio
     idle: 'bg-gray-600',
   }[status]
   const valueColor = {
-    ok:   'text-green-400',
-    warn: 'text-yellow-300',
-    err:  'text-red-400',
+    ok:   'text-green-600 dark:text-green-400',
+    warn: 'text-yellow-700 dark:text-yellow-300',
+    err:  'text-red-600 dark:text-red-400',
     idle: 'text-gray-500',
   }[status]
   return (
@@ -192,7 +192,7 @@ function LanProxyAuthControl({ settings }: { settings: SystemSettings }) {
           className={clsx(
             'inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-xs font-medium transition-colors disabled:opacity-50',
             isEnabled
-              ? 'bg-emerald-900/40 text-emerald-300 hover:bg-emerald-900/60'
+              ? 'bg-emerald-50 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-300 hover:bg-emerald-50 dark:hover:bg-emerald-900/60'
               : 'bg-gray-800 text-gray-400 hover:bg-gray-700',
           )}
           title={t(
@@ -216,7 +216,7 @@ function LanProxyAuthControl({ settings }: { settings: SystemSettings }) {
             <button
               type="button"
               onClick={() => setReveal((v) => !v)}
-              className="rounded p-1 text-gray-500 hover:text-brand-400 hover:bg-gray-800 transition-colors"
+              className="rounded-sm p-1 text-gray-500 hover:text-brand-400 hover:bg-gray-800 transition-colors"
               title={reveal
                 ? t('Hide password', 'Скрыть пароль')
                 : t('Reveal password', 'Показать пароль')}
@@ -226,7 +226,7 @@ function LanProxyAuthControl({ settings }: { settings: SystemSettings }) {
             <button
               type="button"
               onClick={() => setEditing(true)}
-              className="ml-auto rounded p-1 text-xs text-gray-500 hover:text-brand-400 hover:bg-gray-800 px-2 py-0.5 transition-colors"
+              className="ml-auto rounded-sm p-1 text-xs text-gray-500 hover:text-brand-400 hover:bg-gray-800 px-2 py-0.5 transition-colors"
             >
               {t('Edit', 'Редактировать')}
             </button>
@@ -240,7 +240,7 @@ function LanProxyAuthControl({ settings }: { settings: SystemSettings }) {
             value={user}
             onChange={(e) => setUser(e.target.value)}
             placeholder={t('username', 'имя пользователя')}
-            className="rounded-lg bg-gray-900 border border-gray-800 px-2.5 py-1.5 text-xs text-gray-100 focus:border-brand-500 focus:outline-none w-44"
+            className="rounded-lg bg-gray-900 border border-gray-800 px-2.5 py-1.5 text-xs text-gray-100 focus:border-brand-500 focus:outline-hidden w-44"
             autoFocus
           />
           <div className="flex items-center gap-1">
@@ -249,12 +249,12 @@ function LanProxyAuthControl({ settings }: { settings: SystemSettings }) {
               value={pass}
               onChange={(e) => setPass(e.target.value)}
               placeholder={t('password', 'пароль')}
-              className="rounded-lg bg-gray-900 border border-gray-800 px-2.5 py-1.5 text-xs text-gray-100 focus:border-brand-500 focus:outline-none w-48"
+              className="rounded-lg bg-gray-900 border border-gray-800 px-2.5 py-1.5 text-xs text-gray-100 focus:border-brand-500 focus:outline-hidden w-48"
             />
             <button
               type="button"
               onClick={() => setReveal((v) => !v)}
-              className="rounded p-1.5 text-gray-500 hover:text-brand-400 hover:bg-gray-800 transition-colors"
+              className="rounded-sm p-1.5 text-gray-500 hover:text-brand-400 hover:bg-gray-800 transition-colors"
               title={reveal
                 ? t('Hide', 'Скрыть')
                 : t('Reveal', 'Показать')}
@@ -288,7 +288,7 @@ function LanProxyAuthControl({ settings }: { settings: SystemSettings }) {
         </div>
       )}
       {error && (
-        <div className="mt-2 text-xs text-red-400">{error}</div>
+        <div className="mt-2 text-xs text-red-600 dark:text-red-400">{error}</div>
       )}
       {!editing && (
         <p className="mt-2 text-[11px] text-gray-600">
@@ -433,7 +433,7 @@ export function Dashboard() {
       onClick={() => start.mutate()}
       disabled={start.isPending}
       title={t('Start xray', 'Запустить xray')}
-      className="flex items-center justify-center h-6 w-6 rounded text-green-400 hover:bg-gray-800 hover:text-green-300 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+      className="flex items-center justify-center h-6 w-6 rounded-sm text-green-600 dark:text-green-400 hover:bg-gray-800 hover:text-green-700 dark:hover:text-green-300 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
     >
       <Play className="h-3.5 w-3.5" />
     </button>
@@ -443,7 +443,7 @@ export function Dashboard() {
         onClick={() => restart.mutate()}
         disabled={restart.isPending}
         title={t('Restart xray', 'Перезапустить xray')}
-        className="flex items-center justify-center h-6 w-6 rounded text-gray-400 hover:bg-gray-800 hover:text-gray-200 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+        className="flex items-center justify-center h-6 w-6 rounded-sm text-gray-400 hover:bg-gray-800 hover:text-gray-200 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
       >
         <RotateCw className={clsx('h-3.5 w-3.5', restart.isPending && 'animate-spin')} />
       </button>
@@ -451,7 +451,7 @@ export function Dashboard() {
         onClick={() => stop.mutate()}
         disabled={stop.isPending}
         title={t('Stop xray', 'Остановить xray')}
-        className="flex items-center justify-center h-6 w-6 rounded text-red-400 hover:bg-gray-800 hover:text-red-300 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+        className="flex items-center justify-center h-6 w-6 rounded-sm text-red-600 dark:text-red-400 hover:bg-gray-800 hover:text-red-700 dark:hover:text-red-300 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
       >
         <Square className="h-3.5 w-3.5" />
       </button>
@@ -548,7 +548,7 @@ export function Dashboard() {
               className={clsx(
                 'rounded-xl border p-4 text-left transition-all',
                 status?.mode === value
-                  ? 'border-brand-600 bg-brand-900/20 text-brand-300'
+                  ? 'border-brand-400 bg-brand-50 text-brand-700 dark:bg-brand-500/12 dark:text-brand-200'
                   : 'border-gray-800 bg-gray-900/30 text-gray-400 hover:border-gray-700 hover:text-gray-200',
               )}
             >
@@ -591,7 +591,7 @@ export function Dashboard() {
                   className={clsx(
                     'rounded-lg border p-3 text-left text-xs transition-all',
                     isCurrent
-                      ? 'border-brand-600 bg-brand-900/20 text-brand-300'
+                      ? 'border-brand-400 bg-brand-50 text-brand-700 dark:bg-brand-500/12 dark:text-brand-200'
                       : isModeUnsupported
                         ? 'border-gray-800 bg-gray-900/40 text-gray-600 cursor-not-allowed opacity-60'
                         : 'border-gray-700 bg-gray-800 text-gray-400 hover:border-gray-600 hover:text-gray-200',
@@ -600,7 +600,7 @@ export function Dashboard() {
                   <div className="font-medium text-sm mb-0.5 flex items-center gap-1">
                     {label}
                     {isModeUnsupported && (
-                      <span className="rounded bg-gray-800 border border-gray-700 px-1 py-0.5 text-[9px] uppercase tracking-wider text-gray-500 ml-1">
+                      <span className="rounded-sm bg-gray-800 border border-gray-700 px-1 py-0.5 text-[9px] uppercase tracking-wider text-gray-500 ml-1">
                         N/A
                       </span>
                     )}
@@ -619,7 +619,7 @@ export function Dashboard() {
                 type="checkbox"
                 checked={sysSettings?.block_quic ?? true}
                 onChange={(e) => updateSettings.mutate({ block_quic: e.target.checked })}
-                className="rounded border-gray-600 bg-gray-700 text-brand-600"
+                className="rounded-sm border-gray-600 bg-gray-700 text-brand-600"
               />
               <span className="text-xs text-gray-300 flex items-center gap-1">
                 Block QUIC (UDP/443)
@@ -638,7 +638,7 @@ export function Dashboard() {
               type="checkbox"
               checked={sysSettings?.kill_switch ?? false}
               onChange={(e) => updateSettings.mutate({ kill_switch: e.target.checked })}
-              className="rounded border-gray-600 bg-gray-700 text-red-600"
+              className="rounded-sm border-gray-600 bg-gray-700 text-red-600"
             />
             <span className="text-xs text-gray-300 flex items-center gap-1">
               Kill Switch
@@ -656,7 +656,7 @@ export function Dashboard() {
               type="checkbox"
               checked={sysSettings?.auto_restart_xray ?? true}
               onChange={(e) => updateSettings.mutate({ auto_restart_xray: e.target.checked })}
-              className="rounded border-gray-600 bg-gray-700 text-green-600"
+              className="rounded-sm border-gray-600 bg-gray-700 text-green-600"
             />
             <span className="text-xs text-gray-300 flex items-center gap-1">
               Auto Restart
@@ -669,7 +669,7 @@ export function Dashboard() {
           </label>
 
           {sysSettings?.inbound_mode === 'tun' || sysSettings?.inbound_mode === 'both' ? (
-            <div className="rounded-lg bg-yellow-900/20 border border-yellow-700/40 px-3 py-2 text-xs text-yellow-300">
+            <div className="rounded-lg bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-700/40 px-3 py-2 text-xs text-yellow-700 dark:text-yellow-300">
               {t('TUN mode requires xray-core ≥ 1.8 with TUN support compiled in.', 'Режим TUN требует xray-core ≥ 1.8 с поддержкой TUN.')}
             </div>
           ) : null}
@@ -680,7 +680,7 @@ export function Dashboard() {
                 <label className="block text-xs text-gray-500 mb-1">TUN Address</label>
                 <input
                   key={sysSettings?.tun_address}
-                  className="w-full rounded bg-gray-800 border border-gray-700 px-2 py-1 text-xs text-gray-100 font-mono focus:border-brand-500 focus:outline-none"
+                  className="w-full rounded-sm bg-gray-800 border border-gray-700 px-2 py-1 text-xs text-gray-100 font-mono focus:border-brand-500 focus:outline-hidden"
                   defaultValue={sysSettings?.tun_address ?? '10.0.0.1/30'}
                   onBlur={(e) => updateSettings.mutate({ tun_address: e.target.value })}
                 />
@@ -690,7 +690,7 @@ export function Dashboard() {
                 <input
                   key={sysSettings?.tun_mtu}
                   type="number"
-                  className="w-full rounded bg-gray-800 border border-gray-700 px-2 py-1 text-xs text-gray-100 font-mono focus:border-brand-500 focus:outline-none"
+                  className="w-full rounded-sm bg-gray-800 border border-gray-700 px-2 py-1 text-xs text-gray-100 font-mono focus:border-brand-500 focus:outline-hidden"
                   defaultValue={sysSettings?.tun_mtu ?? 9000}
                   onBlur={(e) => updateSettings.mutate({ tun_mtu: parseInt(e.target.value) || 9000 })}
                 />
@@ -704,7 +704,7 @@ export function Dashboard() {
                   )} />
                 </label>
                 <select
-                  className="w-full rounded bg-gray-800 border border-gray-700 px-2 py-1 text-xs text-gray-100 focus:border-brand-500 focus:outline-none"
+                  className="w-full rounded-sm bg-gray-800 border border-gray-700 px-2 py-1 text-xs text-gray-100 focus:border-brand-500 focus:outline-hidden"
                   value={sysSettings?.tun_stack ?? 'system'}
                   onChange={(e) => updateSettings.mutate({ tun_stack: e.target.value })}
                 >
@@ -719,7 +719,7 @@ export function Dashboard() {
                     type="checkbox"
                     checked={sysSettings?.tun_auto_route ?? true}
                     onChange={(e) => updateSettings.mutate({ tun_auto_route: e.target.checked })}
-                    className="rounded border-gray-600 bg-gray-700 text-brand-600"
+                    className="rounded-sm border-gray-600 bg-gray-700 text-brand-600"
                   />
                   <span className="text-xs text-gray-400 flex items-center gap-1">
                     Auto Route
@@ -734,7 +734,7 @@ export function Dashboard() {
                     type="checkbox"
                     checked={sysSettings?.tun_strict_route ?? true}
                     onChange={(e) => updateSettings.mutate({ tun_strict_route: e.target.checked })}
-                    className="rounded border-gray-600 bg-gray-700 text-brand-600"
+                    className="rounded-sm border-gray-600 bg-gray-700 text-brand-600"
                   />
                   <span className="text-xs text-gray-400 flex items-center gap-1">
                     Strict Route
@@ -773,21 +773,21 @@ export function Dashboard() {
           </h2>
           <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
             <div className="rounded-xl border border-gray-800 bg-gray-900/30 p-3">
-              <div className="text-xs font-semibold text-green-400 mb-1">TPROXY</div>
+              <div className="text-xs font-semibold text-green-600 dark:text-green-400 mb-1">TPROXY</div>
               <div className="font-mono text-gray-100 text-sm">:{sysSettings.tproxy_port_tcp}</div>
               <div className="text-xs text-gray-600 mt-0.5">
                 {t('gateway=RPi (transparent)', 'gateway=RPi (прозрачный)')}
               </div>
             </div>
             <div className="rounded-xl border border-gray-800 bg-gray-900/30 p-3">
-              <div className="text-xs font-semibold text-blue-400 mb-1">SOCKS5</div>
+              <div className="text-xs font-semibold text-blue-600 dark:text-blue-400 mb-1">SOCKS5</div>
               <div className="font-mono text-gray-100 text-sm">:{sysSettings.socks_port}</div>
               <div className="text-xs text-gray-600 mt-0.5">
                 {t('explicit proxy (LAN)', 'явный прокси (LAN)')}
               </div>
             </div>
             <div className="rounded-xl border border-gray-800 bg-gray-900/30 p-3">
-              <div className="text-xs font-semibold text-purple-400 mb-1">HTTP</div>
+              <div className="text-xs font-semibold text-purple-600 dark:text-purple-400 mb-1">HTTP</div>
               <div className="font-mono text-gray-100 text-sm">:{sysSettings.http_port}</div>
               <div className="text-xs text-gray-600 mt-0.5">
                 {t('HTTP proxy (LAN)', 'HTTP-прокси (LAN)')}
@@ -817,11 +817,11 @@ export function Dashboard() {
                   <div key={tag} className="flex items-center justify-between px-4 py-2.5 text-sm">
                     <span className="text-gray-300 truncate max-w-[200px]">{label}</span>
                     <div className="flex items-center gap-4 text-xs font-mono shrink-0">
-                      <span className="flex items-center gap-1 text-green-400">
+                      <span className="flex items-center gap-1 text-green-600 dark:text-green-400">
                         <ArrowDown className="h-3 w-3" />
                         {formatBytes(v.downlink)}
                       </span>
-                      <span className="flex items-center gap-1 text-blue-400">
+                      <span className="flex items-center gap-1 text-blue-600 dark:text-blue-400">
                         <ArrowUp className="h-3 w-3" />
                         {formatBytes(v.uplink)}
                       </span>
@@ -932,7 +932,7 @@ function ActiveNodeSection({ nodes, status, activeNode, showNodePicker, setShowN
       {tab === 'node' ? (
         <div ref={pickerRef} className="rounded-xl border border-gray-800 bg-gray-900/30 p-4">
           {activeCircle && (
-            <div className="mb-3 rounded-lg bg-yellow-900/20 border border-yellow-700/40 px-3 py-2 text-xs text-yellow-300">
+            <div className="mb-3 rounded-lg bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-700/40 px-3 py-2 text-xs text-yellow-700 dark:text-yellow-300">
               NodeCircle "{activeCircle.name}" is active — it will override this selection on next rotation.
               <button
                 onClick={() => enableCircle.mutate({ id: activeCircle.id, enabled: false })}
@@ -988,7 +988,7 @@ function ActiveNodeSection({ nodes, status, activeNode, showNodePicker, setShowN
                   className={clsx(
                     'w-full flex items-center justify-between rounded-lg px-3 py-2 text-sm transition-colors',
                     n.id === status?.active_node_id
-                      ? 'bg-brand-900/30 text-brand-300'
+                      ? 'bg-brand-50 text-brand-700 dark:bg-brand-500/15 dark:text-brand-200'
                       : 'hover:bg-gray-800 text-gray-300',
                   )}
                 >
@@ -1011,7 +1011,7 @@ function ActiveNodeSection({ nodes, status, activeNode, showNodePicker, setShowN
                 key={c.id}
                 className={clsx(
                   'rounded-lg border p-3 transition-colors',
-                  c.enabled ? 'border-brand-600/50 bg-brand-900/10' : 'border-gray-800 bg-gray-900/50',
+                  c.enabled ? 'border-brand-400/50 bg-brand-50 dark:bg-brand-900/10' : 'border-gray-800 bg-gray-900/50',
                 )}
               >
                 <div className="flex items-center justify-between">
@@ -1027,7 +1027,7 @@ function ActiveNodeSection({ nodes, status, activeNode, showNodePicker, setShowN
                       onClick={() => rotateNow.mutate(c.id)}
                       disabled={!c.enabled || c.node_ids.length < 2 || (rotateNow.isPending && rotateNow.variables === c.id)}
                       title="Rotate now"
-                      className="rounded p-1.5 text-gray-500 hover:text-brand-400 hover:bg-gray-800 transition-colors disabled:opacity-30"
+                      className="rounded-sm p-1.5 text-gray-500 hover:text-brand-400 hover:bg-gray-800 transition-colors disabled:opacity-30"
                     >
                       <RefreshCw className={clsx('h-3.5 w-3.5', rotateNow.isPending && rotateNow.variables === c.id && 'animate-spin')} />
                     </button>

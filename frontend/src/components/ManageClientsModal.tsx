@@ -160,7 +160,7 @@ export function ManageClientsModal({
     <ModalShell onClose={onClose} labelledBy="manage-clients-title">
       <div className="w-full max-w-3xl rounded-2xl bg-gray-950/95 border border-gray-800 p-6 m-4 max-h-[90vh] overflow-y-auto">
         <div className="flex items-start gap-3 mb-4">
-          <div className="rounded-lg bg-brand-600/15 p-2 text-brand-400">
+          <div className="rounded-lg bg-brand-50 dark:bg-brand-600/15 p-2 text-brand-400">
             <Users className="h-5 w-5" />
           </div>
           <div className="flex-1 min-w-0">
@@ -192,14 +192,14 @@ export function ManageClientsModal({
         </div>
 
         {actionError && (
-          <div className="mb-3 rounded-lg bg-red-900/30 border border-red-700/50 px-3 py-2 text-sm text-red-300 flex items-start gap-2">
-            <AlertTriangle className="h-4 w-4 mt-0.5 flex-shrink-0" />
+          <div className="mb-3 rounded-lg bg-red-50 dark:bg-red-900/30 border border-red-200 dark:border-red-700/50 px-3 py-2 text-sm text-red-700 dark:text-red-300 flex items-start gap-2">
+            <AlertTriangle className="h-4 w-4 mt-0.5 shrink-0" />
             <span>{actionError}</span>
           </div>
         )}
 
         {lastSync && (
-          <div className="mb-3 rounded-lg border border-emerald-700/40 bg-emerald-900/10 px-3 py-2 text-xs text-emerald-300 flex items-start gap-2">
+          <div className="mb-3 rounded-lg border border-emerald-200 dark:border-emerald-700/40 bg-emerald-50 dark:bg-emerald-900/10 px-3 py-2 text-xs text-emerald-700 dark:text-emerald-300 flex items-start gap-2">
             <CheckCircle2 className="h-4 w-4 mt-0.5" />
             <div>
               {t('Sync result: ', 'Результат синхронизации: ')}
@@ -209,7 +209,7 @@ export function ManageClientsModal({
               <span className="font-mono">{lastSync.unchanged.length}</span>
               {' '}{t('unchanged', 'без изменений')}
               {' · '}
-              <span className="font-mono text-yellow-300">{lastSync.orphaned.length}</span>
+              <span className="font-mono text-yellow-700 dark:text-yellow-300">{lastSync.orphaned.length}</span>
               {' '}{t('orphaned', 'осиротевших')}
             </div>
           </div>
@@ -230,7 +230,7 @@ export function ManageClientsModal({
                 value={newName}
                 onChange={(e) => setNewName(e.target.value)}
                 placeholder="phone-2"
-                className="w-full rounded-lg bg-gray-900 border border-gray-800 px-3 py-2 text-sm text-gray-100 focus:border-brand-500 focus:outline-none"
+                className="w-full rounded-lg bg-gray-900 border border-gray-800 px-3 py-2 text-sm text-gray-100 focus:border-brand-500 focus:outline-hidden"
               />
             </label>
           </div>
@@ -260,18 +260,18 @@ export function ManageClientsModal({
             {t('Loading clients…', 'Загрузка клиентов…')}
           </div>
         ) : error ? (
-          <div className="rounded-lg border border-red-700/40 bg-red-900/10 px-3 py-3 text-sm text-red-300 flex items-start gap-2">
+          <div className="rounded-lg border border-red-200 dark:border-red-700/40 bg-red-50 dark:bg-red-900/10 px-3 py-3 text-sm text-red-700 dark:text-red-300 flex items-start gap-2">
             <AlertTriangle className="h-4 w-4 mt-0.5" />
             <div>
               <div className="font-medium">{t('Failed to load clients', 'Не удалось загрузить клиентов')}</div>
-              <div className="text-xs text-red-300/80 mt-0.5 break-words font-mono">
+              <div className="text-xs text-red-700 dark:text-red-300/80 mt-0.5 wrap-break-word font-mono">
                 {(error as Error).message}
               </div>
               <button
                 type="button"
                 onClick={() => refetch()}
                 disabled={isRefetching}
-                className="mt-2 rounded border border-red-700/50 px-2 py-0.5 text-xs hover:bg-red-900/20 disabled:opacity-50"
+                className="mt-2 rounded-sm border border-red-200 dark:border-red-700/50 px-2 py-0.5 text-xs hover:bg-red-50 dark:hover:bg-red-900/20 disabled:opacity-50"
               >
                 {t('Retry', 'Повторить')}
               </button>
@@ -411,7 +411,7 @@ function ClientStatusBadge({ status }: { status: DeploymentClientStatus }) {
   const t = useT()
   if (status === 'orphan') {
     return (
-      <span className="inline-flex items-center gap-1 rounded bg-yellow-900/30 border border-yellow-700/40 px-2 py-0.5 text-xs text-yellow-300">
+      <span className="inline-flex items-center gap-1 rounded-sm bg-yellow-50 dark:bg-yellow-900/30 border border-yellow-200 dark:border-yellow-700/40 px-2 py-0.5 text-xs text-yellow-700 dark:text-yellow-300">
         <AlertCircle className="h-3 w-3" />
         {t('orphan', 'осиротел')}
       </span>
@@ -419,14 +419,14 @@ function ClientStatusBadge({ status }: { status: DeploymentClientStatus }) {
   }
   if (status === 'exported') {
     return (
-      <span className="inline-flex items-center gap-1 rounded bg-emerald-900/30 border border-emerald-700/40 px-2 py-0.5 text-xs text-emerald-300">
+      <span className="inline-flex items-center gap-1 rounded-sm bg-emerald-50 dark:bg-emerald-900/30 border border-emerald-200 dark:border-emerald-700/40 px-2 py-0.5 text-xs text-emerald-700 dark:text-emerald-300">
         <CheckCircle2 className="h-3 w-3" />
         {t('exported', 'экспортирован')}
       </span>
     )
   }
   return (
-    <span className="inline-flex items-center gap-1 rounded bg-gray-800 px-2 py-0.5 text-xs text-gray-400">
+    <span className="inline-flex items-center gap-1 rounded-sm bg-gray-800 px-2 py-0.5 text-xs text-gray-400">
       {t('available', 'доступен')}
     </span>
   )
@@ -444,8 +444,8 @@ function IconBtn({
   spinning?: boolean
 }) {
   const cls = danger
-    ? 'p-1.5 rounded text-gray-500 hover:text-red-400 hover:bg-red-900/20 disabled:opacity-30 disabled:hover:bg-transparent transition-colors'
-    : 'p-1.5 rounded text-gray-500 hover:text-brand-400 hover:bg-gray-800 disabled:opacity-30 disabled:hover:bg-transparent transition-colors'
+    ? 'p-1.5 rounded-sm text-gray-500 hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 disabled:opacity-30 disabled:hover:bg-transparent transition-colors'
+    : 'p-1.5 rounded-sm text-gray-500 hover:text-brand-400 hover:bg-gray-800 disabled:opacity-30 disabled:hover:bg-transparent transition-colors'
   return (
     <button type="button" onClick={onClick} title={title} disabled={disabled} className={cls}>
       {spinning ? (

@@ -37,26 +37,26 @@ type Tab = 'rules' | 'devices'
 type Modal = 'none' | 'add' | 'edit' | 'bulk' | 'help'
 
 const RULE_TYPE_COLORS: Record<RuleType, string> = {
-  mac:      'bg-purple-900/60 text-purple-300',
-  src_ip:   'bg-blue-900/60 text-blue-300',
-  dst_ip:   'bg-cyan-900/60 text-cyan-300',
-  domain:   'bg-green-900/60 text-green-300',
-  port:     'bg-yellow-900/60 text-yellow-300',
-  protocol: 'bg-orange-900/60 text-orange-300',
-  geoip:    'bg-red-900/60 text-red-300',
-  geosite:  'bg-pink-900/60 text-pink-300',
+  mac:      'bg-purple-50 dark:bg-purple-900/60 text-purple-700 dark:text-purple-300',
+  src_ip:   'bg-blue-100 text-blue-700 dark:bg-blue-900/60 dark:text-blue-300',
+  dst_ip:   'bg-cyan-50 dark:bg-cyan-900/60 text-cyan-700 dark:text-cyan-300',
+  domain:   'bg-green-100 text-green-700 dark:bg-green-900/60 dark:text-green-300',
+  port:     'bg-yellow-50 dark:bg-yellow-900/60 text-yellow-700 dark:text-yellow-300',
+  protocol: 'bg-orange-100 text-orange-700 dark:bg-orange-900/60 dark:text-orange-300',
+  geoip:    'bg-red-50 dark:bg-red-900/60 text-red-700 dark:text-red-300',
+  geosite:  'bg-pink-100 text-pink-700 dark:bg-pink-900/60 dark:text-pink-300',
 }
 
 const ACTION_COLORS: Record<string, string> = {
   proxy:  'text-brand-400',
-  direct: 'text-green-400',
-  block:  'text-red-400',
+  direct: 'text-green-600 dark:text-green-400',
+  block:  'text-red-600 dark:text-red-400',
 }
 
 const ACTION_BG_COLORS: Record<string, string> = {
   proxy:  'bg-brand-900/40 text-brand-300',
-  direct: 'bg-green-900/40 text-green-300',
-  block:  'bg-red-900/40 text-red-300',
+  direct: 'bg-green-50 dark:bg-green-900/40 text-green-700 dark:text-green-300',
+  block:  'bg-red-50 dark:bg-red-900/40 text-red-700 dark:text-red-300',
 }
 
 // Quick-Add presets are now provided by the active geo profile (see
@@ -372,7 +372,7 @@ export function Routing() {
         onClick={() => toggleExpanded(rule.id)}
       >
         <span className="truncate">{parts.slice(0, 2).map((v) => v.trim()).join(', ')}</span>
-        <span className="shrink-0 rounded bg-gray-800 px-1.5 py-0.5 text-[10px] text-gray-400">
+        <span className="shrink-0 rounded-sm bg-gray-800 px-1.5 py-0.5 text-[10px] text-gray-400">
           +{parts.length - 2} more
         </span>
       </span>
@@ -417,7 +417,7 @@ export function Routing() {
         type="checkbox"
         checked={selectedIds.has(rule.id)}
         onChange={() => toggleSelect(rule.id)}
-        className="rounded border-gray-600 bg-gray-700 shrink-0 ml-1 sm:ml-0"
+        className="rounded-sm border-gray-600 bg-gray-700 shrink-0 ml-1 sm:ml-0"
       />
       {isDndEnabled && (
         <div className="cursor-grab text-gray-600 hover:text-gray-400 shrink-0 hidden sm:block">
@@ -440,7 +440,7 @@ export function Routing() {
         <div className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-3 sm:flex-wrap">
           <span
             className={clsx(
-              'rounded px-2 py-0.5 text-xs font-mono font-medium',
+              'rounded-sm px-2 py-0.5 text-xs font-mono font-medium',
               RULE_TYPE_COLORS[rule.rule_type] ?? 'bg-gray-700 text-gray-300',
             )}
           >
@@ -463,7 +463,7 @@ export function Routing() {
                       e.stopPropagation()
                       setSelectedSetId(rs.id)
                     }}
-                    className="shrink-0 inline-flex items-center gap-1 rounded bg-purple-900/40 px-1.5 py-0.5 text-[10px] font-medium text-purple-300 hover:bg-purple-800/60 transition-colors"
+                    className="shrink-0 inline-flex items-center gap-1 rounded-sm bg-purple-50 dark:bg-purple-900/40 px-1.5 py-0.5 text-[10px] font-medium text-purple-700 dark:text-purple-300 hover:bg-purple-50 dark:hover:bg-purple-800/60 transition-colors"
                     title={t(`Jump to ${rs.name}`, `Перейти к ${rs.name}`)}
                   >
                     <Tag className="h-2.5 w-2.5" />
@@ -483,7 +483,7 @@ export function Routing() {
                 updateRule.mutate({ id: rule.id, data: { enabled: !rule.enabled } })
               }
               title={rule.enabled ? 'Disable' : 'Enable'}
-              className="rounded p-1.5 text-gray-500 hover:text-gray-200 hover:bg-gray-800 transition-colors"
+              className="rounded-sm p-1.5 text-gray-500 hover:text-gray-200 hover:bg-gray-800 transition-colors"
             >
               {rule.enabled
                 ? <ToggleRight className="h-4 w-4 text-brand-400" />
@@ -491,7 +491,7 @@ export function Routing() {
             </button>
             <button
               onClick={() => { setEditRule(rule); setModal('edit') }}
-              className="rounded p-1.5 text-gray-500 hover:text-gray-200 hover:bg-gray-800 transition-colors"
+              className="rounded-sm p-1.5 text-gray-500 hover:text-gray-200 hover:bg-gray-800 transition-colors"
             >
               <Pencil className="h-4 w-4" />
             </button>
@@ -504,7 +504,7 @@ export function Routing() {
                 })
                 if (ok) deleteRule.mutate(rule.id)
               }}
-              className="rounded p-1.5 text-gray-500 hover:text-red-400 hover:bg-gray-800 transition-colors"
+              className="rounded-sm p-1.5 text-gray-500 hover:text-red-400 hover:bg-gray-800 transition-colors"
             >
               <Trash2 className="h-4 w-4" />
             </button>
@@ -528,13 +528,13 @@ export function Routing() {
   return (
     <div className="p-4 sm:p-6 space-y-5">
       {rulesIgnored && tab === 'rules' && (
-        <div className="rounded-lg border border-amber-900/60 bg-amber-900/15 px-4 py-3 text-amber-200 text-sm flex items-start gap-3">
+        <div className="rounded-lg border border-amber-200 dark:border-amber-900/60 bg-amber-50 dark:bg-amber-900/15 px-4 py-3 text-amber-800 dark:text-amber-200 text-sm flex items-start gap-3">
           <AlertTriangle className="h-5 w-5 shrink-0 mt-0.5" />
           <div>
             <div className="font-semibold mb-0.5">
               Routing rules are disabled in {proxyMode === 'global' ? '"Global"' : '"Bypass / Direct"'} mode
             </div>
-            <div className="text-amber-300/80 text-[13px]">
+            <div className="text-amber-700 dark:text-amber-300/80 text-[13px]">
               {proxyMode === 'global'
                 ? 'All traffic is force-routed through the active node. Rules below are still saved but won\'t take effect until you switch Proxy Mode to "Rules" on the Dashboard. The `Bypass local networks` rule in particular has NO effect in Global — use the "Bypass private CIDRs" toggle on the Dashboard instead.'
                 : 'All traffic goes direct (no proxy). Rules below are still saved but won\'t take effect until you switch Proxy Mode to "Rules" on the Dashboard.'}
@@ -576,7 +576,7 @@ export function Routing() {
                     </span>
                     <a
                       href="/geodata"
-                      className="text-brand-400 hover:text-brand-300"
+                      className="text-brand-400 hover:text-brand-700 dark:hover:text-brand-300"
                       title="Switch geo profile in GeoData"
                     >
                       change
@@ -595,7 +595,7 @@ export function Routing() {
                       >
                         <div className="flex items-center justify-between gap-2">
                           <span>{preset.label}</span>
-                          <span className={clsx('rounded px-1.5 py-0.5 text-[10px] font-medium', ACTION_BG_COLORS[primaryAction] ?? 'bg-gray-700 text-gray-300')}>
+                          <span className={clsx('rounded-sm px-1.5 py-0.5 text-[10px] font-medium', ACTION_BG_COLORS[primaryAction] ?? 'bg-gray-700 text-gray-300')}>
                             {primaryAction}
                             {preset.rules.length > 1 && (
                               <span className="opacity-70"> ×{preset.rules.length}</span>
@@ -666,7 +666,7 @@ export function Routing() {
               type="checkbox"
               checked={selectedIds.size === filteredRules.length && filteredRules.length > 0}
               onChange={() => selectedIds.size === filteredRules.length ? selectNone() : selectAll()}
-              className="rounded border-gray-600 bg-gray-700"
+              className="rounded-sm border-gray-600 bg-gray-700"
             />
             {selectedIds.size > 0 ? `${selectedIds.size} selected` : 'Select all'}
           </label>
@@ -681,7 +681,7 @@ export function Routing() {
                 if (ok) deleteBatch.mutate([...selectedIds])
               }}
               disabled={deleteBatch.isPending}
-              className="flex items-center gap-1 rounded-lg bg-red-900/50 border border-red-700/50 px-2.5 py-1 text-xs text-red-300 hover:bg-red-800/50 transition-colors"
+              className="flex items-center gap-1 rounded-lg bg-red-50 dark:bg-red-900/50 border border-red-200 dark:border-red-700/50 px-2.5 py-1 text-xs text-red-700 dark:text-red-300 hover:bg-red-50 dark:hover:bg-red-800/50 transition-colors"
             >
               <Trash2 className="h-3 w-3" />
               Delete selected
@@ -741,7 +741,7 @@ export function Routing() {
                 className={clsx(
                   'px-3 py-1.5 rounded-lg border text-xs font-medium transition-colors',
                   selectedSetId === key
-                    ? 'border-purple-500 bg-purple-900/30 text-purple-200'
+                    ? 'border-purple-500 bg-purple-50 dark:bg-purple-900/30 text-purple-800 dark:text-purple-200'
                     : 'border-gray-700 bg-gray-900 text-gray-400 hover:text-gray-200 hover:border-gray-600',
                 )}
               >
@@ -758,7 +758,7 @@ export function Routing() {
                   className={clsx(
                     'px-3 py-1.5 rounded-l-lg border-y border-l text-xs font-medium transition-colors flex items-center gap-1.5',
                     selectedSetId === rs.id
-                      ? 'border-purple-500 bg-purple-900/30 text-purple-200'
+                      ? 'border-purple-500 bg-purple-50 dark:bg-purple-900/30 text-purple-800 dark:text-purple-200'
                       // group-hover highlights ALL three buttons' borders
                       // together — hovering the label, edit, or delete
                       // lights up the whole pill, not just the one under
@@ -781,7 +781,7 @@ export function Routing() {
                   className={clsx(
                     'px-1.5 py-1.5 border-y text-gray-500 hover:text-gray-200 flex items-center justify-center transition-colors',
                     selectedSetId === rs.id
-                      ? 'border-purple-500 bg-purple-900/30'
+                      ? 'border-purple-500 bg-purple-50 dark:bg-purple-900/30'
                       : 'border-gray-700 bg-gray-900 group-hover:border-gray-500',
                   )}
                 >
@@ -793,7 +793,7 @@ export function Routing() {
                   className={clsx(
                     'px-1.5 py-1.5 rounded-r-lg border-y border-r text-gray-500 hover:text-red-400 flex items-center justify-center transition-colors',
                     selectedSetId === rs.id
-                      ? 'border-purple-500 bg-purple-900/30'
+                      ? 'border-purple-500 bg-purple-50 dark:bg-purple-900/30'
                       : 'border-gray-700 bg-gray-900 group-hover:border-gray-500',
                   )}
                 >
@@ -973,7 +973,7 @@ export function Routing() {
                                 setTab('rules')
                               }
                             }}
-                            className="inline-flex items-center gap-1 rounded bg-purple-900/40 px-1.5 py-0.5 text-[11px] font-medium text-purple-300 hover:bg-purple-800/60 transition-colors"
+                            className="inline-flex items-center gap-1 rounded-sm bg-purple-50 dark:bg-purple-900/40 px-1.5 py-0.5 text-[11px] font-medium text-purple-700 dark:text-purple-300 hover:bg-purple-50 dark:hover:bg-purple-800/60 transition-colors"
                             title={t(
                               `View "${d.routing_set_name}" rules. Re-assign on the Devices page.`,
                               `Открыть правила «${d.routing_set_name}». Перепривязать — на странице Devices.`,
@@ -1030,7 +1030,7 @@ export function Routing() {
                 <select
                   value={bulkRuleType}
                   onChange={(e) => setBulkRuleType(e.target.value as RuleType)}
-                  className="w-full rounded-lg border border-gray-700 bg-gray-900 px-3 py-2 text-sm text-gray-200 focus:border-brand-500 focus:outline-none"
+                  className="w-full rounded-lg border border-gray-700 bg-gray-900 px-3 py-2 text-sm text-gray-200 focus:border-brand-500 focus:outline-hidden"
                 >
                   {(['mac', 'src_ip', 'dst_ip', 'domain', 'port', 'protocol', 'geoip', 'geosite'] as RuleType[]).map((t) => (
                     <option key={t} value={t}>{t}</option>
@@ -1043,7 +1043,7 @@ export function Routing() {
                 <select
                   value={bulkAction}
                   onChange={(e) => setBulkAction(e.target.value)}
-                  className="w-full rounded-lg border border-gray-700 bg-gray-900 px-3 py-2 text-sm text-gray-200 focus:border-brand-500 focus:outline-none"
+                  className="w-full rounded-lg border border-gray-700 bg-gray-900 px-3 py-2 text-sm text-gray-200 focus:border-brand-500 focus:outline-hidden"
                 >
                   <option value="proxy">proxy</option>
                   <option value="direct">direct</option>
@@ -1057,7 +1057,7 @@ export function Routing() {
                   value={bulkValues}
                   onChange={(e) => setBulkValues(e.target.value)}
                   placeholder={'Paste values, one per line\nExamples:\nnetflix.com\nyoutube.com\nspotify.com'}
-                  className="w-full h-48 rounded-lg border border-gray-700 bg-gray-900 px-3 py-2 text-sm text-gray-200 font-mono placeholder-gray-600 focus:border-brand-500 focus:outline-none resize-none"
+                  className="w-full h-48 rounded-lg border border-gray-700 bg-gray-900 px-3 py-2 text-sm text-gray-200 font-mono placeholder-gray-600 focus:border-brand-500 focus:outline-hidden resize-none"
                 />
               </div>
               {/* Preview */}
@@ -1126,7 +1126,7 @@ export function Routing() {
           <ModalShell onClose={close} labelledBy="delset-title">
             <div className="w-full max-w-md rounded-2xl bg-gray-950 border border-gray-800 shadow-xl p-6 space-y-4">
               <div className="flex items-center gap-2">
-                <Trash2 className="h-5 w-5 text-red-400" />
+                <Trash2 className="h-5 w-5 text-red-600 dark:text-red-400" />
                 <h2 id="delset-title" className="text-lg font-semibold text-white">
                   {t(`Delete set "${deletingSet.name}"?`, `Удалить набор «${deletingSet.name}»?`)}
                 </h2>
@@ -1147,8 +1147,8 @@ export function Routing() {
               )}
 
               {deleteErr && (
-                <div className="flex items-start gap-2 rounded-lg bg-red-900/30 border border-red-700/50 p-3 text-sm text-red-300">
-                  <AlertTriangle className="h-4 w-4 mt-0.5 flex-shrink-0" />
+                <div className="flex items-start gap-2 rounded-lg bg-red-50 dark:bg-red-900/30 border border-red-200 dark:border-red-700/50 p-3 text-sm text-red-700 dark:text-red-300">
+                  <AlertTriangle className="h-4 w-4 mt-0.5 shrink-0" />
                   <span>{deleteErr}</span>
                 </div>
               )}
@@ -1217,9 +1217,9 @@ export function Routing() {
                   )}
                   <li><span className="font-mono">Match Value</span> {t('can contain multiple items separated by comma or new line.', 'может содержать несколько значений, разделённых запятой или переносом строки.')}</li>
                   {lang === 'ru' ? (
-                    <li>Action <span className="text-brand-400 font-medium">proxy</span> отправляет трафик через VPN, <span className="text-green-400 font-medium">direct</span> обходит VPN, <span className="text-red-400 font-medium">block</span> отбрасывает.</li>
+                    <li>Action <span className="text-brand-400 font-medium">proxy</span> отправляет трафик через VPN, <span className="text-green-600 dark:text-green-400 font-medium">direct</span> обходит VPN, <span className="text-red-600 dark:text-red-400 font-medium">block</span> отбрасывает.</li>
                   ) : (
-                    <li>Action <span className="text-brand-400 font-medium">proxy</span> sends traffic through VPN, <span className="text-green-400 font-medium">direct</span> bypasses VPN, <span className="text-red-400 font-medium">block</span> drops it.</li>
+                    <li>Action <span className="text-brand-400 font-medium">proxy</span> sends traffic through VPN, <span className="text-green-600 dark:text-green-400 font-medium">direct</span> bypasses VPN, <span className="text-red-600 dark:text-red-400 font-medium">block</span> drops it.</li>
                   )}
                   <li>{t('You can also route to a specific node or balancer group.', 'Можно также направить на конкретную ноду или группу балансировки.')}</li>
                 </ul>
@@ -1229,8 +1229,8 @@ export function Routing() {
                 <h3 className="text-gray-100 font-semibold mb-2">{t('Domain rule — prefixes', 'Правила domain — префиксы')}</h3>
                 <p className="text-gray-400 mb-3">
                   {lang === 'ru'
-                    ? <>Для правил <span className="font-mono bg-green-900/40 text-green-300 px-1.5 py-0.5 rounded">domain</span> можно добавлять префикс к каждому значению. Префиксы определяют <em>способ</em> совпадения (семантика xray).</>
-                    : <>For <span className="font-mono bg-green-900/40 text-green-300 px-1.5 py-0.5 rounded">domain</span> rules you can prefix each value. Prefixes control <em>how</em> the domain is matched (xray semantics).</>}
+                    ? <>Для правил <span className="font-mono bg-green-50 dark:bg-green-900/40 text-green-700 dark:text-green-300 px-1.5 py-0.5 rounded-sm">domain</span> можно добавлять префикс к каждому значению. Префиксы определяют <em>способ</em> совпадения (семантика xray).</>
+                    : <>For <span className="font-mono bg-green-50 dark:bg-green-900/40 text-green-700 dark:text-green-300 px-1.5 py-0.5 rounded-sm">domain</span> rules you can prefix each value. Prefixes control <em>how</em> the domain is matched (xray semantics).</>}
                 </p>
                 <div className="overflow-x-auto">
                   <table className="w-full text-xs">
@@ -1247,54 +1247,54 @@ export function Routing() {
                         <td className="py-2 pr-3 font-mono text-brand-300">full:</td>
                         <td className="py-2 pr-3 text-gray-300">{t('Exact match only (no subdomains)', 'Только точное совпадение (без поддоменов)')}</td>
                         <td className="py-2 pr-3 font-mono text-gray-400">full:google.com</td>
-                        <td className="py-2 text-gray-400"><span className="text-green-400">google.com</span> <span className="text-red-400">× www.google.com</span></td>
+                        <td className="py-2 text-gray-400"><span className="text-green-600 dark:text-green-400">google.com</span> <span className="text-red-600 dark:text-red-400">× www.google.com</span></td>
                       </tr>
                       <tr>
                         <td className="py-2 pr-3 font-mono text-brand-300">domain:</td>
                         <td className="py-2 pr-3 text-gray-300">{t('Domain + all subdomains', 'Домен + все поддомены')}</td>
                         <td className="py-2 pr-3 font-mono text-gray-400">domain:google.com</td>
-                        <td className="py-2 text-gray-400"><span className="text-green-400">google.com, mail.google.com, a.b.google.com</span></td>
+                        <td className="py-2 text-gray-400"><span className="text-green-600 dark:text-green-400">google.com, mail.google.com, a.b.google.com</span></td>
                       </tr>
                       <tr>
                         <td className="py-2 pr-3 font-mono text-gray-500">({t('no prefix', 'без префикса')})</td>
                         <td className="py-2 pr-3 text-gray-300">{lang === 'ru' ? <>То же что <span className="font-mono">domain:</span> — совпадение по поддоменам</> : <>Same as <span className="font-mono">domain:</span> — subdomain match</>}</td>
                         <td className="py-2 pr-3 font-mono text-gray-400">netflix.com</td>
-                        <td className="py-2 text-gray-400"><span className="text-green-400">netflix.com + *.netflix.com</span></td>
+                        <td className="py-2 text-gray-400"><span className="text-green-600 dark:text-green-400">netflix.com + *.netflix.com</span></td>
                       </tr>
                       <tr>
                         <td className="py-2 pr-3 font-mono text-brand-300">keyword:</td>
                         <td className="py-2 pr-3 text-gray-300">{t('Substring anywhere in the domain', 'Подстрока в любом месте домена')}</td>
                         <td className="py-2 pr-3 font-mono text-gray-400">keyword:google</td>
-                        <td className="py-2 text-gray-400"><span className="text-green-400">google.com, googleusercontent.com, fakegoogle.net</span></td>
+                        <td className="py-2 text-gray-400"><span className="text-green-600 dark:text-green-400">google.com, googleusercontent.com, fakegoogle.net</span></td>
                       </tr>
                       <tr>
                         <td className="py-2 pr-3 font-mono text-brand-300">regexp:</td>
                         <td className="py-2 pr-3 text-gray-300">{t('Regular expression (Go regex syntax)', 'Регулярное выражение (синтаксис Go regex)')}</td>
                         <td className="py-2 pr-3 font-mono text-gray-400">regexp:.*\.ru$</td>
-                        <td className="py-2 text-gray-400"><span className="text-green-400">{t('any domain ending in .ru', 'любой домен, оканчивающийся на .ru')}</span></td>
+                        <td className="py-2 text-gray-400"><span className="text-green-600 dark:text-green-400">{t('any domain ending in .ru', 'любой домен, оканчивающийся на .ru')}</span></td>
                       </tr>
                       <tr>
                         <td className="py-2 pr-3 font-mono text-brand-300">geosite:</td>
                         <td className="py-2 pr-3 text-gray-300">{lang === 'ru' ? <>Категория из <span className="font-mono">geosite.dat</span></> : <>Category from <span className="font-mono">geosite.dat</span></>}</td>
                         <td className="py-2 pr-3 font-mono text-gray-400">geosite:cn</td>
-                        <td className="py-2 text-gray-400"><span className="text-green-400">{t('all Chinese domains from geosite DB', 'все китайские домены из geosite DB')}</span></td>
+                        <td className="py-2 text-gray-400"><span className="text-green-600 dark:text-green-400">{t('all Chinese domains from geosite DB', 'все китайские домены из geosite DB')}</span></td>
                       </tr>
                     </tbody>
                   </table>
                 </div>
-                <div className="mt-3 rounded-lg border border-yellow-800/60 bg-yellow-900/20 p-3 text-xs text-yellow-200/90">
+                <div className="mt-3 rounded-lg border border-yellow-200 dark:border-yellow-800/60 bg-yellow-50 dark:bg-yellow-900/20 p-3 text-xs text-yellow-800 dark:text-yellow-200/90">
                   <p className="font-semibold mb-1">{t('Rule of thumb — when use what:', 'Правило выбора — когда что использовать:')}</p>
                   <ul className="list-disc pl-5 space-y-0.5">
                     {lang === 'ru' ? (<>
                       <li>Нужен один конкретный хост и ничего больше — <span className="font-mono">full:host.example.com</span></li>
                       <li>Нужен сервис и его CDN поддомены — <span className="font-mono">domain:example.com</span> (или просто <span className="font-mono">example.com</span>)</li>
                       <li>Нужно поймать <em>все</em> варианты с словом (ads, tracker…) — <span className="font-mono">keyword:tracker</span></li>
-                      <li>Нужен встроенный список (cn, ru, category-ads-all…) — <span className="font-mono">geosite:&lt;tag&gt;</span> или используйте тип правила <span className="font-mono bg-pink-900/60 text-pink-300 px-1 rounded">geosite</span></li>
+                      <li>Нужен встроенный список (cn, ru, category-ads-all…) — <span className="font-mono">geosite:&lt;tag&gt;</span> или используйте тип правила <span className="font-mono bg-pink-100 text-pink-700 dark:bg-pink-900/60 dark:text-pink-300 px-1 rounded-sm">geosite</span></li>
                     </>) : (<>
                       <li>You want one specific host and nothing else — <span className="font-mono">full:host.example.com</span></li>
                       <li>You want a service and its CDN subdomains — <span className="font-mono">domain:example.com</span> (or simply <span className="font-mono">example.com</span>)</li>
                       <li>You want to catch <em>all</em> variants containing a word (ads, tracker…) — <span className="font-mono">keyword:tracker</span></li>
-                      <li>You want a built-in list (cn, ru, category-ads-all, netflix, google…) — <span className="font-mono">geosite:&lt;tag&gt;</span> or use the dedicated <span className="font-mono bg-pink-900/60 text-pink-300 px-1 rounded">geosite</span> rule type</li>
+                      <li>You want a built-in list (cn, ru, category-ads-all, netflix, google…) — <span className="font-mono">geosite:&lt;tag&gt;</span> or use the dedicated <span className="font-mono bg-pink-100 text-pink-700 dark:bg-pink-900/60 dark:text-pink-300 px-1 rounded-sm">geosite</span> rule type</li>
                     </>)}
                   </ul>
                 </div>
@@ -1313,42 +1313,42 @@ export function Routing() {
                     </thead>
                     <tbody className="divide-y divide-gray-800/60 align-top">
                       <tr>
-                        <td className="py-2 pr-3"><span className="font-mono bg-purple-900/60 text-purple-300 px-1.5 py-0.5 rounded">mac</span></td>
+                        <td className="py-2 pr-3"><span className="font-mono bg-purple-50 dark:bg-purple-900/60 text-purple-700 dark:text-purple-300 px-1.5 py-0.5 rounded-sm">mac</span></td>
                         <td className="py-2 pr-3 text-gray-400">{t('Source device MAC address (applied via nftables, not xray)', 'MAC-адрес устройства-источника (применяется через nftables, не xray)')}</td>
                         <td className="py-2 font-mono text-gray-400">aa:bb:cc:dd:ee:ff</td>
                       </tr>
                       <tr>
-                        <td className="py-2 pr-3"><span className="font-mono bg-blue-900/60 text-blue-300 px-1.5 py-0.5 rounded">src_ip</span></td>
+                        <td className="py-2 pr-3"><span className="font-mono bg-blue-100 text-blue-700 dark:bg-blue-900/60 dark:text-blue-300 px-1.5 py-0.5 rounded-sm">src_ip</span></td>
                         <td className="py-2 pr-3 text-gray-400">{t('Source IP / CIDR (who initiates the connection)', 'IP / CIDR источника (кто инициирует соединение)')}</td>
                         <td className="py-2 font-mono text-gray-400">192.168.1.10, 192.168.2.0/24</td>
                       </tr>
                       <tr>
-                        <td className="py-2 pr-3"><span className="font-mono bg-cyan-900/60 text-cyan-300 px-1.5 py-0.5 rounded">dst_ip</span></td>
+                        <td className="py-2 pr-3"><span className="font-mono bg-cyan-50 dark:bg-cyan-900/60 text-cyan-700 dark:text-cyan-300 px-1.5 py-0.5 rounded-sm">dst_ip</span></td>
                         <td className="py-2 pr-3 text-gray-400">{t('Destination IP / CIDR', 'IP / CIDR назначения')}</td>
                         <td className="py-2 font-mono text-gray-400">1.1.1.1, 10.0.0.0/8</td>
                       </tr>
                       <tr>
-                        <td className="py-2 pr-3"><span className="font-mono bg-green-900/60 text-green-300 px-1.5 py-0.5 rounded">domain</span></td>
+                        <td className="py-2 pr-3"><span className="font-mono bg-green-100 text-green-700 dark:bg-green-900/60 dark:text-green-300 px-1.5 py-0.5 rounded-sm">domain</span></td>
                         <td className="py-2 pr-3 text-gray-400">{t('Destination domain (see prefixes above)', 'Домен назначения (см. префиксы выше)')}</td>
                         <td className="py-2 font-mono text-gray-400">netflix.com, full:api.foo.com, keyword:ads</td>
                       </tr>
                       <tr>
-                        <td className="py-2 pr-3"><span className="font-mono bg-yellow-900/60 text-yellow-300 px-1.5 py-0.5 rounded">port</span></td>
+                        <td className="py-2 pr-3"><span className="font-mono bg-yellow-50 dark:bg-yellow-900/60 text-yellow-700 dark:text-yellow-300 px-1.5 py-0.5 rounded-sm">port</span></td>
                         <td className="py-2 pr-3 text-gray-400">{t('Destination port / range', 'Порт / диапазон назначения')}</td>
                         <td className="py-2 font-mono text-gray-400">80, 443, 8000-9000</td>
                       </tr>
                       <tr>
-                        <td className="py-2 pr-3"><span className="font-mono bg-orange-900/60 text-orange-300 px-1.5 py-0.5 rounded">protocol</span></td>
+                        <td className="py-2 pr-3"><span className="font-mono bg-orange-100 text-orange-700 dark:bg-orange-900/60 dark:text-orange-300 px-1.5 py-0.5 rounded-sm">protocol</span></td>
                         <td className="py-2 pr-3 text-gray-400">{t('L4 / L7 protocol detected by xray sniffer', 'L4 / L7 протокол, определённый xray sniffer')}</td>
                         <td className="py-2 font-mono text-gray-400">tcp, udp, http, tls, bittorrent</td>
                       </tr>
                       <tr>
-                        <td className="py-2 pr-3"><span className="font-mono bg-red-900/60 text-red-300 px-1.5 py-0.5 rounded">geoip</span></td>
+                        <td className="py-2 pr-3"><span className="font-mono bg-red-50 dark:bg-red-900/60 text-red-700 dark:text-red-300 px-1.5 py-0.5 rounded-sm">geoip</span></td>
                         <td className="py-2 pr-3 text-gray-400">{lang === 'ru' ? <>Код страны из <span className="font-mono">geoip.dat</span></> : <>Country code from <span className="font-mono">geoip.dat</span></>}</td>
                         <td className="py-2 font-mono text-gray-400">CN, RU, US, private</td>
                       </tr>
                       <tr>
-                        <td className="py-2 pr-3"><span className="font-mono bg-pink-900/60 text-pink-300 px-1.5 py-0.5 rounded">geosite</span></td>
+                        <td className="py-2 pr-3"><span className="font-mono bg-pink-100 text-pink-700 dark:bg-pink-900/60 dark:text-pink-300 px-1.5 py-0.5 rounded-sm">geosite</span></td>
                         <td className="py-2 pr-3 text-gray-400">{lang === 'ru' ? <>Категория из <span className="font-mono">geosite.dat</span> (префикс не нужен)</> : <>Category from <span className="font-mono">geosite.dat</span> (no prefix needed)</>}</td>
                         <td className="py-2 font-mono text-gray-400">cn, google, netflix, category-ads-all</td>
                       </tr>
@@ -1361,13 +1361,13 @@ export function Routing() {
                 <h3 className="text-gray-100 font-semibold mb-2">{t('Tips', 'Советы')}</h3>
                 <ul className="list-disc pl-5 space-y-1 text-gray-400">
                   {lang === 'ru' ? (<>
-                    <li>Используйте <span className="font-mono bg-gray-800 px-1 rounded">Bulk</span> для вставки множества значений одного типа/действия сразу (по одному на строку).</li>
-                    <li><span className="font-mono bg-gray-800 px-1 rounded">Экспорт</span>/<span className="font-mono bg-gray-800 px-1 rounded">Импорт</span> — переносят правила между областями (Global + сеты): выбери области галочками, импортируй в Global / существующий / новый сет. Импорт находит дубликаты и конфликты (тот же match, другой action) для разрешения. Читает и старые файлы V2RayN / Shadowrocket.</li>
+                    <li>Используйте <span className="font-mono bg-gray-800 px-1 rounded-sm">Bulk</span> для вставки множества значений одного типа/действия сразу (по одному на строку).</li>
+                    <li><span className="font-mono bg-gray-800 px-1 rounded-sm">Экспорт</span>/<span className="font-mono bg-gray-800 px-1 rounded-sm">Импорт</span> — переносят правила между областями (Global + сеты): выбери области галочками, импортируй в Global / существующий / новый сет. Импорт находит дубликаты и конфликты (тот же match, другой action) для разрешения. Читает и старые файлы V2RayN / Shadowrocket.</li>
                     <li>Отключайте правило вместо удаления при отладке — переключатель справа.</li>
                     <li>Ставьте более специфичные правила <em>выше</em> общих (напр. <span className="font-mono">full:api.x.com → direct</span> выше <span className="font-mono">domain:x.com → proxy</span>).</li>
                   </>) : (<>
-                    <li>Use <span className="font-mono bg-gray-800 px-1 rounded">Bulk</span> to paste many values of the same type/action at once (one per line).</li>
-                    <li><span className="font-mono bg-gray-800 px-1 rounded">Export</span>/<span className="font-mono bg-gray-800 px-1 rounded">Import</span> move rules between scopes (Global + sets): tick the scopes to export, import into Global / an existing / a new set. Import flags duplicates and conflicts (same match, different action) to resolve. Also reads legacy V2RayN / Shadowrocket files.</li>
+                    <li>Use <span className="font-mono bg-gray-800 px-1 rounded-sm">Bulk</span> to paste many values of the same type/action at once (one per line).</li>
+                    <li><span className="font-mono bg-gray-800 px-1 rounded-sm">Export</span>/<span className="font-mono bg-gray-800 px-1 rounded-sm">Import</span> move rules between scopes (Global + sets): tick the scopes to export, import into Global / an existing / a new set. Import flags duplicates and conflicts (same match, different action) to resolve. Also reads legacy V2RayN / Shadowrocket files.</li>
                     <li>Disable a rule instead of deleting it while debugging — toggle the switch on the right.</li>
                     <li>Put more specific rules <em>above</em> more generic ones (e.g. <span className="font-mono">full:api.x.com → direct</span> above <span className="font-mono">domain:x.com → proxy</span>).</li>
                   </>)}
@@ -1450,11 +1450,11 @@ function AutoDisabledBanner() {
   return (
     <div
       role="alert"
-      className="rounded-lg border border-yellow-700/50 bg-yellow-950/30 px-4 py-3 text-sm"
+      className="rounded-lg border border-yellow-200 dark:border-yellow-700/50 bg-yellow-50 dark:bg-yellow-950/30 px-4 py-3 text-sm"
     >
       <div className="flex items-start justify-between gap-3 mb-2">
         <div className="flex items-start gap-2 min-w-0">
-          <span className="text-yellow-300 text-lg leading-none mt-0.5">⚠</span>
+          <span className="text-yellow-700 dark:text-yellow-300 text-lg leading-none mt-0.5">⚠</span>
           <div>
             <div className="font-semibold text-yellow-100">
               {items.length}{' '}
@@ -1463,7 +1463,7 @@ function AutoDisabledBanner() {
                 items.length === 1 ? 'правило отключено автоматически' : 'правил отключено автоматически',
               )}
             </div>
-            <div className="text-xs text-yellow-300/80 mt-0.5">
+            <div className="text-xs text-yellow-700 dark:text-yellow-300/80 mt-0.5">
               {t(
                 'Xray rejected the generated config because these rules reference geosite/geoip tags missing from your current .dat. Switch to a profile that includes them, re-enable individually, or delete.',
                 'Xray отклонил конфиг — эти правила ссылаются на geosite/geoip теги отсутствующие в вашем .dat. Переключите Geo профиль либо включите/удалите вручную.',
@@ -1475,7 +1475,7 @@ function AutoDisabledBanner() {
           type="button"
           onClick={() => dismissAll.mutate()}
           disabled={dismissAll.isPending}
-          className="text-xs text-yellow-400 hover:text-yellow-200 underline disabled:opacity-50 flex-shrink-0"
+          className="text-xs text-yellow-600 dark:text-yellow-400 hover:text-yellow-200 underline disabled:opacity-50 shrink-0"
         >
           {t('Dismiss all', 'Скрыть все')}
         </button>
@@ -1490,22 +1490,22 @@ function AutoDisabledBanner() {
               <div className="text-yellow-100 font-medium truncate">
                 {it.name || `Rule #${it.rule_id}`}
               </div>
-              <div className="text-yellow-300/70 font-mono mt-0.5 truncate">
+              <div className="text-yellow-700 dark:text-yellow-300/70 font-mono mt-0.5 truncate">
                 {it.rule_type}: {it.match_value}
               </div>
-              <div className="text-yellow-400/60 mt-0.5">
+              <div className="text-yellow-600 dark:text-yellow-400/60 mt-0.5">
                 {t('Missing:', 'Отсутствует:')}{' '}
                 <span className="font-mono">
                   {it.missing_kind}:{it.missing_tag}
                 </span>
               </div>
             </div>
-            <div className="flex gap-2 flex-shrink-0">
+            <div className="flex gap-2 shrink-0">
               <button
                 type="button"
                 onClick={() => reEnable.mutate(it.rule_id)}
                 disabled={reEnable.isPending}
-                className="rounded border border-yellow-700/60 bg-yellow-900/30 px-2 py-1 text-yellow-200 hover:bg-yellow-800/50 disabled:opacity-50"
+                className="rounded-sm border border-yellow-200 dark:border-yellow-700/60 bg-yellow-50 dark:bg-yellow-900/30 px-2 py-1 text-yellow-800 dark:text-yellow-200 hover:bg-yellow-50 dark:hover:bg-yellow-800/50 disabled:opacity-50"
                 title={t(
                   'Re-enable this rule. If the tag is still missing it will be auto-disabled again on the next config write.',
                   'Включить правило обратно. Если тег всё ещё отсутствует — на следующей записи конфига будет снова отключено.',
@@ -1517,7 +1517,7 @@ function AutoDisabledBanner() {
                 type="button"
                 onClick={() => remove.mutate(it.rule_id)}
                 disabled={remove.isPending}
-                className="rounded border border-red-800/50 bg-red-950/30 px-2 py-1 text-red-300 hover:bg-red-900/40 disabled:opacity-50"
+                className="rounded-sm border border-red-200 dark:border-red-800/50 bg-red-50 dark:bg-red-950/30 px-2 py-1 text-red-700 dark:text-red-300 hover:bg-red-50 dark:hover:bg-red-900/40 disabled:opacity-50"
               >
                 {t('Delete', 'Удалить')}
               </button>

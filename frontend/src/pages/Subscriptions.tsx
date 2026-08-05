@@ -83,7 +83,7 @@ function SubForm({
           required
           autoFocus
           placeholder="My Subscription"
-          className="w-full rounded bg-gray-800 border border-gray-700 px-3 py-1.5 text-sm text-gray-100 focus:border-brand-500 focus:outline-none"
+          className="w-full rounded-sm bg-gray-800 border border-gray-700 px-3 py-1.5 text-sm text-gray-100 focus:border-brand-500 focus:outline-hidden"
         />
       </div>
       <div>
@@ -94,7 +94,7 @@ function SubForm({
           required
           type="url"
           placeholder="https://provider.com/sub?token=…"
-          className="w-full rounded bg-gray-800 border border-gray-700 px-3 py-1.5 text-sm text-gray-100 font-mono focus:border-brand-500 focus:outline-none"
+          className="w-full rounded-sm bg-gray-800 border border-gray-700 px-3 py-1.5 text-sm text-gray-100 font-mono focus:border-brand-500 focus:outline-hidden"
         />
       </div>
       <div className="grid grid-cols-2 gap-3">
@@ -107,7 +107,7 @@ function SubForm({
             value={form.ua}
             onChange={(e) => set('ua', e.target.value)}
             disabled={!!form.custom_ua.trim()}
-            className="w-full rounded bg-gray-800 border border-gray-700 px-3 py-1.5 text-sm text-gray-100 focus:border-brand-500 focus:outline-none disabled:opacity-50"
+            className="w-full rounded-sm bg-gray-800 border border-gray-700 px-3 py-1.5 text-sm text-gray-100 focus:border-brand-500 focus:outline-hidden disabled:opacity-50"
           >
             {uaOptions.map((o) => (
               <option key={o.key} value={o.key}>{o.label}</option>
@@ -129,7 +129,7 @@ function SubForm({
             <button
               type="button"
               onClick={onManageTemplates}
-              className="text-[11px] text-brand-400 hover:text-brand-300 whitespace-nowrap"
+              className="text-[11px] text-brand-400 hover:text-brand-700 dark:hover:text-brand-300 whitespace-nowrap"
             >
               {t('Manage…', 'Настроить…')}
             </button>
@@ -148,7 +148,7 @@ function SubForm({
             Update Interval
             <InfoTip className="ml-0.5" text="How often to auto-update. The scheduler checks every minute and refreshes subscriptions when the interval has elapsed." />
           </label>
-          <div className="flex rounded overflow-hidden border border-gray-700">
+          <div className="flex rounded-sm overflow-hidden border border-gray-700">
             {INTERVAL_PRESETS.map((p) => (
               <button
                 key={p.value}
@@ -176,7 +176,7 @@ function SubForm({
           value={form.custom_ua}
           onChange={(e) => set('custom_ua', e.target.value)}
           placeholder="e.g. Happ/2.7.0/ios/17.4/iPhone15,2"
-          className="w-full rounded bg-gray-800 border border-gray-700 px-3 py-1.5 text-sm text-gray-100 font-mono focus:border-brand-500 focus:outline-none"
+          className="w-full rounded-sm bg-gray-800 border border-gray-700 px-3 py-1.5 text-sm text-gray-100 font-mono focus:border-brand-500 focus:outline-hidden"
         />
       </div>
       <div>
@@ -188,7 +188,7 @@ function SubForm({
           value={form.filter_regex}
           onChange={(e) => set('filter_regex', e.target.value)}
           placeholder="HK|SG|US"
-          className="w-full rounded bg-gray-800 border border-gray-700 px-3 py-1.5 text-sm text-gray-100 font-mono focus:border-brand-500 focus:outline-none"
+          className="w-full rounded-sm bg-gray-800 border border-gray-700 px-3 py-1.5 text-sm text-gray-100 font-mono focus:border-brand-500 focus:outline-hidden"
         />
       </div>
       <div className="flex flex-wrap gap-4">
@@ -197,7 +197,7 @@ function SubForm({
             type="checkbox"
             checked={form.auto_update}
             onChange={(e) => set('auto_update', e.target.checked)}
-            className="rounded border-gray-600 bg-gray-800 text-brand-500"
+            className="rounded-sm border-gray-600 bg-gray-800 text-brand-500"
           />
           Auto-update
         </label>
@@ -206,7 +206,7 @@ function SubForm({
             type="checkbox"
             checked={form.enabled}
             onChange={(e) => set('enabled', e.target.checked)}
-            className="rounded border-gray-600 bg-gray-800 text-brand-500"
+            className="rounded-sm border-gray-600 bg-gray-800 text-brand-500"
           />
           Enabled
         </label>
@@ -215,7 +215,7 @@ function SubForm({
             type="checkbox"
             checked={form.rotate_hwid}
             onChange={(e) => set('rotate_hwid', e.target.checked)}
-            className="rounded border-gray-600 bg-gray-800 text-brand-500"
+            className="rounded-sm border-gray-600 bg-gray-800 text-brand-500"
           />
           Rotate HWID
           <InfoTip className="ml-0.5" text="When enabled, each refresh generates a fresh random X-Hwid header instead of the stable machine-id-derived one. Most panels device-bind on first HWID, so leave OFF by default. Turn ON only if a panel starts returning degraded payloads (e.g. placeholder 'proxy' dummies) to the stable HWID — a fresh UUID often gets past the throttle." />
@@ -536,7 +536,7 @@ export function Subscriptions() {
               onChange={(e) => setQuickUrl(e.target.value)}
               onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); handleQuickAdd() } }}
               placeholder="https://provider.com/sub?token=abc123"
-              className="w-full rounded-lg bg-gray-800 border border-gray-700 pl-9 pr-3 py-2 text-sm text-gray-100 font-mono focus:border-brand-500 focus:outline-none"
+              className="w-full rounded-lg bg-gray-800 border border-gray-700 pl-9 pr-3 py-2 text-sm text-gray-100 font-mono focus:border-brand-500 focus:outline-hidden"
             />
           </div>
           <button
@@ -568,7 +568,7 @@ export function Subscriptions() {
               )}>
                 <div className="flex items-start justify-between gap-3">
                   <div className="flex items-start gap-3 min-w-0">
-                    <Rss className="h-5 w-5 text-brand-400 flex-shrink-0 mt-0.5" />
+                    <Rss className="h-5 w-5 text-brand-400 shrink-0 mt-0.5" />
                     <div className="min-w-0">
                       <div className="text-sm font-medium text-gray-100">{sub.name}</div>
                       <div className="text-xs text-gray-500 font-mono mt-0.5 truncate">{sub.url}</div>
@@ -604,25 +604,25 @@ export function Subscriptions() {
                         )}
                       </div>
                       {sub.last_error && (
-                        <div className="mt-1.5 text-xs text-red-400 bg-red-950/30 border border-red-800/40 rounded px-2 py-1 font-mono">
+                        <div className="mt-1.5 text-xs text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-800/40 rounded-sm px-2 py-1 font-mono">
                           Error: {sub.last_error}
                         </div>
                       )}
                     </div>
                   </div>
-                  <div className="flex items-center gap-1 flex-shrink-0">
+                  <div className="flex items-center gap-1 shrink-0">
                     <button
                       onClick={() => refresh.mutate(sub.id)}
                       disabled={sub.id in refreshing}
                       title="Refresh now"
-                      className="rounded p-1.5 text-gray-500 hover:text-gray-200 hover:bg-gray-800 transition-colors"
+                      className="rounded-sm p-1.5 text-gray-500 hover:text-gray-200 hover:bg-gray-800 transition-colors"
                     >
                       <RefreshCw className={clsx('h-4 w-4', sub.id in refreshing && 'animate-spin')} />
                     </button>
                     <button
                       onClick={() => { setEditSub(sub); setModal('edit') }}
                       title="Edit"
-                      className="rounded p-1.5 text-gray-500 hover:text-gray-200 hover:bg-gray-800 transition-colors"
+                      className="rounded-sm p-1.5 text-gray-500 hover:text-gray-200 hover:bg-gray-800 transition-colors"
                     >
                       <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
@@ -639,7 +639,7 @@ export function Subscriptions() {
                         if (ok) del.mutate(sub.id)
                       }}
                       title="Delete with nodes"
-                      className="rounded p-1.5 text-gray-500 hover:text-red-400 hover:bg-gray-800 transition-colors"
+                      className="rounded-sm p-1.5 text-gray-500 hover:text-red-400 hover:bg-gray-800 transition-colors"
                     >
                       <Trash2 className="h-4 w-4" />
                     </button>

@@ -1,5 +1,6 @@
+import { useEffect, useRef } from 'react'
 import { keepPreviousData, useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { nodesApi, speedtestStream } from '@/api/client'
+import { nodesApi, speedtestStream, autocheckApi } from '@/api/client'
 import type { NodeCreate, NodePageParams, NodeUpdate } from '@/types'
 
 export function useNodes(params?: { enabled?: boolean; group?: string }) {
@@ -260,16 +261,43 @@ export function useReachability() {
   return { run }
 }
 
+/**
+ * "Speed All" — kicks off the SAME background sweep the auto-check uses
+ * (sequential, staleness-guarded, no request timeout), forcing scope "all".
+ * Returns immediately, so a big node set can't 504 the way the old
+ * synchronous speedtest-all did. Results land on the node rows as the sweep
+ * progresses; `useAutocheckSweep` polls the status and refreshes the list.
+ * The manual run also stamps `last_sweep`, so the next scheduled sweep is
+ * pushed out an interval and the two never collide.
+ */
 export function useSpeedtestAll() {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: () => nodesApi.speedtestAll(),
-    onSuccess: (results) => {
-      qc.setQueryData<SpeedResults>(SPEED_RESULTS_KEY, (prev = {}) => {
-        const next = { ...prev }
-        for (const r of results) next[r.node_id] = formatSpeed(r)
-        return next
-      })
-    },
+    mutationFn: () => autocheckApi.run('all', true),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['autocheck'] }),
   })
+}
+
+/**
+ * Poll the auto-check status while a sweep is running so the UI reflects
+ * progress: refreshes the node list on each tick (speeds appear live) and
+ * once more when the sweep finishes. Returns whether a sweep is in flight
+ * (drives the "Speed All" spinner). Idle → no polling.
+ */
+export function useAutocheckSweep(): boolean {
+  const qc = useQueryClient()
+  const status = useQuery({
+    queryKey: ['autocheck'],
+    queryFn: () => autocheckApi.get(),
+    refetchInterval: (q) => (q.state.data?.is_sweeping ? 3000 : false),
+  })
+  const sweeping = !!status.data?.is_sweeping
+  const wasSweeping = useRef(false)
+  useEffect(() => {
+    if (sweeping || wasSweeping.current) {
+      qc.invalidateQueries({ queryKey: ['nodes'] })
+    }
+    wasSweeping.current = sweeping
+  }, [sweeping, status.dataUpdatedAt, qc])
+  return sweeping
 }

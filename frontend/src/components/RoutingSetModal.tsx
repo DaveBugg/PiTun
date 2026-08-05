@@ -96,7 +96,7 @@ export function RoutingSetModal({
       <div className="w-full max-w-md rounded-2xl bg-gray-950 border border-gray-800 shadow-xl">
         <form onSubmit={handleSubmit} className="p-6 space-y-4">
           <div className="flex items-center gap-2 mb-2">
-            <Tag className="h-5 w-5 text-purple-400" />
+            <Tag className="h-5 w-5 text-purple-600 dark:text-purple-400" />
             <h2 id={titleId} className="text-lg font-semibold text-white">
               {isEdit
                 ? t('Edit routing set', 'Редактировать набор')
@@ -117,7 +117,7 @@ export function RoutingSetModal({
               autoFocus
               required
               placeholder={t('e.g. Kids', 'например, Дети')}
-              className="mt-1 w-full rounded-lg bg-gray-900 border border-gray-700 px-3 py-2 text-white focus:border-purple-500 focus:ring-1 focus:ring-purple-500 outline-none"
+              className="mt-1 w-full rounded-lg bg-gray-900 border border-gray-700 px-3 py-2 text-white focus:border-purple-500 focus:ring-1 focus:ring-purple-500 outline-hidden"
             />
           </label>
 
@@ -134,7 +134,7 @@ export function RoutingSetModal({
                 'What this set does — visible only in the UI',
                 'Что делает этот набор — видно только в UI',
               )}
-              className="mt-1 w-full rounded-lg bg-gray-900 border border-gray-700 px-3 py-2 text-white focus:border-purple-500 focus:ring-1 focus:ring-purple-500 outline-none resize-none"
+              className="mt-1 w-full rounded-lg bg-gray-900 border border-gray-700 px-3 py-2 text-white focus:border-purple-500 focus:ring-1 focus:ring-purple-500 outline-hidden resize-none"
             />
           </label>
 
@@ -150,7 +150,7 @@ export function RoutingSetModal({
               type="number"
               value={order}
               onChange={(e) => setOrder(Number(e.target.value) || 0)}
-              className="mt-1 w-full rounded-lg bg-gray-900 border border-gray-700 px-3 py-2 text-white focus:border-purple-500 focus:ring-1 focus:ring-purple-500 outline-none"
+              className="mt-1 w-full rounded-lg bg-gray-900 border border-gray-700 px-3 py-2 text-white focus:border-purple-500 focus:ring-1 focus:ring-purple-500 outline-hidden"
             />
           </label>
 
@@ -173,8 +173,8 @@ export function RoutingSetModal({
           )}
 
           {error && (
-            <div className="flex items-start gap-2 rounded-lg bg-red-900/30 border border-red-700/50 p-3 text-sm text-red-300">
-              <AlertCircle className="h-4 w-4 mt-0.5 flex-shrink-0" />
+            <div className="flex items-start gap-2 rounded-lg bg-red-50 dark:bg-red-900/30 border border-red-200 dark:border-red-700/50 p-3 text-sm text-red-700 dark:text-red-300">
+              <AlertCircle className="h-4 w-4 mt-0.5 shrink-0" />
               <span>{error}</span>
             </div>
           )}

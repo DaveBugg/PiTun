@@ -1,5 +1,6 @@
 """Auto-speedtest config (singleton) + manual 'run now' trigger."""
 import asyncio
+from typing import Optional
 
 from fastapi import APIRouter, Depends
 from sqlmodel.ext.asyncio.session import AsyncSession
@@ -34,10 +35,19 @@ async def update_autocheck(body: AutoCheckUpdate, session: AsyncSession = Depend
 
 
 @router.post("/run")
-async def run_autocheck_now():
+async def run_autocheck_now(
+    scope_kind: Optional[str] = None, scope_value: str = "", force: bool = False,
+):
     """Kick off a sweep immediately in the background — a full sweep can take
-    minutes, so we return right away rather than block the request."""
+    minutes, so we return right away rather than block the request.
+
+    `scope_kind` overrides the saved config scope for this run (the Nodes
+    "Speed All" button passes `all`); omit it to use the configured scope.
+    `force=true` re-tests every node, ignoring the staleness guard — used by
+    "Speed All" so a manual run always refreshes speeds."""
     if autocheck_scheduler.is_sweeping:
         return {"status": "already_running"}
-    asyncio.create_task(autocheck_scheduler.run_sweep())
+    asyncio.create_task(
+        autocheck_scheduler.run_sweep(scope_kind, scope_value or None, force)
+    )
     return {"status": "started"}

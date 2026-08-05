@@ -50,7 +50,7 @@ export function NaiveSidecarPanel({ nodeId, nodeName }: Props) {
         <button
           onClick={() => restart.mutate()}
           disabled={restart.isPending}
-          className="ml-2 flex items-center gap-1 rounded bg-gray-800 px-2 py-0.5 text-gray-400 hover:bg-gray-700 hover:text-gray-200 disabled:opacity-50"
+          className="ml-2 flex items-center gap-1 rounded-sm bg-gray-800 px-2 py-0.5 text-gray-400 hover:bg-gray-700 hover:text-gray-200 disabled:opacity-50"
           title={t('Restart sidecar', 'Перезапустить sidecar')}
         >
           <RotateCw className={clsx('h-3 w-3', restart.isPending && 'animate-spin')} />
@@ -58,7 +58,7 @@ export function NaiveSidecarPanel({ nodeId, nodeName }: Props) {
         </button>
         <button
           onClick={() => setLogsOpen(true)}
-          className="flex items-center gap-1 rounded bg-gray-800 px-2 py-0.5 text-gray-400 hover:bg-gray-700 hover:text-gray-200"
+          className="flex items-center gap-1 rounded-sm bg-gray-800 px-2 py-0.5 text-gray-400 hover:bg-gray-700 hover:text-gray-200"
         >
           <FileText className="h-3 w-3" />
           {t('Logs', 'Логи')}
@@ -91,13 +91,13 @@ function LogsModal({ nodeId, nodeName, onClose }: { nodeId: number; nodeName: st
             <button
               onClick={() => refetch()}
               disabled={isFetching}
-              className="rounded bg-gray-800 px-2 py-1 text-xs text-gray-300 hover:bg-gray-700 disabled:opacity-50"
+              className="rounded-sm bg-gray-800 px-2 py-1 text-xs text-gray-300 hover:bg-gray-700 disabled:opacity-50"
             >
               {isFetching ? '…' : t('Refresh', 'Обновить')}
             </button>
             <button
               onClick={onClose}
-              className="rounded p-1 text-gray-400 hover:text-gray-100 hover:bg-gray-800"
+              className="rounded-sm p-1 text-gray-400 hover:text-gray-100 hover:bg-gray-800"
             >
               <X className="h-4 w-4" />
             </button>

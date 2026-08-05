@@ -569,6 +569,18 @@ def apply(req: ApplyRequest) -> Backup:
     dns = _validate_dns_list(req.dns) if req.dns is not None else None
 
     state = nc.read_state()
+
+    # Never let the panel (re)introduce a routing self-loop: a default
+    # route via the box's own IP hands every off-LAN packet back to us.
+    # This is the exact footgun the Network page exists to fix, so
+    # refusing it here — with a clear message — is the whole point.
+    if gw is not None and state.ip and gw == state.ip:
+        raise NetworkApplyError(
+            f"Gateway {gw} is this host's own IP — that's a routing "
+            "self-loop, not a gateway. Use your ISP router's address "
+            "(usually 192.168.x.1)."
+        )
+
     if state.manager not in ("ifupdown", "networkmanager"):
         raise NetworkApplyError(
             f"Apply not supported on manager {state.manager!r} yet. "
@@ -667,6 +679,19 @@ def probe_gateway(ip: str) -> dict:
         return {
             "reachable": False,
             "detail": "Cannot validate — current host IP/CIDR not detected.",
+        }
+
+    # The box's own address is never a valid gateway — probing it would
+    # "succeed" (we always answer ourselves) and mask the self-loop the
+    # operator is trying to escape. Reject it explicitly instead.
+    if ip == state.ip:
+        return {
+            "reachable": False,
+            "detail": (
+                f"{ip} is THIS PiTun's own address, not a gateway. A gateway "
+                "must be a different device — your ISP router (usually "
+                "192.168.x.1)."
+            ),
         }
     try:
         candidate_net = ipaddress.ip_network(f"{state.ip}/{state.cidr}", strict=False)

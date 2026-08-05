@@ -19,9 +19,9 @@ const MODE_LABELS: Record<string, string> = {
 }
 
 const MODE_COLORS: Record<string, string> = {
-  sequential: 'bg-cyan-900/60 text-cyan-300',
-  random: 'bg-purple-900/60 text-purple-300',
-  best: 'bg-emerald-900/60 text-emerald-300',
+  sequential: 'bg-cyan-50 dark:bg-cyan-900/60 text-cyan-700 dark:text-cyan-300',
+  random: 'bg-purple-50 dark:bg-purple-900/60 text-purple-700 dark:text-purple-300',
+  best: 'bg-emerald-50 dark:bg-emerald-900/60 text-emerald-700 dark:text-emerald-300',
 }
 
 function formatInterval(min: number, max: number): string {
@@ -105,8 +105,10 @@ function CircleModal({ initial, nodeOptions, onSave, onCancel, loading }: ModalP
       mode,
       interval_min: minN,
       interval_max: maxN,
-      max_latency_ms: Math.max(0, parseInt(maxLatency, 10) || 0),
-      min_speed_mbps: Math.max(0, parseFloat(minSpeed) || 0),
+      // Quality filters only apply to "best" mode; zero them otherwise so a
+      // hidden value never silently filters a sequential/random circle.
+      max_latency_ms: mode === 'best' ? Math.max(0, parseInt(maxLatency, 10) || 0) : 0,
+      min_speed_mbps: mode === 'best' ? Math.max(0, parseFloat(minSpeed) || 0) : 0,
       node_ids: Array.from(selectedIds),
     })
   }
@@ -120,7 +122,7 @@ function CircleModal({ initial, nodeOptions, onSave, onCancel, loading }: ModalP
           onChange={(e) => setName(e.target.value)}
           required
           autoFocus
-          className="w-full rounded bg-gray-800 border border-gray-700 px-3 py-1.5 text-sm text-gray-100 focus:border-brand-500 focus:outline-none"
+          className="w-full rounded-sm bg-gray-800 border border-gray-700 px-3 py-1.5 text-sm text-gray-100 focus:border-brand-500 focus:outline-hidden"
           placeholder="My Node Circle"
         />
       </div>
@@ -136,11 +138,11 @@ function CircleModal({ initial, nodeOptions, onSave, onCancel, loading }: ModalP
         <select
           value={mode}
           onChange={(e) => setMode(e.target.value as 'sequential' | 'random' | 'best')}
-          className="w-full rounded bg-gray-800 border border-gray-700 px-3 py-1.5 text-sm text-gray-100 focus:border-brand-500 focus:outline-none"
+          className="w-full rounded-sm bg-gray-800 border border-gray-700 px-3 py-1.5 text-sm text-gray-100 focus:border-brand-500 focus:outline-hidden"
         >
           <option value="sequential">Sequential</option>
           <option value="random">Random</option>
-          <option value="best">Best (lowest latency)</option>
+          <option value="best">{t('Best (lowest latency + min speed)', 'Лучшая (мин. пинг + мин. скорость)')}</option>
         </select>
       </div>
 
@@ -159,7 +161,7 @@ function CircleModal({ initial, nodeOptions, onSave, onCancel, loading }: ModalP
             min={1}
             value={intervalMin}
             onChange={(e) => setIntervalMin(e.target.value)}
-            className="w-full rounded bg-gray-800 border border-gray-700 px-3 py-1.5 text-sm text-gray-100 focus:border-brand-500 focus:outline-none"
+            className="w-full rounded-sm bg-gray-800 border border-gray-700 px-3 py-1.5 text-sm text-gray-100 focus:border-brand-500 focus:outline-hidden"
           />
         </div>
         <div>
@@ -172,49 +174,54 @@ function CircleModal({ initial, nodeOptions, onSave, onCancel, loading }: ModalP
             min={1}
             value={intervalMax}
             onChange={(e) => setIntervalMax(e.target.value)}
-            className="w-full rounded bg-gray-800 border border-gray-700 px-3 py-1.5 text-sm text-gray-100 focus:border-brand-500 focus:outline-none"
+            className="w-full rounded-sm bg-gray-800 border border-gray-700 px-3 py-1.5 text-sm text-gray-100 focus:border-brand-500 focus:outline-hidden"
           />
         </div>
       </div>
 
-      <div className="grid grid-cols-2 gap-3">
-        <div>
-          <label className="flex items-center gap-1 text-xs font-medium text-gray-400 mb-1">
-            {t('Max latency (ms)', 'Макс. пинг (мс)')}
-            <InfoTip position="bottom" className="ml-0.5" text={t(
-              'Skip rotation candidates whose last ping exceeds this. 0 = no limit.',
-              'Пропускать кандидатов, чей последний пинг выше этого. 0 = без ограничения.',
-            )} />
-          </label>
-          <input
-            type="number"
-            inputMode="numeric"
-            min={0}
-            value={maxLatency}
-            onChange={(e) => setMaxLatency(e.target.value)}
-            placeholder="0"
-            className="w-full rounded bg-gray-800 border border-gray-700 px-3 py-1.5 text-sm text-gray-100 focus:border-brand-500 focus:outline-none"
-          />
+      {/* Quality filters — only relevant to "best" mode, which picks the
+          lowest-latency candidate that also clears the min-speed floor.
+          Hidden (and not submitted) for sequential/random. */}
+      {mode === 'best' && (
+        <div className="grid grid-cols-2 gap-3">
+          <div>
+            <label className="flex items-center gap-1 text-xs font-medium text-gray-400 mb-1">
+              {t('Max latency (ms)', 'Макс. пинг (мс)')}
+              <InfoTip position="bottom" className="ml-0.5" text={t(
+                'Skip rotation candidates whose last ping exceeds this. 0 = no limit.',
+                'Пропускать кандидатов, чей последний пинг выше этого. 0 = без ограничения.',
+              )} />
+            </label>
+            <input
+              type="number"
+              inputMode="numeric"
+              min={0}
+              value={maxLatency}
+              onChange={(e) => setMaxLatency(e.target.value)}
+              placeholder="0"
+              className="w-full rounded-sm bg-gray-800 border border-gray-700 px-3 py-1.5 text-sm text-gray-100 focus:border-brand-500 focus:outline-hidden"
+            />
+          </div>
+          <div>
+            <label className="flex items-center gap-1 text-xs font-medium text-gray-400 mb-1">
+              {t('Min speed (Mbps)', 'Мин. скорость (Мбит/с)')}
+              <InfoTip position="bottom" className="ml-0.5" text={t(
+                'Skip candidates whose last speed test is below this. Untested nodes always pass. 0 = no limit.',
+                'Пропускать кандидатов, чей последний замер ниже этого. Непроверенные ноды всегда проходят. 0 = без ограничения.',
+              )} />
+            </label>
+            <input
+              type="number"
+              inputMode="decimal"
+              min={0}
+              value={minSpeed}
+              onChange={(e) => setMinSpeed(e.target.value)}
+              placeholder="0"
+              className="w-full rounded-sm bg-gray-800 border border-gray-700 px-3 py-1.5 text-sm text-gray-100 focus:border-brand-500 focus:outline-hidden"
+            />
+          </div>
         </div>
-        <div>
-          <label className="flex items-center gap-1 text-xs font-medium text-gray-400 mb-1">
-            {t('Min speed (Mbps)', 'Мин. скорость (Мбит/с)')}
-            <InfoTip position="bottom" className="ml-0.5" text={t(
-              'Skip candidates whose last speed test is below this. Untested nodes always pass. 0 = no limit.',
-              'Пропускать кандидатов, чей последний замер ниже этого. Непроверенные ноды всегда проходят. 0 = без ограничения.',
-            )} />
-          </label>
-          <input
-            type="number"
-            inputMode="decimal"
-            min={0}
-            value={minSpeed}
-            onChange={(e) => setMinSpeed(e.target.value)}
-            placeholder="0"
-            className="w-full rounded bg-gray-800 border border-gray-700 px-3 py-1.5 text-sm text-gray-100 focus:border-brand-500 focus:outline-none"
-          />
-        </div>
-      </div>
+      )}
 
       <div>
         <div className="flex items-center justify-between mb-1">
@@ -232,7 +239,7 @@ function CircleModal({ initial, nodeOptions, onSave, onCancel, loading }: ModalP
             <button
               type="button"
               onClick={toggleAll}
-              className="text-xs text-brand-400 hover:text-brand-300 transition-colors"
+              className="text-xs text-brand-400 hover:text-brand-700 dark:hover:text-brand-300 transition-colors"
             >
               {allSelected
                 ? t('Clear', 'Снять все')
@@ -240,7 +247,7 @@ function CircleModal({ initial, nodeOptions, onSave, onCancel, loading }: ModalP
             </button>
           )}
         </div>
-        <div className="rounded bg-gray-800 border border-gray-700 max-h-48 overflow-y-auto divide-y divide-gray-700/50">
+        <div className="rounded-sm bg-gray-800 border border-gray-700 max-h-48 overflow-y-auto divide-y divide-gray-700/50">
           {nodeOptions.length === 0 ? (
             <div className="px-3 py-4 text-sm text-gray-500 text-center">No nodes available</div>
           ) : (
@@ -259,7 +266,7 @@ function CircleModal({ initial, nodeOptions, onSave, onCancel, loading }: ModalP
                   type="checkbox"
                   checked={selectedIds.has(node.id)}
                   onChange={() => toggleNode(node.id)}
-                  className="rounded border-gray-600 bg-gray-700 text-brand-500"
+                  className="rounded-sm border-gray-600 bg-gray-700 text-brand-500"
                 />
                 <span className="text-sm text-gray-200">{node.name}</span>
                 <span className="ml-auto text-xs text-gray-600 font-mono">#{node.id}</span>
@@ -275,7 +282,7 @@ function CircleModal({ initial, nodeOptions, onSave, onCancel, loading }: ModalP
           id="circle-enabled"
           checked={enabled}
           onChange={(e) => setEnabled(e.target.checked)}
-          className="rounded border-gray-600 bg-gray-800 text-brand-500"
+          className="rounded-sm border-gray-600 bg-gray-800 text-brand-500"
         />
         <label htmlFor="circle-enabled" className="text-sm text-gray-300">Enabled</label>
       </div>
@@ -394,13 +401,13 @@ export function NodeCircles() {
                 'rounded-xl border p-4 transition-colors',
                 circle.enabled
                   ? 'border-gray-800 bg-gray-900'
-                  : 'border-gray-800/50 bg-gray-900/50 opacity-60',
+                  : 'border-gray-800 bg-gray-800/40 opacity-90',
               )}
             >
               <div className="flex items-center gap-3 flex-wrap">
                 <span
                   className={clsx(
-                    'rounded px-2 py-0.5 text-xs font-mono font-medium',
+                    'rounded-sm px-2 py-0.5 text-xs font-mono font-medium',
                     MODE_COLORS[circle.mode] ?? 'bg-gray-700 text-gray-300',
                   )}
                 >
@@ -422,7 +429,7 @@ export function NodeCircles() {
                     onClick={() => rotateCircle.mutate(circle.id)}
                     disabled={rotatingId === circle.id || circle.node_ids.length < 2}
                     title="Rotate Now"
-                    className="rounded p-1.5 text-gray-500 hover:text-brand-400 hover:bg-gray-800 transition-colors disabled:opacity-40"
+                    className="rounded-sm p-1.5 text-gray-500 hover:text-brand-400 hover:bg-gray-800 transition-colors disabled:opacity-40"
                   >
                     <RefreshCw className={clsx(
                       'h-4 w-4',
@@ -434,7 +441,7 @@ export function NodeCircles() {
                       toggleEnabled.mutate({ id: circle.id, enabled: !circle.enabled })
                     }
                     title={circle.enabled ? 'Disable' : 'Enable'}
-                    className="rounded p-1.5 text-gray-500 hover:text-gray-200 hover:bg-gray-800 transition-colors"
+                    className="rounded-sm p-1.5 text-gray-500 hover:text-gray-200 hover:bg-gray-800 transition-colors"
                   >
                     {circle.enabled
                       ? <ToggleRight className="h-4 w-4 text-brand-400" />
@@ -442,7 +449,7 @@ export function NodeCircles() {
                   </button>
                   <button
                     onClick={() => { setEditCircle(circle); setModal('edit') }}
-                    className="rounded p-1.5 text-gray-500 hover:text-gray-200 hover:bg-gray-800 transition-colors"
+                    className="rounded-sm p-1.5 text-gray-500 hover:text-gray-200 hover:bg-gray-800 transition-colors"
                   >
                     <Pencil className="h-4 w-4" />
                   </button>
@@ -456,7 +463,7 @@ export function NodeCircles() {
                       })
                       if (ok) deleteCircle.mutate(circle.id)
                     }}
-                    className="rounded p-1.5 text-gray-500 hover:text-red-400 hover:bg-gray-800 transition-colors"
+                    className="rounded-sm p-1.5 text-gray-500 hover:text-red-400 hover:bg-gray-800 transition-colors"
                   >
                     <Trash2 className="h-4 w-4" />
                   </button>
@@ -487,7 +494,7 @@ export function NodeCircles() {
                         className={clsx(
                           'rounded-full px-2.5 py-0.5 text-xs font-mono',
                           isActive
-                            ? 'bg-brand-600/30 text-brand-300 ring-1 ring-brand-500/50'
+                            ? 'bg-brand-50 text-brand-700 dark:bg-brand-600/30 dark:text-brand-300 ring-1 ring-brand-500/50'
                             : 'bg-gray-800 text-gray-400',
                         )}
                       >
@@ -569,9 +576,9 @@ function FailoverToggle() {
           onClick={toggle}
           disabled={update.isPending}
           className={clsx(
-            'mt-0.5 flex-shrink-0 rounded-lg p-1 transition-colors',
+            'mt-0.5 shrink-0 rounded-lg p-1 transition-colors',
             enabled
-              ? 'text-brand-400 hover:text-brand-300'
+              ? 'text-brand-400 hover:text-brand-700 dark:hover:text-brand-300'
               : 'text-gray-600 hover:text-gray-400',
           )}
           aria-label={t('Toggle failover', 'Переключить failover')}
@@ -639,7 +646,7 @@ function FailoverToggle() {
                     className={clsx(
                       'rounded-full px-2.5 py-1 text-xs font-medium transition-colors disabled:opacity-50',
                       selected
-                        ? 'bg-brand-600/30 border border-brand-600/60 text-brand-200'
+                        ? 'bg-brand-50 dark:bg-brand-600/30 border border-brand-400/60 text-brand-700 dark:text-brand-200'
                         : 'bg-gray-800 border border-gray-700 text-gray-400 hover:bg-gray-700 hover:text-gray-300',
                     )}
                     title={`${n.protocol} · ${n.address}:${n.port}`}

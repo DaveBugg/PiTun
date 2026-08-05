@@ -85,8 +85,8 @@ export function ConfirmModal({
       >
         <div className="flex items-start gap-3">
           {danger && (
-            <div className="flex h-9 w-9 items-center justify-center rounded-full bg-red-900/30 shrink-0">
-              <AlertTriangle className="h-5 w-5 text-red-400" />
+            <div className="flex h-9 w-9 items-center justify-center rounded-full bg-red-50 dark:bg-red-900/30 shrink-0">
+              <AlertTriangle className="h-5 w-5 text-red-600 dark:text-red-400" />
             </div>
           )}
           <div className="flex-1 min-w-0">

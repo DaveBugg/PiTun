@@ -123,7 +123,7 @@ export function ServerForm({ initial, onClose, onSubmit }: Props) {
         </div>
 
         {error && (
-          <div className="mb-3 rounded-lg bg-red-900/30 border border-red-700/50 px-3 py-2 text-sm text-red-300">
+          <div className="mb-3 rounded-lg bg-red-50 dark:bg-red-900/30 border border-red-200 dark:border-red-700/50 px-3 py-2 text-sm text-red-700 dark:text-red-300">
             {error}
           </div>
         )}
@@ -198,7 +198,7 @@ export function ServerForm({ initial, onClose, onSubmit }: Props) {
                   onClick={() => setAuthType(m)}
                   className={`rounded-lg px-3 py-1.5 text-sm transition-colors ${
                     authType === m
-                      ? 'bg-brand-600/20 text-brand-300 border border-brand-600/40'
+                      ? 'bg-brand-50 dark:bg-brand-600/20 text-brand-300 border border-brand-400/40'
                       : 'bg-gray-900 border border-gray-800 text-gray-400 hover:bg-gray-800'
                   }`}
                 >
@@ -295,7 +295,7 @@ export function ServerForm({ initial, onClose, onSubmit }: Props) {
 // ── Building blocks ─────────────────────────────────────────────────────────
 
 const inputCls =
-  'w-full rounded-lg bg-gray-900 border border-gray-800 px-3 py-2 text-sm text-gray-100 focus:border-brand-500 focus:outline-none disabled:opacity-50'
+  'w-full rounded-lg bg-gray-900 border border-gray-800 px-3 py-2 text-sm text-gray-100 focus:border-brand-500 focus:outline-hidden disabled:opacity-50'
 
 function Field({
   label,
@@ -339,7 +339,7 @@ function SecretField({
       <div className="mb-1.5 flex items-center gap-2 text-xs">
         <span className="text-gray-500">{label}</span>
         {isSet && (
-          <span className="rounded bg-green-900/40 px-1.5 py-0.5 text-[10px] uppercase tracking-wider text-green-400">
+          <span className="rounded-sm bg-green-50 dark:bg-green-900/40 px-1.5 py-0.5 text-[10px] uppercase tracking-wider text-green-600 dark:text-green-400">
             set
           </span>
         )}

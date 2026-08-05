@@ -13,7 +13,7 @@
  * whichever block is local to the current page.
  *
  * Click-anchored popover modelled on VersionPopover: portal into
- * document.body (escape any backdrop-blur stacking context), position via
+ * document.body (escape any backdrop-blur-sm stacking context), position via
  * getBoundingClientRect, click-outside + Escape to close.
  */
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
@@ -69,8 +69,8 @@ export function HostDnsHelp({ highlight, className }: Props) {
         type="button"
         onClick={() => setOpen(v => !v)}
         className={clsx(
-          'inline-flex items-center gap-1 rounded border border-gray-700 px-1.5 py-0.5',
-          'text-[10px] text-gray-400 hover:text-brand-300 hover:border-brand-700/50 transition-colors',
+          'inline-flex items-center gap-1 rounded-sm border border-gray-700 px-1.5 py-0.5',
+          'text-[10px] text-gray-400 hover:text-brand-700 dark:hover:text-brand-300 hover:border-brand-400/50 transition-colors',
           open && 'text-brand-300 border-brand-700/50',
           className,
         )}
@@ -87,7 +87,7 @@ export function HostDnsHelp({ highlight, className }: Props) {
           role="dialog"
           aria-label={t('Host DNS help', 'Справка по host DNS')}
           style={{ position: 'fixed', left: coords.left, top: coords.top, width: POP_W }}
-          className="z-[9999] rounded-lg border border-gray-700 bg-gray-900 p-3 shadow-2xl
+          className="z-9999 rounded-lg border border-gray-700 bg-gray-900 p-3 shadow-2xl
                      text-[11px] leading-relaxed text-gray-300 space-y-2.5"
         >
           <div className="text-xs font-semibold text-gray-100">
@@ -107,7 +107,7 @@ export function HostDnsHelp({ highlight, className }: Props) {
             where={t('Settings → Host network', 'Настройки → Host network')}
             tag={t('gateway + DNS', 'gateway + DNS')}
             role={t('PRIMARY', 'ОСНОВНОЙ')}
-            roleColor="text-emerald-300"
+            roleColor="text-emerald-700 dark:text-emerald-300"
             lines={[
               t("The box's main network identity: default gateway + its main DNS servers.",
                 'Главная сетевая идентичность машины: default gateway + основные DNS-серверы.'),
@@ -130,7 +130,7 @@ export function HostDnsHelp({ highlight, className }: Props) {
             where={t('DNS → Host resolver', 'DNS → Резолвер хоста')}
             tag={t('this box only · fallback', 'только эта машина · fallback')}
             role={t('BACKUP', 'ЗАПАСНОЙ')}
-            roleColor="text-amber-300"
+            roleColor="text-amber-700 dark:text-amber-300"
             lines={[
               t('ONLY extra fallback DNS, added on top of the primary.',
                 'ТОЛЬКО дополнительный fallback-DNS, добавляется поверх основного.'),

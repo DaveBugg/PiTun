@@ -197,7 +197,7 @@ export function RoutingImportModal({
       <div className="w-full max-w-lg rounded-2xl bg-gray-950 border border-gray-800 shadow-xl max-h-[88vh] overflow-y-auto">
         <div className="p-6 space-y-4">
           <div className="flex items-center gap-2">
-            <FileUp className="h-5 w-5 text-purple-400" />
+            <FileUp className="h-5 w-5 text-purple-600 dark:text-purple-400" />
             <h2 id={titleId} className="text-lg font-semibold text-white">
               {t('Import routing rules', 'Импорт правил роутинга')}
             </h2>
@@ -230,16 +230,16 @@ export function RoutingImportModal({
               <div className="text-xs uppercase tracking-wider text-gray-500">{t('Import into', 'Импортировать в')}</div>
 
               <label className={clsx('flex items-center gap-2.5 rounded-lg border px-3 py-2 cursor-pointer',
-                destKind === 'global' ? 'border-purple-600/60 bg-purple-900/15' : 'border-gray-800 bg-gray-900/40')}>
+                destKind === 'global' ? 'border-purple-600/60 bg-purple-50 dark:bg-purple-900/15' : 'border-gray-800 bg-gray-900/40')}>
                 <input type="radio" checked={destKind === 'global'} onChange={() => { setDestKind('global'); resetPreview() }} className="accent-purple-500" />
                 <Globe2 className="h-4 w-4 text-gray-400" />
                 <span className="text-sm text-gray-200">{t('Global (main rules)', 'Глобальные (основные)')}</span>
               </label>
 
               <label className={clsx('flex items-center gap-2.5 rounded-lg border px-3 py-2 cursor-pointer',
-                destKind === 'set' ? 'border-purple-600/60 bg-purple-900/15' : 'border-gray-800 bg-gray-900/40')}>
+                destKind === 'set' ? 'border-purple-600/60 bg-purple-50 dark:bg-purple-900/15' : 'border-gray-800 bg-gray-900/40')}>
                 <input type="radio" checked={destKind === 'set'} onChange={() => { setDestKind('set'); resetPreview() }} className="accent-purple-500" />
-                <Tag className="h-4 w-4 text-purple-300" />
+                <Tag className="h-4 w-4 text-purple-700 dark:text-purple-300" />
                 <span className="text-sm text-gray-200">{t('A routing set', 'В набор (set)')}</span>
               </label>
 
@@ -248,11 +248,11 @@ export function RoutingImportModal({
                   <div className="flex gap-2 text-xs">
                     <button type="button" onClick={() => { setSetMode('existing'); resetPreview() }}
                       disabled={routingSets.length === 0}
-                      className={clsx('px-2 py-1 rounded-md border', setMode === 'existing' ? 'border-purple-600 text-purple-300' : 'border-gray-700 text-gray-400', 'disabled:opacity-40')}>
+                      className={clsx('px-2 py-1 rounded-md border', setMode === 'existing' ? 'border-purple-600 text-purple-700 dark:text-purple-300' : 'border-gray-700 text-gray-400', 'disabled:opacity-40')}>
                       {t('Existing', 'Существующий')}
                     </button>
                     <button type="button" onClick={() => { setSetMode('new'); resetPreview() }}
-                      className={clsx('px-2 py-1 rounded-md border inline-flex items-center gap-1', setMode === 'new' ? 'border-purple-600 text-purple-300' : 'border-gray-700 text-gray-400')}>
+                      className={clsx('px-2 py-1 rounded-md border inline-flex items-center gap-1', setMode === 'new' ? 'border-purple-600 text-purple-700 dark:text-purple-300' : 'border-gray-700 text-gray-400')}>
                       <Plus className="h-3 w-3" /> {t('New set', 'Новый сет')}
                     </button>
                   </div>
@@ -291,15 +291,15 @@ export function RoutingImportModal({
           {preview && (
             <div className="rounded-lg border border-gray-800 bg-gray-900/40 p-3 text-xs space-y-1">
               <div className="text-gray-300 font-medium">
-                {t('Preview', 'Предпросмотр')} → <span className="text-purple-300">{preview.destination_label}</span>
+                {t('Preview', 'Предпросмотр')} → <span className="text-purple-700 dark:text-purple-300">{preview.destination_label}</span>
                 {!preview.destination_exists && <span className="text-gray-500"> ({t('will be created', 'будет создан')})</span>}
               </div>
               <div className="text-gray-400">
-                <span className="text-emerald-400">+{preview.will_add}</span> {t('new', 'новых')} ·{' '}
+                <span className="text-emerald-600 dark:text-emerald-400">+{preview.will_add}</span> {t('new', 'новых')} ·{' '}
                 {preview.identical_skipped} {t('identical', 'идентичных')} ·{' '}
                 {preview.collapsed_duplicates} {t('file-dupes', 'дублей в файле')} ·{' '}
                 {preview.invalid_skipped} {t('unusable', 'непригодных')} ·{' '}
-                <span className={conflicts.length ? 'text-amber-400' : ''}>{conflicts.length} {t('conflicts', 'конфликтов')}</span>
+                <span className={conflicts.length ? 'text-amber-600 dark:text-amber-400' : ''}>{conflicts.length} {t('conflicts', 'конфликтов')}</span>
               </div>
               {preview.invalid_skipped > 0 && (
                 <div className="text-gray-500">
@@ -313,7 +313,7 @@ export function RoutingImportModal({
           {/* 3b. Conflicts to resolve */}
           {conflicts.length > 0 && (
             <div className="space-y-2">
-              <div className="flex items-center gap-1.5 text-xs text-amber-300">
+              <div className="flex items-center gap-1.5 text-xs text-amber-700 dark:text-amber-300">
                 <AlertTriangle className="h-4 w-4" />
                 {t('Resolve conflicts (same match, different action)', 'Разреши конфликты (тот же match, другой action)')}
               </div>
@@ -321,7 +321,7 @@ export function RoutingImportModal({
                 {conflicts.map(c => {
                   const choice = resolutions[c.key] ?? 'keep'
                   return (
-                    <div key={c.key} className="rounded-lg border border-amber-800/40 bg-amber-900/10 p-2">
+                    <div key={c.key} className="rounded-lg border border-amber-200 dark:border-amber-800/40 bg-amber-50 dark:bg-amber-900/10 p-2">
                       <div className="text-xs text-gray-300 font-mono truncate">
                         {c.rule_type} = {c.match_value}
                       </div>
@@ -331,11 +331,11 @@ export function RoutingImportModal({
                       </div>
                       <div className="flex gap-1.5">
                         <button type="button" onClick={() => setResolutions(p => ({ ...p, [c.key]: 'keep' }))}
-                          className={clsx('px-2 py-0.5 rounded-md text-[11px] border', choice === 'keep' ? 'border-purple-600 text-purple-300 bg-purple-900/20' : 'border-gray-700 text-gray-400')}>
+                          className={clsx('px-2 py-0.5 rounded-md text-[11px] border', choice === 'keep' ? 'border-purple-600 text-purple-700 dark:text-purple-300 bg-purple-50 dark:bg-purple-900/20' : 'border-gray-700 text-gray-400')}>
                           {t('Keep existing', 'Оставить')} ({c.existing_action})
                         </button>
                         <button type="button" onClick={() => setResolutions(p => ({ ...p, [c.key]: 'replace' }))}
-                          className={clsx('px-2 py-0.5 rounded-md text-[11px] border', choice === 'replace' ? 'border-purple-600 text-purple-300 bg-purple-900/20' : 'border-gray-700 text-gray-400')}>
+                          className={clsx('px-2 py-0.5 rounded-md text-[11px] border', choice === 'replace' ? 'border-purple-600 text-purple-700 dark:text-purple-300 bg-purple-50 dark:bg-purple-900/20' : 'border-gray-700 text-gray-400')}>
                           {t('Use imported', 'Импорт')} ({c.incoming_action})
                         </button>
                       </div>
@@ -347,14 +347,14 @@ export function RoutingImportModal({
           )}
 
           {error && (
-            <div className="flex items-start gap-2 rounded-lg bg-red-900/30 border border-red-700/50 p-3 text-sm text-red-300">
-              <AlertCircle className="h-4 w-4 mt-0.5 flex-shrink-0" />
+            <div className="flex items-start gap-2 rounded-lg bg-red-50 dark:bg-red-900/30 border border-red-200 dark:border-red-700/50 p-3 text-sm text-red-700 dark:text-red-300">
+              <AlertCircle className="h-4 w-4 mt-0.5 shrink-0" />
               <span>{error}</span>
             </div>
           )}
           {done && (
-            <div className="flex items-start gap-2 rounded-lg bg-emerald-900/25 border border-emerald-700/50 p-3 text-sm text-emerald-200">
-              <CheckCircle2 className="h-4 w-4 mt-0.5 flex-shrink-0" />
+            <div className="flex items-start gap-2 rounded-lg bg-emerald-50 dark:bg-emerald-900/25 border border-emerald-200 dark:border-emerald-700/50 p-3 text-sm text-emerald-800 dark:text-emerald-200">
+              <CheckCircle2 className="h-4 w-4 mt-0.5 shrink-0" />
               <span>{done}</span>
             </div>
           )}

@@ -100,12 +100,12 @@ export function NodeForm({ initial, onSave, onCancel, loading, nodes = [] }: Pro
         type="button"
         onClick={checkSni}
         disabled={sniCheck.loading || !(form.sni || form.address)}
-        className="rounded bg-gray-800 px-2 py-1 text-[11px] text-gray-300 hover:bg-gray-700 disabled:opacity-50"
+        className="rounded-sm bg-gray-800 px-2 py-1 text-[11px] text-gray-300 hover:bg-gray-700 disabled:opacity-50"
       >
         {sniCheck.loading ? t('Checking…', 'Проверка…') : t('Check SNI', 'Проверить SNI')}
       </button>
       {sniCheck.text && (
-        <span className={clsx('text-[11px]', sniCheck.ok ? 'text-green-400' : 'text-red-400')}>
+        <span className={clsx('text-[11px]', sniCheck.ok ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400')}>
           {sniCheck.ok ? '✓ ' : '✗ '}{sniCheck.text}
         </span>
       )}
@@ -138,7 +138,7 @@ export function NodeForm({ initial, onSave, onCancel, loading, nodes = [] }: Pro
       onChange={(e) => set(field, (type === 'number' ? Number(e.target.value) : e.target.value) as FormData[typeof field])}
       placeholder={placeholder}
       autoFocus={autoFocus}
-      className="w-full rounded bg-gray-800 border border-gray-700 px-3 py-1.5 text-sm text-gray-100 focus:border-brand-500 focus:outline-none"
+      className="w-full rounded-sm bg-gray-800 border border-gray-700 px-3 py-1.5 text-sm text-gray-100 focus:border-brand-500 focus:outline-hidden"
     />
   )
 
@@ -146,7 +146,7 @@ export function NodeForm({ initial, onSave, onCancel, loading, nodes = [] }: Pro
     <select
       value={String(form[field] ?? '')}
       onChange={(e) => set(field, e.target.value as FormData[typeof field])}
-      className="w-full rounded bg-gray-800 border border-gray-700 px-3 py-1.5 text-sm text-gray-100 focus:border-brand-500 focus:outline-none"
+      className="w-full rounded-sm bg-gray-800 border border-gray-700 px-3 py-1.5 text-sm text-gray-100 focus:border-brand-500 focus:outline-hidden"
     >
       {options.map((o) => <option key={o} value={o}>{o}</option>)}
     </select>
@@ -189,7 +189,7 @@ export function NodeForm({ initial, onSave, onCancel, loading, nodes = [] }: Pro
             id="enabled"
             checked={form.enabled}
             onChange={(e) => set('enabled', e.target.checked)}
-            className="rounded border-gray-600 bg-gray-800 text-brand-500"
+            className="rounded-sm border-gray-600 bg-gray-800 text-brand-500"
           />
           <label htmlFor="enabled" className="text-sm text-gray-300">Enabled</label>
         </div>
@@ -204,7 +204,7 @@ export function NodeForm({ initial, onSave, onCancel, loading, nodes = [] }: Pro
             {hasPass && fld('Password', inp('password', 'password'))}
             {form.protocol === 'vless' && fld('Flow', inp('flow', 'text', 'xtls-rprx-vision'), 'e.g. xtls-rprx-vision')}
             {form.protocol === 'vless' && (form.tls === 'tls' || form.tls === 'reality') && !form.flow && (
-              <div className="rounded-lg bg-yellow-900/20 border border-yellow-700/40 px-3 py-2 text-xs text-yellow-300">
+              <div className="rounded-lg bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-700/40 px-3 py-2 text-xs text-yellow-700 dark:text-yellow-300">
                 ⚠ VLESS without flow is deprecated. Set flow to 'xtls-rprx-vision' for better performance.
               </div>
             )}
@@ -248,7 +248,7 @@ export function NodeForm({ initial, onSave, onCancel, loading, nodes = [] }: Pro
                 id="naive_padding"
                 checked={form.naive_padding ?? true}
                 onChange={(e) => set('naive_padding', e.target.checked)}
-                className="rounded border-gray-600 bg-gray-800 text-brand-500"
+                className="rounded-sm border-gray-600 bg-gray-800 text-brand-500"
               />
               <label htmlFor="naive_padding" className="text-sm text-gray-300">
                 {t('Enable padding', 'Включить padding')}
@@ -256,7 +256,7 @@ export function NodeForm({ initial, onSave, onCancel, loading, nodes = [] }: Pro
             </div>
           </div>
           {form.address && /^\d{1,3}(\.\d{1,3}){3}$/.test(form.address) && (
-            <div className="rounded-lg bg-yellow-900/20 border border-yellow-700/40 px-3 py-2 text-xs text-yellow-300">
+            <div className="rounded-lg bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-700/40 px-3 py-2 text-xs text-yellow-700 dark:text-yellow-300">
               ⚠ {t(
                 'Address looks like an IP. NaiveProxy requires a real domain with a valid TLS certificate.',
                 'Адрес похож на IP. NaiveProxy требует реальный домен с валидным TLS-сертификатом.'
@@ -287,12 +287,12 @@ export function NodeForm({ initial, onSave, onCancel, loading, nodes = [] }: Pro
                   id="insecure"
                   checked={form.allow_insecure}
                   onChange={(e) => set('allow_insecure', e.target.checked)}
-                  className="rounded border-gray-600 bg-gray-800 text-brand-500"
+                  className="rounded-sm border-gray-600 bg-gray-800 text-brand-500"
                 />
                 <label htmlFor="insecure" className="text-sm text-gray-300">Allow insecure</label>
               </div>
               {form.allow_insecure && (
-                <div className="rounded-lg bg-yellow-900/20 border border-yellow-700/40 px-3 py-2 text-xs text-yellow-300">
+                <div className="rounded-lg bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-700/40 px-3 py-2 text-xs text-yellow-700 dark:text-yellow-300">
                   ⚠ allowInsecure will be disabled by xray-core after 2026-06-01. Use pinnedPeerCertSha256 instead.
                 </div>
               )}
@@ -362,12 +362,12 @@ export function NodeForm({ initial, onSave, onCancel, loading, nodes = [] }: Pro
                 id="insecure2"
                 checked={form.allow_insecure}
                 onChange={(e) => set('allow_insecure', e.target.checked)}
-                className="rounded border-gray-600 bg-gray-800 text-brand-500"
+                className="rounded-sm border-gray-600 bg-gray-800 text-brand-500"
               />
               <label htmlFor="insecure2" className="text-sm text-gray-300">Allow insecure</label>
             </div>
             {form.allow_insecure && (
-              <div className="rounded-lg bg-yellow-900/20 border border-yellow-700/40 px-3 py-2 text-xs text-yellow-300">
+              <div className="rounded-lg bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-700/40 px-3 py-2 text-xs text-yellow-700 dark:text-yellow-300">
                 ⚠ allowInsecure will be disabled by xray-core after 2026-06-01. Use pinnedPeerCertSha256 instead.
               </div>
             )}
@@ -396,7 +396,7 @@ export function NodeForm({ initial, onSave, onCancel, loading, nodes = [] }: Pro
           <select
             value={serverId}
             onChange={(e) => setServerId(e.target.value)}
-            className="w-full rounded bg-gray-800 border border-gray-700 px-3 py-1.5 text-sm text-gray-100 focus:border-brand-500 focus:outline-none"
+            className="w-full rounded-sm bg-gray-800 border border-gray-700 px-3 py-1.5 text-sm text-gray-100 focus:border-brand-500 focus:outline-hidden"
           >
             <option value="">{t('— none —', '— нет —')}</option>
             {servers.map((s) => (
@@ -417,7 +417,7 @@ export function NodeForm({ initial, onSave, onCancel, loading, nodes = [] }: Pro
         <select
           value={chainNodeId}
           onChange={(e) => setChainNodeId(e.target.value)}
-          className="w-full rounded bg-gray-800 border border-gray-700 px-3 py-1.5 text-sm text-gray-100 focus:border-brand-500 focus:outline-none"
+          className="w-full rounded-sm bg-gray-800 border border-gray-700 px-3 py-1.5 text-sm text-gray-100 focus:border-brand-500 focus:outline-hidden"
         >
           <option value="">None (single tunnel)</option>
           {nodes
@@ -434,8 +434,8 @@ export function NodeForm({ initial, onSave, onCancel, loading, nodes = [] }: Pro
         {chainNodeId && (() => {
           const chainNode = nodes.find(n => n.id === Number(chainNodeId))
           return chainNode ? (
-            <div className="rounded-xl border border-blue-800/50 bg-blue-950/30 p-4 space-y-3 text-xs">
-              <div className="flex items-center gap-2 text-blue-300 font-semibold">
+            <div className="rounded-xl border border-blue-200 dark:border-blue-800/50 bg-blue-50 dark:bg-blue-950/30 p-4 space-y-3 text-xs">
+              <div className="flex items-center gap-2 text-blue-700 dark:text-blue-300 font-semibold">
                 <span>🔗</span>
                 <span>Double Tunnel Active</span>
               </div>
@@ -443,16 +443,16 @@ export function NodeForm({ initial, onSave, onCancel, loading, nodes = [] }: Pro
                 <div className="text-gray-300">Traffic path:</div>
                 <div className="pl-2 border-l-2 border-gray-700 space-y-1">
                   <div>Your device</div>
-                  <div className="text-blue-400">↓ inner: encrypted by <span className="text-gray-200">[this node]</span></div>
-                  <div className="text-yellow-400">↓ outer: tunneled via <span className="text-gray-200">{chainNode.name}</span></div>
+                  <div className="text-blue-600 dark:text-blue-400">↓ inner: encrypted by <span className="text-gray-200">[this node]</span></div>
+                  <div className="text-yellow-600 dark:text-yellow-400">↓ outer: tunneled via <span className="text-gray-200">{chainNode.name}</span></div>
                   <div>Server <span className="text-gray-200">{chainNode.address}</span> → decrypts outer</div>
                   <div>Server <span className="text-gray-200">[this node address]</span> → decrypts inner</div>
-                  <div className="text-green-400">↓ Internet (clean traffic)</div>
+                  <div className="text-green-600 dark:text-green-400">↓ Internet (clean traffic)</div>
                 </div>
               </div>
               <div className="rounded-lg bg-gray-900 border border-gray-700 px-3 py-2 space-y-1">
                 <div className="text-gray-300 font-medium">How to activate:</div>
-                <div className="text-gray-400">Set <span className="text-white font-medium">[this node]</span> as Active Node on the Dashboard. The chain node <span className="text-yellow-300">{chainNode.name}</span> is used automatically as outer transport — you do not set it as active node.</div>
+                <div className="text-gray-400">Set <span className="text-white font-medium">[this node]</span> as Active Node on the Dashboard. The chain node <span className="text-yellow-700 dark:text-yellow-300">{chainNode.name}</span> is used automatically as outer transport — you do not set it as active node.</div>
               </div>
               <div className="text-gray-600">⚠ Both servers must be independently reachable from RPi. Test connectivity via Nodes → health check before using.</div>
             </div>

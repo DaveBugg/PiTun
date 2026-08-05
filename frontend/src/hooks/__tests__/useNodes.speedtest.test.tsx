@@ -20,6 +20,10 @@ vi.mock('@/api/client', () => ({
     speedtest: vi.fn(),
     speedtestAll: vi.fn(),
   },
+  autocheckApi: {
+    run: vi.fn(),
+    get: vi.fn(),
+  },
 }))
 
 import {
@@ -28,7 +32,7 @@ import {
   useSpeedResults,
   useSpeedPending,
 } from '@/hooks/useNodes'
-import { nodesApi } from '@/api/client'
+import { nodesApi, autocheckApi } from '@/api/client'
 
 let qc: QueryClient
 
@@ -162,14 +166,15 @@ describe('speed-test result cache', () => {
     expect(result.current.pending.data).not.toContain(5)
   })
 
-  it('speedtest-all merges into the same cache without dropping earlier rows', async () => {
+  it('speed-all kicks a forced background sweep and leaves existing results untouched', async () => {
+    // "Speed All" no longer does a synchronous per-node call that could 504
+    // on a big node set — it forces the background auto-check sweep (scope
+    // "all"). Results land later via a node-list refetch, so it must NOT
+    // clobber the speed-results cache a prior single test populated.
     vi.mocked(nodesApi.speedtest).mockResolvedValue({
       node_id: 1, node_name: 'a', download_mbps: 1,
     })
-    vi.mocked(nodesApi.speedtestAll).mockResolvedValue([
-      { node_id: 2, node_name: 'b', download_mbps: 2 },
-      { node_id: 3, node_name: 'c', error: 'timeout' },
-    ])
+    vi.mocked(autocheckApi.run).mockResolvedValue({ status: 'started' } as never)
 
     const { result } = renderHook(() => ({
       one: useSpeedtest(), all: useSpeedtestAll(), results: useSpeedResults(),
@@ -179,8 +184,8 @@ describe('speed-test result cache', () => {
     await waitFor(() => expect(result.current.results.data[1]).toBe('1 Mbps'))
 
     act(() => { result.current.all.mutate() })
-    await waitFor(() => expect(result.current.results.data[2]).toBe('2 Mbps'))
-    expect(result.current.results.data[3]).toBe('timeout')
+    await waitFor(() => expect(autocheckApi.run).toHaveBeenCalledWith('all', true))
+    // The earlier row survives — Speed All doesn't write the results cache.
     expect(result.current.results.data[1]).toBe('1 Mbps')
   })
 })

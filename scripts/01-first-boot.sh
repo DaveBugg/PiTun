@@ -56,6 +56,18 @@ fi
 validate_ip "$STATIC_IP" "STATIC_IP" || { echo "Aborting."; exit 1; }
 validate_ip "$GATEWAY" "GATEWAY" || { echo "Aborting."; exit 1; }
 
+# The gateway must be a DIFFERENT device (your router). If it equals the
+# static IP, the box routes to itself — the "PiTun gateway points at
+# itself" self-loop that kills all outbound traffic. Same guard as
+# change-network.sh; catching it here stops the loop being baked in at
+# first boot.
+if [ "$STATIC_IP" = "$GATEWAY" ]; then
+    warn "STATIC_IP and GATEWAY are identical ($STATIC_IP)."
+    warn "The gateway must be your router (a DIFFERENT device), else the box"
+    warn "routes to itself and has no internet (routing self-loop). Aborting."
+    exit 1
+fi
+
 log "PiTun First Boot Setup"
 log "User: $CURRENT_USER"
 log "Static IP: $STATIC_IP"
@@ -147,7 +159,11 @@ sudo sysctl -p /etc/sysctl.d/99-pitun.conf > /dev/null
 # ── 5. Set hostname ──
 log "Setting hostname to pitun..."
 sudo hostnamectl set-hostname pitun
-echo "127.0.1.1 pitun" | sudo tee -a /etc/hosts > /dev/null
+# Idempotent: only add the 127.0.1.1 mapping if it isn't already there —
+# re-running this script must not pile up duplicate /etc/hosts lines.
+if ! grep -qE '^\s*127\.0\.1\.1\s+pitun(\s|$)' /etc/hosts; then
+    echo "127.0.1.1 pitun" | sudo tee -a /etc/hosts > /dev/null
+fi
 
 # ── 6. Update system ──
 log "Updating system packages..."

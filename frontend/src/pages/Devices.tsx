@@ -24,8 +24,8 @@ type SetFilterValue = 'any' | 'none' | number
 
 const POLICY_META: Record<DeviceRoutingPolicy, { label: string; color: string; icon: typeof ShieldCheck }> = {
   default:  { label: 'Default',  color: 'bg-gray-700 text-gray-300',          icon: ShieldMinus },
-  include:  { label: 'Include',  color: 'bg-green-900/60 text-green-300',     icon: ShieldCheck },
-  exclude:  { label: 'Exclude',  color: 'bg-red-900/60 text-red-300',         icon: ShieldBan },
+  include:  { label: 'Include',  color: 'bg-green-100 text-green-700 dark:bg-green-900/60 dark:text-green-300',     icon: ShieldCheck },
+  exclude:  { label: 'Exclude',  color: 'bg-red-50 dark:bg-red-900/60 text-red-700 dark:text-red-300',         icon: ShieldBan },
 }
 
 function timeAgo(dateStr: string): string {
@@ -246,7 +246,7 @@ export function Devices() {
               'h-2 w-2 rounded-full shrink-0',
               onlineCount > 0 ? 'bg-green-500 animate-pulse' : 'bg-gray-600',
             )} />
-            <span className={clsx('text-sm font-semibold truncate', onlineCount > 0 ? 'text-green-400' : 'text-gray-500')}>
+            <span className={clsx('text-sm font-semibold truncate', onlineCount > 0 ? 'text-green-600 dark:text-green-400' : 'text-gray-500')}>
               {onlineCount} {t('of', 'из')} {devices.length}
             </span>
           </div>
@@ -295,8 +295,8 @@ export function Devices() {
           </div>
           <div className="mt-2 flex items-center gap-3 text-xs font-mono">
             <span className="text-gray-300" title={t('default policy', 'по умолчанию')}>{policyCount.default}</span>
-            <span className="text-green-400" title={t('include policy', 'include')}>{policyCount.include}</span>
-            <span className="text-red-400" title={t('exclude policy', 'exclude')}>{policyCount.exclude}</span>
+            <span className="text-green-600 dark:text-green-400" title={t('include policy', 'include')}>{policyCount.include}</span>
+            <span className="text-red-600 dark:text-red-400" title={t('exclude policy', 'exclude')}>{policyCount.exclude}</span>
           </div>
           <div className="mt-0.5 text-xs text-gray-600 truncate">def / incl / excl</div>
         </div>
@@ -322,7 +322,7 @@ export function Devices() {
                 className={clsx(
                   'rounded-xl border p-4 text-left transition-all',
                   active
-                    ? 'border-brand-600 bg-brand-900/20 text-brand-300'
+                    ? 'border-brand-400 bg-brand-50 text-brand-700 dark:bg-brand-500/12 dark:text-brand-200'
                     : 'border-gray-800 bg-gray-900/30 text-gray-400 hover:border-gray-700 hover:text-gray-200',
                 )}
               >
@@ -343,7 +343,7 @@ export function Devices() {
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             placeholder="Search by MAC, IP, name, hostname, vendor…"
-            className="w-full rounded-lg bg-gray-900 border border-gray-800 pl-9 pr-3 py-2 text-sm text-gray-100 focus:border-brand-500 focus:outline-none"
+            className="w-full rounded-lg bg-gray-900 border border-gray-800 pl-9 pr-3 py-2 text-sm text-gray-100 focus:border-brand-500 focus:outline-hidden"
           />
         </div>
 
@@ -353,7 +353,7 @@ export function Devices() {
               key={v || 'any'}
               onClick={() => setFilterOnline(v)}
               className={clsx(
-                'rounded px-2 py-1 text-xs font-medium transition-colors',
+                'rounded-sm px-2 py-1 text-xs font-medium transition-colors',
                 filterOnline === v
                   ? 'bg-brand-600 text-white'
                   : 'bg-gray-800 text-gray-400 hover:bg-gray-700',
@@ -370,7 +370,7 @@ export function Devices() {
               key={p || 'all'}
               onClick={() => setFilterPolicy(p)}
               className={clsx(
-                'rounded px-2 py-1 text-xs font-medium transition-colors',
+                'rounded-sm px-2 py-1 text-xs font-medium transition-colors',
                 filterPolicy === p
                   ? 'bg-brand-600 text-white'
                   : 'bg-gray-800 text-gray-400 hover:bg-gray-700',
@@ -398,7 +398,7 @@ export function Devices() {
                 else if (v === 'none') setFilterSet('none')
                 else setFilterSet(Number(v))
               }}
-              className="rounded bg-gray-800 border border-gray-700 px-2 py-1 text-xs font-medium text-gray-200 focus:border-purple-500 focus:outline-none"
+              className="rounded-sm bg-gray-800 border border-gray-700 px-2 py-1 text-xs font-medium text-gray-200 focus:border-purple-500 focus:outline-hidden"
               title={t('Filter by routing set', 'Фильтр по набору')}
             >
               <option value="any">{t('Any set', 'Любой набор')}</option>
@@ -418,13 +418,13 @@ export function Devices() {
           <span className="text-gray-700">|</span>
           <button
             onClick={() => applyBulkPolicy('include')}
-            className="flex items-center gap-1 text-xs font-medium text-green-400 hover:text-green-300 transition-colors"
+            className="flex items-center gap-1 text-xs font-medium text-green-600 dark:text-green-400 hover:text-green-700 dark:hover:text-green-300 transition-colors"
           >
             <ShieldCheck className="h-3.5 w-3.5" /> Include
           </button>
           <button
             onClick={() => applyBulkPolicy('exclude')}
-            className="flex items-center gap-1 text-xs font-medium text-red-400 hover:text-red-300 transition-colors"
+            className="flex items-center gap-1 text-xs font-medium text-red-600 dark:text-red-400 hover:text-red-700 dark:hover:text-red-300 transition-colors"
           >
             <ShieldBan className="h-3.5 w-3.5" /> Exclude
           </button>
@@ -440,7 +440,7 @@ export function Devices() {
           {routingSets.length > 0 && (
             <>
               <span className="text-gray-700">|</span>
-              <Tag className="h-3.5 w-3.5 text-purple-400" />
+              <Tag className="h-3.5 w-3.5 text-purple-600 dark:text-purple-400" />
               <select
                 value=""
                 onChange={(e) => {
@@ -451,7 +451,7 @@ export function Devices() {
                   e.target.value = ''  // reset to placeholder
                 }}
                 disabled={bulkAssignSet.isPending}
-                className="rounded bg-gray-800 border border-gray-700 px-2 py-1 text-xs font-medium text-gray-200 focus:border-purple-500 focus:outline-none disabled:opacity-50"
+                className="rounded-sm bg-gray-800 border border-gray-700 px-2 py-1 text-xs font-medium text-gray-200 focus:border-purple-500 focus:outline-hidden disabled:opacity-50"
               >
                 <option value="">
                   {t('Move to set…', 'Переместить в набор…')}
@@ -495,7 +495,7 @@ export function Devices() {
                     type="checkbox"
                     checked={selected.size === filtered.length && filtered.length > 0}
                     onChange={toggleSelectAll}
-                    className="rounded border-gray-700 bg-gray-950 text-brand-500 focus:ring-0 focus:ring-offset-0"
+                    className="rounded-sm border-gray-700 bg-gray-950 text-brand-500 focus:ring-0 focus:ring-offset-0"
                   />
                 </th>
                 <th className="px-3 py-2.5 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
@@ -530,7 +530,7 @@ export function Devices() {
                     key={d.id}
                     className={clsx(
                       'hover:bg-gray-900/40 transition-colors',
-                      selected.has(d.id) && 'bg-brand-600/5',
+                      selected.has(d.id) && 'bg-brand-50 dark:bg-brand-600/5',
                     )}
                   >
                     <td className="px-3 py-2.5">
@@ -538,12 +538,12 @@ export function Devices() {
                         type="checkbox"
                         checked={selected.has(d.id)}
                         onChange={() => toggleSelect(d.id)}
-                        className="rounded border-gray-700 bg-gray-950 text-brand-500 focus:ring-0 focus:ring-offset-0"
+                        className="rounded-sm border-gray-700 bg-gray-950 text-brand-500 focus:ring-0 focus:ring-offset-0"
                       />
                     </td>
                     <td className="px-3 py-2.5">
                       {d.is_online ? (
-                        <span className="inline-flex items-center gap-1 text-xs text-green-400">
+                        <span className="inline-flex items-center gap-1 text-xs text-green-600 dark:text-green-400">
                           <Wifi className="h-3.5 w-3.5" /> Online
                         </span>
                       ) : (
@@ -563,9 +563,9 @@ export function Devices() {
                               if (e.key === 'Enter') saveEdit(d)
                               if (e.key === 'Escape') setEditId(null)
                             }}
-                            className="rounded bg-gray-950 border border-gray-700 px-2 py-1 text-sm text-gray-100 focus:border-brand-500 focus:outline-none w-36"
+                            className="rounded-sm bg-gray-950 border border-gray-700 px-2 py-1 text-sm text-gray-100 focus:border-brand-500 focus:outline-hidden w-36"
                           />
-                          <button onClick={() => saveEdit(d)} className="text-green-400 hover:text-green-300">
+                          <button onClick={() => saveEdit(d)} className="text-green-600 dark:text-green-400 hover:text-green-700 dark:hover:text-green-300">
                             <Check className="h-3.5 w-3.5" />
                           </button>
                           <button onClick={() => setEditId(null)} className="text-gray-500 hover:text-gray-300">
@@ -592,7 +592,7 @@ export function Devices() {
                       <button
                         onClick={() => cyclePolicy(d)}
                         className={clsx(
-                          'inline-flex items-center gap-1 rounded px-2 py-0.5 text-xs font-medium transition-colors',
+                          'inline-flex items-center gap-1 rounded-sm px-2 py-0.5 text-xs font-medium transition-colors',
                           pm.color,
                         )}
                         title="Click to cycle policy"
@@ -626,12 +626,12 @@ export function Devices() {
                               : t('Assign to routing set', 'Назначить в набор')
                           }
                           className={clsx(
-                            'rounded bg-gray-800 border border-gray-700 px-2 py-0.5 text-xs font-medium focus:border-purple-500 focus:outline-none',
+                            'rounded-sm bg-gray-800 border border-gray-700 px-2 py-0.5 text-xs font-medium focus:border-purple-500 focus:outline-hidden',
                             d.routing_policy === 'exclude'
                               ? 'text-gray-600 cursor-not-allowed'
                               : d.routing_set_id === null
                                 ? 'text-gray-400'
-                                : 'text-purple-300',
+                                : 'text-purple-700 dark:text-purple-300',
                           )}
                         >
                           <option value="null">— {t('Global', 'Глобал')}</option>
@@ -648,7 +648,7 @@ export function Devices() {
                       <div className="flex items-center justify-end gap-1">
                         <button
                           onClick={() => startEdit(d)}
-                          className="rounded p-1.5 text-gray-500 hover:bg-gray-800 hover:text-gray-300 transition-colors"
+                          className="rounded-sm p-1.5 text-gray-500 hover:bg-gray-800 hover:text-gray-300 transition-colors"
                           title="Rename"
                         >
                           <Pencil className="h-3.5 w-3.5" />
@@ -663,7 +663,7 @@ export function Devices() {
                             })
                             if (ok) deleteDevice.mutate(d.id)
                           }}
-                          className="rounded p-1.5 text-gray-500 hover:bg-gray-800 hover:text-red-400 transition-colors"
+                          className="rounded-sm p-1.5 text-gray-500 hover:bg-gray-800 hover:text-red-400 transition-colors"
                           title="Delete"
                         >
                           <Trash2 className="h-3.5 w-3.5" />

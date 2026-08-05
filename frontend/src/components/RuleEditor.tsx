@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { balancersApi, http } from '@/api/client'
+import { useT } from '@/hooks/useT'
 import type { RoutingRule, RoutingRuleCreate, RuleType } from '@/types'
 
 interface GeoCategories {
@@ -18,6 +19,17 @@ const RULE_TYPE_LABELS: Record<RuleType, string> = {
   domain: 'Domain / Keyword',
   port: 'Port Range',
   protocol: 'Protocol',
+  geoip: 'GeoIP',
+  geosite: 'GeoSite',
+}
+
+const RULE_TYPE_LABELS_RU: Record<RuleType, string> = {
+  mac: 'MAC-адрес',
+  src_ip: 'IP/CIDR источника',
+  dst_ip: 'IP/CIDR назначения',
+  domain: 'Домен / Ключевое слово',
+  port: 'Диапазон портов',
+  protocol: 'Протокол',
   geoip: 'GeoIP',
   geosite: 'GeoSite',
 }
@@ -42,6 +54,7 @@ interface Props {
 }
 
 export function RuleEditor({ initial, nodeOptions = [], onSave, onCancel, loading }: Props) {
+  const t = useT()
   const { data: balancerGroups = [] } = useQuery({
     queryKey: ['balancers'],
     queryFn: () => balancersApi.list(),
@@ -140,43 +153,43 @@ export function RuleEditor({ initial, nodeOptions = [], onSave, onCancel, loadin
     <form onSubmit={handleSubmit} className="space-y-4">
       <div className="grid grid-cols-2 gap-3">
         <div>
-          <label className="block text-xs font-medium text-gray-400 mb-1">Name</label>
+          <label className="block text-xs font-medium text-gray-400 mb-1">{t('Name', 'Название')}</label>
           <input
             value={form.name}
             onChange={(e) => set('name', e.target.value)}
             required
             autoFocus
-            className="w-full rounded bg-gray-800 border border-gray-700 px-3 py-1.5 text-sm text-gray-100 focus:border-brand-500 focus:outline-none"
-            placeholder="Block China IPs"
+            className="w-full rounded-sm bg-gray-800 border border-gray-700 px-3 py-1.5 text-sm text-gray-100 focus:border-brand-500 focus:outline-hidden"
+            placeholder={t('Block China IPs', 'Блокировать IP Китая')}
           />
         </div>
         <div>
-          <label className="block text-xs font-medium text-gray-400 mb-1">Priority (lower = first)</label>
+          <label className="block text-xs font-medium text-gray-400 mb-1">{t('Priority (lower = first)', 'Приоритет (меньше = раньше)')}</label>
           <input
             type="number"
             value={form.order}
             onChange={(e) => set('order', Number(e.target.value))}
-            className="w-full rounded bg-gray-800 border border-gray-700 px-3 py-1.5 text-sm text-gray-100 focus:border-brand-500 focus:outline-none"
+            className="w-full rounded-sm bg-gray-800 border border-gray-700 px-3 py-1.5 text-sm text-gray-100 focus:border-brand-500 focus:outline-hidden"
           />
         </div>
       </div>
 
       <div>
-        <label className="block text-xs font-medium text-gray-400 mb-1">Rule Type</label>
+        <label className="block text-xs font-medium text-gray-400 mb-1">{t('Rule Type', 'Тип правила')}</label>
         <select
           value={form.rule_type}
           onChange={(e) => set('rule_type', e.target.value as RuleType)}
-          className="w-full rounded bg-gray-800 border border-gray-700 px-3 py-1.5 text-sm text-gray-100 focus:border-brand-500 focus:outline-none"
+          className="w-full rounded-sm bg-gray-800 border border-gray-700 px-3 py-1.5 text-sm text-gray-100 focus:border-brand-500 focus:outline-hidden"
         >
-          {RULE_TYPES.map((t) => (
-            <option key={t} value={t}>{RULE_TYPE_LABELS[t]}</option>
+          {RULE_TYPES.map((rt) => (
+            <option key={rt} value={rt}>{t(RULE_TYPE_LABELS[rt], RULE_TYPE_LABELS_RU[rt])}</option>
           ))}
         </select>
       </div>
 
       <div>
         <label className="block text-xs font-medium text-gray-400 mb-1">
-          Match Value
+          {t('Match Value', 'Значение')}
           <span className="ml-2 font-normal text-gray-600">({RULE_TYPE_HINTS[form.rule_type]})</span>
         </label>
         <textarea
@@ -194,7 +207,7 @@ export function RuleEditor({ initial, nodeOptions = [], onSave, onCancel, loadin
           // editing big geosite groups (50+ tags). Default 8 rows
           // already covers most cases without the dialog growing
           // beyond viewport.
-          className="w-full rounded bg-gray-800 border border-gray-700 px-3 py-1.5 text-sm text-gray-100 font-mono focus:border-brand-500 focus:outline-none resize-y"
+          className="w-full rounded-sm bg-gray-800 border border-gray-700 px-3 py-1.5 text-sm text-gray-100 font-mono focus:border-brand-500 focus:outline-hidden resize-y"
           placeholder={RULE_TYPE_HINTS[form.rule_type]}
         />
         {(form.rule_type === 'geosite' || form.rule_type === 'geoip') && geoCategories && (
@@ -215,7 +228,7 @@ export function RuleEditor({ initial, nodeOptions = [], onSave, onCancel, loadin
       </div>
 
       <div>
-        <label className="block text-xs font-medium text-gray-400 mb-1">Action</label>
+        <label className="block text-xs font-medium text-gray-400 mb-1">{t('Action', 'Действие')}</label>
         <select
           value={isNodeAction ? '_node' : isBalancerAction ? '_balancer' : form.action}
           onChange={(e) => {
@@ -227,29 +240,29 @@ export function RuleEditor({ initial, nodeOptions = [], onSave, onCancel, loadin
               set('action', e.target.value)
             }
           }}
-          className="w-full rounded bg-gray-800 border border-gray-700 px-3 py-1.5 text-sm text-gray-100 focus:border-brand-500 focus:outline-none"
+          className="w-full rounded-sm bg-gray-800 border border-gray-700 px-3 py-1.5 text-sm text-gray-100 focus:border-brand-500 focus:outline-hidden"
         >
           {ACTIONS.map((a) => (
             <option key={a} value={a}>{a.charAt(0).toUpperCase() + a.slice(1)}</option>
           ))}
           {nodeOptions.length > 0 && (
-            <option value="_node">Route to specific node…</option>
+            <option value="_node">{t('Route to specific node…', 'Направить на конкретную ноду…')}</option>
           )}
           {balancerGroups.length > 0 && (
-            <option value="_balancer">Route via balancer group…</option>
+            <option value="_balancer">{t('Route via balancer group…', 'Через группу балансировки…')}</option>
           )}
         </select>
       </div>
 
       {isNodeAction && nodeOptions.length > 0 && (
         <div>
-          <label className="block text-xs font-medium text-gray-400 mb-1">Target Node</label>
+          <label className="block text-xs font-medium text-gray-400 mb-1">{t('Target Node', 'Целевая нода')}</label>
           <select
             value={form.customNode}
             onChange={(e) => set('customNode', e.target.value)}
-            className="w-full rounded bg-gray-800 border border-gray-700 px-3 py-1.5 text-sm text-gray-100 focus:border-brand-500 focus:outline-none"
+            className="w-full rounded-sm bg-gray-800 border border-gray-700 px-3 py-1.5 text-sm text-gray-100 focus:border-brand-500 focus:outline-hidden"
           >
-            <option value="">Select node…</option>
+            <option value="">{t('Select node…', 'Выберите ноду…')}</option>
             {nodeOptions.map((n) => (
               <option key={n.id} value={n.id}>{n.name}</option>
             ))}
@@ -259,15 +272,15 @@ export function RuleEditor({ initial, nodeOptions = [], onSave, onCancel, loadin
 
       {isBalancerAction && balancerGroups.length > 0 && (
         <div>
-          <label className="block text-xs font-medium text-gray-400 mb-1">Target Balancer Group</label>
+          <label className="block text-xs font-medium text-gray-400 mb-1">{t('Target Balancer Group', 'Целевая группа балансировки')}</label>
           <select
             value={form.customBalancer}
             onChange={(e) => set('customBalancer', e.target.value)}
-            className="w-full rounded bg-gray-800 border border-gray-700 px-3 py-1.5 text-sm text-gray-100 focus:border-brand-500 focus:outline-none"
+            className="w-full rounded-sm bg-gray-800 border border-gray-700 px-3 py-1.5 text-sm text-gray-100 focus:border-brand-500 focus:outline-hidden"
           >
-            <option value="">Select balancer group…</option>
+            <option value="">{t('Select balancer group…', 'Выберите группу…')}</option>
             {balancerGroups.map((bg) => (
-              <option key={bg.id} value={bg.id}>{bg.name} ({bg.node_ids.length} nodes, {bg.strategy})</option>
+              <option key={bg.id} value={bg.id}>{bg.name} ({bg.node_ids.length} {t('nodes', 'нод')}, {bg.strategy})</option>
             ))}
           </select>
         </div>
@@ -279,9 +292,9 @@ export function RuleEditor({ initial, nodeOptions = [], onSave, onCancel, loadin
           id="rule-enabled"
           checked={form.enabled}
           onChange={(e) => set('enabled', e.target.checked)}
-          className="rounded border-gray-600 bg-gray-800 text-brand-500"
+          className="rounded-sm border-gray-600 bg-gray-800 text-brand-500"
         />
-        <label htmlFor="rule-enabled" className="text-sm text-gray-300">Enabled</label>
+        <label htmlFor="rule-enabled" className="text-sm text-gray-300">{t('Enabled', 'Включено')}</label>
       </div>
 
       <div className="flex justify-end gap-3 pt-2 border-t border-gray-800">
@@ -290,14 +303,14 @@ export function RuleEditor({ initial, nodeOptions = [], onSave, onCancel, loadin
           onClick={onCancel}
           className="rounded-lg px-4 py-2 text-sm text-gray-400 hover:text-gray-100 hover:bg-gray-800 transition-colors"
         >
-          Cancel
+          {t('Cancel', 'Отмена')}
         </button>
         <button
           type="submit"
           disabled={loading}
           className="rounded-lg bg-brand-600 px-4 py-2 text-sm font-medium text-white hover:bg-brand-500 disabled:opacity-50 transition-colors"
         >
-          {loading ? 'Saving…' : 'Save Rule'}
+          {loading ? t('Saving…', 'Сохранение…') : t('Save Rule', 'Сохранить правило')}
         </button>
       </div>
     </form>
@@ -329,13 +342,14 @@ function GeoTagPicker({
   currentValue: string
   onAppend: (tag: string) => void
 }) {
+  const t = useT()
   const [filter, setFilter] = useState('')
   const [open, setOpen] = useState(false)
 
   if (available.length === 0) {
     return (
       <div className="mt-1 text-[11px] text-gray-600">
-        Tag autocomplete unavailable — the .dat cache is empty (Geo files not loaded).
+        {t('Tag autocomplete unavailable — the .dat cache is empty (Geo files not loaded).', 'Автодополнение тегов недоступно — кэш .dat пуст (Geo-файлы не загружены).')}
       </div>
     )
   }
@@ -345,23 +359,23 @@ function GeoTagPicker({
   )
   const f = filter.trim().toLowerCase()
   const filtered = f
-    ? available.filter((t) => t.includes(f))
+    ? available.filter((tag) => tag.includes(f))
     : available
   const display = filtered.slice(0, 200)
   const hidden = filtered.length - display.length
 
   return (
-    <div className="mt-2 rounded border border-gray-800 bg-gray-900/50">
+    <div className="mt-2 rounded-sm border border-gray-800 bg-gray-900/50">
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
         className="w-full flex items-center justify-between px-3 py-1.5 text-xs text-gray-400 hover:text-gray-200 transition-colors"
       >
         <span>
-          {open ? '▼' : '▶'} Browse available tags ({available.length})
+          {open ? '▼' : '▶'} {t('Browse available tags', 'Показать доступные теги')} ({available.length})
         </span>
         <span className="text-[11px] text-gray-600">
-          {currentTags.size} selected
+          {currentTags.size} {t('selected', 'выбрано')}
         </span>
       </button>
       {open && (
@@ -370,8 +384,8 @@ function GeoTagPicker({
             type="text"
             value={filter}
             onChange={(e) => setFilter(e.target.value)}
-            placeholder="Filter tags…"
-            className="w-full rounded bg-gray-800 border border-gray-700 px-2 py-1 text-xs text-gray-200 focus:border-brand-500 focus:outline-none"
+            placeholder={t('Filter tags…', 'Фильтр тегов…')}
+            className="w-full rounded-sm bg-gray-800 border border-gray-700 px-2 py-1 text-xs text-gray-200 focus:border-brand-500 focus:outline-hidden"
           />
           <div className="flex flex-wrap gap-1 max-h-48 overflow-y-auto">
             {display.map((tag) => {
@@ -383,10 +397,10 @@ function GeoTagPicker({
                   onClick={() => onAppend(tag)}
                   className={
                     inUse
-                      ? 'rounded border border-gray-700 bg-gray-800/50 px-2 py-0.5 text-[11px] text-gray-500 font-mono hover:bg-gray-700'
-                      : 'rounded border border-gray-700 bg-gray-800 px-2 py-0.5 text-[11px] text-gray-300 font-mono hover:bg-brand-700 hover:border-brand-600 hover:text-white'
+                      ? 'rounded-sm border border-gray-700 bg-gray-800/50 px-2 py-0.5 text-[11px] text-gray-500 font-mono hover:bg-gray-700'
+                      : 'rounded-sm border border-gray-700 bg-gray-800 px-2 py-0.5 text-[11px] text-gray-300 font-mono hover:bg-brand-700 hover:border-brand-400 hover:text-white'
                   }
-                  title={inUse ? 'Already in this rule (click to append again)' : 'Click to append'}
+                  title={inUse ? t('Already in this rule (click to append again)', 'Уже в правиле (клик — добавить снова)') : t('Click to append', 'Клик — добавить')}
                 >
                   {tag}
                 </button>
@@ -394,11 +408,11 @@ function GeoTagPicker({
             })}
             {hidden > 0 && (
               <span className="text-[11px] text-gray-600 self-center pl-2">
-                +{hidden} more — refine filter
+                +{hidden} {t('more — refine filter', 'ещё — уточните фильтр')}
               </span>
             )}
             {filtered.length === 0 && (
-              <span className="text-[11px] text-gray-600">No tags match the filter.</span>
+              <span className="text-[11px] text-gray-600">{t('No tags match the filter.', 'Нет тегов по фильтру.')}</span>
             )}
           </div>
         </div>

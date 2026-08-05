@@ -65,7 +65,7 @@ export function Pagination({
         <select
           value={pageSize}
           onChange={(e) => onPageSizeChange(Number(e.target.value))}
-          className="rounded-md border border-gray-800 bg-gray-900 px-2 py-1 text-xs text-gray-200 focus:border-brand-600 focus:outline-none"
+          className="rounded-md border border-gray-800 bg-gray-900 px-2 py-1 text-xs text-gray-200 focus:border-brand-400 focus:outline-hidden"
         >
           {pageSizeOptions.map((opt) => (
             <option key={opt} value={opt}>{opt}</option>
@@ -134,7 +134,7 @@ function PageButton({
       aria-label={ariaLabel}
       aria-current={active ? 'page' : undefined}
       className={clsx(
-        'min-w-[1.75rem] rounded-md px-2 py-1 text-xs transition-colors',
+        'min-w-7 rounded-md px-2 py-1 text-xs transition-colors',
         active
           ? 'bg-brand-600 text-white font-medium'
           : 'bg-gray-900 border border-gray-800 text-gray-400 hover:text-gray-200 hover:border-gray-700',

@@ -116,7 +116,7 @@ export function RoutingExportModal({
       <div className="w-full max-w-md rounded-2xl bg-gray-950 border border-gray-800 shadow-xl">
         <div className="p-6 space-y-4">
           <div className="flex items-center gap-2">
-            <FileDown className="h-5 w-5 text-purple-400" />
+            <FileDown className="h-5 w-5 text-purple-600 dark:text-purple-400" />
             <h2 id={titleId} className="text-lg font-semibold text-white">
               {t('Export routing rules', 'Экспорт правил роутинга')}
             </h2>
@@ -138,7 +138,7 @@ export function RoutingExportModal({
                   key={s.id}
                   className={clsx(
                     'flex items-center gap-3 rounded-lg border px-3 py-2 cursor-pointer transition-colors',
-                    isSel ? 'border-purple-600/60 bg-purple-900/15' : 'border-gray-800 bg-gray-900/40 hover:border-gray-700',
+                    isSel ? 'border-purple-600/60 bg-purple-50 dark:bg-purple-900/15' : 'border-gray-800 bg-gray-900/40 hover:border-gray-700',
                     empty && 'opacity-60',
                   )}
                 >
@@ -150,7 +150,7 @@ export function RoutingExportModal({
                   />
                   {s.isGlobal
                     ? <Globe2 className="h-4 w-4 text-gray-400 shrink-0" />
-                    : <Tag className="h-4 w-4 text-purple-300 shrink-0" />}
+                    : <Tag className="h-4 w-4 text-purple-700 dark:text-purple-300 shrink-0" />}
                   <span className="text-sm text-gray-200 truncate flex-1">{s.label}</span>
                   <span className="text-xs text-gray-500 shrink-0">
                     {s.rules.length} {t('rules', 'правил')}

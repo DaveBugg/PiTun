@@ -156,7 +156,7 @@ export function UriImport({ onDone, onCancel }: Props) {
           onChange={(e) => { setUris(e.target.value); setFileName(null) }}
           rows={10}
           placeholder={`Paste proxy URIs (one per line) or a PiTun JSON bundle — format is auto-detected:\n\nvless://...\nvmess://...\ntrojan://...\nnaive+https://user:pass@example.com:443/?padding=1#MyNaive`}
-          className="w-full rounded-lg bg-gray-800 border border-gray-700 px-3 py-2 text-sm text-gray-100 font-mono focus:border-brand-500 focus:outline-none resize-none"
+          className="w-full rounded-lg bg-gray-800 border border-gray-700 px-3 py-2 text-sm text-gray-100 font-mono focus:border-brand-500 focus:outline-hidden resize-none"
         />
       )}
 
@@ -174,7 +174,7 @@ export function UriImport({ onDone, onCancel }: Props) {
             type="checkbox"
             checked={nameFromFile}
             onChange={(e) => setNameFromFile(e.target.checked)}
-            className="h-3.5 w-3.5 rounded border-gray-600 bg-gray-800 text-brand-600 focus:ring-brand-500"
+            className="h-3.5 w-3.5 rounded-sm border-gray-600 bg-gray-800 text-brand-600 focus:ring-brand-500"
           />
           Use filename as node name (<span className="font-mono text-gray-300">{fileName}</span>)
           <span className="text-gray-600">— single-config files only</span>
@@ -183,10 +183,10 @@ export function UriImport({ onDone, onCancel }: Props) {
 
       {result && (
         <div className="rounded-lg bg-gray-800 border border-gray-700 p-3 text-sm space-y-1">
-          <p className="text-green-400">Imported: {result.imported}</p>
-          {result.skipped > 0 && <p className="text-yellow-400">Skipped (duplicates): {result.skipped}</p>}
+          <p className="text-green-600 dark:text-green-400">Imported: {result.imported}</p>
+          {result.skipped > 0 && <p className="text-yellow-600 dark:text-yellow-400">Skipped (duplicates): {result.skipped}</p>}
           {result.errors.length > 0 && (
-            <details className="text-red-400">
+            <details className="text-red-600 dark:text-red-400">
               <summary className="cursor-pointer">Errors: {result.errors.length}</summary>
               <ul className="mt-1 space-y-0.5 pl-4 text-xs">
                 {result.errors.map((e, i) => <li key={i}>{e}</li>)}
