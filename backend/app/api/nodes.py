@@ -10,7 +10,7 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.config import APP_VERSION
 from app.core.dataplane import dispatch_dataplane
-from app.database import get_session
+from app.database import get_async_engine, get_session
 from app.models import BalancerGroup, Node, RoutingRule
 from app.schemas import (
     HealthResult,
@@ -589,6 +589,9 @@ async def import_nodes(
     # paste/subscription file never collapses every node to the same name.
     if body.name_override and len(parsed) == 1:
         parsed[0]["name"] = body.name_override
+    # Optional country-flag prefix (no-op unless a GeoLite2 DB exists).
+    from app.core.geoip_lookup import enrich_parsed_nodes
+    enrich_parsed_nodes(parsed)
     imported = 0
     skipped = 0
     errors: List[str] = []
@@ -984,6 +987,26 @@ async def check_all_nodes():
 
 # ── Speed test ────────────────────────────────────────────────────────────────
 
+async def _persist_node_speed(
+    node_id: int, mbps: Optional[float], max_mbps: Optional[float] = None
+) -> None:
+    """Cache a speed reading (avg + peak) on the Node row so it survives a
+    restart and feeds NodeCircle best/min_speed + the UI's staleness colour.
+    Best-effort: a write failure must never break the speed test itself."""
+    if mbps is None:
+        return
+    try:
+        async with AsyncSession(get_async_engine()) as session:
+            node = await session.get(Node, node_id)
+            if node:
+                node.speed_mbps = float(mbps)
+                node.speed_max_mbps = float(max_mbps) if max_mbps is not None else None
+                node.speed_tested_at = datetime.now(timezone.utc)
+                await session.commit()
+    except Exception:  # noqa: BLE001 — advisory cache, never fatal
+        pass
+
+
 @router.post("/{node_id:int}/speedtest", response_model=SpeedTestResult)
 async def speedtest_node(node_id: int, session: AsyncSession = Depends(get_session)):
     from app.core.speedtest import speedtest_node as _speedtest
@@ -993,6 +1016,13 @@ async def speedtest_node(node_id: int, session: AsyncSession = Depends(get_sessi
         raise HTTPException(404, "Node not found")
 
     result = await _speedtest(node)
+    mbps = result.get("download_mbps")
+    if mbps is not None:
+        node.speed_mbps = float(mbps)
+        mx = result.get("max_mbps")
+        node.speed_max_mbps = float(mx) if mx is not None else None
+        node.speed_tested_at = datetime.now(timezone.utc)
+        await session.commit()
     return SpeedTestResult(**result)
 
 
@@ -1014,8 +1044,16 @@ async def speedtest_node_stream(node_id: int, session: AsyncSession = Depends(ge
 
     async def _gen():
         import json
+        final_mbps = None
+        final_max = None
         async for event in speedtest_stream(node):
+            if event.get("phase") == "done":
+                final_mbps = event.get("mbps")
+                final_max = event.get("mbps_max")
             yield json.dumps(event) + "\n"
+        # Persist the post-warmup average + peak after the stream closes. A
+        # fresh session — the request-scoped one is gone once streaming starts.
+        await _persist_node_speed(node_id, final_mbps, final_max)
 
     return StreamingResponse(
         _gen(),
@@ -1060,7 +1098,15 @@ async def speedtest_all_nodes(session: AsyncSession = Depends(get_session)):
 
     nodes = list((await session.exec(select(Node).where(Node.enabled == True))).all())
     results = []
+    now = datetime.now(timezone.utc)
     for node in nodes:
         result = await _speedtest(node)
+        mbps = result.get("download_mbps")
+        if mbps is not None:
+            node.speed_mbps = float(mbps)
+            mx = result.get("max_mbps")
+            node.speed_max_mbps = float(mx) if mx is not None else None
+            node.speed_tested_at = now
         results.append(SpeedTestResult(**result))
+    await session.commit()
     return results

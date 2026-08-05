@@ -62,30 +62,46 @@ _STREAM_UA = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Ge
 _STREAM_SECS = 14.0           # time box: measure for at most this long
 _STREAM_WARMUP = 2.0          # ignore the ramp-up (TCP slow-start / TLS) in the numbers
 
+# Reachability gate: two independent, always-on 204 endpoints so one being
+# blocked/down in a region doesn't false-negative a working node. ANY 204 =
+# reachable; only when all fail (across the retry round) do we call it dead
+# and skip the speed targets.
+_REACH_TARGETS = [
+    ("google", "https://www.google.com/generate_204"),
+    ("cloudflare", "https://cp.cloudflare.com/generate_204"),
+]
+_REACH_TIMEOUT_S = 6.0
+
 
 async def speedtest_node(node: Node) -> Dict:
-    """Run a download speed test through a freshly-spawned xray for `node`."""
+    """Measure download speed through a freshly-spawned xray for `node`.
+
+    The single, unified path shared by the manual button, "speed all" and
+    the background auto-check sweep:
+
+      1. Spin the throwaway xray.
+      2. **Reachability gate** — two popular 204 endpoints (Google, CF).
+         If the node can't reach the internet, return early instead of
+         burning every 14s speed fallback for nothing.
+      3. Measure the download exactly like the live streaming test:
+         average after a warm-up + the peak steady window.
+
+    Returns `_result(...)` with `download_mbps` (avg), `max_mbps` (peak),
+    `reachable` and `latency_ms`.
+    """
     proc: Optional[asyncio.subprocess.Process] = None
     tmp_path: Optional[str] = None
     try:
-        # Resolve the full chain: [entry_parent, ..., node]. For a non-chained
-        # node, chain == [node]. For a chained WG (WG blocked by ISP), chain
-        # looks like [proxy_parent, wg] — and only the entry parent's address
-        # needs to be reachable directly; everything deeper tunnels through it.
+        # Resolve the full chain: [entry_parent, ..., node]. Only the entry
+        # parent's address needs to be reachable directly; deeper hops tunnel.
         try:
             chain = await _resolve_chain(node)
         except Exception as exc:
             return _result(node, error=f"chain resolve: {exc}")
 
         entry = chain[0]
-        # Naive outbounds point at the LOCAL sidecar (127.0.0.1:<internal_port>),
-        # not at the remote server — xray doesn't speak naive's HTTPS-masquerade
-        # protocol. The sidecar handles its own DNS and remote connection, so
-        # we skip the "pre-resolve entry IP + rewrite outbound address" dance
-        # that other protocols need. If the entry hop is naive with a chain
-        # this is a config error anyway (naive can't be tunneled through
-        # xray), but for the common case of a standalone naive node it "just
-        # works" — the sidecar must be running (we verify below).
+        # Naive outbounds point at the LOCAL sidecar, not the remote server —
+        # skip the pre-resolve+rewrite dance other protocols need.
         entry_ip: Optional[str] = None
         if entry.protocol != "naive":
             try:
@@ -93,26 +109,38 @@ async def speedtest_node(node: Node) -> Dict:
             except Exception as exc:
                 return _result(node, error=f"dns entry: {exc}")
 
-        # Fail fast if naive sidecar isn't up — otherwise temp xray starts but
-        # every connection attempt hangs until _CURL_TIMEOUT.
+        # Fail fast if the naive sidecar isn't up (otherwise every connection
+        # through the temp xray hangs to timeout).
         if node.protocol == "naive":
             if not node.internal_port:
                 return _result(node, error="naive sidecar port not allocated")
             if not await _port_open("127.0.0.1", int(node.internal_port)):
                 return _result(node, error=f"naive sidecar not listening on :{node.internal_port}")
 
-        resolved_urls = await _resolve_test_urls()
-        if not resolved_urls:
-            return _result(node, error="Failed to resolve any test URL")
-
         socks_port, proc, tmp_path, start_err = await _start_temp_xray(node, chain, entry_ip)
         if proc is None or start_err:
-            # `start_err` with a live proc = the port never opened. Running
-            # curl anyway would just burn _CURL_TIMEOUT and report a generic
-            # failure instead of the real reason; `finally` still reaps proc.
             return _result(node, error=start_err or "Failed to start temp xray")
 
-        return await _run_curl_speedtest(node, socks_port, resolved_urls)
+        # Reachability gate — skip the speed fallbacks entirely on a dead node.
+        reachable, latency_ms, detail = await _probe_reachable(socks_port)
+        if not reachable:
+            return _result(node, error=f"unreachable: {detail}",
+                           reachable=False, latency_ms=latency_ms)
+
+        # Measure like the live test: avg after warm-up + peak steady window.
+        # First target that yields data wins.
+        last_error = "no targets reachable"
+        for label, url in _STREAM_TARGETS:
+            try:
+                measured = await _measure_download(socks_port, label, url)
+            except Exception as exc:  # noqa: BLE001 — try the next target
+                last_error = f"{label}: {str(exc)[:120]}"
+                continue
+            if measured is not None:
+                avg, mx = measured
+                return _result(node, download_mbps=avg, max_mbps=mx,
+                               reachable=True, latency_ms=latency_ms)
+        return _result(node, error=last_error, reachable=True, latency_ms=latency_ms)
 
     except Exception as exc:
         logger.warning("Speedtest node %d error: %s", node.id, exc)
@@ -165,6 +193,14 @@ async def speedtest_stream(node: Node):
         socks_port, proc, tmp_path, start_err = await _start_temp_xray(node, chain, entry_ip)
         if proc is None or start_err:
             yield {"phase": "error", "error": start_err or "failed to start temp xray"}
+            return
+
+        # Reachability gate first — if the node can't reach the internet, say
+        # so and stop instead of grinding every speed fallback to timeout.
+        yield {"phase": "connecting", "host": "checking reachability"}
+        reachable, _lat, detail = await _probe_reachable(socks_port)
+        if not reachable:
+            yield {"phase": "error", "error": f"unreachable: {detail}"}
             return
 
         last_error = "no targets reachable"
@@ -222,24 +258,9 @@ async def reachability_check(node: Node) -> Dict:
         if proc is None or start_err:
             return {"ok": False, "latency_ms": None, "detail": start_err or "xray failed"}
 
-        import httpx
-        loop = asyncio.get_event_loop()
-        proxy = f"socks5://127.0.0.1:{socks_port}"
-        t0 = loop.time()
-        try:
-            async with httpx.AsyncClient(
-                proxy=proxy, timeout=httpx.Timeout(8.0, connect=8.0),
-                headers={"User-Agent": _STREAM_UA},
-            ) as client:
-                resp = await client.get("https://www.google.com/generate_204")
-            latency = int((loop.time() - t0) * 1000)
-            ok = resp.status_code in (204, 200)
-            return {
-                "ok": ok, "latency_ms": latency,
-                "detail": "reachable" if ok else f"HTTP {resp.status_code}",
-            }
-        except Exception as exc:  # noqa: BLE001
-            return {"ok": False, "latency_ms": None, "detail": str(exc)[:120] or "no response"}
+        # Same two-endpoint gate the speed test uses.
+        ok, latency, detail = await _probe_reachable(socks_port)
+        return {"ok": ok, "latency_ms": latency, "detail": detail}
     finally:
         await _cleanup(proc, tmp_path)
 
@@ -327,6 +348,55 @@ async def sni_scan(domain: str, node: Optional[Node] = None) -> Dict:
         return {"ok": False, "detail": str(exc)[:120], "via": via}
     finally:
         await _cleanup(proc, tmp_path)
+
+
+async def _probe_reachable(socks_port: int, rounds: int = 2) -> Tuple[bool, Optional[int], str]:
+    """Is the internet actually reachable through this node?
+
+    Tries the popular 204 endpoints (Google, Cloudflare) in order; the first
+    one that answers 204/200 wins → reachable. If all fail, retry the whole
+    set once more (`rounds`). Returns (ok, latency_ms, detail). This is the
+    cheap gate run BEFORE the speed targets, so a dead node fails in ~1s
+    instead of grinding every 14s speed fallback for nothing."""
+    import httpx
+
+    loop = asyncio.get_event_loop()
+    proxy = f"socks5://127.0.0.1:{socks_port}"
+    detail = "no response"
+    for r in range(max(1, rounds)):
+        for label, url in _REACH_TARGETS:
+            t0 = loop.time()
+            try:
+                async with httpx.AsyncClient(
+                    proxy=proxy,
+                    timeout=httpx.Timeout(_REACH_TIMEOUT_S, connect=_REACH_TIMEOUT_S),
+                    headers={"User-Agent": _STREAM_UA},
+                ) as client:
+                    resp = await client.get(url)
+                if resp.status_code in (204, 200):
+                    return True, int((loop.time() - t0) * 1000), label
+                detail = f"{label}: HTTP {resp.status_code}"
+            except Exception as exc:  # noqa: BLE001 — any transport error = not reachable
+                detail = f"{label}: {str(exc)[:80]}"
+        if r < max(1, rounds) - 1:
+            await asyncio.sleep(0.4)
+    return False, None, detail
+
+
+async def _measure_download(socks_port: int, label: str, url: str) -> Optional[Tuple[float, float]]:
+    """Drain the streaming download to its final numbers for the non-streaming
+    callers. Returns (avg_mbps, max_mbps) or None if the target sent no data.
+    Reuses `_stream_download` so the manual, background and live paths all
+    compute speed the exact same way (avg after warm-up + peak steady window)."""
+    avg: Optional[float] = None
+    mx: Optional[float] = None
+    async for ev in _stream_download(socks_port, label, url):
+        if ev["phase"] == "done":
+            avg = ev.get("mbps")
+            mx = ev.get("mbps_max")
+    if avg is None:
+        return None
+    return avg, (mx if mx is not None else avg)
 
 
 async def _stream_download(socks_port: int, label: str, url: str):
@@ -702,10 +772,14 @@ def _safe_unlink(path: Optional[str]) -> None:
         pass
 
 
-def _result(node: Node, download_mbps=None, error=None) -> Dict:
+def _result(node: Node, download_mbps=None, error=None,
+            max_mbps=None, reachable=None, latency_ms=None) -> Dict:
     return {
         "node_id": node.id,
         "node_name": node.name,
-        "download_mbps": download_mbps,
+        "download_mbps": download_mbps,   # average after warm-up
+        "max_mbps": max_mbps,             # best steady window (peak)
+        "reachable": reachable,           # generate_204 succeeded through the node
+        "latency_ms": latency_ms,         # reachability round-trip
         "error": error,
     }

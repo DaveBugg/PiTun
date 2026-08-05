@@ -61,12 +61,15 @@ async def lifespan(app: FastAPI):
 
     from app.core.geo_scheduler import geo_scheduler
 
+    from app.core.autocheck_scheduler import autocheck_scheduler
+
     health_checker.start()
     subscription_scheduler.start()
     circle_scheduler.start()
     device_scanner.start()
     metrics_collector.start()
     geo_scheduler.start()
+    autocheck_scheduler.start()
 
     # Supervise naive sidecars: react to docker `die` events within ms,
     # rather than waiting for the 30 s HealthChecker tick.
@@ -246,6 +249,7 @@ async def lifespan(app: FastAPI):
     device_scanner.stop()
     metrics_collector.stop()
     geo_scheduler.stop()
+    autocheck_scheduler.stop()
     try:
         from app.core.naive_supervisor import naive_supervisor
         naive_supervisor.stop()
@@ -317,7 +321,7 @@ app.add_middleware(
 )
 
 # ── Routers ───────────────────────────────────────────────────────────────────
-from app.api import nodes, routing, routing_sets, subscriptions, system, geodata, logs, dns, balancers, auth, nodecircle, devices, diagnostics, events, servers, scripts, server_tasks, server_clients, templates, user_agents, xui, network
+from app.api import nodes, routing, routing_sets, subscriptions, system, geodata, logs, dns, balancers, auth, nodecircle, devices, diagnostics, events, servers, scripts, server_tasks, server_clients, templates, user_agents, xui, network, autocheck
 from app.core.auth import get_current_user
 
 app.include_router(auth.router, prefix="/api")
@@ -336,6 +340,7 @@ app.include_router(geodata.router, prefix="/api", dependencies=_auth)
 app.include_router(dns.router, dependencies=_auth)
 app.include_router(balancers.router, prefix="/api", dependencies=_auth)
 app.include_router(nodecircle.router, prefix="/api", dependencies=_auth)
+app.include_router(autocheck.router, prefix="/api", dependencies=_auth)
 app.include_router(devices.router, prefix="/api", dependencies=_auth)
 app.include_router(diagnostics.router, prefix="/api", dependencies=_auth)
 app.include_router(events.router, prefix="/api", dependencies=_auth)

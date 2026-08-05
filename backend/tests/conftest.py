@@ -29,6 +29,7 @@ from app.core.auth import hash_password, create_access_token
 for _name in (
     "metrics_collector", "sub_scheduler", "circle_scheduler",
     "device_scanner", "naive_supervisor", "nftables",
+    "autocheck_scheduler",
 ):
     try:
         __import__(f"app.core.{_name}")
@@ -90,6 +91,7 @@ def client_fixture(engine):
         patch("app.core.circle_scheduler.circle_scheduler.start"),
         patch("app.core.device_scanner.device_scanner.start"),
         patch("app.core.metrics_collector.metrics_collector.start"),
+        patch("app.core.autocheck_scheduler.autocheck_scheduler.start"),
         patch("app.core.naive_supervisor.naive_supervisor.start"),
         patch("app.core.naive_supervisor.naive_supervisor.stop"),
         patch("app.core.healthcheck.health_checker.stop"),
@@ -97,6 +99,7 @@ def client_fixture(engine):
         patch("app.core.circle_scheduler.circle_scheduler.stop"),
         patch("app.core.device_scanner.device_scanner.stop"),
         patch("app.core.metrics_collector.metrics_collector.stop"),
+        patch("app.core.autocheck_scheduler.autocheck_scheduler.stop"),
         patch("app.core.xray.xray_manager.stop", new_callable=AsyncMock),
         patch("app.core.nftables.nftables_manager.flush", new_callable=AsyncMock),
     ):

@@ -161,6 +161,11 @@ class NodeRead(NodeBase):
     latency_ms: Optional[int] = None
     last_check: Optional[datetime] = None
     is_online: bool = True
+    # Last speed reading (Mbps) + when it was taken. The UI shows the age
+    # and greys/reddens a reading older than ~6h.
+    speed_mbps: Optional[float] = None
+    speed_max_mbps: Optional[float] = None
+    speed_tested_at: Optional[datetime] = None
     # Multi-client deployment provenance (since v1.3.0-beta.4). When this
     # Node was exported from a DeploymentClient (e.g. WireGuard peer),
     # keep the link so the UI can render "from <server name>" alongside
@@ -875,12 +880,15 @@ class NodeCircleBase(BaseModel):
     mode: str = "sequential"
     interval_min: int = 5
     interval_max: int = 15
+    # Candidate filters (0 = disabled). See circle_scheduler.
+    max_latency_ms: int = 0
+    min_speed_mbps: float = 0.0
 
     @field_validator("mode")
     @classmethod
     def validate_mode(cls, v: str) -> str:
-        if v not in ("sequential", "random"):
-            raise ValueError("mode must be sequential|random")
+        if v not in ("sequential", "random", "best"):
+            raise ValueError("mode must be sequential|random|best")
         return v
 
     @field_validator("interval_min")
@@ -906,14 +914,16 @@ class NodeCircleUpdate(BaseModel):
     mode: Optional[str] = None
     interval_min: Optional[int] = None
     interval_max: Optional[int] = None
+    max_latency_ms: Optional[int] = None
+    min_speed_mbps: Optional[float] = None
 
     @field_validator("mode", mode="before")
     @classmethod
     def validate_mode(cls, v):
         if v is None:
             return v
-        if v not in ("sequential", "random"):
-            raise ValueError("mode must be sequential|random")
+        if v not in ("sequential", "random", "best"):
+            raise ValueError("mode must be sequential|random|best")
         return v
 
 class NodeCircleRead(NodeCircleBase):
@@ -933,6 +943,43 @@ class NodeCircleRead(NodeCircleBase):
 
     class Config:
         from_attributes = True
+
+
+_AUTOCHECK_SCOPES = ("all", "subscription", "group", "nodes")
+
+
+class AutoCheckRead(BaseModel):
+    enabled: bool
+    interval_minutes: int
+    scope_kind: str
+    scope_value: str
+    last_sweep: Optional[datetime] = None
+    # Live status (filled by the endpoint, not stored).
+    is_sweeping: bool = False
+
+    class Config:
+        from_attributes = True
+
+
+class AutoCheckUpdate(BaseModel):
+    enabled: Optional[bool] = None
+    interval_minutes: Optional[int] = None
+    scope_kind: Optional[str] = None
+    scope_value: Optional[str] = None
+
+    @field_validator("interval_minutes")
+    @classmethod
+    def validate_interval(cls, v):
+        if v is not None and v < 1:
+            raise ValueError("interval_minutes must be at least 1")
+        return v
+
+    @field_validator("scope_kind")
+    @classmethod
+    def validate_scope_kind(cls, v):
+        if v is not None and v not in _AUTOCHECK_SCOPES:
+            raise ValueError(f"scope_kind must be one of {_AUTOCHECK_SCOPES}")
+        return v
 
 
 # ─── User-Agent templates ─────────────────────────────────────────────────────
@@ -1640,7 +1687,10 @@ class HealthResult(BaseModel):
 class SpeedTestResult(BaseModel):
     node_id: int
     node_name: str
-    download_mbps: Optional[float]
+    download_mbps: Optional[float]          # average after warm-up
+    max_mbps: Optional[float] = None        # peak steady window
+    reachable: Optional[bool] = None        # generate_204 succeeded through the node
+    latency_ms: Optional[int] = None        # reachability round-trip
     error: Optional[str] = None
 
 

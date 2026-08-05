@@ -6,6 +6,37 @@ import type { Node } from '@/types'
 import { StatusBadge } from './StatusBadge'
 import { useServers } from '@/hooks/useServers'
 
+// Readings older than this render in a warning colour — the speed is
+// probably stale and worth re-testing.
+const SPEED_STALE_MS = 6 * 60 * 60 * 1000
+
+/** Persisted speed reading + its age. Returns null when the node has
+ *  never been speed-tested. `stale` flips true past SPEED_STALE_MS. */
+function fmtMbps(v: number): string {
+  return v >= 100 ? String(Math.round(v)) : v.toFixed(1)
+}
+
+function speedInfo(
+  mbps?: number | null, iso?: string | null, maxMbps?: number | null,
+): { text: string; stale: boolean } | null {
+  if (mbps == null) return null
+  // avg, plus the peak when it's meaningfully higher (avg / peak).
+  const speed = (maxMbps != null && maxMbps > mbps + 0.05)
+    ? `${fmtMbps(mbps)} / ${fmtMbps(maxMbps)}`
+    : fmtMbps(mbps)
+  if (!iso) return { text: `${speed} Mbps`, stale: false }
+  // Backend sends naive UTC (no Z) — normalise before parsing.
+  const d = new Date(iso.endsWith('Z') ? iso : iso + 'Z')
+  const diffMs = Date.now() - d.getTime()
+  const min = Math.floor(diffMs / 60000)
+  const age =
+    min < 1 ? 'just now'
+      : min < 60 ? `${min}m ago`
+      : min < 1440 ? `${Math.floor(min / 60)}h ago`
+      : `${Math.floor(min / 1440)}d ago`
+  return { text: `${speed} Mbps · ${age}`, stale: diffMs >= SPEED_STALE_MS }
+}
+
 interface Props {
   node: Node
   isActive?: boolean
@@ -130,6 +161,29 @@ export function NodeCard({
             </div>
             <div className="mt-2 flex items-center gap-2 flex-wrap">
               <StatusBadge online={node.is_online} latency={node.latency_ms ?? undefined} />
+              {/* Persisted speed reading + age. Reddens past 6h so a
+                  stale number doesn't read as current. Hidden until the
+                  node has been speed-tested at least once. */}
+              {(() => {
+                const s = speedInfo(node.speed_mbps, node.speed_tested_at, node.speed_max_mbps)
+                if (!s) return null
+                return (
+                  <span
+                    className={clsx(
+                      'inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-[11px]',
+                      s.stale
+                        ? 'border-red-800/50 bg-red-950/30 text-red-300'
+                        : 'border-gray-700 bg-gray-800/40 text-gray-300',
+                    )}
+                    title={s.stale
+                      ? 'Speed reading is over 6 hours old — re-run the speed test'
+                      : 'Last speed test — average / peak'}
+                  >
+                    <Gauge className="h-3 w-3" />
+                    {s.text}
+                  </span>
+                )
+              })()}
               {/* Source label — "from <server name>" — for nodes
                   exported from a server-side multi-client deployment
                   (WireGuard, since v1.3.0-beta.4). */}

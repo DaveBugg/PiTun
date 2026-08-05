@@ -1,6 +1,6 @@
 import * as React from 'react'
 import { useEffect, useMemo, useState } from 'react'
-import { Plus, Activity, Search, GripVertical, Gauge, FileDown, FileUp, Pin, ArrowDownNarrowWide, ArrowUpNarrowWide } from 'lucide-react'
+import { Plus, Activity, Search, GripVertical, Gauge, FileDown, FileUp, Pin, ArrowDownNarrowWide, ArrowUpNarrowWide, Timer } from 'lucide-react'
 import { clsx } from 'clsx'
 import { useQueryClient, useMutation } from '@tanstack/react-query'
 import {
@@ -29,6 +29,7 @@ import { Pagination } from '@/components/Pagination'
 import { useConfirm } from '@/components/ConfirmModal'
 import { copyToClipboard } from '@/lib/clipboard'
 import { ModalShell } from '@/components/ModalShell'
+import { AutoCheckModal } from '@/components/AutoCheckModal'
 import { apiErrorText } from '@/lib/apiError'
 import type { Node, NodeCreate, NodePageParams } from '@/types'
 
@@ -75,6 +76,7 @@ function loadDirection(): SortDirection {
 export function Nodes() {
   const confirm = useConfirm()
   const [modal, setModal] = useState<Modal>('none')
+  const [showAutocheck, setShowAutocheck] = useState(false)
   const [editNode, setEditNode] = useState<Node | null>(null)
   const [search, setSearch] = useState('')
   const [filters, setFilters] = useState<NodeFilterState>({})
@@ -286,6 +288,14 @@ export function Nodes() {
           >
             <Gauge className={clsx('h-4 w-4', speedAll.isPending && 'animate-spin')} />
             {speedAll.isPending ? 'Testing…' : 'Speed All'}
+          </button>
+          <button
+            onClick={() => setShowAutocheck(true)}
+            className="flex items-center gap-1.5 rounded-lg bg-gray-800 px-3 py-2 text-sm text-gray-300 hover:bg-gray-700 transition-colors"
+            title="Auto speed-checks — schedule background speed tests"
+          >
+            <Timer className="h-4 w-4" />
+            Auto-checks
           </button>
           {/* Unified Import — paste URIs OR drop a PiTun JSON bundle;
               the modal auto-detects which path to take. */}
@@ -539,6 +549,11 @@ export function Nodes() {
             onCancel={() => setModal('none')}
           />
         </Modal>
+      )}
+
+      {/* Auto-checks config */}
+      {showAutocheck && (
+        <AutoCheckModal nodes={allNodesForReorder} onClose={() => setShowAutocheck(false)} />
       )}
     </div>
   )

@@ -15,11 +15,13 @@ import type { NodeCircle, NodeCircleCreate } from '@/types'
 const MODE_LABELS: Record<string, string> = {
   sequential: 'Sequential',
   random: 'Random',
+  best: 'Best',
 }
 
 const MODE_COLORS: Record<string, string> = {
   sequential: 'bg-cyan-900/60 text-cyan-300',
   random: 'bg-purple-900/60 text-purple-300',
+  best: 'bg-emerald-900/60 text-emerald-300',
 }
 
 function formatInterval(min: number, max: number): string {
@@ -52,8 +54,12 @@ interface ModalProps {
 function CircleModal({ initial, nodeOptions, onSave, onCancel, loading }: ModalProps) {
   const t = useT()
   const [name, setName] = useState(initial?.name ?? '')
-  const [mode, setMode] = useState<'sequential' | 'random'>(initial?.mode ?? 'sequential')
+  const [mode, setMode] = useState<'sequential' | 'random' | 'best'>(initial?.mode ?? 'sequential')
   const [enabled, setEnabled] = useState(initial?.enabled ?? false)
+  // Candidate filters — string-backed like the intervals so the field can
+  // be transiently empty. "0" / empty = disabled.
+  const [maxLatency, setMaxLatency] = useState(String(initial?.max_latency_ms ?? 0))
+  const [minSpeed, setMinSpeed] = useState(String(initial?.min_speed_mbps ?? 0))
   // Interval inputs are kept as strings so the user can transiently clear
   // the field while typing (`Number('')` = 0, which would lock them into
   // a leading-zero state like "035"). We parse on submit; empty/invalid
@@ -99,6 +105,8 @@ function CircleModal({ initial, nodeOptions, onSave, onCancel, loading }: ModalP
       mode,
       interval_min: minN,
       interval_max: maxN,
+      max_latency_ms: Math.max(0, parseInt(maxLatency, 10) || 0),
+      min_speed_mbps: Math.max(0, parseFloat(minSpeed) || 0),
       node_ids: Array.from(selectedIds),
     })
   }
@@ -121,17 +129,18 @@ function CircleModal({ initial, nodeOptions, onSave, onCancel, loading }: ModalP
         <label className="flex items-center gap-1 text-xs font-medium text-gray-400 mb-1">
           Mode
           <InfoTip position="bottom" className="ml-0.5" text={t(
-            'Sequential rotates through nodes in order (1 -> 2 -> 3 -> 1). Random picks a different node each time (never the same one twice in a row).',
-            'Sequential ротирует ноды по порядку (1 → 2 → 3 → 1). Random каждый раз выбирает другую ноду (никогда та же два раза подряд).',
+            'Sequential rotates through nodes in order (1 -> 2 -> 3 -> 1). Random picks a different node each time. Best prefers the lowest-latency healthy node.',
+            'Sequential ротирует ноды по порядку (1 → 2 → 3 → 1). Random каждый раз выбирает другую ноду. Best предпочитает живую ноду с наименьшим пингом.',
           )} />
         </label>
         <select
           value={mode}
-          onChange={(e) => setMode(e.target.value as 'sequential' | 'random')}
+          onChange={(e) => setMode(e.target.value as 'sequential' | 'random' | 'best')}
           className="w-full rounded bg-gray-800 border border-gray-700 px-3 py-1.5 text-sm text-gray-100 focus:border-brand-500 focus:outline-none"
         >
           <option value="sequential">Sequential</option>
           <option value="random">Random</option>
+          <option value="best">Best (lowest latency)</option>
         </select>
       </div>
 
@@ -163,6 +172,45 @@ function CircleModal({ initial, nodeOptions, onSave, onCancel, loading }: ModalP
             min={1}
             value={intervalMax}
             onChange={(e) => setIntervalMax(e.target.value)}
+            className="w-full rounded bg-gray-800 border border-gray-700 px-3 py-1.5 text-sm text-gray-100 focus:border-brand-500 focus:outline-none"
+          />
+        </div>
+      </div>
+
+      <div className="grid grid-cols-2 gap-3">
+        <div>
+          <label className="flex items-center gap-1 text-xs font-medium text-gray-400 mb-1">
+            {t('Max latency (ms)', 'Макс. пинг (мс)')}
+            <InfoTip position="bottom" className="ml-0.5" text={t(
+              'Skip rotation candidates whose last ping exceeds this. 0 = no limit.',
+              'Пропускать кандидатов, чей последний пинг выше этого. 0 = без ограничения.',
+            )} />
+          </label>
+          <input
+            type="number"
+            inputMode="numeric"
+            min={0}
+            value={maxLatency}
+            onChange={(e) => setMaxLatency(e.target.value)}
+            placeholder="0"
+            className="w-full rounded bg-gray-800 border border-gray-700 px-3 py-1.5 text-sm text-gray-100 focus:border-brand-500 focus:outline-none"
+          />
+        </div>
+        <div>
+          <label className="flex items-center gap-1 text-xs font-medium text-gray-400 mb-1">
+            {t('Min speed (Mbps)', 'Мин. скорость (Мбит/с)')}
+            <InfoTip position="bottom" className="ml-0.5" text={t(
+              'Skip candidates whose last speed test is below this. Untested nodes always pass. 0 = no limit.',
+              'Пропускать кандидатов, чей последний замер ниже этого. Непроверенные ноды всегда проходят. 0 = без ограничения.',
+            )} />
+          </label>
+          <input
+            type="number"
+            inputMode="decimal"
+            min={0}
+            value={minSpeed}
+            onChange={(e) => setMinSpeed(e.target.value)}
+            placeholder="0"
             className="w-full rounded bg-gray-800 border border-gray-700 px-3 py-1.5 text-sm text-gray-100 focus:border-brand-500 focus:outline-none"
           />
         </div>

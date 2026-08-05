@@ -16,6 +16,7 @@ import type {
   HealthResult, SpeedTestResult,
   BalancerGroup, BalancerGroupCreate, BalancerGroupUpdate,
   NodeCircle, NodeCircleCreate, NodeCircleUpdate,
+  AutoCheck, AutoCheckUpdate,
   Device, DeviceUpdate, DeviceBulkUpdate, DeviceScanResult,
   RoutingSet, RoutingSetCreate, RoutingSetUpdate, RoutingSetCapacity,
   RoutingPortRule, RoutingImportDestination, RoutingImportPreviewResult,
@@ -490,6 +491,14 @@ export const balancersApi = {
   create: (data: BalancerGroupCreate) => http.post<BalancerGroup>('/balancers', data).then(r => r.data),
   update: (id: number, data: BalancerGroupUpdate) => http.patch<BalancerGroup>(`/balancers/${id}`, data).then(r => r.data),
   delete: (id: number) => http.delete(`/balancers/${id}`),
+}
+
+// ── Auto-checks (background speed sweep) ─────────────────────────────────────
+
+export const autocheckApi = {
+  get: () => http.get<AutoCheck>('/autocheck').then(r => r.data),
+  update: (data: AutoCheckUpdate) => http.put<AutoCheck>('/autocheck', data).then(r => r.data),
+  run: () => http.post<{ status: string }>('/autocheck/run').then(r => r.data),
 }
 
 // ── NodeCircle ───────────────────────────────────────────────────────────────

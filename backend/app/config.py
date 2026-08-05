@@ -5,7 +5,7 @@ from typing import List
 # OpenAPI metadata, `/health` response, and `/system/status` so the
 # frontend can display it next to the xray version. Bump this on each
 # release — frontend keeps its own version in `frontend/package.json`.
-APP_VERSION = "1.4.12"
+APP_VERSION = "1.5.0-beta.1"
 
 
 class Settings(BaseSettings):
@@ -22,6 +22,10 @@ class Settings(BaseSettings):
     xray_config_path: str = "/tmp/pitun/config.json"
     xray_geoip_path: str = "/usr/local/share/xray/geoip.dat"
     xray_geosite_path: str = "/usr/local/share/xray/geosite.dat"
+    # Optional MaxMind GeoLite2-Country DB for node-name flag enrichment.
+    # Opt-in: absent file = feature off. Operator supplies it (same
+    # bind-mounted dir as the .dat files). See core/geoip_lookup.py.
+    geoip_country_db_path: str = "/usr/local/share/xray/GeoLite2-Country.mmdb"
     xray_log_level: str = "warning"
     xray_log_path: str = "/tmp/pitun/xray.log"
 

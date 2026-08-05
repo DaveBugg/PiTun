@@ -20,3 +20,9 @@ docker==7.1.0
 # is already pulled in transitively by python-jose. Pinned to 2.x — the
 # 1.x line had several auth bugs we don't want to accidentally regress to.
 asyncssh==2.23.0
+
+# maxminddb: reads MaxMind GeoLite2 .mmdb for optional node-name flag
+# enrichment (core/geoip_lookup.py). Lightweight, pure-Python fallback.
+# The feature is opt-in — the .mmdb file itself is operator-supplied and
+# never shipped (MaxMind EULA), so this dep is inert until the file exists.
+maxminddb==2.6.2

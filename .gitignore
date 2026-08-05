@@ -133,3 +133,6 @@ frontend;C/
 # Frontend test coverage / snapshots
 coverage/
 .vitest/
+
+# Internal planning (names the fork + security details) — keep out of the public repo
+docs/fork-analysis-romuss-pitunya.md

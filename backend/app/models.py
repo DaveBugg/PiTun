@@ -102,6 +102,15 @@ class Node(SQLModel, table=True):
     last_check: Optional[datetime] = None
     is_online: bool = True
 
+    # Speed test — last measured throughput (Mbps) + when it was taken.
+    # `speed_mbps` is the average after warm-up; `speed_max_mbps` is the peak
+    # steady window from the same run. Written by the /speedtest endpoints +
+    # the auto-check sweep; read by NodeCircle "best" / min_speed and the UI
+    # (stale >6h shown differently).
+    speed_mbps: Optional[float] = None
+    speed_max_mbps: Optional[float] = None
+    speed_tested_at: Optional[datetime] = None
+
     # Order in list
     order: int = 0
 
@@ -433,11 +442,34 @@ class NodeCircle(SQLModel, table=True):
     name: str
     enabled: bool = False
     node_ids: str = "[]"          # JSON list of node IDs in order
-    mode: str = "sequential"      # "sequential" | "random"
+    mode: str = "sequential"      # "sequential" | "random" | "best"
     interval_min: int = 5         # minimum minutes between rotations
     interval_max: int = 15        # maximum minutes (for random interval)
     current_index: int = 0        # current position in the circle
     last_rotated: Optional[datetime] = None
+    # Candidate filters (0 = disabled). max_latency_ms drops slow-RTT
+    # candidates; min_speed_mbps drops candidates whose last speed test
+    # was below the floor. "best" mode picks the highest-quality survivor.
+    max_latency_ms: int = 0
+    min_speed_mbps: float = 0.0
+
+
+class AutoCheckConfig(SQLModel, table=True):
+    """Singleton config (row id=1) for the background auto-speedtest sweep.
+
+    A scheduler periodically speed-tests the scoped nodes so `speed_mbps` /
+    `speed_tested_at` stay fresh (feeds NodeCircle best/min_speed + the UI
+    staleness colour) without the operator clicking each node.
+    """
+    id: Optional[int] = Field(default=None, primary_key=True)
+    enabled: bool = False
+    interval_minutes: int = 360            # sweep cadence; also the per-node
+                                           # staleness guard (skip if fresher)
+    # scope_kind: "all" | "subscription" | "group" | "nodes".
+    # scope_value: subscription id / group name / JSON "[1,2,3]"; ignored for "all".
+    scope_kind: str = "all"
+    scope_value: str = ""
+    last_sweep: Optional[datetime] = None  # start of the most recent sweep
 
 
 class Device(SQLModel, table=True):
@@ -480,6 +512,13 @@ class User(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     username: str = Field(unique=True, index=True)
     password_hash: str
+    # Brute-force lockout for the login endpoint. `failed_attempts` counts
+    # consecutive bad logins; once it crosses the threshold `lock_until` is
+    # set and logins are rejected until it passes. Both reset on a
+    # successful login. (PiTun is LAN-only with no captcha/IP throttling, so
+    # this per-account guard is the primary brute-force protection.)
+    failed_attempts: int = 0
+    lock_until: Optional[datetime] = None
 
 
 class Event(SQLModel, table=True):

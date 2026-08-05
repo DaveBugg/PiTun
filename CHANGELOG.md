@@ -4,6 +4,46 @@ All notable user-facing changes to PiTun. Full per-release detail lives in the
 [GitHub Releases](https://github.com/DaveBugg/PiTun/releases); this file is the
 committed summary.
 
+## v1.5.0-beta.1 — 2026-08-04
+
+**Beta.** Smarter node-circle rotation driven by real speed data, an automatic
+background speed-check, a unified speed test that gates on reachability, plus
+login lockout and optional GeoIP flags. Ships DB migrations 019–022.
+
+### Added
+
+- **NodeCircle quality-aware rotation.** Circles gain a **`best`** mode and two
+  candidate filters — **`max_latency_ms`** (drop high-RTT nodes) and
+  **`min_speed_mbps`** (drop nodes whose last speed reading is below a floor;
+  never-tested nodes get the benefit of the doubt). A **smart-skip** keeps a
+  scheduled rotation from moving off a healthy, low-latency active node — manual
+  "rotate now" still always rotates.
+- **Automatic speed checks.** A background sweep (Nodes → **Auto-checks**)
+  speed-tests a chosen scope — **all / a subscription / a group / specific
+  nodes** — on an interval, so `best` / `min_speed` and the UI stay fresh
+  without manual testing. Sequential (a speed test saturates the uplink), with a
+  per-node staleness guard and per-node error isolation. `POST /api/autocheck`
+  + `run`.
+- **Per-node speed history in the UI.** The last reading (average **and** peak)
+  and its age show on the node card; a reading older than 6h is flagged so a
+  stale number never reads as current. Persisted, so it survives a restart.
+- **Login lockout.** After 5 consecutive failed logins an account is locked for
+  15 minutes (HTTP 429 + `Retry-After`); a successful login resets the counter.
+  PiTun is LAN-only with no captcha, so this is the primary brute-force guard.
+- **Optional GeoIP flags.** Imported node names can be prefixed with a country
+  flag (`🇳🇱 vless-nl`). Fully opt-in and licence-clean — nothing is shipped or
+  downloaded; drop a MaxMind `GeoLite2-Country.mmdb` next to the geoip/geosite
+  data and it lights up, absent it's a silent no-op.
+
+### Changed
+
+- **One speed-measurement path** for the manual button, "speed all", the live
+  stream and the auto-check. It now **gates on reachability first** — two
+  popular 204 endpoints (Google, Cloudflare) with a retry — and only then
+  measures, so a dead node fails in ~1s instead of grinding every download
+  fallback. The number is the **average after a warm-up plus the peak** steady
+  window (previously a single curl figure), and both avg and peak are saved.
+
 ## v1.4.12 — 2026-08-04
 
 Hotfix.

@@ -94,6 +94,67 @@ class TestStartTempXrayTimeoutBranch:
         assert fake.terminated or fake.killed
 
 
+class TestUnifiedMeasure:
+    """The unified speedtest_node: reachability gate first, then avg + peak."""
+
+    def _start_ok(self, node, chain, entry_ip):
+        return 19999, _FakeProc(), None, None
+
+    def test_unreachable_skips_speed_targets(self):
+        with (
+            mock.patch.object(st, "_resolve_chain", new_callable=AsyncMock, return_value=[_node()]),
+            mock.patch.object(st.HealthChecker, "_resolve_direct",
+                              new_callable=AsyncMock, return_value="1.2.3.4"),
+            mock.patch.object(st, "_start_temp_xray", side_effect=self._start_ok),
+            mock.patch.object(st, "_probe_reachable", new_callable=AsyncMock,
+                              return_value=(False, None, "google: timeout")),
+            mock.patch.object(st, "_measure_download", new_callable=AsyncMock) as meas,
+        ):
+            result = asyncio.run(st.speedtest_node(_node()))
+
+        assert result["reachable"] is False
+        assert (result.get("error") or "").startswith("unreachable")
+        assert result["download_mbps"] is None
+        # The whole point: a dead node never grinds the speed fallbacks.
+        meas.assert_not_awaited()
+
+    def test_reachable_measures_avg_and_peak(self):
+        with (
+            mock.patch.object(st, "_resolve_chain", new_callable=AsyncMock, return_value=[_node()]),
+            mock.patch.object(st.HealthChecker, "_resolve_direct",
+                              new_callable=AsyncMock, return_value="1.2.3.4"),
+            mock.patch.object(st, "_start_temp_xray", side_effect=self._start_ok),
+            mock.patch.object(st, "_probe_reachable", new_callable=AsyncMock,
+                              return_value=(True, 42, "google")),
+            mock.patch.object(st, "_measure_download", new_callable=AsyncMock,
+                              return_value=(123.4, 200.0)),
+        ):
+            result = asyncio.run(st.speedtest_node(_node()))
+
+        assert result["reachable"] is True
+        assert result["download_mbps"] == 123.4   # avg after warm-up
+        assert result["max_mbps"] == 200.0        # peak steady window
+        assert result["latency_ms"] == 42
+        assert result.get("error") is None
+
+    def test_reachable_but_all_targets_dry(self):
+        # 204 works but every speed target yields nothing → reachable, no speed.
+        with (
+            mock.patch.object(st, "_resolve_chain", new_callable=AsyncMock, return_value=[_node()]),
+            mock.patch.object(st.HealthChecker, "_resolve_direct",
+                              new_callable=AsyncMock, return_value="1.2.3.4"),
+            mock.patch.object(st, "_start_temp_xray", side_effect=self._start_ok),
+            mock.patch.object(st, "_probe_reachable", new_callable=AsyncMock,
+                              return_value=(True, 30, "cloudflare")),
+            mock.patch.object(st, "_measure_download", new_callable=AsyncMock, return_value=None),
+        ):
+            result = asyncio.run(st.speedtest_node(_node()))
+
+        assert result["reachable"] is True
+        assert result["download_mbps"] is None
+        assert result.get("error")
+
+
 class TestReservedPorts:
     def test_speedtest_port_is_bindable_and_unique(self):
         ports = {st._reserve_local_port() for _ in range(5)}

@@ -472,6 +472,9 @@ async def _fetch_subscription_unlocked(sub_id: int) -> None:
             deduped[fp] = n  # last-wins
         parsed_dedup_skipped = len(parsed) - len(deduped)
         parsed = list(deduped.values())
+        # Optional country-flag prefix (no-op unless a GeoLite2 DB exists).
+        from app.core.geoip_lookup import enrich_parsed_nodes
+        enrich_parsed_nodes(parsed)
         if parsed_dedup_skipped > 0:
             logger.info(
                 "Subscription %d: collapsed %d duplicate parsed entries "

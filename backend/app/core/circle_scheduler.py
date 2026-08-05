@@ -17,6 +17,23 @@ logger = logging.getLogger(__name__)
 _CHECK_INTERVAL = 15
 
 
+async def _get_active_node(session) -> Optional[Node]:
+    """Resolve the system's current active node from Settings, or None.
+
+    Used by smart-skip to check the ACTUAL active node's health rather than
+    trusting the circle's `current_index`, which can drift from it.
+    """
+    setting = (await session.exec(
+        select(DBSettings).where(DBSettings.key == "active_node_id")
+    )).first()
+    if not setting or not setting.value:
+        return None
+    try:
+        return await session.get(Node, int(setting.value))
+    except (ValueError, TypeError):
+        return None
+
+
 class CircleScheduler:
     def __init__(self) -> None:
         self._task: Optional[asyncio.Task] = None
@@ -104,7 +121,7 @@ class CircleScheduler:
                     self._next_rotate[cid] = now
 
             if now >= self._next_rotate[cid]:
-                await self.rotate_circle(cid)
+                await self.rotate_circle(cid, from_scheduler=True)
                 interval = self._calc_interval(cd)
                 self._next_rotate[cid] = now + timedelta(minutes=interval)
                 logger.debug("NodeCircle %d: next rotation in %.1f minutes", cid, interval)
@@ -130,7 +147,7 @@ class CircleScheduler:
     # normally (no permanent broken state).
     _ROTATE_DEADLINE_S = 20.0
 
-    async def rotate_circle(self, circle_id: int) -> bool:
+    async def rotate_circle(self, circle_id: int, from_scheduler: bool = False) -> bool:
         """Public entry point — wraps the actual rotation in a per-circle
         lock and a hard timeout.
 
@@ -150,7 +167,7 @@ class CircleScheduler:
         async with lock:
             try:
                 async with asyncio.timeout(self._ROTATE_DEADLINE_S):
-                    return await self._do_rotate(circle_id)
+                    return await self._do_rotate(circle_id, from_scheduler)
             except asyncio.TimeoutError:
                 logger.warning(
                     "NodeCircle %d: rotation exceeded %.0fs deadline — aborted, "
@@ -159,7 +176,7 @@ class CircleScheduler:
                 )
                 return False
 
-    async def _do_rotate(self, circle_id: int) -> bool:
+    async def _do_rotate(self, circle_id: int, from_scheduler: bool = False) -> bool:
         """Pre-ping + rotate to first alive candidate.
 
         Returns True iff `active_node_id` was actually changed. False on
@@ -241,10 +258,30 @@ class CircleScheduler:
             current_idx = circle.current_index if circle.current_index < len(node_ids) else 0
             prev_node_id = node_ids[current_idx]
 
-            # Build candidate order: random=shuffle, sequential=walk forward.
-            if circle.mode == "random":
+            max_latency_ms = circle.max_latency_ms or 0
+            min_speed_mbps = circle.min_speed_mbps or 0.0
+
+            # Smart-skip: on a SCHEDULED tick with a latency budget set, don't
+            # churn off an active node that's still online and within budget.
+            # Manual "rotate now" and failover pass from_scheduler=False and
+            # always rotate. Untested latency (None) never blocks a rotation.
+            if from_scheduler and max_latency_ms > 0:
+                active = await _get_active_node(session)
+                if (active is not None and active.is_online
+                        and active.latency_ms is not None
+                        and active.latency_ms <= max_latency_ms):
+                    logger.debug(
+                        "NodeCircle %d: active node %d healthy (%dms <= %dms) — skip rotation",
+                        circle_id, active.id, active.latency_ms, max_latency_ms,
+                    )
+                    return False
+
+            # Build candidate order: random/best collect all, sequential walks
+            # forward. "best" is ordered by quality after the filter pass below.
+            if circle.mode in ("random", "best"):
                 order = [i for i in range(len(node_ids)) if i != current_idx]
-                random.shuffle(order)
+                if circle.mode == "random":
+                    random.shuffle(order)
             else:  # sequential — walk forward from current+1, wrap, skip current
                 order = [(current_idx + i) % len(node_ids) for i in range(1, len(node_ids))]
 
@@ -252,6 +289,15 @@ class CircleScheduler:
             for idx in order:
                 cand = await session.get(Node, node_ids[idx])
                 if not cand or not cand.enabled:
+                    continue
+                # Candidate filters (0 = disabled). Reject only on KNOWN-bad
+                # values — an untested node (None) gets the benefit of the
+                # doubt so a fresh circle isn't left with zero candidates.
+                if (max_latency_ms > 0 and cand.latency_ms is not None
+                        and cand.latency_ms > max_latency_ms):
+                    continue
+                if (min_speed_mbps > 0 and cand.speed_mbps is not None
+                        and cand.speed_mbps < min_speed_mbps):
                     continue
                 addr, port, udp = await health_checker._resolve_probe_target(session, cand)
                 candidates.append({
@@ -263,7 +309,18 @@ class CircleScheduler:
                     "udp": udp,
                     "protocol": cand.protocol,
                     "internal_port": cand.internal_port,
+                    "latency_ms": cand.latency_ms,
+                    "speed_mbps": cand.speed_mbps,
                 })
+
+            # "best" mode: probe in quality order — lowest latency first, then
+            # highest speed. Untested (None) sort last so known-good candidates
+            # are tried before unknowns.
+            if circle.mode == "best":
+                candidates.sort(key=lambda c: (
+                    c["latency_ms"] if c["latency_ms"] is not None else 10 ** 9,
+                    -(c["speed_mbps"] or 0.0),
+                ))
 
             circle_name = circle.name
             circle_mode = circle.mode

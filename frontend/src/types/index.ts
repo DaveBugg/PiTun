@@ -69,6 +69,11 @@ export interface Node {
   latency_ms?: number
   last_check?: string
   is_online: boolean
+  // Last speed reading (Mbps) + when it was taken. The UI greys/reddens a
+  // reading older than ~6h.
+  speed_mbps?: number | null
+  speed_max_mbps?: number | null
+  speed_tested_at?: string | null
   order: number
   chain_node_id?: number | null
   // Optional link to a Server (the VPS hosting this node's upstream).
@@ -722,13 +727,32 @@ export interface NodeCircle {
   name: string
   enabled: boolean
   node_ids: number[]
-  mode: 'sequential' | 'random'
+  mode: 'sequential' | 'random' | 'best'
   interval_min: number
   interval_max: number
+  // Candidate filters (0 = disabled). max_latency_ms drops slow-RTT
+  // candidates; min_speed_mbps drops candidates below the speed floor.
+  max_latency_ms: number
+  min_speed_mbps: number
   current_index: number
   last_rotated?: string
   current_node_name?: string
 }
+export type AutoCheckScope = 'all' | 'subscription' | 'group' | 'nodes'
+
+export interface AutoCheck {
+  enabled: boolean
+  interval_minutes: number
+  scope_kind: AutoCheckScope
+  // subscription id / group name / JSON "[1,2,3]"; empty for "all".
+  scope_value: string
+  last_sweep?: string | null
+  // Live status from the backend (not stored).
+  is_sweeping: boolean
+}
+
+export type AutoCheckUpdate = Partial<Pick<AutoCheck, 'enabled' | 'interval_minutes' | 'scope_kind' | 'scope_value'>>
+
 export type NodeCircleCreate = Omit<NodeCircle, 'id' | 'current_index' | 'last_rotated' | 'current_node_name'>
 export type NodeCircleUpdate = Partial<NodeCircleCreate>
 

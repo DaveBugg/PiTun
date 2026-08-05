@@ -217,7 +217,13 @@ export function useSpeedtestStream() {
       }
     })
       .catch(() => setResult(id, 'error'))
-      .finally(() => setPending(id, false))
+      .finally(() => {
+        setPending(id, false)
+        // Server persists the post-warmup average as the stream closes, so
+        // by now node.speed_mbps/speed_tested_at are fresh — refetch so the
+        // node card's speed badge (and its 6h staleness colour) updates.
+        qc.invalidateQueries({ queryKey: ['nodes'] })
+      })
   }
 
   return { run }
