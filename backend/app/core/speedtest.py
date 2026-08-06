@@ -24,10 +24,10 @@ from sqlmodel import select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.config import settings
-from app.core.config_gen import _build_outbound
+from app.core.config_gen import _build_outbound, SPEED_PROBE_PORT
 from app.core.healthcheck import HealthChecker
 from app.database import get_async_engine
-from app.models import Node
+from app.models import Node, Settings as DBSettings
 
 logger = logging.getLogger(__name__)
 
@@ -73,6 +73,51 @@ _REACH_TARGETS = [
 _REACH_TIMEOUT_S = 6.0
 
 
+async def _is_active_node(node_id: int) -> bool:
+    """Is `node_id` the currently active node? Never raises — a lookup hiccup
+    just falls back to the temp-xray path."""
+    try:
+        async with AsyncSession(get_async_engine()) as s:
+            row = (await s.exec(
+                select(DBSettings).where(DBSettings.key == "active_node_id")
+            )).first()
+            return bool(row and row.value and int(row.value) == node_id)
+    except (TypeError, ValueError):
+        return False
+    except Exception as exc:  # noqa: BLE001 — never block a speed test on this
+        logger.debug("active-node lookup failed: %s", exc)
+        return False
+
+
+async def _live_socks_ready(node_id: int) -> bool:
+    """True when `node_id` is active AND the main xray's speed-probe inbound is
+    listening — i.e. we can measure it through the LIVE tunnel instead of a
+    second temp xray (which, for WireGuard, would fight the live session)."""
+    return await _is_active_node(node_id) and await _port_open("127.0.0.1", SPEED_PROBE_PORT)
+
+
+async def _gate_and_measure(node: Node, socks_port: int) -> Dict:
+    """Reachability gate + download measurement over an already-open SOCKS
+    port — a throwaway xray OR the live speed-probe inbound. Shared so both
+    paths measure identically."""
+    reachable, latency_ms, detail = await _probe_reachable(socks_port)
+    if not reachable:
+        return _result(node, error=f"unreachable: {detail}",
+                       reachable=False, latency_ms=latency_ms)
+    last_error = "no targets reachable"
+    for label, url in _STREAM_TARGETS:
+        try:
+            measured = await _measure_download(socks_port, label, url)
+        except Exception as exc:  # noqa: BLE001 — try the next target
+            last_error = f"{label}: {str(exc)[:120]}"
+            continue
+        if measured is not None:
+            avg, mx = measured
+            return _result(node, download_mbps=avg, max_mbps=mx,
+                           reachable=True, latency_ms=latency_ms)
+    return _result(node, error=last_error, reachable=True, latency_ms=latency_ms)
+
+
 async def speedtest_node(node: Node) -> Dict:
     """Measure download speed through a freshly-spawned xray for `node`.
 
@@ -92,6 +137,15 @@ async def speedtest_node(node: Node) -> Dict:
     proc: Optional[asyncio.subprocess.Process] = None
     tmp_path: Optional[str] = None
     try:
+        # Active node: measure through the LIVE tunnel (the main xray's
+        # speed-probe inbound → active outbound) instead of a throwaway xray.
+        # A second instance re-opens the node's outbound; for WireGuard that's
+        # a second session with the same peer key, which the server can't hold
+        # twice — the temp test and the live tunnel fight, the reachability
+        # gate flaps to "unreachable", and the live tunnel is briefly disrupted.
+        if await _live_socks_ready(node.id):
+            return await _gate_and_measure(node, SPEED_PROBE_PORT)
+
         # Resolve the full chain: [entry_parent, ..., node]. Only the entry
         # parent's address needs to be reachable directly; deeper hops tunnel.
         try:
@@ -121,26 +175,7 @@ async def speedtest_node(node: Node) -> Dict:
         if proc is None or start_err:
             return _result(node, error=start_err or "Failed to start temp xray")
 
-        # Reachability gate — skip the speed fallbacks entirely on a dead node.
-        reachable, latency_ms, detail = await _probe_reachable(socks_port)
-        if not reachable:
-            return _result(node, error=f"unreachable: {detail}",
-                           reachable=False, latency_ms=latency_ms)
-
-        # Measure like the live test: avg after warm-up + peak steady window.
-        # First target that yields data wins.
-        last_error = "no targets reachable"
-        for label, url in _STREAM_TARGETS:
-            try:
-                measured = await _measure_download(socks_port, label, url)
-            except Exception as exc:  # noqa: BLE001 — try the next target
-                last_error = f"{label}: {str(exc)[:120]}"
-                continue
-            if measured is not None:
-                avg, mx = measured
-                return _result(node, download_mbps=avg, max_mbps=mx,
-                               reachable=True, latency_ms=latency_ms)
-        return _result(node, error=last_error, reachable=True, latency_ms=latency_ms)
+        return await _gate_and_measure(node, socks_port)
 
     except Exception as exc:
         logger.warning("Speedtest node %d error: %s", node.id, exc)
@@ -167,33 +202,40 @@ async def speedtest_stream(node: Node):
     tmp_path: Optional[str] = None
     try:
         yield {"phase": "start", "node_id": node.id}
-        try:
-            chain = await _resolve_chain(node)
-        except Exception as exc:  # noqa: BLE001
-            yield {"phase": "error", "error": f"chain resolve: {exc}"}
-            return
 
-        entry = chain[0]
-        entry_ip: Optional[str] = None
-        if entry.protocol != "naive":
+        # Active node → measure through the LIVE tunnel (speed-probe inbound),
+        # never a second temp xray (WireGuard single-session contention — see
+        # speedtest_node). Otherwise spin the usual throwaway instance.
+        if await _live_socks_ready(node.id):
+            socks_port = SPEED_PROBE_PORT
+        else:
             try:
-                entry_ip = await HealthChecker._resolve_direct(entry.address)
+                chain = await _resolve_chain(node)
             except Exception as exc:  # noqa: BLE001
-                yield {"phase": "error", "error": f"dns entry: {exc}"}
-                return
-        if node.protocol == "naive":
-            if not node.internal_port:
-                yield {"phase": "error", "error": "naive sidecar port not allocated"}
-                return
-            if not await _port_open("127.0.0.1", int(node.internal_port)):
-                yield {"phase": "error", "error": f"naive sidecar not on :{node.internal_port}"}
+                yield {"phase": "error", "error": f"chain resolve: {exc}"}
                 return
 
-        yield {"phase": "connecting", "host": "starting xray"}
-        socks_port, proc, tmp_path, start_err = await _start_temp_xray(node, chain, entry_ip)
-        if proc is None or start_err:
-            yield {"phase": "error", "error": start_err or "failed to start temp xray"}
-            return
+            entry = chain[0]
+            entry_ip: Optional[str] = None
+            if entry.protocol != "naive":
+                try:
+                    entry_ip = await HealthChecker._resolve_direct(entry.address)
+                except Exception as exc:  # noqa: BLE001
+                    yield {"phase": "error", "error": f"dns entry: {exc}"}
+                    return
+            if node.protocol == "naive":
+                if not node.internal_port:
+                    yield {"phase": "error", "error": "naive sidecar port not allocated"}
+                    return
+                if not await _port_open("127.0.0.1", int(node.internal_port)):
+                    yield {"phase": "error", "error": f"naive sidecar not on :{node.internal_port}"}
+                    return
+
+            yield {"phase": "connecting", "host": "starting xray"}
+            socks_port, proc, tmp_path, start_err = await _start_temp_xray(node, chain, entry_ip)
+            if proc is None or start_err:
+                yield {"phase": "error", "error": start_err or "failed to start temp xray"}
+                return
 
         # Reachability gate first — if the node can't reach the internet, say
         # so and stop instead of grinding every speed fallback to timeout.
@@ -272,6 +314,8 @@ async def sni_scan(domain: str, node: Optional[Node] = None) -> Dict:
     probed directly. Returns {ok, tls13, http2, status, via, detail}."""
     import re
 
+    import ipaddress
+
     domain = (domain or "").strip()
     for pfx in ("https://", "http://"):
         if domain.lower().startswith(pfx):
@@ -279,6 +323,16 @@ async def sni_scan(domain: str, node: Optional[Node] = None) -> Dict:
     domain = domain.split("/", 1)[0].split(":", 1)[0].strip()
     if not domain:
         return {"ok": False, "detail": "empty domain", "via": "direct"}
+
+    # A bare IP (or any host whose cert won't validate) still needs probing
+    # so we can read the cert it presents — that's the "scan the IP and see
+    # what turns up" case. `-k` below lets the handshake finish on a mismatch
+    # so curl still prints the server-certificate block.
+    try:
+        ipaddress.ip_address(domain)
+        is_ip = True
+    except ValueError:
+        is_ip = False
 
     proc: Optional[asyncio.subprocess.Process] = None
     tmp_path: Optional[str] = None
@@ -306,6 +360,8 @@ async def sni_scan(domain: str, node: Optional[Node] = None) -> Dict:
 
         cmd = ["curl", "-sS", "-v", "-o", "/dev/null", "--max-time", "10",
                "--http2", "-A", _STREAM_UA]
+        if is_ip:
+            cmd.append("-k")
         if socks_port:
             cmd += ["-x", f"socks5h://127.0.0.1:{socks_port}"]
         cmd.append(f"https://{domain}")
@@ -322,6 +378,15 @@ async def sni_scan(domain: str, node: Optional[Node] = None) -> Dict:
         m_status = re.search(r"< HTTP/[\d.]+ (\d{3})", txt)
         status = int(m_status.group(1)) if m_status else None
         reachable = status is not None
+
+        # Pull the certificate the endpoint actually presents, so scanning a
+        # bare IP still surfaces the domain(s) behind it (what the operator
+        # can use as the REALITY serverName). curl prints "subject: CN=…" and,
+        # on a name match, the cert's own name on the subjectAltName line.
+        m_subj = re.search(r"subject:\s*([^\r\n]+)", txt)
+        cert_subject = m_subj.group(1).strip() if m_subj else None
+        m_san = re.search(r"subjectAltName:[^\r\n]*?cert's \"([^\"]+)\"", txt)
+        cert_name = m_san.group(1) if m_san else None
 
         ok = bool(tls13 and http2 and reachable and status < 400)
         if ok:
@@ -341,6 +406,7 @@ async def sni_scan(domain: str, node: Optional[Node] = None) -> Dict:
         return {
             "ok": ok, "tls13": tls13, "http2": http2,
             "status": status, "via": via, "detail": detail,
+            "cert_subject": cert_subject, "cert_name": cert_name,
         }
     except asyncio.TimeoutError:
         return {"ok": False, "detail": "timed out", "via": via}

@@ -160,23 +160,30 @@ class AutoCheckScheduler:
                             datetime.now(timezone.utc) < _as_utc(node.speed_tested_at) + interval:
                         skipped += 1
                         continue
+                    mbps = mx = None
                     try:
                         result = await _speedtest(node)
+                        mbps = result.get("download_mbps")
+                        mx = result.get("max_mbps")
                     except Exception as exc:  # noqa: BLE001 — isolate per node
                         logger.info("AutoCheck: node %d speedtest error: %s", nid, exc)
-                        failed += 1
-                        continue
-                    mbps = result.get("download_mbps")
+                    # Stamp the check time either way. On failure we clear the
+                    # reading but keep the timestamp, so the UI shows a "no speed"
+                    # badge (with age) instead of a blank row — a node that
+                    # couldn't be measured should say so, not look untested.
+                    # `force` (manual Speed All) bypasses the staleness guard
+                    # above, so a failed node is always retried by hand.
                     if mbps:
                         node.speed_mbps = float(mbps)
-                        mx = result.get("max_mbps")
                         node.speed_max_mbps = float(mx) if mx is not None else None
-                        node.speed_tested_at = datetime.now(timezone.utc)
-                        session.add(node)
-                        await session.commit()
                         tested += 1
                     else:
+                        node.speed_mbps = None
+                        node.speed_max_mbps = None
                         failed += 1
+                    node.speed_tested_at = datetime.now(timezone.utc)
+                    session.add(node)
+                    await session.commit()
 
             logger.info(
                 "AutoCheck sweep done: tested=%d skipped=%d failed=%d (scope=%d)",

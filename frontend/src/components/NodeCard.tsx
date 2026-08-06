@@ -16,25 +16,32 @@ function fmtMbps(v: number): string {
   return v >= 100 ? String(Math.round(v)) : v.toFixed(1)
 }
 
+// Backend sends naive UTC (no Z) — normalise before parsing.
+function fmtAge(iso: string): string {
+  const min = Math.floor((Date.now() - new Date(iso.endsWith('Z') ? iso : iso + 'Z').getTime()) / 60000)
+  return min < 1 ? 'just now'
+    : min < 60 ? `${min}m ago`
+    : min < 1440 ? `${Math.floor(min / 60)}h ago`
+    : `${Math.floor(min / 1440)}d ago`
+}
+
 function speedInfo(
   mbps?: number | null, iso?: string | null, maxMbps?: number | null,
-): { text: string; stale: boolean } | null {
-  if (mbps == null) return null
+): { text: string; stale: boolean; failed?: boolean } | null {
+  if (mbps == null) {
+    // No reading. If it was never checked (no timestamp) show nothing;
+    // if it WAS checked (a sweep/manual test stamped the time) the check
+    // failed — surface that instead of leaving the row blank.
+    if (!iso) return null
+    return { text: `no speed · ${fmtAge(iso)}`, stale: false, failed: true }
+  }
   // avg, plus the peak when it's meaningfully higher (avg / peak).
   const speed = (maxMbps != null && maxMbps > mbps + 0.05)
     ? `${fmtMbps(mbps)} / ${fmtMbps(maxMbps)}`
     : fmtMbps(mbps)
   if (!iso) return { text: `${speed} Mbps`, stale: false }
-  // Backend sends naive UTC (no Z) — normalise before parsing.
-  const d = new Date(iso.endsWith('Z') ? iso : iso + 'Z')
-  const diffMs = Date.now() - d.getTime()
-  const min = Math.floor(diffMs / 60000)
-  const age =
-    min < 1 ? 'just now'
-      : min < 60 ? `${min}m ago`
-      : min < 1440 ? `${Math.floor(min / 60)}h ago`
-      : `${Math.floor(min / 1440)}d ago`
-  return { text: `${speed} Mbps · ${age}`, stale: diffMs >= SPEED_STALE_MS }
+  const diffMs = Date.now() - new Date(iso.endsWith('Z') ? iso : iso + 'Z').getTime()
+  return { text: `${speed} Mbps · ${fmtAge(iso)}`, stale: diffMs >= SPEED_STALE_MS }
 }
 
 interface Props {
@@ -171,11 +178,15 @@ export function NodeCard({
                   <span
                     className={clsx(
                       'inline-flex items-center gap-1 rounded-sm border px-1.5 py-0.5 text-[11px]',
-                      s.stale
+                      s.failed
+                        ? 'border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-800/50 dark:bg-amber-950/30 dark:text-amber-300'
+                        : s.stale
                         ? 'border-red-200 bg-red-50 text-red-700 dark:border-red-800/50 dark:bg-red-950/30 dark:text-red-300'
                         : 'border-gray-700 bg-gray-800/40 text-gray-300',
                     )}
-                    title={s.stale
+                    title={s.failed
+                      ? 'Last speed check failed — the node was unreachable or returned no throughput. Retry the speed test.'
+                      : s.stale
                       ? 'Speed reading is over 6 hours old — re-run the speed test'
                       : 'Last speed test — average / peak'}
                   >

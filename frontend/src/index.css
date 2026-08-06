@@ -86,7 +86,8 @@
    "card panel surface" in their respective themes. */
   :root,
   [data-theme='dark'] {
-    /* Brand accent — TailAdmin indigo ramp (brand-25 → 950). Same both themes. */
+    /* Brand accent — TailAdmin indigo ramp (light + default). Dark theme
+       overrides this to the original sky-blue ramp in the block below. */
     --ch-brand-50: 236 243 255;
     --ch-brand-100: 221 233 255;
     --ch-brand-200: 194 214 255;
@@ -116,6 +117,27 @@
     --ch-surface-raised: 16 24 40; /* gray-900 — cards */
     --ch-surface-sunken: 8 11 18;
 
+  }
+
+  /* ── DARK THEME brand override ───────────────────────────────────────────
+   Restore the original sky-blue accent (Tailwind sky ramp) for DARK ONLY.
+   Light + default keep the TailAdmin indigo above; this standalone
+   [data-theme='dark'] selector has equal specificity and comes later in
+   source, so it wins for dark. One override cascades to every brand utility
+   — bg-brand, text-brand, border-brand, ring-brand, and their /alpha and
+   `dark:` compiled variants (e.g. .dark\:bg-brand-600\/20:where([data-theme=dark],…))
+   — because each resolves rgb(var(--ch-brand-*)). */
+  [data-theme='dark'] {
+    --ch-brand-50: 240 249 255;
+    --ch-brand-100: 224 242 254;
+    --ch-brand-200: 186 230 253;
+    --ch-brand-300: 125 211 252;
+    --ch-brand-400: 56 189 248;
+    --ch-brand-500: 14 165 233;
+    --ch-brand-600: 2 132 199;
+    --ch-brand-700: 3 105 161;
+    --ch-brand-800: 7 89 133;
+    --ch-brand-900: 12 74 110;
   }
 
   /* ── LIGHT THEME ─────────────────────────────────────────────────────────

@@ -4,6 +4,44 @@ All notable user-facing changes to PiTun. Full per-release detail lives in the
 [GitHub Releases](https://github.com/DaveBugg/PiTun/releases); this file is the
 committed summary.
 
+## v1.5.1 — 2026-08-06
+
+Fixes the active node reporting no speed on a general sweep, adds a REALITY
+dest / SNI scanner to x-ui inbound creation, and a small dark-theme refresh.
+
+### Added
+
+- **REALITY dest / SNI scanner at inbound creation.** Creating an x-ui inbound
+  from a REALITY preset gains a **Scan (via active node)** button that probes
+  the SNI field's target — a domain OR a bare IP — through the active node and
+  reports TLS 1.3 / HTTP-2 suitability plus the certificate the endpoint
+  presents, so a bare-IP scan surfaces the domain behind it (usable as the
+  serverName). Mirrors 3x-ui's reality-sni scan, routed like every other
+  server op. No hardcoded candidate lists — it scans exactly what you enter.
+
+### Fixed
+
+- **The active node reported "no speed" on a general / auto speed sweep.**
+  Every speed test spun up a throwaway xray, which for the *active* node opens
+  a SECOND tunnel to the same server — fatal for WireGuard, which holds one
+  session per peer key: the temp test and the live tunnel fought, the
+  reachability gate flapped to "unreachable", and the reading failed (briefly
+  disrupting the live tunnel too). The active node is now measured through the
+  live tunnel — config_gen adds a loopback `speed-probe` inbound pinned to the
+  active outbound and the test reuses the session already up. No second
+  session, no disruption, an honest number. Non-active nodes are unchanged.
+
+### Changed
+
+- **Failed speed checks are visible.** A node the sweep couldn't measure now
+  shows an amber `no speed · <age>` badge instead of a blank row — the check
+  is stamped so the failure persists across reloads.
+- **Dark-theme polish.** The main content pane now matches the sidebar colour,
+  and the brand accent returns to the original sky-blue ramp in dark mode only
+  (light keeps the TailAdmin indigo).
+- Removed the redundant "Check SNI" button from the add-node form — the scan
+  belongs at inbound creation, not when registering an already-existing node.
+
 ## v1.5.0 — 2026-08-05
 
 Promotes v1.5.0-beta.1 to stable and lands a UI-framework refresh, a full

@@ -628,6 +628,10 @@ export interface SniScanResult {
   status?: number | null
   via: string
   detail: string
+  /** Certificate the endpoint presents — lets a bare-IP scan surface the
+   *  domain(s) behind it (usable as the REALITY serverName). */
+  cert_subject?: string | null
+  cert_name?: string | null
 }
 
 export const diagnosticsApi = {

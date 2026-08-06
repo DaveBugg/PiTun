@@ -890,6 +890,18 @@ def resolve_active_circle(circles, active_node_id):
     return None, None
 
 
+# Loopback SOCKS inbound the backend uses to speed-test the ACTIVE node
+# through the LIVE tunnel instead of spinning a second temp xray. A temp
+# instance re-opens the node's outbound — for WireGuard that means a SECOND
+# session with the same peer key, which the server can only hold once, so the
+# temp test and the live tunnel fight and the reading fails (and the live
+# tunnel is briefly disrupted). This inbound is force-routed to the active
+# outbound (see the top routing rule), so measuring through it reuses the
+# session that's already up. Present only when there's an active node.
+SPEED_PROBE_PORT = 10809
+SPEED_PROBE_TAG = "speed-probe"
+
+
 def generate_config(
     active_node: Optional[Node],
     all_nodes: List[Node],
@@ -1025,6 +1037,17 @@ def generate_config(
             "sniffing": {"enabled": dns_sniffing, "destOverride": sniff_dest, "routeOnly": True},
         },
     ]
+
+    # Live-tunnel speed-probe inbound (loopback). Only useful when a node is
+    # active; the top routing rule below pins it to the active outbound.
+    if active_node is not None:
+        inbounds.append({
+            "tag": SPEED_PROBE_TAG,
+            "protocol": "socks",
+            "listen": "127.0.0.1",
+            "port": SPEED_PROBE_PORT,
+            "settings": {"auth": "noauth", "udp": False},
+        })
 
     # TPROXY inbounds
     if inbound_mode in ("tproxy", "both"):
@@ -1334,6 +1357,17 @@ def generate_config(
 
         # Default: direct
         routing_rules.append({"type": "field", "ip": ["0.0.0.0/0", "::/0"], "outboundTag": "direct"})
+
+    # Force the speed-probe inbound straight to the active outbound, ahead of
+    # every other rule, so a live-tunnel measurement always egresses via the
+    # active node (never diverted by a geoip/domain/set rule).
+    if active_node is not None:
+        routing_rules.insert(0, {
+            "type": "field",
+            "inboundTag": [SPEED_PROBE_TAG],
+            **({"balancerTag": active_balancer_tag} if active_balancer_tag
+               else {"outboundTag": f"node-{active_node.id}"}),
+        })
 
     config: Dict[str, Any] = {
         "log": {

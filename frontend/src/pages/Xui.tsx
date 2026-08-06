@@ -3,10 +3,10 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   Layers, Loader2, AlertTriangle, ExternalLink, Trash2, Plus, RefreshCw,
   ShieldCheck, ShieldAlert, Server as ServerIcon, KeyRound, Copy, Check,
-  ChevronRight, ChevronDown, Upload, Shuffle, UploadCloud, QrCode,
+  ChevronRight, ChevronDown, Upload, Shuffle, UploadCloud, QrCode, Radar,
 } from 'lucide-react'
 
-import { xuiApi } from '@/api/client'
+import { xuiApi, diagnosticsApi, type SniScanResult } from '@/api/client'
 import { useT } from '@/hooks/useT'
 import { useConfirm } from '@/components/ConfirmModal'
 import { ModalShell } from '@/components/ModalShell'
@@ -1066,6 +1066,25 @@ function AddInboundModal({
   const [values, setValues] = useState<Record<string, string>>({})
   const [error, setError] = useState('')
 
+  // REALITY dest / SNI scan — probe whatever's in the `sni` field (a domain
+  // OR a bare IP) THROUGH THE ACTIVE NODE and surface what turns up: TLS 1.3 /
+  // HTTP-2 suitability plus the certificate domain the endpoint presents, so
+  // the operator can pick a working serverName. Mirrors 3x-ui's reality-sni
+  // scan, but routed through the active node like every other server op.
+  const [sniScan, setSniScan] = useState<{ loading: boolean; res: SniScanResult | null; err: string }>(
+    { loading: false, res: null, err: '' },
+  )
+  const scanSni = async (fieldName: string) => {
+    const target = (values[fieldName] || '').trim()
+    if (!target) return
+    setSniScan({ loading: true, res: null, err: '' })
+    try {
+      setSniScan({ loading: false, res: await diagnosticsApi.sniScan(target), err: '' })
+    } catch {
+      setSniScan({ loading: false, res: null, err: t('scan failed', 'ошибка сканирования') })
+    }
+  }
+
   const preset = presets.find((p) => p.id === presetId) ?? null
 
   // Pre-populate defaults when picking a preset. Fields with a
@@ -1216,6 +1235,49 @@ function AddInboundModal({
                   placeholder={f.placeholder || (f.default ?? '')}
                   className="w-full rounded-lg bg-gray-900 border border-gray-800 px-3 py-2 text-sm text-gray-100 focus:border-brand-500 focus:outline-hidden"
                 />
+                {f.type === 'sni' && (
+                  <div className="mt-1.5 space-y-1">
+                    <button
+                      type="button"
+                      onClick={() => scanSni(f.name)}
+                      disabled={sniScan.loading || !values[f.name]?.trim()}
+                      className="rounded-sm bg-gray-800 px-2 py-1 text-[11px] text-gray-300 hover:bg-gray-700 disabled:opacity-50 inline-flex items-center gap-1.5"
+                    >
+                      {sniScan.loading
+                        ? <Loader2 className="h-3 w-3 animate-spin" />
+                        : <Radar className="h-3 w-3" />}
+                      {sniScan.loading
+                        ? t('Scanning…', 'Сканирую…')
+                        : t('Scan (via active node)', 'Сканировать (через активную ноду)')}
+                    </button>
+                    {(sniScan.res || sniScan.err) && (
+                      <div className={
+                        'text-[11px] ' +
+                        (sniScan.err
+                          ? 'text-red-600 dark:text-red-400'
+                          : sniScan.res!.ok
+                          ? 'text-green-600 dark:text-green-400'
+                          : 'text-amber-600 dark:text-amber-400')
+                      }>
+                        {sniScan.err || (
+                          <>
+                            {sniScan.res!.ok ? '✓ ' : '• '}{sniScan.res!.detail}
+                            {sniScan.res!.tls13 != null && ` · TLS1.3 ${sniScan.res!.tls13 ? '✓' : '✗'}`}
+                            {sniScan.res!.http2 != null && ` · h2 ${sniScan.res!.http2 ? '✓' : '✗'}`}
+                            {(sniScan.res!.cert_name || sniScan.res!.cert_subject) && (
+                              <> · {t('cert', 'серт')}:{' '}
+                                <span className="text-gray-300">
+                                  {sniScan.res!.cert_name || sniScan.res!.cert_subject}
+                                </span>
+                              </>
+                            )}
+                            {` · via ${sniScan.res!.via}`}
+                          </>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )}
                 {f.help && (
                   <p className="text-[11px] text-gray-500 mt-1 leading-snug">{f.help}</p>
                 )}

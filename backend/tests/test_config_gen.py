@@ -58,6 +58,32 @@ def _find_inbound(config, tag):
     return None
 
 
+class TestSpeedProbeInbound:
+    """The active node is speed-tested through the LIVE tunnel: config_gen adds
+    a loopback `speed-probe` socks inbound + a top-priority rule pinning it to
+    the active outbound, so no second temp xray (and no WG session fight)."""
+
+    def test_present_and_routed_to_active_node(self):
+        from app.core.config_gen import SPEED_PROBE_PORT
+        node = _make_node(id=7, protocol="vless")
+        cfg = generate_config(node, [node], [], "global", _default_settings())
+        ib = _find_inbound(cfg, "speed-probe")
+        assert ib is not None
+        assert ib["listen"] == "127.0.0.1"
+        assert ib["port"] == SPEED_PROBE_PORT
+        assert ib["protocol"] == "socks"
+        # First routing rule pins the probe inbound → active node's outbound.
+        first = cfg["routing"]["rules"][0]
+        assert first.get("inboundTag") == ["speed-probe"]
+        assert first.get("outboundTag") == "node-7"
+
+    def test_absent_without_active_node(self):
+        node = _make_node(id=7, protocol="vless")
+        cfg = generate_config(None, [node], [], "global", _default_settings())
+        assert _find_inbound(cfg, "speed-probe") is None
+        assert all(r.get("inboundTag") != ["speed-probe"] for r in cfg["routing"]["rules"])
+
+
 # ============================================================================
 # Sockopt mark tests (CRITICAL -- these catch the routing loop bug)
 # ============================================================================

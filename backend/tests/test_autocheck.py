@@ -115,6 +115,11 @@ class TestRunSweep:
         assert summary["tested"] == 1
         session.expire_all()
         assert session.get(Node, good.id).speed_mbps == 42.0
+        # A failed check is stamped (time set, reading cleared) so the UI
+        # can show a "no speed" badge instead of a blank row.
+        bad_row = session.get(Node, bad.id)
+        assert bad_row.speed_tested_at is not None
+        assert bad_row.speed_mbps is None
 
 
 class TestAutoCheckAPI:
