@@ -310,6 +310,32 @@ export function Settings() {
         </div>
       ))}
 
+      {/* HTTPS / trust certificate */}
+      {section(Lock, t('HTTPS', 'HTTPS'), t('Serve the panel over TLS and trust its certificate', 'Панель по TLS и доверие сертификату'), (
+        <div className="space-y-3">
+          <p className="text-[12px] text-gray-400">
+            {t(
+              'The panel is also served over HTTPS (443) with a per-install certificate signed by a local PiTun CA. Install the root CA in your OS/browser trust store to drop the "not secure" warning. Plain HTTP on port 80 keeps working, so a cert issue can never lock you out.',
+              'Панель также отдаётся по HTTPS (443) с сертификатом этой установки, подписанным локальным PiTun CA. Добавь root-CA в доверенные в ОС/браузере, чтобы убрать предупреждение «не защищено». Обычный HTTP на порту 80 продолжает работать, так что проблема с сертификатом не заблокирует доступ.',
+            )}
+          </p>
+          <a
+            href="/pitun-ca.crt"
+            download="pitun-ca.crt"
+            className="inline-flex items-center gap-2 rounded-lg bg-brand-600 hover:bg-brand-500 px-3 py-2 text-[12px] text-white font-medium"
+          >
+            <Lock className="h-3.5 w-3.5" />
+            {t('Download PiTun root CA', 'Скачать root-CA PiTun')}
+          </a>
+          <p className="text-[11px] text-gray-600">
+            {t(
+              'After trusting the CA, reopen the panel over https://. macOS: add to Keychain → System and mark "Always Trust". Windows: import into "Trusted Root Certification Authorities". Firefox: Settings → Privacy → Certificates → Import (trust for websites).',
+              'После доверия CA открой панель по https://. macOS: добавь в Keychain → System и поставь «Always Trust». Windows: импорт в «Доверенные корневые центры сертификации». Firefox: Настройки → Приватность → Сертификаты → Импорт (доверять сайтам).',
+            )}
+          </p>
+        </div>
+      ))}
+
       {/* Ports */}
       {section(Cable, 'Service Ports', t('Proxy and DNS listening ports', 'Порты прослушивания прокси и DNS'), (
         <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">

@@ -197,6 +197,16 @@
     background-color: #a8bdf999;
   }
 
+  /* Dark-theme blue pills (mode / status / type badges — "rules",
+     "running", vmess, src_ip). The saturated blue-900 wash reads too
+     "pure blue" on the dark surface; swap it for a desaturated grey-blue
+     that matches the sky-blue accent. Same override pattern as the light
+     patches above; wins over Tailwind's generated utility by specificity
+     within the shared utilities layer. */
+  [data-theme='dark'] .dark\:bg-blue-900\/60 {
+    background-color: color-mix(in oklab, oklch(0.43 0.09 227.29) 60%, transparent);
+  }
+
   /* Smooth transition when toggling between themes — short enough to feel
    responsive, long enough not to feel like a jank refresh. */
   html {

@@ -26,7 +26,7 @@ def _seed_global(session, *rules):
 class TestImportPreview:
     def test_new_rules_into_global(self, client, session, auth_headers, default_settings):
         r = client.post("/api/routing/import/preview", headers=auth_headers, json={
-            "rules": [_r("domain", "youtube.com", "proxy"), _r("domain", "vk.com", "direct")],
+            "rules": [_r("domain", "youtube.com", "proxy"), _r("domain", "ru-site.example", "direct")],
             "destination": {"kind": "global"},
         })
         assert r.status_code == 200, r.text

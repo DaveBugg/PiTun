@@ -684,6 +684,7 @@ async def _fetch_subscription_unlocked(sub_id: int) -> None:
         # the circle enabled lets it spring back to life automatically
         # if the operator re-adds nodes to the panel.
         circles_pruned: list[int] = []
+        pruned_summary: list[str] = []  # "'name' (-N)" per affected circle
         if removed_ids:
             import json as _json
             all_circles = (await session.exec(select(NodeCircle))).all()
@@ -709,6 +710,7 @@ async def _fetch_subscription_unlocked(sub_id: int) -> None:
                 circle.node_ids = _json.dumps(surviving_ids)
                 session.add(circle)
                 circles_pruned.append(circle.id)
+                pruned_summary.append(f"'{circle.name}' (-{len(ids) - len(surviving_ids)})")
             if circles_pruned:
                 logger.warning(
                     "Subscription %d refresh: pruned dangling refs from "
@@ -776,6 +778,24 @@ async def _fetch_subscription_unlocked(sub_id: int) -> None:
                     f"Subscription {sub_id} no longer serves the relay node(s) that "
                     f"node(s) {unchained} were chained through; the chain link was "
                     f"cleared and they now connect directly."
+                ),
+            )
+
+        # Surface pruned circles in the Recent Events feed so the operator
+        # notices a circle that shrank — especially the "provider moved a node
+        # to a new address" case, where the node returns as a NEW id and is
+        # not auto-re-added to the circle.
+        if pruned_summary:
+            from app.core.events import record_event
+            await record_event(
+                category="circle.pruned",
+                severity="warning",
+                title="NodeCircle membership changed by refresh",
+                details=(
+                    f"Subscription {sub_id} refresh removed node(s) from circle(s): "
+                    f"{', '.join(pruned_summary)}. A node removed from the panel — or "
+                    f"moved to a new address, which returns as a new id — is not "
+                    f"auto-re-added; check the circle membership."
                 ),
             )
 

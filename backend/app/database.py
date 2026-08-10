@@ -200,7 +200,13 @@ async def init_default_settings():
         # Health check
         "health_interval": str(settings.health_interval),
         "health_timeout": str(settings.health_timeout),
-        "disable_ipv6": "false",
+        # Disabled by default on a CLEAN install: PiTun's TPROXY pipeline is
+        # IPv4-only, so turning host IPv6 off avoids a whole class of
+        # IPv6-path surprises (the DNS engine already returns IPv4-only to
+        # clients via dns_query_strategy=UseIPv4). INSERT OR IGNORE means
+        # existing boxes keep whatever they already have — only a fresh DB
+        # picks up this default, so upgrades never flip it silently.
+        "disable_ipv6": "true",
         "dns_over_tcp": "false",
         # LAN proxy authentication (since v1.3.0-beta.6). Applies to
         # the explicit SOCKS5 + HTTP inbounds (not TPROXY — that one

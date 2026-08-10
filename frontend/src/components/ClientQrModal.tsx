@@ -24,7 +24,7 @@ import { copyToClipboard } from '@/lib/clipboard'
 export interface ClientQrModalProps {
   open: boolean
   onClose: () => void
-  /** Heading shown above the QR (e.g. "VPN-VK · admin@home"). */
+  /** Heading shown above the QR (e.g. "VPN-A · admin@home"). */
   title: string
   /** Eager URI (alternative to `fetchUri`). One of the two is required. */
   uri?: string | null

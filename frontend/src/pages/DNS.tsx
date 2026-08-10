@@ -194,7 +194,7 @@ function DnsSettingsSection({
             "Fastest response wins, but rule servers appear in the log for domains they shouldn't handle.\n\n" +
             "Examples with ON:\n" +
             "• youtube.com → 94.140.14.14 (YouTube rule) only\n" +
-            "• vk.com → 77.88.8.8 (Bypass RU) only\n" +
+            "• ru-site.example → 77.88.8.8 (Bypass RU) only\n" +
             "• apple.com → 8.8.8.8 → 8.8.4.4 → 1.1.1.1 (plain servers, no rule match)\n\n" +
             "Examples with OFF:\n" +
             "• apple.com → queried on ALL servers simultaneously; 94.140.14.14 may appear in the log even though no YouTube rule matched",
@@ -206,7 +206,7 @@ function DnsSettingsSection({
             "Побеждает быстрейший ответ, но rule-серверы появляются в логе для чужих доменов.\n\n" +
             "Примеры с ON:\n" +
             "• youtube.com → 94.140.14.14 (правило YouTube) только\n" +
-            "• vk.com → 77.88.8.8 (Bypass RU) только\n" +
+            "• ru-site.example → 77.88.8.8 (Bypass RU) только\n" +
             "• apple.com → 8.8.8.8 → 8.8.4.4 → 1.1.1.1 (plain-серверы, правило не совпало)\n\n" +
             "Примеры с OFF:\n" +
             "• apple.com → запрашивается на ВСЕХ серверах одновременно; 94.140.14.14 может появиться в логе хотя правило YouTube не совпало"

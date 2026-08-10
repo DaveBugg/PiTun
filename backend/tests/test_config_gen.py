@@ -349,19 +349,19 @@ class TestModes:
         catch-all to active node. This is the contract the new
         Routing-page banner (frontend 1.3.5) tells the user about."""
         node = _make_node(id=11)
-        # A user rule that would normally send vk.com direct
+        # A user rule that would normally send ru-site.example direct
         user_rule = RoutingRule(
             id=99, name="bypass vk", rule_type="domain",
-            match_value="vk.com", action="direct", order=0, enabled=True,
+            match_value="ru-site.example", action="direct", order=0, enabled=True,
         )
         cfg = generate_config(
             node, [node], [user_rule], "global", _default_settings(),
         )
-        # No rule mentions vk.com
+        # No rule mentions ru-site.example
         for r in cfg["routing"]["rules"]:
-            assert "vk.com" not in str(r), (
+            assert "ru-site.example" not in str(r), (
                 "global mode must NOT emit user RoutingRule rows; "
-                f"found one referencing vk.com: {r}"
+                f"found one referencing ru-site.example: {r}"
             )
 
 
@@ -652,7 +652,7 @@ class TestDNS:
     # ── DNS-upstream outboundTag pinning (since v1.3.5) ────────────────
     #
     # Pinning DNS servers to `outboundTag: direct` is the fix for the
-    # 192.168.1.4 burn-in lockup. The contract these tests pin: every
+    # DNS burn-in lockup. The contract these tests pin: every
     # DNS server entry must end up as a dict with outboundTag=direct,
     # regardless of whether the operator configured it as a bare
     # upstream, a per-domain object, or a fallback. The only exception
@@ -717,7 +717,7 @@ class TestDNS:
         outboundTag=direct without losing their existing fields."""
         from app.models import DNSRule
         rules = [DNSRule(
-            id=1, name="r", domain_match="vk.com",
+            id=1, name="r", domain_match="ru-site.example",
             dns_server="77.88.8.8", dns_type="plain",
             enabled=True, order=10,
         )]
@@ -732,7 +732,7 @@ class TestDNS:
         assert yandex is not None, cfg["dns"]["servers"]
         assert yandex["outboundTag"] == "direct"
         # Existing fields preserved
-        assert "vk.com" in yandex.get("domains", [])
+        assert "ru-site.example" in yandex.get("domains", [])
 
     def test_ru_bypass_dns_pinned(self):
         """`bypass_ru_dns=true` adds a Yandex-DNS server for RU domains.

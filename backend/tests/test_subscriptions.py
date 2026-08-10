@@ -174,7 +174,7 @@ class TestSubscriptionRefreshUpsert:
     `active_node_id` across a refresh. Drives the same code path as
     the real `_fetch_subscription` but with the network fetch stubbed
     to a deterministic URI list. Mirrors the real-world failure mode
-    the user hit on 192.168.1.4 with a 1256-node subscription."""
+    seen with a 1256-node subscription."""
 
     def test_active_node_survives_refresh_when_node_returns(
         self, client, admin_user, auth_headers, session,

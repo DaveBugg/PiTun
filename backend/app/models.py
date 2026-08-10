@@ -722,7 +722,7 @@ class ProxyChain(SQLModel, table=True):
 
     A `ChainClient` is one logical user — when created it spawns N
     panel-side clients (one per channel), so the user gets N VLESS
-    URIs (e.g. "VPN-VK" / "VPN-MAX" / ...) all backed by the same
+    URIs (e.g. "VPN-A" / "VPN-B" / ...) all backed by the same
     exit IP. Importing any of them as a `Node` makes PiTun route
     through that chain end-to-end.
     """

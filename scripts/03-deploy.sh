@@ -199,6 +199,13 @@ if sudo nft list table inet pitun > /dev/null 2>&1; then
     REBUILD_FLUSHED=1
 fi
 
+# HTTPS: generate the panel's per-install cert + local CA BEFORE nginx comes
+# up — `listen 443 ssl` aborts without the files. Idempotent: reuses the CA,
+# re-issues the leaf only when the LAN IP changed. See scripts/gen-cert.sh.
+log "Ensuring HTTPS certificate for the panel (443)..."
+sudo bash "$(dirname "$0")/gen-cert.sh" "$VM_IP" \
+    || err "HTTPS cert generation failed — aborting before nginx start (fix openssl, re-run)"
+
 log "Building Docker containers (this may take 5-10 minutes on first run)..."
 $DOCKER compose up -d --build 2>&1
 

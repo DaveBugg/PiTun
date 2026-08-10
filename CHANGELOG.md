@@ -4,6 +4,44 @@ All notable user-facing changes to PiTun. Full per-release detail lives in the
 [GitHub Releases](https://github.com/DaveBugg/PiTun/releases); this file is the
 committed summary.
 
+## v1.5.2 — 2026-08-06
+
+Adds HTTPS for the panel (per-install cert + downloadable local CA), disables
+host IPv6 by default on clean installs, and surfaces NodeCircles that a
+subscription refresh shrank.
+
+### Added
+
+- **HTTPS for the panel.** The reverse proxy now serves the UI over TLS on
+  **443** alongside plain HTTP on 80, so a cert issue can't lock you out. A
+  per-install certificate is signed by a local **PiTun CA**, generated before
+  nginx starts (`scripts/gen-cert.sh`), with the box's LAN IP + `pitun` /
+  `pitun.local` in the SAN. **Settings → HTTPS** offers the root CA for
+  download — trust it once to drop the browser warning. WebSocket / log
+  streams upgrade to `wss://` automatically. Existing boxes pick it up on the
+  next deploy.
+- **NodeCircle "shrank by refresh" highlight.** When a subscription refresh
+  removes a node that belonged to a circle, PiTun records a `circle.pruned`
+  event (Recent Events) naming the affected circle(s), and the NodeCircles
+  page flags any circle with a missing member or fewer than 2 nodes with a
+  **check members** badge. Covers the case where a provider moves a node to a
+  new address — it comes back as a new id and isn't auto-re-added.
+
+### Changed
+
+- **Host IPv6 is disabled by default on a CLEAN install** (`disable_ipv6=true`
+  seeded for fresh DBs only). PiTun's TPROXY is IPv4-only, so this avoids a
+  class of IPv6-path surprises; existing installs keep whatever they had
+  (`INSERT OR IGNORE` — an upgrade never flips it). Client-side IPv6 leaks
+  were already closed by `dns_query_strategy=UseIPv4`.
+- **Dark-theme polish.** Blue type/mode pills (rules / vmess / src_ip) use a
+  desaturated grey-blue in dark mode instead of the saturated blue-900 wash.
+
+### Housekeeping
+
+- Sanitized example identifiers in a few source comments and test fixtures
+  (no behaviour change).
+
 ## v1.5.1 — 2026-08-06
 
 Fixes the active node reporting no speed on a general sweep, adds a REALITY

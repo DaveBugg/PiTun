@@ -1,6 +1,6 @@
 import * as React from 'react'
 import { useState } from 'react'
-import { Plus, Pencil, Trash2, ToggleLeft, ToggleRight, RefreshCw, Circle } from 'lucide-react'
+import { Plus, Pencil, Trash2, ToggleLeft, ToggleRight, RefreshCw, Circle, AlertTriangle } from 'lucide-react'
 import { InfoTip } from '@/components/InfoTip'
 import { clsx } from 'clsx'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
@@ -350,6 +350,10 @@ export function NodeCircles() {
   })
 
   const nodeOptions = nodes.map((n) => ({ id: n.id, name: n.name }))
+  // Ids that still resolve to a real node — used to flag circles that a
+  // subscription refresh may have shrunk (dead ids pruned, or a moved node
+  // that came back as a new id and wasn't auto-re-added).
+  const nodeIdSet = new Set(nodes.map((n) => n.id))
 
   const handleSave = (data: NodeCircleCreate) => {
     if (editCircle) {
@@ -419,6 +423,19 @@ export function NodeCircles() {
                 <span className="text-xs text-gray-500 font-mono">
                   {circle.node_ids.length} node{circle.node_ids.length !== 1 ? 's' : ''}
                 </span>
+
+                {(circle.node_ids.some((id) => !nodeIdSet.has(id)) || circle.node_ids.length < 2) && (
+                  <span
+                    className="inline-flex items-center gap-1 rounded-sm border border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-800/50 dark:bg-amber-950/30 dark:text-amber-300 px-1.5 py-0.5 text-[11px]"
+                    title={t(
+                      'This circle may have lost members in a subscription refresh — a node removed from the panel (or moved to a new address, which returns as a new id) is not auto-re-added. Check the membership; a circle needs at least 2 nodes to rotate.',
+                      'Круг мог потерять участников при обновлении подписки — нода, убранная из панели (или переехавшая на новый адрес, что возвращается новым id), не добавляется автоматически. Проверь состав; для ротации нужно минимум 2 ноды.',
+                    )}
+                  >
+                    <AlertTriangle className="h-3 w-3" />
+                    {t('check members', 'проверь состав')}
+                  </span>
+                )}
 
                 <span className="text-xs text-gray-500">
                   {formatInterval(circle.interval_min, circle.interval_max)}

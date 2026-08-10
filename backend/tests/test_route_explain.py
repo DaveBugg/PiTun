@@ -386,9 +386,9 @@ class TestAccessLogParser:
     def test_parses_legacy_doublearrow(self):
         from app.core.route_explain_probe import _read_chosen_outbound
         import tempfile, os
-        log = "2026 accepted tcp:vk.com:443 [probe-in >> direct]\n"
+        log = "2026 accepted tcp:ru-site.example:443 [probe-in >> direct]\n"
         fd, p = tempfile.mkstemp(); os.write(fd, log.encode()); os.close(fd)
         try:
-            assert _read_chosen_outbound(p, "vk.com") == "direct"
+            assert _read_chosen_outbound(p, "ru-site.example") == "direct"
         finally:
             os.remove(p)
