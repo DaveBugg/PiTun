@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { systemApi } from '@/api/client'
 import HostNetworkSection from '@/components/HostNetworkSection'
+import BackupSection from '@/components/BackupSection'
 import { UpdateSection } from '@/components/UpdateSection'
 import {
   Settings as SettingsIcon,
@@ -334,6 +335,11 @@ export function Settings() {
             )}
           </p>
         </div>
+      ))}
+
+      {/* Backup / restore */}
+      {section(Database, t('Backup & Restore', 'Бэкап и восстановление'), t('Export the whole configuration to a file, or restore from one', 'Экспорт всей конфигурации в файл или восстановление из него'), (
+        <BackupSection />
       ))}
 
       {/* Ports */}

@@ -321,7 +321,7 @@ app.add_middleware(
 )
 
 # ── Routers ───────────────────────────────────────────────────────────────────
-from app.api import nodes, routing, routing_sets, subscriptions, system, geodata, logs, dns, balancers, auth, nodecircle, devices, diagnostics, events, servers, scripts, server_tasks, server_clients, templates, user_agents, xui, network, autocheck
+from app.api import nodes, routing, routing_sets, subscriptions, system, geodata, logs, dns, balancers, auth, nodecircle, devices, diagnostics, events, servers, scripts, server_tasks, server_clients, templates, user_agents, xui, network, autocheck, backup
 from app.core.auth import get_current_user
 
 app.include_router(auth.router, prefix="/api")
@@ -341,6 +341,7 @@ app.include_router(dns.router, dependencies=_auth)
 app.include_router(balancers.router, prefix="/api", dependencies=_auth)
 app.include_router(nodecircle.router, prefix="/api", dependencies=_auth)
 app.include_router(autocheck.router, prefix="/api", dependencies=_auth)
+app.include_router(backup.router, prefix="/api", dependencies=_auth)
 app.include_router(devices.router, prefix="/api", dependencies=_auth)
 app.include_router(diagnostics.router, prefix="/api", dependencies=_auth)
 app.include_router(events.router, prefix="/api", dependencies=_auth)

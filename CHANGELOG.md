@@ -4,6 +4,37 @@ All notable user-facing changes to PiTun. Full per-release detail lives in the
 [GitHub Releases](https://github.com/DaveBugg/PiTun/releases); this file is the
 committed summary.
 
+## v1.5.3 — 2026-08-11
+
+Two ways to stop hand-maintaining state: a NodeCircle can now track a
+subscription automatically, and the whole configuration can be exported to (and
+restored from) a single file. Ships DB migration 023.
+
+### Added
+
+- **NodeCircle auto-sync from a subscription.** Link a circle to a subscription
+  and every refresh keeps its membership current: nodes the panel still serves
+  are kept or **added** — including one that came back under a new address, which
+  arrives as a new id and previously had to be re-added by hand — while nodes the
+  panel dropped leave. Members you picked yourself, or that came from another
+  subscription, are always preserved. Unlinked circles behave exactly as before
+  (dangling ids pruned, "check members" badge), so nothing changes unless you opt
+  in. Membership changes are reported in Recent Events as `circle.synced`.
+- **Whole-box configuration backup.** **Settings → Backup & Restore** exports
+  settings, subscriptions, nodes, routing sets and rules, DNS rules, balancer
+  groups, node circles, devices and UA templates as one JSON file, and restores
+  it onto a fresh box.
+  - **Secrets are opt-in** (`include_secrets`, off by default), so the file you
+    share for debugging carries no node credentials or subscription URLs — and
+    restoring such a file never blanks the credentials already on the box.
+  - **Restore previews before it writes**: per-section add / update / delete
+    counts plus warnings, then an explicit confirm. `merge` adds and updates;
+    `replace` additionally deletes rows the backup doesn't contain.
+  - The dataplane is regenerated and xray reloaded afterwards, so restored
+    routing and DNS take effect immediately.
+  - Endpoints: `GET /api/system/backup`, `POST /api/system/backup/preview`,
+    `POST /api/system/backup/restore`.
+
 ## v1.5.2 — 2026-08-06
 
 Adds HTTPS for the panel (per-install cert + downloadable local CA), disables

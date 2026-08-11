@@ -4,7 +4,7 @@ import { Plus, Pencil, Trash2, ToggleLeft, ToggleRight, RefreshCw, Circle, Alert
 import { InfoTip } from '@/components/InfoTip'
 import { clsx } from 'clsx'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { circleApi } from '@/api/client'
+import { circleApi, subsApi } from '@/api/client'
 import { useNodes } from '@/hooks/useNodes'
 import { useSystemSettings, useUpdateSettings } from '@/hooks/useSystem'
 import { useT } from '@/hooks/useT'
@@ -69,6 +69,14 @@ function CircleModal({ initial, nodeOptions, onSave, onCancel, loading }: ModalP
   const [selectedIds, setSelectedIds] = useState<Set<number>>(
     new Set(initial?.node_ids ?? [])
   )
+  // Optional subscription link — '' means "managed by hand" (sent as null).
+  const [subscriptionId, setSubscriptionId] = useState<number | ''>(
+    initial?.subscription_id ?? ''
+  )
+  const { data: subs = [] } = useQuery({
+    queryKey: ['subscriptions'],
+    queryFn: () => subsApi.list(),
+  })
 
   const toggleNode = (id: number) => {
     setSelectedIds((prev) => {
@@ -110,6 +118,9 @@ function CircleModal({ initial, nodeOptions, onSave, onCancel, loading }: ModalP
       max_latency_ms: mode === 'best' ? Math.max(0, parseInt(maxLatency, 10) || 0) : 0,
       min_speed_mbps: mode === 'best' ? Math.max(0, parseFloat(minSpeed) || 0) : 0,
       node_ids: Array.from(selectedIds),
+      // null (not undefined) so clearing the link actually reaches the PATCH
+      // body — the backend patches with exclude_unset.
+      subscription_id: subscriptionId === '' ? null : Number(subscriptionId),
     })
   }
 
@@ -224,6 +235,34 @@ function CircleModal({ initial, nodeOptions, onSave, onCancel, loading }: ModalP
       )}
 
       <div>
+        <label className="flex items-center gap-1 text-xs font-medium text-gray-400 mb-1">
+          {t('Sync from subscription', 'Синхронизация с подпиской')}
+          <InfoTip position="bottom" className="ml-0.5" text={t(
+            "Link the circle to a subscription and every refresh keeps its membership current: nodes the panel still serves are added (including one that returned under a new address), dropped ones leave. Nodes you picked by hand — or from another subscription — are always kept. Leave unlinked to manage the list yourself.",
+            'Свяжи круг с подпиской — и каждое её обновление поддерживает состав в актуальном виде: ноды, которые панель ещё отдаёт, добавляются (в т.ч. вернувшаяся под новым адресом), исчезнувшие убираются. Ноды, выбранные вручную (или из другой подписки), всегда сохраняются. Без связи состав ведёшь сам.',
+          )} />
+        </label>
+        <select
+          value={subscriptionId === '' ? '' : String(subscriptionId)}
+          onChange={(e) => setSubscriptionId(e.target.value === '' ? '' : Number(e.target.value))}
+          className="w-full rounded-sm bg-gray-800 border border-gray-700 px-3 py-1.5 text-sm text-gray-100 focus:border-brand-500 focus:outline-hidden"
+        >
+          <option value="">{t('Not linked — manual membership', 'Без связи — состав вручную')}</option>
+          {subs.map((s) => (
+            <option key={s.id} value={s.id}>{s.name}</option>
+          ))}
+        </select>
+        {subscriptionId !== '' && (
+          <p className="mt-1 text-[11px] text-gray-500">
+            {t(
+              'Membership updates automatically on each refresh of this subscription.',
+              'Состав обновляется автоматически при каждом обновлении этой подписки.',
+            )}
+          </p>
+        )}
+      </div>
+
+      <div>
         <div className="flex items-center justify-between mb-1">
           <label className="flex items-center gap-1 text-xs font-medium text-gray-400">
             Nodes <span className="text-gray-600 font-normal">({selectedIds.size} selected)</span>
@@ -321,6 +360,15 @@ export function NodeCircles() {
     refetchInterval: 15_000,
   })
   const { data: nodes = [] } = useNodes()
+  // Names for the "synced from <subscription>" badge on each circle card.
+  const { data: subsForBadge = [] } = useQuery({
+    queryKey: ['subscriptions'],
+    queryFn: () => subsApi.list(),
+  })
+  const subNameById = React.useMemo(
+    () => new Map(subsForBadge.map((s) => [s.id, s.name])),
+    [subsForBadge],
+  )
 
   const createCircle = useMutation({
     mutationFn: (data: NodeCircleCreate) => circleApi.create(data),
@@ -424,7 +472,23 @@ export function NodeCircles() {
                   {circle.node_ids.length} node{circle.node_ids.length !== 1 ? 's' : ''}
                 </span>
 
-                {(circle.node_ids.some((id) => !nodeIdSet.has(id)) || circle.node_ids.length < 2) && (
+                {circle.subscription_id != null && (
+                  <span
+                    className="inline-flex items-center gap-1 rounded-sm border border-brand-200 bg-brand-50 text-brand-700 dark:border-brand-800/50 dark:bg-brand-950/30 dark:text-brand-300 px-1.5 py-0.5 text-[11px]"
+                    title={t(
+                      'Membership is kept in sync with this subscription on every refresh. Manually added nodes are preserved.',
+                      'Состав синхронизируется с этой подпиской при каждом обновлении. Ноды, добавленные вручную, сохраняются.',
+                    )}
+                  >
+                    <RefreshCw className="h-3 w-3" />
+                    {subNameById.get(circle.subscription_id) ?? t('synced', 'синхронизирован')}
+                  </span>
+                )}
+
+                {/* A linked circle is repaired automatically on the next
+                   refresh, so only nag about a genuinely unmanaged one. */}
+                {circle.subscription_id == null &&
+                  (circle.node_ids.some((id) => !nodeIdSet.has(id)) || circle.node_ids.length < 2) && (
                   <span
                     className="inline-flex items-center gap-1 rounded-sm border border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-800/50 dark:bg-amber-950/30 dark:text-amber-300 px-1.5 py-0.5 text-[11px]"
                     title={t(

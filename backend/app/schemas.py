@@ -883,6 +883,9 @@ class NodeCircleBase(BaseModel):
     # Candidate filters (0 = disabled). See circle_scheduler.
     max_latency_ms: int = 0
     min_speed_mbps: float = 0.0
+    # Link to a Subscription (None = manually managed). When set, the
+    # subscription's refresh keeps this circle's membership in sync.
+    subscription_id: Optional[int] = None
 
     @field_validator("mode")
     @classmethod
@@ -916,6 +919,8 @@ class NodeCircleUpdate(BaseModel):
     interval_max: Optional[int] = None
     max_latency_ms: Optional[int] = None
     min_speed_mbps: Optional[float] = None
+    # Send an explicit `null` to unlink (falls back to manual management).
+    subscription_id: Optional[int] = None
 
     @field_validator("mode", mode="before")
     @classmethod

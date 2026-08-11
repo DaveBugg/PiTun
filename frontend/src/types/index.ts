@@ -734,6 +734,9 @@ export interface NodeCircle {
   // candidates; min_speed_mbps drops candidates below the speed floor.
   max_latency_ms: number
   min_speed_mbps: number
+  /** Linked Subscription: its refresh keeps this circle's membership in
+   *  sync (manual members are preserved). null = managed by hand. */
+  subscription_id?: number | null
   current_index: number
   last_rotated?: string
   current_node_name?: string

@@ -311,6 +311,136 @@ class TestSubscriptionRefreshPreservesCircles:
         # Still enabled — has 2 members which is enough to rotate
         assert circle_after.enabled is True
 
+    def test_linked_circle_auto_syncs_and_keeps_manual_members(
+        self, client, admin_user, auth_headers, session,
+    ):
+        """A circle linked to a subscription tracks it: nodes the panel
+        still serves are added (including ones that came back under a NEW
+        id — the case pruning alone can't fix), dropped ones leave, and
+        members that didn't come from this subscription stay put."""
+        import asyncio, json
+        from app.api.subscriptions import _fetch_subscription_unlocked
+        from app.models import Subscription, Node, NodeCircle
+
+        sub = Subscription(name="Linked", url="http://example/sub", enabled=True)
+        session.add(sub)
+        session.commit()
+        session.refresh(sub)
+
+        # `a` survives the refresh, `c` disappears from the panel.
+        a = Node(name="a", protocol="vless", address="1.1.1.1", port=443,
+                 uuid="a", transport="tcp", subscription_id=sub.id, enabled=True)
+        c = Node(name="c", protocol="vless", address="3.3.3.3", port=443,
+                 uuid="c", transport="tcp", subscription_id=sub.id, enabled=True)
+        # Standalone node added by hand — must survive the sync.
+        manual = Node(name="manual", protocol="vless", address="9.9.9.9", port=443,
+                      uuid="m", transport="tcp", enabled=True)
+        for n in (a, c, manual):
+            session.add(n)
+        session.commit()
+        for n in (a, c, manual):
+            session.refresh(n)
+        # Capture ids as plain ints: `c` is deleted by the refresh below, and
+        # touching the ORM object afterwards raises DetachedInstanceError.
+        a_id, c_id, manual_id = a.id, c.id, manual.id
+
+        circle = NodeCircle(
+            name="linked", node_ids=json.dumps([manual.id, a.id, c.id]),
+            mode="sequential", interval_min=5, interval_max=10,
+            current_index=2, enabled=True, subscription_id=sub.id,
+        )
+        session.add(circle)
+        session.commit()
+        session.refresh(circle)
+        circle_id = circle.id
+
+        # Panel now serves `a` and a brand-new `d`; `c` is gone.
+        with mock.patch(
+            "app.api.subscriptions.httpx.AsyncClient"
+        ) as mock_client:
+            instance = mock_client.return_value.__aenter__.return_value
+            instance.get = AsyncMock(return_value=mock.Mock(
+                status_code=200,
+                text=(
+                    "vless://a@1.1.1.1:443?type=tcp#a\n"
+                    "vless://d@4.4.4.4:443?type=tcp#d\n"
+                ),
+                raise_for_status=lambda: None,
+            ))
+            asyncio.run(_fetch_subscription_unlocked(sub.id))
+
+        session.expire_all()
+        circle_after = session.get(NodeCircle, circle_id)
+        ids_after = json.loads(circle_after.node_ids)
+
+        from sqlmodel import select as sm_select
+        d = session.exec(
+            sm_select(Node).where(Node.name == "d")
+        ).first()
+        assert d is not None, "new node from the panel was not imported"
+
+        # Manual member kept, subscription set refreshed, dead id gone.
+        assert manual_id in ids_after, f"manual member dropped: {ids_after!r}"
+        assert a_id in ids_after, f"surviving node missing: {ids_after!r}"
+        assert d.id in ids_after, f"new node not auto-added: {ids_after!r}"
+        assert c_id not in ids_after, f"removed node still present: {ids_after!r}"
+        # current_index pointed at the (now gone) 3rd entry — must be in range.
+        assert circle_after.current_index < len(ids_after)
+
+    def test_unlinked_circle_is_not_auto_populated(
+        self, client, admin_user, auth_headers, session,
+    ):
+        """Without an explicit link the old behaviour stands: dangling ids
+        are pruned, but new subscription nodes are NOT pulled in — the
+        operator manages membership."""
+        import asyncio, json
+        from app.api.subscriptions import _fetch_subscription_unlocked
+        from app.models import Subscription, Node, NodeCircle
+
+        sub = Subscription(name="Unlinked", url="http://example/sub", enabled=True)
+        session.add(sub)
+        session.commit()
+        session.refresh(sub)
+
+        a = Node(name="a", protocol="vless", address="1.1.1.1", port=443,
+                 uuid="a", transport="tcp", subscription_id=sub.id, enabled=True)
+        session.add(a)
+        session.commit()
+        session.refresh(a)
+
+        circle = NodeCircle(
+            name="manual-circle", node_ids=json.dumps([a.id]),
+            mode="sequential", interval_min=5, interval_max=10,
+            current_index=0, enabled=True,  # subscription_id stays None
+        )
+        session.add(circle)
+        session.commit()
+        session.refresh(circle)
+        circle_id = circle.id
+
+        with mock.patch(
+            "app.api.subscriptions.httpx.AsyncClient"
+        ) as mock_client:
+            instance = mock_client.return_value.__aenter__.return_value
+            instance.get = AsyncMock(return_value=mock.Mock(
+                status_code=200,
+                text=(
+                    "vless://a@1.1.1.1:443?type=tcp#a\n"
+                    "vless://d@4.4.4.4:443?type=tcp#d\n"
+                ),
+                raise_for_status=lambda: None,
+            ))
+            asyncio.run(_fetch_subscription_unlocked(sub.id))
+
+        session.expire_all()
+        ids_after = json.loads(session.get(NodeCircle, circle_id).node_ids)
+        from sqlmodel import select as sm_select
+        d = session.exec(sm_select(Node).where(Node.name == "d")).first()
+        assert d is not None
+        assert ids_after == [a.id], (
+            f"unlinked circle should not absorb new nodes: {ids_after!r}"
+        )
+
     def test_circle_stays_enabled_when_drops_below_two_members(
         self, client, admin_user, auth_headers, session,
     ):

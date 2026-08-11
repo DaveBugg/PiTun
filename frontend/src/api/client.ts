@@ -512,6 +512,42 @@ export const autocheckApi = {
 
 // ── NodeCircle ───────────────────────────────────────────────────────────────
 
+export interface BackupSectionPlan {
+  section: string
+  incoming: number
+  existing: number
+  would_add: number
+  would_update: number
+  would_delete: number
+}
+
+export interface BackupRestorePlan {
+  ok: boolean
+  kind?: string | null
+  bundle_version?: number | null
+  pitun_version?: string | null
+  exported_at?: string | null
+  secrets_included: boolean
+  mode: string
+  plan: BackupSectionPlan[]
+  warnings: string[]
+}
+
+/** Whole-box config backup. Export is a plain GET (the browser downloads it);
+ *  restore is preview-then-commit so nothing is written unseen. */
+export const backupApi = {
+  export: (includeSecrets: boolean) =>
+    http.get('/system/backup', {
+      params: includeSecrets ? { include_secrets: true } : {},
+    }).then(r => r.data),
+  preview: (bundle: unknown, mode: string, sections?: string[]) =>
+    http.post<BackupRestorePlan>('/system/backup/preview', { bundle, mode, sections })
+      .then(r => r.data),
+  restore: (bundle: unknown, mode: string, sections?: string[]) =>
+    http.post<BackupRestorePlan>('/system/backup/restore', { bundle, mode, sections })
+      .then(r => r.data),
+}
+
 export const circleApi = {
   list: () => http.get<NodeCircle[]>('/nodecircle').then(r => r.data),
   create: (data: NodeCircleCreate) => http.post<NodeCircle>('/nodecircle', data).then(r => r.data),

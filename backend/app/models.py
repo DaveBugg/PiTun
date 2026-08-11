@@ -452,6 +452,12 @@ class NodeCircle(SQLModel, table=True):
     # was below the floor. "best" mode picks the highest-quality survivor.
     max_latency_ms: int = 0
     min_speed_mbps: float = 0.0
+    # Optional link to a Subscription. When set, the circle's membership is
+    # rebuilt on every refresh of that subscription: nodes it still serves are
+    # kept/added, ones it dropped are removed, and members added by hand (or
+    # from another subscription) are preserved. NULL = manually managed, which
+    # is the existing behaviour for every pre-existing circle.
+    subscription_id: Optional[int] = Field(default=None, foreign_key="subscription.id")
 
 
 class AutoCheckConfig(SQLModel, table=True):

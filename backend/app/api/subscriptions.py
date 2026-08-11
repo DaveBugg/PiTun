@@ -718,6 +718,85 @@ async def _fetch_subscription_unlocked(sub_id: int) -> None:
                     sub_id, len(circles_pruned), circles_pruned,
                 )
 
+        # ── Auto-sync circles LINKED to this subscription ────────────
+        #
+        # Opt-in counterpart to the pruning above. A circle with
+        # `subscription_id == sub_id` tracks the subscription: nodes it
+        # still serves are kept/added (so a node that came back under a
+        # NEW id — the "provider moved it" case the prune can't fix —
+        # rejoins automatically), dropped ones leave.
+        #
+        # Members that did NOT come from this subscription (added by
+        # hand, or belonging to another sub) are preserved: we only take
+        # ownership of our own rows. That distinction is what makes this
+        # a merge rather than the "rebuild from scratch" that would
+        # silently delete an operator's manual additions.
+        #
+        # Circles with subscription_id = NULL are untouched here — they
+        # keep the pruning + "check members" event, which stays the right
+        # behaviour when nobody opted into automatic management.
+        synced_summary: list[str] = []
+        # An ENABLED circle whose membership moved changes the generated
+        # balancer, and the new members are freshly-imported ids that are in
+        # neither `changed_ids` (updated-in-place rows only) nor the config's
+        # current node set — so the reload heuristic below would miss it.
+        # Track it explicitly and force the re-apply.
+        synced_live_circle = False
+        linked_circles = (await session.exec(
+            select(NodeCircle).where(NodeCircle.subscription_id == sub_id)
+        )).all()
+        if linked_circles:
+            import json as _json
+            # Post-upsert membership of this subscription, fastest first so
+            # sequential rotation naturally starts on the better nodes.
+            fresh_ids = [
+                nid for nid in (await session.exec(
+                    select(Node.id)
+                    .where(Node.subscription_id == sub_id)
+                    .where(Node.enabled == True)  # noqa: E712
+                    .order_by(Node.latency_ms.asc().nulls_last(), Node.id)  # type: ignore[union-attr]
+                )).all()
+                if nid is not None
+            ]
+            fresh_set = set(fresh_ids)
+            for circle in linked_circles:
+                try:
+                    ids = (
+                        _json.loads(circle.node_ids)
+                        if isinstance(circle.node_ids, str)
+                        else (circle.node_ids or [])
+                    )
+                except Exception:
+                    continue
+                # Keep foreign/manual members (minus anything just deleted),
+                # then append this subscription's current set.
+                manual_ids = [
+                    i for i in ids if i not in fresh_set and i not in removed_ids
+                ]
+                merged = manual_ids + fresh_ids
+                if merged == ids:
+                    continue  # already in sync
+                added = len(fresh_set - set(ids))
+                dropped = len([i for i in ids if i in removed_ids])
+                if circle.current_index >= len(merged):
+                    circle.current_index = 0
+                circle.node_ids = _json.dumps(merged)
+                session.add(circle)
+                if circle.enabled:
+                    synced_live_circle = True
+                # A linked circle is managed automatically — don't also nag
+                # about it in the "check members" warning below.
+                if circle.id in circles_pruned:
+                    idx = circles_pruned.index(circle.id)
+                    circles_pruned.pop(idx)
+                    pruned_summary.pop(idx)
+                synced_summary.append(f"'{circle.name}' (+{added}/-{dropped})")
+            if synced_summary:
+                logger.info(
+                    "Subscription %d refresh: auto-synced %d linked NodeCircle(s): %s",
+                    sub_id, len(synced_summary), ", ".join(synced_summary),
+                )
+
         # Heal active_node_id if it pointed at a now-removed row.
         # Prefer: a node that survived the refresh (same id still
         # valid). Fallback: first enabled + online node from this
@@ -799,8 +878,24 @@ async def _fetch_subscription_unlocked(sub_id: int) -> None:
                 ),
             )
 
+        # Linked circles resynced themselves — informational, not a warning:
+        # nothing needs the operator's attention, but the membership DID
+        # change, so it belongs in the feed.
+        if synced_summary:
+            from app.core.events import record_event
+            await record_event(
+                category="circle.synced",
+                severity="info",
+                title="NodeCircle auto-synced from subscription",
+                details=(
+                    f"Subscription {sub_id} refresh updated linked circle(s): "
+                    f"{', '.join(synced_summary)}. Members added by hand or from "
+                    f"another subscription were kept."
+                ),
+            )
+
         await _reload_if_config_nodes_touched(
             session,
             touched_ids=changed_ids | removed_ids,
-            force=healed_active is not None,
+            force=healed_active is not None or synced_live_circle,
         )
