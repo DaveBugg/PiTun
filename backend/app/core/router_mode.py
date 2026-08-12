@@ -70,6 +70,12 @@ def _lan_addressing(lan: str, m: dict) -> tuple[str, str]:
     return ip, str(net)
 
 
+def _safe_lease_name(raw: str) -> str:
+    """A dhcp-host name dnsmasq will accept, or empty."""
+    import re
+    return re.sub(r"[^A-Za-z0-9-]", "-", raw).strip("-")[:32]
+
+
 async def teardown() -> dict:
     """Return the box to gateway mode. Safe to call at any time.
 
@@ -147,7 +153,13 @@ async def apply(session: AsyncSession) -> dict:
     leases = [
         dhcp_mod.StaticLease(
             mac=d.mac, ip=d.dhcp_reserved_ip or "",
-            name=(d.name or d.hostname or "").replace(" ", "-")[:32],
+            # dnsmasq's dhcp-host is a comma-separated line-oriented field
+            # and the name is attacker-influenced — it comes from the DHCP
+            # hostname or mDNS. A comma adds a field, a '#' comments the rest
+            # of the line, a newline injects a directive; all three stop
+            # dnsmasq from starting, which takes DHCP down for the whole LAN
+            # as leases expire.
+            name=_safe_lease_name(d.name or d.hostname or ""),
         )
         for d in reserved if d.mac and d.dhcp_reserved_ip
     ]
@@ -210,9 +222,15 @@ async def apply(session: AsyncSession) -> dict:
             raise RouterModeError("Could not apply the router firewall/NAT rules.")
         applied.append("nat")
 
+        # Both branches matter. Without the else, turning a subsystem off in
+        # the panel returned 200 while the daemon kept running — so "disable
+        # WiFi" left hostapd broadcasting, which is exactly what an operator
+        # does when rotating a leaked passphrase.
         if (m.get("dhcp_enabled") or "true").lower() == "true":
             await dhcp_mod.start(dhcp_cfg)
             applied.append("dhcp")
+        else:
+            await dhcp_mod.stop()
 
         # WiFi last: it's the only step that can take the LAN interface down
         # while reconfiguring the radio, so everything else is already up if
@@ -238,6 +256,8 @@ async def apply(session: AsyncSession) -> dict:
             except wifi_mod.WifiConfigError as exc:
                 raise RouterModeError(f"WiFi could not start: {exc}")
             applied.append("wifi")
+        else:
+            await wifi_mod.stop()
     except Exception as exc:
         # Half-applied router mode is worse than none: the LAN would get
         # addresses pointing at a gateway that doesn't forward, or forwarding

@@ -549,8 +549,15 @@ class TestOrchestration:
 
         monkeypatch.setattr(rm.nft, "apply_router_nat", fake_nat)
         monkeypatch.setattr(rm.nft, "remove_router_nat", fake_remove)
+        async def fake_wifi_stop():
+            calls.append(("wifi_stop",))
+            return {"running": False}
+
         monkeypatch.setattr(rm.dhcp_mod, "start", fake_dhcp_start)
         monkeypatch.setattr(rm.dhcp_mod, "stop", fake_dhcp_stop)
+        # apply() now stops a subsystem that is switched off, so the wifi path
+        # is exercised even when wifi_enabled is false.
+        monkeypatch.setattr(rm.wifi_mod, "stop", fake_wifi_stop)
         monkeypatch.setattr(rm, "set_ip_forward", lambda on: forward_ok)
         monkeypatch.setattr(rm.nc, "list_interfaces",
                             lambda: [{"name": "eth0"}, {"name": "eth1"}])
@@ -1529,3 +1536,129 @@ class TestSettingsGateAfterReview:
         # Either refused outright, or accepted because no LAN port is set yet —
         # what must NOT happen is reaching apply() with an invalid combination.
         assert r.status_code in (200, 204, 400)
+
+
+class TestWanCannotReachContainers:
+    """The input chain's `ct state new drop` is the whole safety argument for
+    the uplink — but Docker-published services are DNAT'd and traverse FORWARD,
+    never INPUT. An unqualified docker0 accept therefore bypasses it entirely,
+    and the wan_blocked counter reads zero while it happens."""
+
+    def _rules(self, monkeypatch):
+        import asyncio
+        from app.core import nftables as nft
+        scripts = []
+
+        async def fake_nft(script):
+            scripts.append(script)
+            return True
+
+        monkeypatch.setattr(nft, "_nft", fake_nft)
+        asyncio.run(nft.apply_router_nat("eth0", "eth1"))
+        body = "\n".join(scripts)
+        return [l.strip() for l in body.split("chain forward")[1]
+                .split("}")[0].splitlines()
+                if l.strip() and not l.strip().startswith("#")]
+
+    def test_no_unqualified_container_accept(self, monkeypatch):
+        for rule in self._rules(monkeypatch):
+            if "docker0" in rule or "br-*" in rule:
+                assert rule.count("ifname") >= 2, (
+                    f"container rule must name both sides, else WAN-side DNAT "
+                    f"matches it: {rule!r}"
+                )
+
+    def test_containers_can_still_reach_the_internet(self, monkeypatch):
+        rules = self._rules(monkeypatch)
+        assert any('iifname "docker0" oifname "eth0" accept' == r for r in rules)
+
+    def test_lan_can_still_reach_published_ports(self, monkeypatch):
+        """The panel is one of them — losing this locks everyone out of the UI
+        and leaves nobody able to confirm the router."""
+        rules = self._rules(monkeypatch)
+        assert any('iifname "eth1" ct status dnat accept' == r for r in rules)
+
+
+class TestDisablingASubsystemStopsIt:
+    """Turning WiFi off is what an operator does to kill a leaked passphrase.
+    Returning 200 while hostapd keeps broadcasting it is the worst outcome."""
+
+    def _run(self, monkeypatch, extra):
+        import asyncio
+        from app.core import router_mode as rm
+        calls = []
+
+        async def ok_nat(*a, **k):
+            return True
+
+        async def noop():
+            return {"running": False}
+
+        async def dhcp_start(cfg):
+            calls.append("dhcp_start")
+            return {"running": True}
+
+        async def dhcp_stop():
+            calls.append("dhcp_stop")
+            return {"running": False}
+
+        async def wifi_start(cfg):
+            calls.append("wifi_start")
+            return {"running": True}
+
+        async def wifi_stop():
+            calls.append("wifi_stop")
+            return {"running": False}
+
+        monkeypatch.setattr(rm.nft, "apply_router_nat", ok_nat)
+        monkeypatch.setattr(rm.nft, "remove_router_nat", lambda: noop())
+        monkeypatch.setattr(rm.dhcp_mod, "start", dhcp_start)
+        monkeypatch.setattr(rm.dhcp_mod, "stop", dhcp_stop)
+        monkeypatch.setattr(rm.wifi_mod, "start", wifi_start)
+        monkeypatch.setattr(rm.wifi_mod, "stop", wifi_stop)
+        monkeypatch.setattr(rm, "set_ip_forward", lambda on: True)
+        monkeypatch.setattr(rm.nc, "list_interfaces",
+                            lambda: [{"name": "eth0"}, {"name": "eth1"}])
+        monkeypatch.setattr(rm.nc, "read_interface_address", lambda i: ("192.168.10.1", 24))
+        monkeypatch.setattr(rm.nc, "is_wireless", lambda i: True)
+
+        base = {"operating_mode": "router", "wan_interface": "eth0",
+                "lan_interface": "eth1"}
+        base.update(extra)
+
+        class S:
+            async def exec(self, statement=None, *a, **k):
+                rows = ([] if statement is not None and "device" in str(statement).lower()
+                        else [type("R", (), {"key": k2, "value": v})() for k2, v in base.items()])
+                return type("Res", (), {"all": lambda self: rows})()
+
+        asyncio.run(rm.apply(S()))
+        return calls
+
+    def test_wifi_off_stops_the_access_point(self, monkeypatch):
+        calls = self._run(monkeypatch, {"wifi_enabled": "false"})
+        assert "wifi_stop" in calls and "wifi_start" not in calls
+
+    def test_dhcp_off_stops_the_server(self, monkeypatch):
+        calls = self._run(monkeypatch, {"dhcp_enabled": "false"})
+        assert "dhcp_stop" in calls and "dhcp_start" not in calls
+
+
+class TestLeaseNameCannotBreakDnsmasq:
+    """Device names come from DHCP hostnames and mDNS, so they are
+    attacker-influenced, and dhcp-host is a comma-separated line."""
+
+    def test_injection_characters_are_stripped(self):
+        from app.core.router_mode import _safe_lease_name
+        for raw, banned in (
+            ("nas,192.168.1.9,evil", ","),
+            ("printer#comment", "#"),
+            ("tv\nserver=1.2.3.4", "\n"),
+            ("laptop=x", "="),
+        ):
+            assert banned not in _safe_lease_name(raw), raw
+
+    def test_ordinary_names_survive_readably(self):
+        from app.core.router_mode import _safe_lease_name
+        assert _safe_lease_name("Living Room TV") == "Living-Room-TV"
+        assert _safe_lease_name("nas-01") == "nas-01"

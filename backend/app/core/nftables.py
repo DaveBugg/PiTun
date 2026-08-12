@@ -593,8 +593,18 @@ table inet {_ROUTER_TABLE} {{
         # Container-to-container (the reverse proxy reaching the SPA) once
         # bridge-nf-call-iptables puts bridged traffic through this hook.
         iifname "br-*" oifname "br-*" accept
-        iifname "docker0" accept
-        oifname "docker0" accept
+        iifname "docker0" oifname "docker0" accept
+        # Containers reaching the internet (image pulls, panel healthchecks).
+        #
+        # These four rules are qualified on purpose. As bare `iifname docker0
+        # accept` / `oifname docker0 accept` they quietly undid the input
+        # chain: a packet arriving on the WAN and DNAT'd to a published port
+        # traverses FORWARD, not INPUT, so it matched `oifname docker0` and was
+        # accepted. xray binds its DNS, SOCKS and HTTP inbounds to 0.0.0.0, so
+        # that was an open resolver and an open proxy — and `wan_blocked` read
+        # zero the whole time, because nothing ever reached the drop.
+        iifname "docker0" oifname "{wan}" accept
+        iifname "br-*" oifname "{wan}" accept
         # xray's tunnel interface, when the proxy is carrying the traffic.
         iifname "xray0" accept
         oifname "xray0" accept
