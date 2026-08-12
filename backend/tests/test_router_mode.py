@@ -756,3 +756,168 @@ class TestDhcpReservations:
         assert r.status_code in (200, 204), r.text
         session.expire_all()
         assert session.get(Device, d.id).dhcp_reserved_ip is None
+
+
+class TestWifiConfig:
+    """What goes on the air. Most of the ways this fails are hardware or
+    regulatory, and they fail by producing silence rather than an error, so
+    the checks live here rather than being discovered on a rooftop."""
+
+    def _cfg(self, **over):
+        from app.core.wifi import WifiConfig
+        base = dict(interface="wlan0", ssid="PiTun", passphrase="correcthorse",
+                    country="DE", band="2.4", channel=6)
+        base.update(over)
+        return WifiConfig(**base)
+
+    def test_basic_wpa2_config(self):
+        from app.core.wifi import render_hostapd_conf
+        conf = render_hostapd_conf(self._cfg())
+        assert "interface=wlan0" in conf
+        assert "ssid=PiTun" in conf
+        assert "wpa_key_mgmt=WPA-PSK" in conf
+        assert "hw_mode=g" in conf
+
+    def test_country_code_is_required(self):
+        """Without it the radio comes up with no usable channels — the kind of
+        failure that looks like broken hardware."""
+        from app.core.wifi import render_hostapd_conf, WifiConfigError
+        import pytest
+        for bad in ("", "Deutschland", "d", "12"):
+            with pytest.raises(WifiConfigError, match="country code"):
+                render_hostapd_conf(self._cfg(country=bad))
+
+    def test_regulatory_compliance_is_enabled(self):
+        from app.core.wifi import render_hostapd_conf
+        conf = render_hostapd_conf(self._cfg(country="NL"))
+        assert "country_code=NL" in conf
+        assert "ieee80211d=1" in conf
+
+    def test_channel_must_belong_to_the_band(self):
+        """A 5 GHz channel with hw_mode=g parses fine and then transmits
+        nothing, which is the worst kind of misconfiguration."""
+        from app.core.wifi import render_hostapd_conf, WifiConfigError
+        import pytest
+        with pytest.raises(WifiConfigError, match="not a 2.4 GHz channel"):
+            render_hostapd_conf(self._cfg(band="2.4", channel=44))
+        with pytest.raises(WifiConfigError, match="not a 5 GHz channel"):
+            render_hostapd_conf(self._cfg(band="5", channel=6))
+
+    def test_five_ghz_uses_the_right_hw_mode(self):
+        from app.core.wifi import render_hostapd_conf
+        conf = render_hostapd_conf(self._cfg(band="5", channel=36))
+        assert "hw_mode=a" in conf and "channel=36" in conf
+
+    def test_passphrase_length_is_a_protocol_limit(self):
+        from app.core.wifi import render_hostapd_conf, WifiConfigError
+        import pytest
+        for bad in ("short", "x" * 64):
+            with pytest.raises(WifiConfigError, match="8-63"):
+                render_hostapd_conf(self._cfg(passphrase=bad))
+
+    def test_ssid_is_measured_in_bytes(self):
+        """A 32-emoji SSID is well under 32 characters and still too long for
+        the driver."""
+        from app.core.wifi import render_hostapd_conf, WifiConfigError
+        import pytest
+        render_hostapd_conf(self._cfg(ssid="x" * 32))          # exactly at the limit
+        with pytest.raises(WifiConfigError, match="1-32 bytes"):
+            render_hostapd_conf(self._cfg(ssid="😀" * 9))       # 36 bytes
+        with pytest.raises(WifiConfigError, match="1-32 bytes"):
+            render_hostapd_conf(self._cfg(ssid=""))
+
+    def test_wpa3_transitional_keeps_wpa2_clients(self):
+        """Requiring management-frame protection would lock out exactly the
+        clients this mixed mode exists to support."""
+        from app.core.wifi import render_hostapd_conf
+        conf = render_hostapd_conf(self._cfg(security="wpa2wpa3"))
+        assert "wpa_key_mgmt=WPA-PSK SAE" in conf
+        assert "ieee80211w=1" in conf and "ieee80211w=2" not in conf
+
+    def test_bridge_puts_wifi_on_the_wired_lan(self):
+        """One subnet and one DHCP scope for wired and wireless — otherwise
+        devices on either side can't see each other."""
+        from app.core.wifi import render_hostapd_conf
+        conf = render_hostapd_conf(self._cfg(bridge="br-lan"))
+        assert "bridge=br-lan" in conf
+
+    def test_passphrase_is_redacted_for_logs(self):
+        from app.core.wifi import render_hostapd_conf, redact
+        conf = render_hostapd_conf(self._cfg(passphrase="supersecret123"))
+        assert "supersecret123" not in redact(conf)
+        assert "wpa_passphrase=********" in redact(conf)
+
+
+class TestLanBridge:
+    """Bridging is the most disruptive step in router mode: enslaving a port
+    moves its address, dropping every connection on it — including the session
+    of whoever is running the command."""
+
+    def _capture(self, monkeypatch, *, exists=False, fail_on=None):
+        from app.core import wifi
+        calls = []
+
+        def fake_ip(*args, **kw):
+            calls.append(" ".join(args))
+            rc = 0
+            if args[:3] == ("link", "show", wifi.BRIDGE_NAME):
+                rc = 0 if exists else 1
+            if fail_on and fail_on in " ".join(args):
+                rc = 1
+            return type("R", (), {"returncode": rc, "stdout": "", "stderr": ""})()
+
+        monkeypatch.setattr(wifi, "_ip", fake_ip)
+        return wifi, calls
+
+    def test_address_moves_to_the_bridge(self, monkeypatch):
+        wifi, calls = self._capture(monkeypatch)
+        res = wifi.create_lan_bridge("eth1", "192.168.10.1/24")
+        assert res["created"] is True
+        joined = " | ".join(calls)
+        assert "link add name br-lan type bridge" in joined
+        assert "link set eth1 master br-lan" in joined
+        assert "addr add 192.168.10.1/24 dev br-lan" in joined
+
+    def test_bridge_is_created_before_the_address_is_flushed(self, monkeypatch):
+        """Otherwise a failure leaves the LAN with no address anywhere."""
+        wifi, calls = self._capture(monkeypatch)
+        wifi.create_lan_bridge("eth1", "192.168.10.1/24")
+        add_i = next(i for i, c in enumerate(calls) if c.startswith("link add name"))
+        flush_i = next(i for i, c in enumerate(calls) if c.startswith("addr flush"))
+        assert add_i < flush_i
+
+    def test_failed_enslave_puts_the_address_back(self, monkeypatch):
+        """Better a working un-bridged LAN than neither."""
+        import pytest
+        wifi, calls = self._capture(monkeypatch, fail_on="master br-lan")
+        with pytest.raises(wifi.WifiConfigError):
+            wifi.create_lan_bridge("eth1", "192.168.10.1/24")
+        joined = " | ".join(calls)
+        assert "addr add 192.168.10.1/24 dev eth1" in joined
+        assert "link delete br-lan" in joined
+
+    def test_existing_bridge_is_not_rebuilt(self, monkeypatch):
+        wifi, calls = self._capture(monkeypatch, exists=True)
+        res = wifi.create_lan_bridge("eth1", "192.168.10.1/24")
+        assert res["created"] is False
+        assert not any(c.startswith("addr flush") for c in calls)
+
+    def test_removal_returns_the_address_to_the_wired_port(self, monkeypatch):
+        wifi, calls = self._capture(monkeypatch, exists=True)
+        wifi.remove_lan_bridge("eth1", "192.168.10.1/24")
+        joined = " | ".join(calls)
+        assert "link set eth1 nomaster" in joined
+        assert "link delete br-lan" in joined
+        assert "addr add 192.168.10.1/24 dev eth1" in joined
+
+    def test_bogus_input_never_reaches_ip(self, monkeypatch):
+        import pytest
+        wifi, calls = self._capture(monkeypatch)
+        for bad_if, bad_cidr in (
+            ("eth1; rm -rf /", "192.168.10.1/24"),
+            ("eth1", "not-a-cidr"),
+            ("", "192.168.10.1/24"),
+        ):
+            with pytest.raises(wifi.WifiConfigError):
+                wifi.create_lan_bridge(bad_if, bad_cidr)
+        assert not any("rm -rf" in c for c in calls)

@@ -75,6 +75,7 @@ class Settings(BaseSettings):
     # NaiveProxy sidecars
     naive_image: str = "pitun-naive:latest"
     dnsmasq_image: str = "pitun-dnsmasq:latest"
+    hostapd_image: str = "pitun-hostapd:latest"
     naive_config_dir: str = "/etc/pitun/naive"
     naive_port_range_start: int = 20800
     naive_port_range_end: int = 20899
