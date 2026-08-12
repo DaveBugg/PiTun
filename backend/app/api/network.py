@@ -23,6 +23,8 @@ from typing import List, Optional
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 
+from app.database import get_session
+from fastapi import Depends
 from app.core import network_config
 from app.core import network_apply
 
@@ -77,6 +79,25 @@ def get_interfaces() -> dict:
         "count": len(ifaces),
         "router_capable": len(ifaces) >= 2,
     }
+
+
+@router.get("/router-mode")
+async def router_mode_status(session=Depends(get_session)) -> dict:
+    """Configured mode plus what the dataplane is actually running."""
+    from app.core import router_mode
+    return await router_mode.status(session)
+
+
+@router.get("/router-mode/diagnose")
+async def router_mode_diagnose() -> dict:
+    """Read the WAN counters and explain them.
+
+    Exists because the two rules the uplink depends on — DHCP replies and the
+    ICMP that PMTU discovery needs — fail silently. Without this the operator
+    is left with "the internet is broken" and no way to tell which.
+    """
+    from app.core import router_mode
+    return {"findings": await router_mode.diagnose_wan()}
 
 
 @router.get("/backups")

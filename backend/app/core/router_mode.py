@@ -69,10 +69,24 @@ def _lan_addressing(lan: str, m: dict) -> tuple[str, str]:
 
 
 async def teardown() -> dict:
-    """Return the box to gateway mode. Safe to call at any time."""
-    steps = {}
-    steps["dhcp"] = (await dhcp_mod.stop())["running"] is False
-    steps["nat"] = await nft.remove_router_nat()
+    """Return the box to gateway mode. Safe to call at any time.
+
+    Every step is best-effort and failures are recorded rather than raised:
+    this is the escape hatch. If it could fail, a box that lost its Docker
+    socket (or was already half-configured) would be stuck in router mode with
+    no way back — and gateway is the state that keeps the LAN working.
+    """
+    steps: dict = {}
+    try:
+        steps["dhcp"] = (await dhcp_mod.stop())["running"] is False
+    except Exception as exc:  # noqa: BLE001 — never block the way back
+        logger.warning("Teardown: could not stop the DHCP server: %s", exc)
+        steps["dhcp"] = f"error: {exc}"
+    try:
+        steps["nat"] = await nft.remove_router_nat()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Teardown: could not remove the router firewall: %s", exc)
+        steps["nat"] = f"error: {exc}"
     # IP forwarding is left ON: the TPROXY path in gateway mode needs it too,
     # and turning it off here would break proxying for everyone.
     logger.info("Router mode torn down: %s", steps)

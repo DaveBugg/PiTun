@@ -86,10 +86,15 @@ class TestModeGate:
         """Since phase 1 the mode arrives together with its port roles — the
         Settings page batches the whole form into one PATCH, and a router with
         no ports assigned is not a state worth persisting."""
+        async def _noop_apply(_session):
+            return {"mode": "router"}
+
         with mock.patch("app.core.network_config.list_interfaces",
-                        return_value=[{"name": "eth0"}, {"name": "eth1"}]),              mock.patch("app.core.network_config.wifi_capabilities",
+                        return_value=[{"name": "eth0"}, {"name": "eth1"}]), \
+             mock.patch("app.core.network_config.wifi_capabilities",
                         return_value={"wireless": False, "ap_capable": False,
-                                      "modes": [], "bands": [], "detail": ""}):
+                                      "modes": [], "bands": [], "detail": ""}), \
+             mock.patch("app.core.router_mode.apply", _noop_apply):
             resp = client.patch("/api/system/settings", headers=auth_headers,
                                 json={"operating_mode": "router",
                                       "wan_interface": "eth0",
@@ -194,9 +199,15 @@ class TestPortRoles:
     WIRED = {"wireless": False, "ap_capable": False, "modes": [], "bands": [], "detail": ""}
 
     def _patch(self, client, headers, body, caps=None):
+        async def _noop_apply(_session):
+            return {"mode": "gateway"}
+
+        # These assert the request validator, not the dataplane — the
+        # orchestrator is covered separately in TestOrchestration.
         with mock.patch("app.core.network_config.list_interfaces", return_value=self.ETH), \
              mock.patch("app.core.network_config.wifi_capabilities",
-                        return_value=caps or self.WIRED):
+                        return_value=caps or self.WIRED), \
+             mock.patch("app.core.router_mode.apply", _noop_apply):
             return client.patch("/api/system/settings", headers=headers, json=body)
 
     def test_unknown_interface_rejected(self, client, admin_user, auth_headers):
@@ -630,3 +641,44 @@ class TestWanDiagnosis:
     def test_inactive_router_mode_is_not_an_error(self, monkeypatch):
         out = self._diag(monkeypatch, {})
         assert len(out) == 1 and out[0]["level"] == "ok"
+
+
+class TestTeardownIsAlwaysPossible:
+    """Gateway is the state that keeps the LAN working, so the way back must
+    not be blocked by the very failure the operator is escaping."""
+
+    def test_teardown_survives_a_broken_docker_socket(self, monkeypatch):
+        import asyncio
+        from app.core import router_mode as rm
+
+        async def boom():
+            raise RuntimeError("docker socket unreachable")
+
+        async def ok():
+            return True
+
+        monkeypatch.setattr(rm.dhcp_mod, "stop", boom)
+        monkeypatch.setattr(rm.nft, "remove_router_nat", ok)
+
+        res = asyncio.run(rm.teardown())
+        assert res["mode"] == "gateway"
+        assert "error" in str(res["steps"]["dhcp"])
+        # The firewall still came down even though DHCP teardown failed.
+        assert res["steps"]["nat"] is True
+
+    def test_teardown_survives_nft_failure_too(self, monkeypatch):
+        import asyncio
+        from app.core import router_mode as rm
+
+        async def stopped():
+            return {"running": False}
+
+        async def boom():
+            raise RuntimeError("nft missing")
+
+        monkeypatch.setattr(rm.dhcp_mod, "stop", stopped)
+        monkeypatch.setattr(rm.nft, "remove_router_nat", boom)
+
+        res = asyncio.run(rm.teardown())
+        assert res["mode"] == "gateway"
+        assert res["steps"]["dhcp"] is True

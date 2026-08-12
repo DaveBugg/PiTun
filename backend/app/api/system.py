@@ -1092,6 +1092,33 @@ async def update_settings(body: SettingsUpdate, session: AsyncSession = Depends(
                 ),
             )
 
+    # Reconcile router mode with the dataplane. Runs whenever anything it
+    # depends on moved — including a switch back to gateway, which has to tear
+    # the router rules down rather than leave them applied under a mode that
+    # says they aren't.
+    #
+    # A failure here reverts `operating_mode` to gateway before surfacing the
+    # error: the orchestrator has already rolled the dataplane back, so
+    # leaving the setting saying "router" would mean the UI claims a mode the
+    # box isn't in, and the next boot would retry a config we know fails.
+    _ROUTER_KEYS = {
+        "operating_mode", "wan_interface", "lan_interface",
+        "dhcp_enabled", "dhcp_pool_start", "dhcp_pool_end", "dhcp_lease_hours",
+    }
+    if _ROUTER_KEYS & set(patches):
+        from app.core import router_mode
+        try:
+            await router_mode.apply(session)
+        except router_mode.RouterModeError as exc:
+            if patches.get("operating_mode") == "router":
+                await _set_setting(session, "operating_mode", "gateway")
+                await session.commit()
+            raise HTTPException(
+                400,
+                f"Router mode could not be applied — the box stays in gateway "
+                f"mode and the network was left as it was. {exc}",
+            )
+
     # Apply IPv6 toggle via bind-mounted host /proc/sys
     if "disable_ipv6" in patches:
         val = "1" if patches["disable_ipv6"] else "0"

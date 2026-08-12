@@ -71,6 +71,18 @@ async def lifespan(app: FastAPI):
     geo_scheduler.start()
     autocheck_scheduler.start()
 
+    # Reconcile router mode with the dataplane on boot: nftables tables and
+    # the DHCP container don't survive a reboot, so a box configured as a
+    # router would come back up as a plain host and take the LAN with it.
+    try:
+        from sqlmodel.ext.asyncio.session import AsyncSession as _AsyncSession
+        from app.database import get_async_engine as _engine
+        from app.core import router_mode
+        async with _AsyncSession(_engine()) as _s:
+            await router_mode.apply(_s)
+    except Exception as exc:  # noqa: BLE001 — never block startup on this
+        logger.warning("Router mode not applied on boot: %s", exc)
+
     # Supervise naive sidecars: react to docker `die` events within ms,
     # rather than waiting for the 30 s HealthChecker tick.
     try:
