@@ -108,6 +108,20 @@ fi
 if [ ! -f .env ]; then
     log "Generating .env..."
     SECRET_KEY=$(openssl rand -hex 32)
+
+    # Detect the LAN port and subnet rather than writing eth0 / 192.168.1.0/24
+    # and hoping. Predictable interface names (enp1s0, enx<mac>) are the norm
+    # on x86 and on many RPi images, and a wrong INTERFACE here means the
+    # TPROXY rules attach to a port that does not exist — the proxy comes up
+    # and simply never sees any traffic.
+    DETECTED_IF=$(ip -o -4 route show to default 2>/dev/null | awk '{print $5}' | head -n1)
+    [ -z "$DETECTED_IF" ] && DETECTED_IF=eth0
+    DETECTED_CIDR=$(ip -o -4 addr show dev "$DETECTED_IF" 2>/dev/null         | awk '{print $4}' | head -n1)
+    if [ -n "$DETECTED_CIDR" ] && command -v python3 >/dev/null 2>&1; then
+        DETECTED_CIDR=$(python3 -c "import ipaddress,sys; print(ipaddress.ip_network(sys.argv[1], strict=False))" "$DETECTED_CIDR" 2>/dev/null || true)
+    fi
+    [ -z "$DETECTED_CIDR" ] && DETECTED_CIDR=192.168.1.0/24
+    log "Detected LAN: $DETECTED_IF ($DETECTED_CIDR)"
     cat > .env << EOF
 # PiTun configuration — auto-generated
 SECRET_KEY=${SECRET_KEY}
@@ -125,8 +139,8 @@ XRAY_LOG_LEVEL=warning
 TPROXY_PORT_TCP=7893
 TPROXY_PORT_UDP=7894
 DNS_PORT=5353
-INTERFACE=eth0
-LAN_CIDR=192.168.1.0/24
+INTERFACE=${DETECTED_IF}
+LAN_CIDR=${DETECTED_CIDR}
 GATEWAY_IP=${VM_IP}
 
 # GeoData
@@ -212,6 +226,19 @@ $DOCKER compose up -d --build 2>&1
 # Build NaiveProxy sidecar image (used by backend to spawn naive nodes).
 # Cheap to rebuild — binary is cached inside the image layer.
 if [ -f "$PITUN_DIR/docker/naive/Dockerfile" ]; then
+    # Router-mode sidecars. Built here rather than on first use: the failure
+    # would otherwise land at the worst moment — the operator switches to
+    # router mode, and DHCP refuses to start because an image nobody ever
+    # built is missing. Both are tiny and the build is cached.
+    for sidecar in dnsmasq hostapd; do
+        if [ -d "$PITUN_DIR/docker/$sidecar" ]; then
+            log "Building pitun-$sidecar sidecar image..."
+            if ! $DOCKER build -q -t "pitun-$sidecar:latest" "$PITUN_DIR/docker/$sidecar" >/dev/null 2>&1; then
+                warn "Failed to build pitun-$sidecar — router mode will not be able to start it"
+            fi
+        fi
+    done
+
     log "Building pitun-naive sidecar image..."
     if ! $DOCKER build -t pitun-naive:latest "$PITUN_DIR/docker/naive" 2>&1; then
         warn "Failed to build pitun-naive image — NaiveProxy nodes will not work until this is fixed"

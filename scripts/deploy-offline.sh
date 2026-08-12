@@ -140,6 +140,11 @@ if [ ! -f .env ]; then
     echo "[+] Generating .env"
     SECRET_KEY=\$(openssl rand -hex 32 2>/dev/null || echo changeme-\$(date +%s))
     VM_IP=\$(hostname -I | awk '{print \$1}')
+    # LAN port is detected, not assumed: a wrong INTERFACE means the TPROXY
+    # rules attach to a port that doesn't exist and the proxy silently sees
+    # no traffic at all.
+    DETECTED_IF=$(ip -o -4 route show to default 2>/dev/null | awk '{print $5}' | head -n1)
+
     cat > .env <<ENV
 SECRET_KEY=\${SECRET_KEY}
 BACKEND_PORT=8000
@@ -152,7 +157,7 @@ XRAY_LOG_LEVEL=warning
 TPROXY_PORT_TCP=7893
 TPROXY_PORT_UDP=7894
 DNS_PORT=5353
-INTERFACE=eth0
+INTERFACE=${DETECTED_IF:-eth0}
 LAN_CIDR=192.168.1.0/24
 GATEWAY_IP=\${VM_IP}
 VITE_API_BASE_URL=/api

@@ -193,11 +193,12 @@ echo "nft_tproxy" > /etc/modules-load.d/pitun.conf 2>/dev/null || true
 # ── 6. Verify static IP ──
 # Static IP is set in 01-first-boot.sh. Verify it's active — if PiTun uses DHCP,
 # it will receive its own DHCP option 3 (gateway) and route to itself, breaking everything.
-METHOD=$(nmcli -t -f ipv4.method con show "$(nmcli -t -f NAME,DEVICE con show --active | grep eth0 | cut -d: -f1)" 2>/dev/null | cut -d: -f2)
+PRIMARY_IF=$(ip -o -4 route show to default 2>/dev/null | awk '{print $5}' | head -n1)
+    METHOD=$(nmcli -t -f ipv4.method con show "$(nmcli -t -f NAME,DEVICE con show --active | grep ":${PRIMARY_IF}$" | cut -d: -f1)" 2>/dev/null | cut -d: -f2)
 if [ "$METHOD" = "manual" ]; then
     log "Static IP verified (set in 01-first-boot.sh)"
 else
-    warn "WARNING: eth0 is using DHCP! Run 01-first-boot.sh first to set static IP."
+    warn "WARNING: ${PRIMARY_IF:-the LAN port} is using DHCP! Run 01-first-boot.sh first to set static IP."
     warn "Gateway mode will break without static IP (DHCP option 3 loop)."
 fi
 

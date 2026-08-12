@@ -24,9 +24,13 @@ err()  { echo -e "${RED}[x]${NC} $*"; exit 1; }
 [[ $EUID -ne 0 ]] && err "Run as root: sudo $0"
 
 # Current values
-CURRENT_IP=$(ip -4 addr show eth0 2>/dev/null | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | head -1)
+# The LAN port is not necessarily eth0 — predictable names (enp1s0,
+# enx<mac>) are the norm on x86 and many RPi images.
+IFACE=$(ip -o -4 route show to default 2>/dev/null | awk '{print $5}' | head -n1)
+[ -z "$IFACE" ] && IFACE=eth0
+CURRENT_IP=$(ip -4 addr show "$IFACE" 2>/dev/null | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | head -1)
 CURRENT_GW=$(ip route 2>/dev/null | grep 'default via' | awk '{print $3}' | head -1)
-CON_NAME=$(nmcli -t -f NAME,DEVICE con show --active 2>/dev/null | grep eth0 | cut -d: -f1)
+CON_NAME=$(nmcli -t -f NAME,DEVICE con show --active 2>/dev/null | grep ":${IFACE}$" | cut -d: -f1)
 
 echo ""
 echo "  Current IP:      ${CURRENT_IP:-unknown}"
@@ -72,7 +76,7 @@ read -rp "Apply changes? [y/N]: " CONFIRM
 # ── 1. Apply static IP via NetworkManager ──
 if [ -z "$CON_NAME" ]; then
     CON_NAME="Wired connection 1"
-    warn "No active eth0 connection found, using '$CON_NAME'"
+    warn "No active $IFACE connection found, using '$CON_NAME'"
 fi
 
 log "Setting static IP: $NEW_IP/24, gateway: $NEW_GW"
