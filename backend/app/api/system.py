@@ -753,6 +753,7 @@ async def get_settings(session: AsyncSession = Depends(get_session)):
         auto_restart_xray=m.get("auto_restart_xray", "true").lower() == "true",
         dns_query_log_enabled=m.get("dns_query_log_enabled", "false").lower() == "true",
         device_routing_mode=m.get("device_routing_mode", "all"),
+        operating_mode=m.get("operating_mode", "gateway"),
         disable_ipv6=_detect_sysctl_bool("net.ipv6.conf.all.disable_ipv6", m.get("disable_ipv6", "false").lower() == "true"),
         dns_over_tcp=_detect_resolv_use_vc(m.get("dns_over_tcp", "false").lower() == "true"),
         health_interval=_int("health_interval", env_settings.health_interval),
@@ -888,6 +889,25 @@ async def update_settings(body: SettingsUpdate, session: AsyncSession = Depends(
     # but the runtime keeps the old mode. See backlog item 1 in
     # notes.md ("TUN/Both silently bricks proxy"). The snapshot is
     # cheap: a single Settings row read.
+    # Router mode needs a WAN and a LAN. Refuse it on hardware that has only
+    # one physical NIC — the UI hides the option there, but the API is the
+    # real gate: accepting it would leave a setting the dataplane can never
+    # honour, and (once phases 1-2 land) could take the box off the network.
+    if patches.get("operating_mode") == "router":
+        from app.core.network_config import list_interfaces
+        nics = list_interfaces()
+        if len(nics) < 2:
+            raise HTTPException(
+                400,
+                f"Router mode needs at least 2 physical network interfaces; "
+                f"this box has {len(nics)}"
+                + (f" ({', '.join(n['name'] for n in nics)})" if nics else "")
+                + ". Keep 'gateway' mode: devices point their gateway at PiTun "
+                  "and your existing router keeps doing DHCP and NAT.",
+            )
+    if patches.get("operating_mode") not in (None, "gateway", "router"):
+        raise HTTPException(400, "operating_mode must be 'gateway' or 'router'")
+
     inbound_mode_was = None
     if "inbound_mode" in patches and patches["inbound_mode"] is not None:
         existing_row = (await session.exec(

@@ -3,6 +3,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { systemApi } from '@/api/client'
 import HostNetworkSection from '@/components/HostNetworkSection'
 import BackupSection from '@/components/BackupSection'
+import OperatingModeSection from '@/components/OperatingModeSection'
 import { UpdateSection } from '@/components/UpdateSection'
 import {
   Settings as SettingsIcon,
@@ -283,6 +284,11 @@ export function Settings() {
       {/* Network */}
       {section(Network, 'Network', t('Interface, gateway and LAN configuration', 'Интерфейс, шлюз и настройки LAN'), (
         <div className="space-y-5">
+          <OperatingModeSection
+            value={String(val('operating_mode') || 'gateway')}
+            onChange={(m) => set('operating_mode', m)}
+          />
+          <div className="border-t border-gray-800" />
           {/* xray-config knobs (DB-backed settings consumed by config_gen) */}
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
             {field('Interface', textInput('interface', 'eth0', t('Network interface for transparent proxy', 'Сетевой интерфейс для прозрачного прокси')))}

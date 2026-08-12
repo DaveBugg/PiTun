@@ -136,3 +136,4 @@ coverage/
 
 # Internal planning (names the fork + security details) — keep out of the public repo
 docs/fork-analysis-romuss-pitunya.md
+docs/router-mode-plan.md

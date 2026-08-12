@@ -535,6 +535,23 @@ export interface BackupRestorePlan {
 
 /** Whole-box config backup. Export is a plain GET (the browser downloads it);
  *  restore is preview-then-commit so nothing is written unseen. */
+export interface HostInterface {
+  name: string
+  mac: string
+  up: boolean
+  carrier: boolean
+  ipv4: string | null
+  cidr: number | null
+  is_default_route: boolean
+}
+
+export interface InterfaceInventory {
+  items: HostInterface[]
+  count: number
+  /** True when the box has 2+ physical NICs, i.e. router mode is possible. */
+  router_capable: boolean
+}
+
 export const backupApi = {
   export: (includeSecrets: boolean) =>
     http.get('/system/backup', {
@@ -1379,6 +1396,8 @@ export interface NetworkRollbackResult {
 }
 
 export const networkApi = {
+  interfaces: () =>
+    http.get<InterfaceInventory>('/network/interfaces').then(r => r.data),
   getState: async (): Promise<NetworkState> => {
     const r = await http.get('/network/state')
     return r.data

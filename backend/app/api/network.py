@@ -62,6 +62,23 @@ def get_network_state() -> dict:
     return state.to_dict()
 
 
+@router.get("/interfaces")
+def get_interfaces() -> dict:
+    """Physical NICs plus whether this box could act as a full router.
+
+    `router_capable` is the gate the UI uses: router mode needs a WAN and a
+    LAN, so it is only offered on hardware with two or more real NICs.
+    Virtual/container/tunnel interfaces are filtered out, so the count means
+    what it says.
+    """
+    ifaces = network_config.list_interfaces()
+    return {
+        "items": ifaces,
+        "count": len(ifaces),
+        "router_capable": len(ifaces) >= 2,
+    }
+
+
 @router.get("/backups")
 def get_backups() -> dict:
     """List saved rollback points, newest first."""

@@ -602,3 +602,83 @@ def read_state() -> NetworkState:
         dns=dns,
         warnings=warnings,
     )
+
+
+# ── Interface inventory (router mode, phase 0) ───────────────────────────────
+#
+# Router mode needs to know how many REAL NICs the box has: the UI only offers
+# it on hardware with two or more, and the operator has to pick which one faces
+# the ISP. Everything here is read-only — nothing in phase 0 changes behaviour.
+
+# Interfaces that exist because of virtualisation, containers or our own tunnel.
+# They must never be offered as a WAN/LAN candidate: picking `docker0` as the
+# uplink would be nonsense, and `xray0` is created by PiTun itself.
+_VIRTUAL_PREFIXES = (
+    "lo", "docker", "br-", "veth", "virbr", "tun", "tap", "xray",
+    "wg", "ppp", "bond", "dummy", "sit", "gre", "vxlan", "tailscale", "zt",
+)
+
+
+def _is_physical(name: str, link: dict) -> bool:
+    """True when `name` looks like a real NIC we could assign a role to.
+
+    Prefix matching alone is not enough — a USB-Ethernet dongle can be
+    `enx<mac>` and a VLAN sub-interface is `eth0.835` — so we also drop
+    anything the kernel reports as having a `link_type` we can't route on,
+    and anything that is a sub-interface of another link.
+    """
+    if name.startswith(_VIRTUAL_PREFIXES):
+        return False
+    if link.get("link_type") != "ether":
+        return False
+    # VLAN sub-interfaces (eth0.835) and anything enslaved to a bridge/bond
+    # are not standalone role candidates.
+    if "." in name or link.get("master"):
+        return False
+    return True
+
+
+def list_interfaces() -> List[dict]:
+    """Inventory of physical NICs with enough state to choose roles.
+
+    Returns one dict per interface: name, mac, up (admin state), carrier
+    (cable actually plugged in), ipv4/cidr, and `is_default_route` marking
+    the one currently carrying traffic to the internet.
+
+    Physical-only: virtual/container/tunnel interfaces are filtered out, so
+    `len(...) >= 2` is a meaningful "this box can be a router" test.
+    """
+    try:
+        r = subprocess.run(
+            ["ip", "-j", "link", "show"],
+            capture_output=True, text=True, timeout=5,
+        )
+    except (FileNotFoundError, subprocess.SubprocessError):
+        return []
+    if r.returncode != 0:
+        return []
+    try:
+        links = json.loads(r.stdout or "[]")
+    except ValueError:
+        return []
+
+    default_iface, _ = read_default_route()
+    out: List[dict] = []
+    for link in links:
+        name = link.get("ifname") or ""
+        if not name or not _is_physical(name, link):
+            continue
+        ip, cidr = read_interface_address(name)
+        out.append({
+            "name": name,
+            "mac": link.get("address") or "",
+            # `operstate` is the kernel's view; "UP" needs a carrier too, and
+            # a NIC with no cable reports LOWER_UP missing from its flags.
+            "up": link.get("operstate") == "UP",
+            "carrier": "LOWER_UP" in (link.get("flags") or []),
+            "ipv4": ip,
+            "cidr": cidr,
+            "is_default_route": name == default_iface,
+        })
+    out.sort(key=lambda i: i["name"])
+    return out

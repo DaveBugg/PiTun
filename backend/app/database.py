@@ -206,6 +206,13 @@ async def init_default_settings():
         # clients via dns_query_strategy=UseIPv4). INSERT OR IGNORE means
         # existing boxes keep whatever they already have — only a fresh DB
         # picks up this default, so upgrades never flip it silently.
+        # How the box operates on the network (router mode, phase 0):
+        #   "gateway" — today's model: PiTun sits beside the router, devices
+        #               point their gateway at it. Only option on 1-NIC boxes.
+        #   "router"  — PiTun owns the WAN uplink, serves DHCP and NATs.
+        # Never switched automatically; the UI only offers "router" when the
+        # box actually has two or more physical NICs.
+        "operating_mode": "gateway",
         "disable_ipv6": "true",
         "dns_over_tcp": "false",
         # LAN proxy authentication (since v1.3.0-beta.6). Applies to

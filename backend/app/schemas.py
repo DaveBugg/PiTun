@@ -1393,6 +1393,7 @@ class SettingsRead(BaseModel):
     dns_query_log_enabled: bool = False
     # Device routing
     device_routing_mode: str = "all"  # "all" | "include_only" | "exclude_list"
+    operating_mode: str = "gateway"
     # IPv6
     disable_ipv6: bool = False
     # DNS over TCP
@@ -1420,6 +1421,9 @@ class SettingsRead(BaseModel):
 
 class SettingsUpdate(BaseModel):
     mode: Optional[str] = None
+    # "gateway" (beside the router, default) | "router" (owns WAN, DHCP+NAT).
+    # Rejected server-side unless the box has 2+ physical NICs.
+    operating_mode: Optional[str] = None
     active_node_id: Optional[int] = None
     failover_enabled: Optional[bool] = None
     failover_node_ids: Optional[List[int]] = None
