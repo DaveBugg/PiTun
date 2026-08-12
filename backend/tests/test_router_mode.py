@@ -120,3 +120,60 @@ class TestInterfacesEndpoint:
                         return_value=[{"name": "eth0"}]):
             body = client.get("/api/network/interfaces", headers=auth_headers).json()
         assert body["router_capable"] is False
+
+
+class TestWifiCapability:
+    """AP mode is a chipset property, not a property of "it's wireless".
+    Getting this wrong means tearing down a working setup to start hostapd
+    on hardware that can never run it."""
+
+    _IW_AP = """Wiphy phy0
+\tSupported interface modes:
+\t\t * IBSS
+\t\t * managed
+\t\t * AP
+\t\t * P2P-client
+\tBand 1:
+\tBand 2:
+"""
+    _IW_CLIENT_ONLY = """Wiphy phy0
+\tSupported interface modes:
+\t\t * managed
+\tBand 1:
+"""
+
+    def test_non_wireless_is_not_ap_capable(self, monkeypatch):
+        monkeypatch.setattr(nc.os.path, "exists", lambda p: False)
+        monkeypatch.setattr(nc, "_phy_for", lambda i: None)
+        cap = nc.wifi_capabilities("eth0")
+        assert cap["wireless"] is False and cap["ap_capable"] is False
+
+    def test_ap_capable_adapter(self, monkeypatch):
+        monkeypatch.setattr(nc, "is_wireless", lambda i: True)
+        monkeypatch.setattr(nc, "_phy_for", lambda i: "phy0")
+        monkeypatch.setattr(nc, "host_run",
+                            lambda *a, **k: mock.Mock(returncode=0, stdout=self._IW_AP, stderr=""))
+        cap = nc.wifi_capabilities("wlan0")
+        assert cap["ap_capable"] is True
+        assert "AP" in cap["modes"] and "managed" in cap["modes"]
+        assert cap["bands"] == ["Band 1", "Band 2"]
+
+    def test_client_only_adapter_rejected(self, monkeypatch):
+        monkeypatch.setattr(nc, "is_wireless", lambda i: True)
+        monkeypatch.setattr(nc, "_phy_for", lambda i: "phy0")
+        monkeypatch.setattr(nc, "host_run",
+                            lambda *a, **k: mock.Mock(returncode=0, stdout=self._IW_CLIENT_ONLY, stderr=""))
+        cap = nc.wifi_capabilities("wlan0")
+        assert cap["ap_capable"] is False
+        assert "client-only" in cap["detail"]
+
+    def test_missing_iw_is_unknown_not_unsupported(self, monkeypatch):
+        """A missing tool must never read as "your hardware can't do it" —
+        that sends the operator chasing the wrong problem."""
+        monkeypatch.setattr(nc, "is_wireless", lambda i: True)
+        monkeypatch.setattr(nc, "_phy_for", lambda i: "phy0")
+        monkeypatch.setattr(nc, "host_run",
+                            lambda *a, **k: mock.Mock(returncode=127, stdout="", stderr="iw: not found"))
+        cap = nc.wifi_capabilities("wlan0")
+        assert cap["ap_capable"] is None
+        assert "not installed" in cap["detail"]

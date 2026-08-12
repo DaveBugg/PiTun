@@ -69,6 +69,25 @@ export default function OperatingModeSection({
                     {t('uplink', 'аплинк')}
                   </span>
                 )}
+                {n.wireless && (
+                  <span
+                    className={clsx(
+                      'rounded-sm border px-1.5 py-0.5 text-[10px]',
+                      n.ap_capable === true
+                        ? 'border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-800/50 dark:bg-emerald-950/30 dark:text-emerald-300'
+                        : n.ap_capable === false
+                        ? 'border-gray-700 text-gray-500'
+                        : 'border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-800/50 dark:bg-amber-950/30 dark:text-amber-300',
+                    )}
+                    title={n.wifi_detail}
+                  >
+                    {n.ap_capable === true
+                      ? t('WiFi · can serve', 'WiFi · может раздавать')
+                      : n.ap_capable === false
+                      ? t('WiFi · client only', 'WiFi · только клиент')
+                      : t('WiFi · unknown', 'WiFi · неизвестно')}
+                  </span>
+                )}
                 <span className={clsx('text-[10px]', n.carrier ? 'text-emerald-600 dark:text-emerald-400' : 'text-gray-600')}>
                   {n.carrier ? t('link up', 'линк есть') : t('no link', 'нет линка')}
                 </span>

@@ -43,7 +43,7 @@ log "Installing system packages..."
 apt-get update -qq
 apt-get install -y -qq \
     curl git nftables iproute2 net-tools sqlite3 unzip \
-    ca-certificates gnupg lsb-release openssl \
+    ca-certificates gnupg lsb-release openssl iw \
     arp-scan dnsutils jq cron \
     > /dev/null 2>&1
 log "System packages OK"

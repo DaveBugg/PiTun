@@ -536,6 +536,11 @@ export interface BackupRestorePlan {
 /** Whole-box config backup. Export is a plain GET (the browser downloads it);
  *  restore is preview-then-commit so nothing is written unseen. */
 export interface HostInterface {
+  wireless: boolean
+  /** true = can be an AP, false = client-only, null = undetermined (no `iw`). */
+  ap_capable: boolean | null
+  wifi_detail: string
+  wifi_modes: string[]
   name: string
   mac: string
   up: boolean

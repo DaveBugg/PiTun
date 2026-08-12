@@ -93,7 +93,7 @@ _NSENTER_BASE = [
 # accept user input.
 _ALLOWED_PROGRAMS = frozenset({
     "arping", "cat", "chmod", "chown", "command", "dhcpcd", "ifdown",
-    "ifup", "ip", "mkdir", "mv", "netplan", "networkctl", "nmcli",
+    "ifup", "ip", "iw", "mkdir", "mv", "netplan", "networkctl", "nmcli",
     "nsenter", "ping", "resolvectl", "rm", "sh", "stat", "systemctl",
     "tee", "test",
 })
@@ -669,7 +669,15 @@ def list_interfaces() -> List[dict]:
         if not name or not _is_physical(name, link):
             continue
         ip, cidr = read_interface_address(name)
+        # Wireless NICs count as ports, but serving WiFi needs AP mode — a
+        # chipset property. Probe it here so the UI never offers "use this as
+        # the LAN's WiFi" on a client-only adapter.
+        wifi = wifi_capabilities(name)
         out.append({
+            "wireless": wifi["wireless"],
+            "ap_capable": wifi["ap_capable"],
+            "wifi_detail": wifi["detail"],
+            "wifi_modes": wifi["modes"],
             "name": name,
             "mac": link.get("address") or "",
             # `operstate` is the kernel's view; "UP" needs a carrier too, and
@@ -682,3 +690,94 @@ def list_interfaces() -> List[dict]:
         })
     out.sort(key=lambda i: i["name"])
     return out
+
+
+# ── Wireless capability probe (router mode, phase 1b gate) ───────────────────
+#
+# Serving WiFi means putting the radio into AP mode, and that is a property of
+# the chipset + driver, not of "it's a wireless NIC". Plenty of parts —
+# most cheap USB dongles, some built-in Realtek/Broadcom — are client-only.
+# Trying hostapd on those fails at runtime, after we've already torn down the
+# working setup. So: probe first, and only offer AP mode on a positive answer.
+#
+# Deliberately tri-state. `None` means "we could not determine" (usually `iw`
+# isn't installed) and must NOT be shown as "not supported" — the operator can
+# fix a missing tool, and telling them their hardware is incapable when it may
+# be fine is worse than admitting we don't know.
+
+
+def _phy_for(ifname: str) -> Optional[str]:
+    """Kernel phy name (`phy0`) backing a wireless interface, else None."""
+    try:
+        with open(f"/sys/class/net/{ifname}/phy80211/name") as f:
+            return f.read().strip() or None
+    except OSError:
+        return None
+
+
+def is_wireless(ifname: str) -> bool:
+    """True for a WiFi interface. Filesystem check — no tooling required."""
+    return os.path.exists(f"/sys/class/net/{ifname}/wireless") or _phy_for(ifname) is not None
+
+
+def wifi_capabilities(ifname: str) -> dict:
+    """Can `ifname` act as an access point?
+
+    Returns {wireless, ap_capable, modes, bands, detail}. `ap_capable` is
+    True / False / None, where None means undetermined (see module note).
+    """
+    if not is_wireless(ifname):
+        return {"wireless": False, "ap_capable": False, "modes": [], "bands": [],
+                "detail": "not a wireless interface"}
+
+    phy = _phy_for(ifname)
+    if not phy:
+        return {"wireless": True, "ap_capable": None, "modes": [], "bands": [],
+                "detail": "no phy80211 for this interface — cannot query the driver"}
+
+    r = host_run(["iw", "phy", phy, "info"], timeout=8)
+    if r.returncode != 0:
+        # Missing tool is the common case and it's fixable, so say so plainly.
+        err_l = (r.stderr or "").lower()
+        # The message differs by path: bare exec says "not found", nsenter
+        # reports "failed to execute iw: No such file or directory".
+        missing = (
+            "not found" in err_l
+            or "no such file" in err_l
+            or r.returncode == 127
+            or not (r.stdout or r.stderr)
+        )
+        return {
+            "wireless": True, "ap_capable": None, "modes": [], "bands": [],
+            "detail": ("`iw` is not installed — install it to check whether this "
+                       "adapter supports AP mode" if missing
+                       else f"iw failed: {(r.stderr or '').strip()[:120]}"),
+        }
+
+    # `iw phy info` prints an indented list under "Supported interface modes:",
+    # each entry as "\t\t * AP". Collect until the indentation block ends.
+    modes: List[str] = []
+    in_modes = False
+    bands: List[str] = []
+    for line in (r.stdout or "").splitlines():
+        stripped = line.strip()
+        if stripped.startswith("Supported interface modes"):
+            in_modes = True
+            continue
+        if in_modes:
+            if stripped.startswith("*"):
+                modes.append(stripped.lstrip("* ").strip())
+                continue
+            in_modes = False
+        if stripped.startswith("Band "):
+            bands.append(stripped.rstrip(":"))
+
+    ap = "AP" in modes
+    return {
+        "wireless": True,
+        "ap_capable": ap,
+        "modes": modes,
+        "bands": bands,
+        "detail": ("adapter supports AP mode" if ap
+                   else "adapter is client-only — it cannot serve WiFi"),
+    }
