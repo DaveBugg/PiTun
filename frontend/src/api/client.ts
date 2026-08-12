@@ -1421,6 +1421,11 @@ export const networkApi = {
     http.get<RouterModeStatus>('/network/router-mode').then(r => r.data),
   diagnoseWan: () =>
     http.get<{ findings: WanFinding[] }>('/network/router-mode/diagnose').then(r => r.data),
+  routerModePending: () =>
+    http.get<{ pending: boolean; deadline?: string; seconds_left: number }>(
+      '/network/router-mode/pending').then(r => r.data),
+  confirmRouterMode: () =>
+    http.post<{ confirmed: boolean }>('/network/router-mode/confirm').then(r => r.data),
   getState: async (): Promise<NetworkState> => {
     const r = await http.get('/network/state')
     return r.data

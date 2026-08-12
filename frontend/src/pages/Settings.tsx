@@ -5,6 +5,7 @@ import HostNetworkSection from '@/components/HostNetworkSection'
 import BackupSection from '@/components/BackupSection'
 import OperatingModeSection from '@/components/OperatingModeSection'
 import WifiApSection from '@/components/WifiApSection'
+import WanSection from '@/components/WanSection'
 import WanDiagnosticsSection from '@/components/WanDiagnosticsSection'
 import { UpdateSection } from '@/components/UpdateSection'
 import {
@@ -302,6 +303,21 @@ export function Settings() {
           />
           {String(val('operating_mode') || 'gateway') === 'router' && (
             <>
+              <WanSection
+                wan={String(val('wan_interface') || '')}
+                values={{
+                  mode: String(val('wan_mode') || 'dhcp'),
+                  vlanId: String(val('wan_vlan_id') ?? 0),
+                  macClone: String(val('wan_mac_clone') || ''),
+                  address: String(val('wan_static_address') || ''),
+                  gateway: String(val('wan_static_gateway') || ''),
+                  dns: String(val('wan_static_dns') || ''),
+                  pppoeUser: String(val('wan_pppoe_user') || ''),
+                  // Write-only on the backend, same as the WiFi passphrase.
+                  pppoePassword: String(draft['wan_pppoe_password'] ?? ''),
+                }}
+                onChange={(k, v) => set(k, k === 'wan_vlan_id' ? Number(v) || 0 : v)}
+              />
               <WifiApSection
                 lan={String(val('lan_interface') || '')}
                 wifi={{
