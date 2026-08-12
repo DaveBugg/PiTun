@@ -328,3 +328,81 @@ class TestRouterNat:
         body = "\n".join(scripts)
         assert "pitun_router" in body
         assert "table inet pitun " not in body and "table inet pitun\n" not in body
+
+
+class TestDhcpConfig:
+    """The generated dnsmasq config is what the whole LAN depends on, so the
+    interesting assertions are semantic: what clients are told, and which
+    misconfigurations are refused before a daemon ever sees them."""
+
+    def _cfg(self, **over):
+        from app.core.dhcp import DhcpConfig
+        base = dict(interface="eth1", lan_cidr="192.168.10.0/24",
+                    lan_address="192.168.10.1", pool_start="192.168.10.100",
+                    pool_end="192.168.10.200", lease_hours=12)
+        base.update(over)
+        return DhcpConfig(**base)
+
+    def test_dns_is_disabled_so_xray_keeps_port_53(self):
+        from app.core.dhcp import render_dnsmasq_conf
+        conf = render_dnsmasq_conf(self._cfg())
+        assert "port=0" in conf.splitlines(), "dnsmasq must not serve DNS"
+
+    def test_clients_are_pointed_at_pitun_for_gateway_and_dns(self):
+        from app.core.dhcp import render_dnsmasq_conf
+        conf = render_dnsmasq_conf(self._cfg())
+        assert "dhcp-option=3,192.168.10.1" in conf   # router
+        assert "dhcp-option=6,192.168.10.1" in conf   # DNS
+        assert "dhcp-range=192.168.10.100,192.168.10.200,255.255.255.0,12h" in conf
+
+    def test_binds_only_to_the_lan_port(self):
+        """A DHCP server answering on the WAN side would be both useless and
+        hostile to the ISP's network."""
+        from app.core.dhcp import render_dnsmasq_conf
+        conf = render_dnsmasq_conf(self._cfg())
+        assert "interface=eth1" in conf
+        assert "bind-interfaces" in conf
+
+    def test_gateway_address_inside_the_pool_is_refused(self):
+        """dnsmasq won't catch this; a client handed the gateway's own address
+        breaks the LAN in a way that's miserable to diagnose."""
+        from app.core.dhcp import render_dnsmasq_conf, DhcpConfigError
+        import pytest
+        with pytest.raises(DhcpConfigError, match="inside the DHCP pool"):
+            render_dnsmasq_conf(self._cfg(lan_address="192.168.10.150"))
+
+    def test_pool_outside_subnet_is_refused(self):
+        from app.core.dhcp import render_dnsmasq_conf, DhcpConfigError
+        import pytest
+        with pytest.raises(DhcpConfigError, match="outside the LAN subnet"):
+            render_dnsmasq_conf(self._cfg(pool_end="10.0.0.5"))
+
+    def test_inverted_pool_is_refused(self):
+        from app.core.dhcp import render_dnsmasq_conf, DhcpConfigError
+        import pytest
+        with pytest.raises(DhcpConfigError, match="range is empty"):
+            render_dnsmasq_conf(
+                self._cfg(pool_start="192.168.10.200", pool_end="192.168.10.100")
+            )
+
+    def test_reservations_outside_the_subnet_are_dropped_not_emitted(self):
+        from app.core.dhcp import render_dnsmasq_conf, StaticLease
+        conf = render_dnsmasq_conf(self._cfg(static_leases=[
+            StaticLease(mac="aa:bb:cc:dd:ee:ff", ip="192.168.10.50", name="nas"),
+            StaticLease(mac="11:22:33:44:55:66", ip="10.9.9.9", name="elsewhere"),
+            StaticLease(mac="99:88:77:66:55:44", ip="not-an-ip"),
+        ]))
+        assert "dhcp-host=aa:bb:cc:dd:ee:ff,192.168.10.50,nas" in conf
+        assert "10.9.9.9" not in conf
+        assert "not-an-ip" not in conf
+
+    def test_suggested_pool_never_collides_with_the_gateway(self):
+        from app.core.dhcp import default_pool_for, render_dnsmasq_conf
+        import ipaddress
+        for gw in ("192.168.10.1", "192.168.10.254", "192.168.10.150"):
+            start, end = default_pool_for("192.168.10.0/24", gw)
+            g = ipaddress.ip_address(gw)
+            assert not (ipaddress.ip_address(start) <= g <= ipaddress.ip_address(end)), gw
+            # And the suggestion must actually render.
+            render_dnsmasq_conf(self._cfg(
+                lan_address=gw, pool_start=start, pool_end=end))
