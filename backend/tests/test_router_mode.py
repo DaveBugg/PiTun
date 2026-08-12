@@ -83,10 +83,17 @@ class TestModeGate:
         assert "2 physical" in resp.json()["detail"]
 
     def test_router_mode_accepted_on_two_nics(self, client, admin_user, auth_headers):
+        """Since phase 1 the mode arrives together with its port roles — the
+        Settings page batches the whole form into one PATCH, and a router with
+        no ports assigned is not a state worth persisting."""
         with mock.patch("app.core.network_config.list_interfaces",
-                        return_value=[{"name": "eth0"}, {"name": "eth1"}]):
+                        return_value=[{"name": "eth0"}, {"name": "eth1"}]),              mock.patch("app.core.network_config.wifi_capabilities",
+                        return_value={"wireless": False, "ap_capable": False,
+                                      "modes": [], "bands": [], "detail": ""}):
             resp = client.patch("/api/system/settings", headers=auth_headers,
-                                json={"operating_mode": "router"})
+                                json={"operating_mode": "router",
+                                      "wan_interface": "eth0",
+                                      "lan_interface": "eth1"})
         assert resp.status_code in (200, 204), resp.text
         assert client.get("/api/system/settings",
                           headers=auth_headers).json()["operating_mode"] == "router"
@@ -177,3 +184,73 @@ class TestWifiCapability:
         cap = nc.wifi_capabilities("wlan0")
         assert cap["ap_capable"] is None
         assert "not installed" in cap["detail"]
+
+
+class TestPortRoles:
+    """WAN faces the ISP, LAN faces the home network. These are the checks that
+    stop an unbuildable configuration from ever reaching the dataplane."""
+
+    ETH = [{"name": "eth0"}, {"name": "eth1"}, {"name": "wlan0"}]
+    WIRED = {"wireless": False, "ap_capable": False, "modes": [], "bands": [], "detail": ""}
+
+    def _patch(self, client, headers, body, caps=None):
+        with mock.patch("app.core.network_config.list_interfaces", return_value=self.ETH), \
+             mock.patch("app.core.network_config.wifi_capabilities",
+                        return_value=caps or self.WIRED):
+            return client.patch("/api/system/settings", headers=headers, json=body)
+
+    def test_unknown_interface_rejected(self, client, admin_user, auth_headers):
+        r = self._patch(client, auth_headers, {"wan_interface": "eth9"})
+        assert r.status_code == 400
+        assert "not a physical interface" in r.json()["detail"]
+
+    def test_same_port_for_both_roles_rejected(self, client, admin_user, auth_headers):
+        r = self._patch(client, auth_headers,
+                        {"wan_interface": "eth0", "lan_interface": "eth0"})
+        assert r.status_code == 400
+        assert "cannot be the same port" in r.json()["detail"]
+
+    def test_client_only_wifi_rejected_as_lan(self, client, admin_user, auth_headers):
+        """Serving the LAN over WiFi means running an AP — refuse the radio
+        that can't, instead of failing later when hostapd won't start."""
+        caps = {"wireless": True, "ap_capable": False, "modes": ["managed"],
+                "bands": [], "detail": "adapter is client-only"}
+        r = self._patch(client, auth_headers,
+                        {"wan_interface": "eth0", "lan_interface": "wlan0"}, caps)
+        assert r.status_code == 400
+        assert "client-only" in r.json()["detail"]
+
+    def test_undetermined_wifi_rejected_as_lan(self, client, admin_user, auth_headers):
+        """Unknown capability is not permission — but the message must point at
+        the missing tool, not blame the hardware."""
+        caps = {"wireless": True, "ap_capable": None, "modes": [], "bands": [],
+                "detail": "`iw` is not installed"}
+        r = self._patch(client, auth_headers,
+                        {"wan_interface": "eth0", "lan_interface": "wlan0"}, caps)
+        assert r.status_code == 400
+        assert "iw" in r.json()["detail"]
+
+    def test_ap_capable_wifi_allowed_as_lan(self, client, admin_user, auth_headers):
+        caps = {"wireless": True, "ap_capable": True, "modes": ["managed", "AP"],
+                "bands": ["Band 1"], "detail": "adapter supports AP mode"}
+        r = self._patch(client, auth_headers,
+                        {"wan_interface": "eth0", "lan_interface": "wlan0"}, caps)
+        assert r.status_code in (200, 204), r.text
+
+    def test_router_mode_without_roles_rejected(self, client, admin_user, auth_headers):
+        r = self._patch(client, auth_headers, {"operating_mode": "router"})
+        assert r.status_code == 400
+        assert "WAN port" in r.json()["detail"] and "LAN port" in r.json()["detail"]
+
+    def test_roles_can_be_set_while_staying_in_gateway_mode(
+        self, client, admin_user, auth_headers,
+    ):
+        """Assigning roles is not the same as switching mode — the operator can
+        prepare the configuration and flip the mode separately."""
+        r = self._patch(client, auth_headers,
+                        {"wan_interface": "eth0", "lan_interface": "eth1"})
+        assert r.status_code in (200, 204), r.text
+        got = client.get("/api/system/settings", headers=auth_headers).json()
+        assert got["wan_interface"] == "eth0"
+        assert got["lan_interface"] == "eth1"
+        assert got["operating_mode"] == "gateway"

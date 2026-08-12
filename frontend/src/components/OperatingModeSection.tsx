@@ -16,10 +16,13 @@ import { useT } from '@/hooks/useT'
  * handling arrive in later phases.
  */
 export default function OperatingModeSection({
-  value, onChange,
+  value, onChange, wan, lan, onRoleChange,
 }: {
   value: string
   onChange: (mode: string) => void
+  wan: string
+  lan: string
+  onRoleChange: (role: 'wan_interface' | 'lan_interface', iface: string) => void
 }) {
   const t = useT()
   const { data, isLoading } = useQuery({
@@ -160,6 +163,62 @@ export default function OperatingModeSection({
               `Router mode needs at least 2 physical ports — this box has ${data?.count ?? 0}.`,
               `Для режима роутера нужно минимум 2 физических порта — на этой машине ${data?.count ?? 0}.`,
             )}
+          </div>
+        )}
+
+        {/* Port roles — only meaningful once router mode is chosen. The
+           backend validates the same rules; this narrows the choices so the
+           operator doesn't have to discover them by hitting an error. */}
+        {value === 'router' && (
+          <div className="mt-3 grid sm:grid-cols-2 gap-3">
+            <div>
+              <label className="block text-[11px] font-medium text-gray-400 mb-1">
+                {t('WAN port — faces the ISP', 'WAN-порт — в сторону провайдера')}
+              </label>
+              <select
+                value={wan}
+                onChange={(e) => onRoleChange('wan_interface', e.target.value)}
+                className="w-full rounded-lg bg-gray-950 border border-gray-800 px-3 py-2 text-sm text-gray-100 focus:outline-hidden focus:border-gray-600"
+              >
+                <option value="">{t('— choose —', '— выберите —')}</option>
+                {nics.filter((n) => n.name !== lan).map((n) => (
+                  <option key={n.name} value={n.name}>
+                    {n.name}{n.is_default_route ? t(' (current uplink)', ' (текущий аплинк)') : ''}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="block text-[11px] font-medium text-gray-400 mb-1">
+                {t('LAN port — faces your network', 'LAN-порт — в сторону сети')}
+              </label>
+              <select
+                value={lan}
+                onChange={(e) => onRoleChange('lan_interface', e.target.value)}
+                className="w-full rounded-lg bg-gray-950 border border-gray-800 px-3 py-2 text-sm text-gray-100 focus:outline-hidden focus:border-gray-600"
+              >
+                <option value="">{t('— choose —', '— выберите —')}</option>
+                {nics
+                  .filter((n) => n.name !== wan)
+                  // A client-only radio can't run an access point, so it can
+                  // never serve the LAN — leave it out rather than let the
+                  // operator pick it and get a 400.
+                  .filter((n) => !n.wireless || n.ap_capable === true)
+                  .map((n) => (
+                    <option key={n.name} value={n.name}>
+                      {n.name}{n.wireless ? t(' (WiFi AP)', ' (WiFi AP)') : ''}
+                    </option>
+                  ))}
+              </select>
+              {nics.some((n) => n.wireless && n.ap_capable !== true) && (
+                <p className="mt-1 text-[10px] text-gray-600">
+                  {t(
+                    'Wireless adapters that cannot run an access point are not listed.',
+                    'Беспроводные адаптеры без поддержки точки доступа не показаны.',
+                  )}
+                </p>
+              )}
+            </div>
           </div>
         )}
 

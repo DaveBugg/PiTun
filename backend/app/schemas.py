@@ -1394,6 +1394,8 @@ class SettingsRead(BaseModel):
     # Device routing
     device_routing_mode: str = "all"  # "all" | "include_only" | "exclude_list"
     operating_mode: str = "gateway"
+    wan_interface: str = ""
+    lan_interface: str = ""
     # IPv6
     disable_ipv6: bool = False
     # DNS over TCP
@@ -1424,6 +1426,8 @@ class SettingsUpdate(BaseModel):
     # "gateway" (beside the router, default) | "router" (owns WAN, DHCP+NAT).
     # Rejected server-side unless the box has 2+ physical NICs.
     operating_mode: Optional[str] = None
+    wan_interface: Optional[str] = None
+    lan_interface: Optional[str] = None
     active_node_id: Optional[int] = None
     failover_enabled: Optional[bool] = None
     failover_node_ids: Optional[List[int]] = None

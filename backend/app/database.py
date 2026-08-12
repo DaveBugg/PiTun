@@ -213,6 +213,10 @@ async def init_default_settings():
         # Never switched automatically; the UI only offers "router" when the
         # box actually has two or more physical NICs.
         "operating_mode": "gateway",
+        # Port roles for router mode (empty until the operator assigns them).
+        # wan_interface faces the ISP, lan_interface faces the home network.
+        "wan_interface": "",
+        "lan_interface": "",
         "disable_ipv6": "true",
         "dns_over_tcp": "false",
         # LAN proxy authentication (since v1.3.0-beta.6). Applies to

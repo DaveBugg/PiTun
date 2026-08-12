@@ -754,6 +754,8 @@ async def get_settings(session: AsyncSession = Depends(get_session)):
         dns_query_log_enabled=m.get("dns_query_log_enabled", "false").lower() == "true",
         device_routing_mode=m.get("device_routing_mode", "all"),
         operating_mode=m.get("operating_mode", "gateway"),
+        wan_interface=m.get("wan_interface", ""),
+        lan_interface=m.get("lan_interface", ""),
         disable_ipv6=_detect_sysctl_bool("net.ipv6.conf.all.disable_ipv6", m.get("disable_ipv6", "false").lower() == "true"),
         dns_over_tcp=_detect_resolv_use_vc(m.get("dns_over_tcp", "false").lower() == "true"),
         health_interval=_int("health_interval", env_settings.health_interval),
@@ -907,6 +909,69 @@ async def update_settings(body: SettingsUpdate, session: AsyncSession = Depends(
             )
     if patches.get("operating_mode") not in (None, "gateway", "router"):
         raise HTTPException(400, "operating_mode must be 'gateway' or 'router'")
+
+    # Port roles. Validated whenever either role is being set, and again as a
+    # completeness check when router mode is switched on — a router with no
+    # WAN, or with one port doing both jobs, is not a configuration we should
+    # ever persist and then try to apply.
+    if any(k in patches for k in ("wan_interface", "lan_interface", "operating_mode")):
+        from app.core.network_config import list_interfaces, wifi_capabilities
+
+        async def _current(key: str) -> str:
+            row = (await session.exec(
+                select(DBSettings).where(DBSettings.key == key)
+            )).first()
+            return row.value if row else ""
+
+        wan = patches.get("wan_interface")
+        lan = patches.get("lan_interface")
+        wan = await _current("wan_interface") if wan is None else wan
+        lan = await _current("lan_interface") if lan is None else lan
+        mode = patches.get("operating_mode")
+        if mode is None:
+            mode = await _current("operating_mode") or "gateway"
+
+        if wan or lan:
+            names = {i["name"] for i in list_interfaces()}
+            for role, value in (("wan_interface", wan), ("lan_interface", lan)):
+                if value and value not in names:
+                    raise HTTPException(
+                        400,
+                        f"{role} '{value}' is not a physical interface on this box "
+                        f"({', '.join(sorted(names)) or 'none detected'})",
+                    )
+            if wan and lan and wan == lan:
+                raise HTTPException(
+                    400,
+                    f"WAN and LAN cannot be the same port ('{wan}') — router mode "
+                    "needs one port facing the ISP and another facing the network.",
+                )
+            # Serving the LAN over WiFi means running an access point, which
+            # only some radios can do. Catch it here rather than at hostapd
+            # start, which happens after the working setup is torn down.
+            if lan:
+                cap = wifi_capabilities(lan)
+                if cap["wireless"] and cap["ap_capable"] is False:
+                    raise HTTPException(
+                        400,
+                        f"'{lan}' is a client-only wireless adapter — it cannot serve "
+                        "the LAN. Use a wired port for LAN, or a WiFi adapter that "
+                        "supports AP mode.",
+                    )
+                if cap["wireless"] and cap["ap_capable"] is None:
+                    raise HTTPException(
+                        400,
+                        f"Cannot confirm '{lan}' supports AP mode: {cap['detail']}. "
+                        "Resolve that before assigning it as the LAN port.",
+                    )
+
+        if mode == "router" and (not wan or not lan):
+            missing = " and ".join(
+                r for r, v in (("a WAN port", wan), ("a LAN port", lan)) if not v
+            )
+            raise HTTPException(
+                400, f"Router mode needs {missing} assigned before it can be enabled.",
+            )
 
     inbound_mode_was = None
     if "inbound_mode" in patches and patches["inbound_mode"] is not None:

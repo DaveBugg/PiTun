@@ -287,6 +287,9 @@ export function Settings() {
           <OperatingModeSection
             value={String(val('operating_mode') || 'gateway')}
             onChange={(m) => set('operating_mode', m)}
+            wan={String(val('wan_interface') || '')}
+            lan={String(val('lan_interface') || '')}
+            onRoleChange={(role, iface) => set(role, iface)}
           />
           <div className="border-t border-gray-800" />
           {/* xray-config knobs (DB-backed settings consumed by config_gen) */}
