@@ -412,7 +412,8 @@ class TestWanExposure:
     """Router mode is the first time PiTun has an interface facing the
     internet. xray binds DNS/SOCKS/HTTP to 0.0.0.0, which was harmless when
     every interface faced the LAN and is an open resolver plus a pair of open
-    proxies the moment there's an uplink."""
+    proxies the moment there's an uplink. The uplink therefore accepts nothing
+    new at all — replies only."""
 
     def _apply(self, monkeypatch, **kw):
         import asyncio
@@ -427,35 +428,43 @@ class TestWanExposure:
         asyncio.run(nft.apply_router_nat("eth0", "eth1", **kw))
         return "\n".join(scripts)
 
-    def test_local_services_are_closed_on_the_wan_side(self, monkeypatch):
-        body = self._apply(
-            monkeypatch,
-            tcp_services=[80, 443, 53, 1080, 8080],
-            udp_services=[53, 5353],
-        )
-        assert 'iifname "eth0" tcp dport { 53, 80, 443, 1080, 8080 } drop' in body
-        assert 'iifname "eth0" udp dport { 53, 5353 } drop' in body
-
-    def test_input_policy_stays_accept_so_ssh_survives(self, monkeypatch):
-        """Dropping by default would also cut SSH — locking the operator out
-        of a remote box while securing it is not a trade worth making."""
-        body = self._apply(monkeypatch, tcp_services=[80])
-        assert "type filter hook input priority filter; policy accept" in body
-        assert "ct state established,related accept" in body
-
-    def test_lan_side_is_not_restricted(self, monkeypatch):
-        """Only the WAN interface is matched — the LAN must still reach the
-        panel, DNS and the proxies."""
-        body = self._apply(monkeypatch, tcp_services=[80, 443])
-        assert 'iifname "eth1" tcp dport' not in body
-
-    def test_no_services_means_no_drop_rules(self, monkeypatch):
+    def test_nothing_new_is_accepted_from_the_internet(self, monkeypatch):
+        """One blanket rule instead of a port list — a list has to be
+        maintained, and a forgotten port is an exposed service."""
         body = self._apply(monkeypatch)
-        assert "dport" not in body
-        assert "no local services to close" in body
+        assert 'iifname "eth0" ct state new drop' in body
+        assert "ct state established,related accept" in body
+        assert "ct state invalid drop" in body
+
+    def test_dhcp_client_replies_still_get_in(self, monkeypatch):
+        """They arrive as NEW rather than RELATED, so the blanket drop would
+        otherwise stop the uplink from ever getting an address."""
+        body = self._apply(monkeypatch)
+        assert 'iifname "eth0" udp sport 67 udp dport 68 accept' in body
+
+    def test_pmtu_and_traceroute_icmp_survive(self, monkeypatch):
+        """Dropping these makes connections hang instead of fail — one of the
+        worst failure modes to diagnose."""
+        body = self._apply(monkeypatch)
+        assert "destination-unreachable" in body and "time-exceeded" in body
+
+    def test_input_policy_stays_accept_and_drops_are_wan_scoped(self, monkeypatch):
+        """A drop policy would cut the LAN path too. Every restriction is
+        bound to the WAN interface so LAN administration always survives."""
+        body = self._apply(monkeypatch)
+        assert "type filter hook input priority filter; policy accept" in body
+        input_chain = body.split("chain input")[1].split("chain forward")[0]
+        for line in input_chain.splitlines():
+            if "drop" in line and not line.strip().startswith("#"):
+                assert 'iifname "eth0"' in line or "ct state invalid" in line, line
+
+    def test_published_ports_can_be_opened_explicitly(self, monkeypatch):
+        body = self._apply(monkeypatch, wan_allow_tcp=[51820, 443], wan_allow_udp=[51821])
+        assert 'iifname "eth0" tcp dport { 443, 51820 } accept' in body
+        assert 'iifname "eth0" udp dport { 51821 } accept' in body
 
     def test_out_of_range_ports_are_ignored(self, monkeypatch):
-        body = self._apply(monkeypatch, tcp_services=[80, 0, 70000, -1])
-        assert "{ 80 }" in body
+        body = self._apply(monkeypatch, wan_allow_tcp=[443, 0, 70000, -1])
+        assert "{ 443 }" in body
         for bad in ("70000", "-1"):
             assert bad not in body

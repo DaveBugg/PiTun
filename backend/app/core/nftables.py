@@ -485,8 +485,8 @@ async def apply_router_nat(
     wan: str,
     lan: str,
     *,
-    tcp_services: Sequence[int] = (),
-    udp_services: Sequence[int] = (),
+    wan_allow_tcp: Sequence[int] = (),
+    wan_allow_udp: Sequence[int] = (),
 ) -> bool:
     """Masquerade LAN→WAN and filter forwarding, statefully.
 
@@ -495,18 +495,29 @@ async def apply_router_nat(
     conntrack state rather than by an open policy, so the WAN side can't
     initiate into the LAN.
 
-    The input chain closes what router mode newly exposes. In gateway mode
-    there is no WAN port, so it never mattered that xray binds its DNS, SOCKS
-    and HTTP inbounds to 0.0.0.0 — every interface faced the LAN. Give the box
-    an uplink and those same listeners face the internet: an open resolver
-    (DNS amplification) and open proxies (anyone routing traffic through your
-    line). `tcp_services` / `udp_services` are the local ports to close on the
-    WAN side — pass the panel, DNS, SOCKS, HTTP and TPROXY ports.
+    The input chain gives the uplink a clean posture: **nothing new arrives
+    from the internet**. Only replies to connections the box itself opened are
+    accepted, so every local service — the panel, SSH, and xray's DNS / SOCKS /
+    HTTP inbounds, all of which bind 0.0.0.0 — is reachable over the LAN and
+    invisible from the WAN. That matters because gateway mode had no
+    internet-facing interface at all, so binding everything to 0.0.0.0 was
+    harmless; an uplink turns the same listeners into an open resolver (abused
+    for DNS amplification) and open proxies.
 
-    That chain's policy is deliberately ACCEPT, not drop: a drop policy on
-    input would also cut SSH, and locking the operator out of a remote box
-    while "securing" it is not a trade worth making. We close what we know we
-    opened, and leave the rest of the host's inbound posture alone.
+    It's a blanket `ct state new drop` on the WAN rather than a list of ports
+    to close, because a list has to be maintained: add a service later, forget
+    its port, and it's exposed. The blanket rule covers whatever we add next.
+
+    Two exceptions are required for the uplink itself to work: DHCP-client
+    replies (they arrive as NEW, not RELATED, so conntrack won't admit them),
+    and the ICMP types PMTU discovery and traceroute rely on — dropping those
+    produces connections that hang rather than fail. `wan_allow_tcp` /
+    `wan_allow_udp` open specific ports when something is deliberately
+    published.
+
+    The chain's policy stays ACCEPT and every drop is scoped to `iifname wan`:
+    the LAN path is untouched, so tightening the uplink cannot lock the
+    operator out of a box they administer over the LAN.
     """
     if not (_validate_iface(wan) and _validate_iface(lan)):
         logger.error("Router NAT: invalid interface names (wan=%r lan=%r)", wan, lan)
@@ -515,14 +526,31 @@ async def apply_router_nat(
         logger.error("Router NAT: wan and lan must differ (both %r)", wan)
         return False
 
-    tcp_ports = sorted({int(p) for p in tcp_services if 0 < int(p) < 65536})
-    udp_ports = sorted({int(p) for p in udp_services if 0 < int(p) < 65536})
-    rules = []
+    tcp_ports = sorted({int(p) for p in wan_allow_tcp if 0 < int(p) < 65536})
+    udp_ports = sorted({int(p) for p in wan_allow_udp if 0 < int(p) < 65536})
+    rules = [
+        "        # The uplink brings its own address up over DHCP, and those",
+        "        # replies arrive as NEW — conntrack alone would not admit them.",
+        f'        iifname "{wan}" udp sport 67 udp dport 68 accept',
+        "        # PMTU discovery and traceroute fail by hanging rather than",
+        "        # erroring if these are dropped, which is miserable to debug.",
+        f'        iifname "{wan}" icmp type {{ echo-request, destination-unreachable, time-exceeded, parameter-problem }} accept',
+    ]
     if tcp_ports:
-        rules.append(f'        iifname "{wan}" tcp dport {{ {", ".join(map(str, tcp_ports))} }} drop')
+        rules.append(
+            f'        iifname "{wan}" tcp dport {{ {", ".join(map(str, tcp_ports))} }} accept'
+        )
     if udp_ports:
-        rules.append(f'        iifname "{wan}" udp dport {{ {", ".join(map(str, udp_ports))} }} drop')
-    wan_service_rules = "\n".join(rules) or "        # no local services to close"
+        rules.append(
+            f'        iifname "{wan}" udp dport {{ {", ".join(map(str, udp_ports))} }} accept'
+        )
+    rules += [
+        "        # Everything else arriving from the internet is refused. Every",
+        "        # local service — panel, SSH, xray's DNS/SOCKS/HTTP — stays",
+        "        # reachable over the LAN and invisible from the WAN.",
+        f'        iifname "{wan}" ct state new drop',
+    ]
+    wan_service_rules = "\n".join(rules)
 
     script = f"""
 table inet {_ROUTER_TABLE} {{
@@ -535,6 +563,7 @@ table inet {_ROUTER_TABLE} {{
     chain input {{
         type filter hook input priority filter; policy accept;
         ct state established,related accept
+        ct state invalid drop
 {wan_service_rules}
     }}
 
