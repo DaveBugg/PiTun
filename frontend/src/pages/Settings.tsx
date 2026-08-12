@@ -4,6 +4,8 @@ import { systemApi } from '@/api/client'
 import HostNetworkSection from '@/components/HostNetworkSection'
 import BackupSection from '@/components/BackupSection'
 import OperatingModeSection from '@/components/OperatingModeSection'
+import WifiApSection from '@/components/WifiApSection'
+import WanDiagnosticsSection from '@/components/WanDiagnosticsSection'
 import { UpdateSection } from '@/components/UpdateSection'
 import {
   Settings as SettingsIcon,
@@ -298,6 +300,27 @@ export function Settings() {
             }}
             onDhcpChange={(k, v) => set(k, v)}
           />
+          {String(val('operating_mode') || 'gateway') === 'router' && (
+            <>
+              <WifiApSection
+                lan={String(val('lan_interface') || '')}
+                wifi={{
+                  enabled: isChecked('wifi_enabled'),
+                  ssid: String(val('wifi_ssid') || ''),
+                  // Write-only on the backend: starts empty and only sends
+                  // when the operator actually types a new one.
+                  passphrase: String(draft['wifi_passphrase'] ?? ''),
+                  country: String(val('wifi_country') || ''),
+                  band: String(val('wifi_band') || '2.4'),
+                  channel: String(val('wifi_channel') ?? 0),
+                  security: String(val('wifi_security') || 'wpa2'),
+                  hidden: isChecked('wifi_hidden'),
+                }}
+                onChange={(k, v) => set(k, v)}
+              />
+              <WanDiagnosticsSection />
+            </>
+          )}
           <div className="border-t border-gray-800" />
           {/* xray-config knobs (DB-backed settings consumed by config_gen) */}
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
