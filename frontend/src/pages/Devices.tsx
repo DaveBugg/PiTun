@@ -49,6 +49,12 @@ export function Devices() {
   const [selected, setSelected] = useState<Set<number>>(new Set())
   const [editId, setEditId] = useState<number | null>(null)
   const [editName, setEditName] = useState('')
+  // DHCP reservation editing (router mode). Deliberately separate from the
+  // observed `ip`: pinning what ARP happened to see would fix an address the
+  // device merely held once.
+  const [reserveId, setReserveId] = useState<number | null>(null)
+  const [reserveValue, setReserveValue] = useState('')
+  const [reserveError, setReserveError] = useState('')
 
   const MODE_OPTIONS = [
     { value: 'all',          label: 'All devices',   desc: t('Route traffic for all LAN devices', 'Маршрутизировать трафик всех устройств LAN') },
@@ -173,6 +179,18 @@ export function Devices() {
     updateDevice.mutate({ id: d.id, data: { name: editName } }, {
       onSuccess: () => setEditId(null),
     })
+  }
+
+  const saveReservation = (d: Device) => {
+    setReserveError('')
+    updateDevice.mutate(
+      { id: d.id, data: { dhcp_reserved_ip: reserveValue.trim() } },
+      {
+        onSuccess: () => setReserveId(null),
+        onError: (e: any) =>
+          setReserveError(e?.response?.data?.detail || 'Could not save'),
+      },
+    )
   }
 
   const cyclePolicy = (d: Device) => {
@@ -583,7 +601,69 @@ export function Devices() {
                         </div>
                       )}
                     </td>
-                    <td className="px-3 py-2.5 font-mono text-gray-300">{d.ip || '—'}</td>
+                    <td className="px-3 py-2.5 font-mono text-gray-300">
+                      {reserveId === d.id ? (
+                        <div className="space-y-1">
+                          <input
+                            autoFocus
+                            value={reserveValue}
+                            onChange={(e) => setReserveValue(e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter') saveReservation(d)
+                              if (e.key === 'Escape') setReserveId(null)
+                            }}
+                            placeholder={t('reserved IP', 'закреплённый IP')}
+                            className="w-32 rounded-sm bg-gray-800 border border-gray-700 px-2 py-1 text-xs"
+                          />
+                          <div className="flex gap-1">
+                            <button
+                              type="button"
+                              onClick={() => saveReservation(d)}
+                              className="rounded-sm bg-brand-600 hover:bg-brand-500 px-2 py-0.5 text-[10px] text-white"
+                            >
+                              {t('Save', 'Сохранить')}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => { setReserveId(null); setReserveError('') }}
+                              className="rounded-sm border border-gray-700 px-2 py-0.5 text-[10px] text-gray-400"
+                            >
+                              {t('Cancel', 'Отмена')}
+                            </button>
+                          </div>
+                          {reserveError && (
+                            <div className="text-[10px] text-red-600 dark:text-red-400 max-w-40">
+                              {reserveError}
+                            </div>
+                          )}
+                        </div>
+                      ) : (
+                        <div className="flex items-center gap-1.5">
+                          <span>{d.ip || '—'}</span>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setReserveId(d.id)
+                              setReserveValue(d.dhcp_reserved_ip || d.ip || '')
+                              setReserveError('')
+                            }}
+                            title={d.dhcp_reserved_ip
+                              ? t(`Reserved ${d.dhcp_reserved_ip} — click to change or clear`,
+                                  `Закреплён ${d.dhcp_reserved_ip} — изменить или снять`)
+                              : t('Reserve a fixed address for this device (router mode DHCP)',
+                                  'Закрепить постоянный адрес за устройством (DHCP в режиме роутера)')}
+                            className={clsx(
+                              'rounded-sm border px-1 py-0.5 text-[10px] leading-none',
+                              d.dhcp_reserved_ip
+                                ? 'border-brand-200 bg-brand-50 text-brand-700 dark:border-brand-800/50 dark:bg-brand-950/30 dark:text-brand-300'
+                                : 'border-gray-800 text-gray-600 hover:text-gray-300',
+                            )}
+                          >
+                            {d.dhcp_reserved_ip ? d.dhcp_reserved_ip : t('pin', 'закрепить')}
+                          </button>
+                        </div>
+                      )}
+                    </td>
                     <td className="px-3 py-2.5 font-mono text-gray-400 text-xs">{d.mac}</td>
                     <td className="px-3 py-2.5 text-gray-500 text-xs max-w-32 truncate" title={d.vendor ?? ''}>
                       {d.vendor || '—'}

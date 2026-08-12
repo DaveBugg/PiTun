@@ -773,6 +773,8 @@ export interface Device {
   first_seen: string
   last_seen: string
   is_online: boolean
+  /** Fixed address handed out by PiTun's DHCP in router mode (null = none). */
+  dhcp_reserved_ip?: string | null
   routing_policy: DeviceRoutingPolicy
   /**
    * v1.4: which RoutingSet this device belongs to. `null` = unassigned
@@ -782,6 +784,8 @@ export interface Device {
 }
 
 export interface DeviceUpdate {
+  /** Fixed DHCP address for router mode. Send "" to clear. */
+  dhcp_reserved_ip?: string | null
   name?: string
   routing_policy?: DeviceRoutingPolicy
   // null = unassign (move to global). Omit field entirely to leave alone.

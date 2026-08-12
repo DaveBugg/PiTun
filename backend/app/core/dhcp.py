@@ -132,6 +132,15 @@ def render_dnsmasq_conf(cfg: DhcpConfig) -> str:
                     lease.mac, lease.ip, net,
                 )
                 continue
+            # Reserving the gateway's own address hands a client the router's
+            # IP — the same collision the pool check guards against, arriving
+            # by a different route.
+            if str(ip) == cfg.lan_address:
+                logger.warning(
+                    "DHCP: skipping reservation %s -> %s (that is the gateway's "
+                    "own address)", lease.mac, lease.ip,
+                )
+                continue
             suffix = f",{lease.name}" if lease.name else ""
             lines.append(f"dhcp-host={lease.mac},{lease.ip}{suffix}")
 

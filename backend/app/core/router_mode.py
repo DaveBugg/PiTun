@@ -122,9 +122,26 @@ async def apply(session: AsyncSession) -> dict:
     pool_end = (m.get("dhcp_pool_end") or "").strip()
     if not pool_start or not pool_end:
         pool_start, pool_end = dhcp_mod.default_pool_for(lan_cidr, lan_address)
+    # Reservations come from devices the operator explicitly pinned. Ones that
+    # don't fit the current subnet are dropped by the renderer with a log line
+    # rather than failing the whole apply — a stale reservation from a previous
+    # LAN shouldn't stop the router coming up.
+    from app.models import Device
+    reserved = (await session.exec(
+        select(Device).where(Device.dhcp_reserved_ip != None)  # noqa: E711
+    )).all()
+    leases = [
+        dhcp_mod.StaticLease(
+            mac=d.mac, ip=d.dhcp_reserved_ip or "",
+            name=(d.name or d.hostname or "").replace(" ", "-")[:32],
+        )
+        for d in reserved if d.mac and d.dhcp_reserved_ip
+    ]
+
     dhcp_cfg = dhcp_mod.DhcpConfig(
         interface=lan, lan_cidr=lan_cidr, lan_address=lan_address,
         pool_start=pool_start, pool_end=pool_end, lease_hours=lease_hours,
+        static_leases=leases,
     )
     try:
         dhcp_mod.render_dnsmasq_conf(dhcp_cfg)
@@ -159,7 +176,8 @@ async def apply(session: AsyncSession) -> dict:
     return {
         "mode": "router", "wan": wan, "lan": lan,
         "lan_address": lan_address, "lan_cidr": lan_cidr,
-        "dhcp_pool": [pool_start, pool_end], "applied": applied,
+        "dhcp_pool": [pool_start, pool_end], "reservations": len(leases),
+        "applied": applied,
     }
 
 

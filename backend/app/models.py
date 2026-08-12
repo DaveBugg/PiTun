@@ -489,6 +489,11 @@ class Device(SQLModel, table=True):
     last_seen: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     is_online: bool = True
     routing_policy: str = "default"  # "default" | "include" | "exclude"
+    # Fixed address handed to this device by PiTun's DHCP server in router
+    # mode. Distinct from `ip`, which is whatever ARP scanning last observed:
+    # promoting an observation to a reservation would pin an address the
+    # device merely happened to hold. NULL = no reservation.
+    dhcp_reserved_ip: Optional[str] = None
 
     # NULL = unassigned (device sees only global rules — preserves old
     # behaviour on upgrade). Set to a RoutingSet.id to apply that set's

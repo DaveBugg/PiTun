@@ -522,11 +522,19 @@ class TestOrchestration:
         return rm, calls, asyncio
 
     class _Session:
-        def __init__(self, mapping):
-            self._m = mapping
+        """Serves settings rows; every other query (devices, for DHCP
+        reservations) comes back empty."""
 
-        async def exec(self, *_a, **_kw):
-            rows = [type("R", (), {"key": k, "value": v})() for k, v in self._m.items()]
+        def __init__(self, mapping, devices=()):
+            self._m = mapping
+            self._devices = list(devices)
+
+        async def exec(self, statement=None, *_a, **_kw):
+            if statement is not None and "device" in str(statement).lower():
+                rows = self._devices
+            else:
+                rows = [type("R", (), {"key": k, "value": v})()
+                        for k, v in self._m.items()]
             return type("Res", (), {"all": lambda self: rows})()
 
     def test_gateway_mode_tears_everything_down(self, monkeypatch):
@@ -682,3 +690,69 @@ class TestTeardownIsAlwaysPossible:
         res = asyncio.run(rm.teardown())
         assert res["mode"] == "gateway"
         assert res["steps"]["dhcp"] is True
+
+
+class TestDhcpReservations:
+    """Reservations are an explicit operator choice, not a promotion of the
+    address ARP happened to observe — pinning an observation would fix an
+    address the device merely held once, possibly outside the pool we serve."""
+
+    def _cfg(self, leases):
+        from app.core.dhcp import DhcpConfig
+        return DhcpConfig(
+            interface="eth1", lan_cidr="192.168.10.0/24",
+            lan_address="192.168.10.1", pool_start="192.168.10.100",
+            pool_end="192.168.10.200", lease_hours=12, static_leases=leases,
+        )
+
+    def test_reservation_for_the_gateway_address_is_dropped(self):
+        """Same collision the pool check prevents, arriving by another route."""
+        from app.core.dhcp import render_dnsmasq_conf, StaticLease
+        conf = render_dnsmasq_conf(self._cfg([
+            StaticLease(mac="aa:bb:cc:dd:ee:ff", ip="192.168.10.1", name="oops"),
+            StaticLease(mac="11:22:33:44:55:66", ip="192.168.10.60", name="nas"),
+        ]))
+        assert "192.168.10.1," not in conf.replace("dhcp-option=3,192.168.10.1", "")
+        assert "dhcp-host=11:22:33:44:55:66,192.168.10.60,nas" in conf
+
+    def test_reservation_inside_the_pool_is_allowed(self):
+        """dnsmasq honours a dhcp-host inside the range — that's the normal
+        way to pin an address a device already uses."""
+        from app.core.dhcp import render_dnsmasq_conf, StaticLease
+        conf = render_dnsmasq_conf(self._cfg([
+            StaticLease(mac="aa:bb:cc:dd:ee:ff", ip="192.168.10.150", name="tv"),
+        ]))
+        assert "dhcp-host=aa:bb:cc:dd:ee:ff,192.168.10.150,tv" in conf
+
+    def test_bad_reservation_is_rejected_by_the_api(self, client, admin_user,
+                                                    auth_headers, session):
+        from app.models import Device
+        d = Device(mac="aa:bb:cc:00:11:22", ip="192.168.1.5")
+        session.add(d)
+        session.commit()
+        session.refresh(d)
+
+        bad = client.patch(f"/api/devices/{d.id}", headers=auth_headers,
+                           json={"dhcp_reserved_ip": "not-an-ip"})
+        assert bad.status_code == 400
+        assert "not a valid IPv4" in bad.json()["detail"]
+
+        ok = client.patch(f"/api/devices/{d.id}", headers=auth_headers,
+                          json={"dhcp_reserved_ip": "192.168.10.60"})
+        assert ok.status_code in (200, 204), ok.text
+        session.expire_all()
+        assert session.get(Device, d.id).dhcp_reserved_ip == "192.168.10.60"
+
+    def test_empty_string_clears_the_reservation(self, client, admin_user,
+                                                 auth_headers, session):
+        from app.models import Device
+        d = Device(mac="bb:cc:dd:00:11:22", dhcp_reserved_ip="192.168.10.61")
+        session.add(d)
+        session.commit()
+        session.refresh(d)
+
+        r = client.patch(f"/api/devices/{d.id}", headers=auth_headers,
+                         json={"dhcp_reserved_ip": ""})
+        assert r.status_code in (200, 204), r.text
+        session.expire_all()
+        assert session.get(Device, d.id).dhcp_reserved_ip is None

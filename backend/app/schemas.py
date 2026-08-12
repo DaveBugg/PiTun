@@ -1745,6 +1745,7 @@ class DeviceRead(BaseModel):
     first_seen: datetime
     last_seen: datetime
     is_online: bool = True
+    dhcp_reserved_ip: Optional[str] = None
     routing_policy: str = "default"
     # NULL = unassigned (only global routing rules apply). Set to a
     # RoutingSet.id to apply that set's rules in addition to globals.
@@ -1756,6 +1757,8 @@ class DeviceRead(BaseModel):
 
 class DeviceUpdate(BaseModel):
     name: Optional[str] = None
+    # Send "" to clear a reservation; omit to leave it alone.
+    dhcp_reserved_ip: Optional[str] = None
     routing_policy: Optional[str] = None
     # Sentinel-free: pass `null` to unassign (back to global-only),
     # omit the field entirely to leave the current assignment alone.

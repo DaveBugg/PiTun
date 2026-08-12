@@ -67,6 +67,24 @@ async def update_device(
 
     patch = data.model_dump(exclude_unset=True)
 
+    # A DHCP reservation is only meaningful as a valid IPv4 address; "" clears
+    # it. Validated here rather than at apply time so a typo is rejected while
+    # the operator is looking at the form, not silently dropped later when the
+    # router config is generated.
+    if "dhcp_reserved_ip" in patch:
+        raw = (patch["dhcp_reserved_ip"] or "").strip()
+        if raw:
+            import ipaddress
+            try:
+                ipaddress.IPv4Address(raw)
+            except ValueError:
+                raise HTTPException(
+                    400, f"'{raw}' is not a valid IPv4 address for a DHCP reservation",
+                )
+            patch["dhcp_reserved_ip"] = raw
+        else:
+            patch["dhcp_reserved_ip"] = None
+
     # Validate target routing set exists (if assigning, not unassigning).
     if "routing_set_id" in patch and patch["routing_set_id"] is not None:
         from app.models import RoutingSet
