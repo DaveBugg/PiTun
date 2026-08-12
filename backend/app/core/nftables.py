@@ -583,6 +583,18 @@ table inet {_ROUTER_TABLE} {{
         # LAN out to the internet, and LAN talking to itself.
         iifname "{lan}" oifname "{wan}" accept
         iifname "{lan}" oifname "{lan}" accept
+        # The panel itself. PiTun's web UI is an nginx container with published
+        # ports, so a LAN request to this box's own address is DNAT'd to the
+        # container and then traverses FORWARD — not INPUT. Without this the
+        # first apply cuts every LAN device off the panel, which also means
+        # nobody can press the confirm button and the watchdog reverts a
+        # working router purely because we blocked the way to its own UI.
+        iifname "{lan}" ct status dnat accept
+        # Container-to-container (the reverse proxy reaching the SPA) once
+        # bridge-nf-call-iptables puts bridged traffic through this hook.
+        iifname "br-*" oifname "br-*" accept
+        iifname "docker0" accept
+        oifname "docker0" accept
         # xray's tunnel interface, when the proxy is carrying the traffic.
         iifname "xray0" accept
         oifname "xray0" accept
@@ -601,10 +613,23 @@ table inet {_ROUTER_TABLE} {{
 
 
 async def remove_router_nat() -> bool:
-    """Drop the router table. Idempotent — absent table is success."""
-    await _nft(f"delete table inet {_ROUTER_TABLE}")
-    logger.info("Router NAT removed")
-    return True
+    """Drop the router table. Idempotent — an absent table is success.
+
+    Returns whether the table is now gone. The previous unconditional `True`
+    told teardown the firewall had come down even when nft refused, which is
+    the one thing teardown must not lie about. The absent-table case is
+    checked first so a gateway-mode box — where this runs on every boot and
+    the table never exists — stops logging an nft error for normal operation.
+    """
+    rc, _out, _err = await _run_exec("nft", "list", "table", "inet", _ROUTER_TABLE)
+    if rc != 0:
+        return True  # nothing to remove
+    ok = await _nft(f"delete table inet {_ROUTER_TABLE}")
+    if ok:
+        logger.info("Router NAT removed")
+    else:
+        logger.error("Router NAT table could not be removed — it is still active")
+    return ok
 
 
 async def router_counters() -> dict:

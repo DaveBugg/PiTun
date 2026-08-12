@@ -78,12 +78,27 @@ _SECTIONS: List[tuple[str, Any, Any]] = [
 ]
 
 
+# `settings` is a key/value table, so per-column redaction cannot reach it —
+# every secret there lives in the `value` column of a particular row. Redacting
+# by column alone silently exported the WiFi PSK and the ISP account password
+# in the bundle the UI calls safe to share, even though the settings endpoint
+# itself never returns them.
+_SECRET_SETTING_KEYS = frozenset({
+    "wifi_passphrase",
+    "wan_pppoe_password",
+    "lan_proxy_auth_pass",
+})
+
+
 def _row_to_dict(row: Any, section: str, include_secrets: bool) -> Dict[str, Any]:
     data = row.model_dump(mode="json")
-    if not include_secrets:
-        for field in _SECRET_FIELDS.get(section, ()):
-            if data.get(field):
-                data[field] = ""
+    if include_secrets:
+        return data
+    for field in _SECRET_FIELDS.get(section, ()):
+        if data.get(field):
+            data[field] = ""
+    if section == "settings" and data.get("key") in _SECRET_SETTING_KEYS and data.get("value"):
+        data["value"] = ""
     return data
 
 

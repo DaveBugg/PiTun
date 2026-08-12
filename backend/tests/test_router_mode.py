@@ -10,6 +10,13 @@ from unittest import mock
 from app.core import network_config as nc
 
 
+def _async_value(value):
+    """An awaitable returning `value` — for stubbing async helpers."""
+    async def _coro(*_a, **_kw):
+        return value
+    return _coro()
+
+
 def _link(name, link_type="ether", **extra):
     d = {"ifname": name, "link_type": link_type, "address": "aa:bb:cc:dd:ee:ff",
          "operstate": "UP", "flags": ["BROADCAST", "MULTICAST", "UP", "LOWER_UP"]}
@@ -325,11 +332,33 @@ class TestRouterNat:
         assert asyncio.run(nft.apply_router_nat("eth0", "eth0")) is False
         assert scripts == []
 
-    def test_removal_is_idempotent(self, monkeypatch):
+    def test_removal_is_idempotent_when_the_table_is_absent(self, monkeypatch):
+        """Teardown runs on every boot, including on gateway-mode boxes where
+        the table never existed — that must be quiet success, not an error."""
         import asyncio
         nft, scripts = self._capture(monkeypatch)
+        # rc=1 from `nft list table` is how an absent table reports itself.
+        monkeypatch.setattr(nft, "_run_exec",
+                            lambda *a: _async_value((1, "", "No such file or directory")))
         assert asyncio.run(nft.remove_router_nat()) is True
         assert asyncio.run(nft.remove_router_nat()) is True
+        assert scripts == [], "an absent table must not be deleted again"
+
+    def test_removal_reports_failure_instead_of_claiming_success(self, monkeypatch):
+        """Teardown is the escape hatch; telling it the firewall came down when
+        it did not is the one lie it cannot afford."""
+        import asyncio
+        from app.core import nftables as nft
+
+        async def present(*_a):
+            return (0, f"table inet pitun_router {{}}", "")
+
+        async def refuse(_script):
+            return False
+
+        monkeypatch.setattr(nft, "_run_exec", present)
+        monkeypatch.setattr(nft, "_nft", refuse)
+        assert asyncio.run(nft.remove_router_nat()) is False
 
     def test_router_table_is_separate_from_the_tproxy_table(self, monkeypatch):
         """Applying router rules must never rewrite the proxy's own table."""
@@ -1192,8 +1221,15 @@ class TestWanInOrchestrator:
         monkeypatch.setattr(rm.nc, "list_interfaces",
                             lambda: [{"name": "eth0"}, {"name": "eth1"}])
         monkeypatch.setattr(rm.nc, "read_interface_address", lambda i: ("192.168.10.1", 24))
-        monkeypatch.setattr(rm.wan_mod, "apply",
-                            lambda cfg: seen.setdefault("wan_applied", cfg.mode))
+        # Mirror the real contract: apply() returns a summary dict whose
+        # "interface" is the link the session actually produced.
+        def fake_wan_apply(cfg):
+            seen["wan_applied"] = cfg.mode
+            return {"mode": cfg.mode,
+                    "interface": rm.wan_mod.effective_interface(cfg),
+                    "steps": []}
+
+        monkeypatch.setattr(rm.wan_mod, "apply", fake_wan_apply)
 
         base = {"operating_mode": "router", "wan_interface": "eth0",
                 "lan_interface": "eth1"}
@@ -1360,3 +1396,60 @@ class TestWatchdog:
         after = client.get("/api/network/router-mode/pending",
                            headers=auth_headers).json()
         assert after["pending"] is False
+
+
+class TestPppoeInterfaceIsRead:
+    """The firewall matches interfaces by NAME, so a guessed ppp0 that turns
+    out to be ppp1 loads cleanly and then matches nothing: no NAT, LAN egress
+    hitting policy drop, and the WAN input filter inert."""
+
+    def test_live_name_overrides_the_guess(self, monkeypatch):
+        from app.core import wan
+        monkeypatch.setattr(wan, "detect_manager", lambda: "networkmanager")
+        monkeypatch.setattr(wan, "_nmcli",
+                            lambda *a, **k: type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})())
+        monkeypatch.setattr(wan, "live_pppoe_interface", lambda: "ppp1")
+        res = wan.apply(wan.WanConfig(interface="eth0", mode="pppoe",
+                                      username="u", password="p"))
+        assert res["interface"] == "ppp1"
+
+    def test_no_ppp_link_is_an_error_not_a_guess(self, monkeypatch):
+        """Reporting success while building the firewall around a name that
+        doesn't exist would leave the uplink wide open."""
+        import pytest
+        from app.core import wan
+        monkeypatch.setattr(wan, "detect_manager", lambda: "networkmanager")
+        monkeypatch.setattr(wan, "_nmcli",
+                            lambda *a, **k: type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})())
+        monkeypatch.setattr(wan, "live_pppoe_interface", lambda: None)
+        with pytest.raises(wan.WanConfigError, match="no ppp interface"):
+            wan.apply(wan.WanConfig(interface="eth0", mode="pppoe",
+                                    username="u", password="p"))
+
+
+class TestBackupRedactsSettingSecrets:
+    """The settings section is key/value, so per-column redaction never
+    reached it — the WiFi PSK and the ISP password were exported verbatim in
+    the bundle the UI calls safe to share."""
+
+    def test_secret_settings_are_blanked(self, client, admin_user, auth_headers, session):
+        from app.models import Settings as DBSettings
+        for k, v in (("wifi_passphrase", "wifi-secret-1"),
+                     ("wan_pppoe_password", "isp-secret-2"),
+                     ("wifi_ssid", "HomeNet")):
+            session.add(DBSettings(key=k, value=v))
+        session.commit()
+
+        body = client.get("/api/system/backup", headers=auth_headers).text
+        assert "wifi-secret-1" not in body
+        assert "isp-secret-2" not in body
+        # Non-secret settings must still round-trip.
+        assert "HomeNet" in body
+
+    def test_include_secrets_still_exports_them(self, client, admin_user, auth_headers, session):
+        from app.models import Settings as DBSettings
+        session.add(DBSettings(key="wifi_passphrase", value="wifi-secret-3"))
+        session.commit()
+        body = client.get("/api/system/backup", headers=auth_headers,
+                          params={"include_secrets": True}).text
+        assert "wifi-secret-3" in body

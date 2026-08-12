@@ -68,13 +68,47 @@ def effective_interface(cfg: WanConfig) -> str:
     yields a router that forwards nothing, with no error to explain it.
     """
     if cfg.mode == "pppoe":
-        # NetworkManager names PPPoE links ppp0, ppp1… in creation order. With
-        # a single uplink this is ppp0; the orchestrator re-reads the live
-        # state after apply rather than trusting this blindly.
+        # Best guess only — NetworkManager numbers PPPoE links ppp0, ppp1… in
+        # creation order, so another PPP device (or a previous pppd still
+        # tearing down) shifts it. Callers that have already run `apply()` must
+        # use `live_pppoe_interface()` instead: every firewall rule matches on
+        # `iifname`/`oifname`, which compares a NAME at packet time, so a wrong
+        # guess loads cleanly and then matches nothing — no NAT, LAN egress
+        # hitting policy drop, and the WAN input filter inert.
         return "ppp0"
     if cfg.vlan_id:
         return f"{cfg.interface}.{cfg.vlan_id}"
     return cfg.interface
+
+
+def live_pppoe_interface() -> Optional[str]:
+    """The ppp interface that actually exists, or None.
+
+    Reads the kernel rather than assuming, because the name is what every
+    nftables rule matches on. Picks the one NetworkManager reports for our
+    connection when it can, and falls back to the sole ppp link present.
+    """
+    r = _nmcli("-t", "-f", "GENERAL.DEVICES", "connection", "show", _CONN_NAME, timeout=10)
+    if r.returncode == 0:
+        for line in (r.stdout or "").splitlines():
+            _, _, dev = line.partition(":")
+            dev = dev.strip()
+            if dev.startswith("ppp"):
+                return dev
+
+    r2 = host_run(["ip", "-o", "link", "show"], timeout=10)
+    if r2.returncode == 0:
+        found = [
+            part.split("@")[0].strip()
+            for line in (r2.stdout or "").splitlines()
+            for part in [line.split(":")[1] if ":" in line else ""]
+            if part.strip().startswith("ppp")
+        ]
+        if len(found) == 1:
+            return found[0]
+        if len(found) > 1:
+            logger.warning("Several ppp interfaces present (%s) — cannot pick", found)
+    return None
 
 
 def validate(cfg: WanConfig) -> None:
@@ -239,8 +273,24 @@ def apply(cfg: WanConfig) -> dict:
         )
     steps.append("link up")
 
-    logger.info("WAN applied: %s", "; ".join(steps))
-    return {"mode": cfg.mode, "interface": effective_interface(cfg), "steps": steps}
+    iface = effective_interface(cfg)
+    if cfg.mode == "pppoe":
+        live = live_pppoe_interface()
+        if live and live != iface:
+            logger.warning(
+                "PPPoE came up as %s, not %s — using the live name", live, iface,
+            )
+            iface = live
+        elif not live:
+            raise WanConfigError(
+                "The PPPoE session reported success but no ppp interface "
+                "appeared. Refusing to build the firewall around a guessed "
+                "name — every rule matches on the interface name, so the wrong "
+                "one loads cleanly and then protects nothing."
+            )
+
+    logger.info("WAN applied: %s (interface %s)", "; ".join(steps), iface)
+    return {"mode": cfg.mode, "interface": iface, "steps": steps}
 
 
 def teardown() -> dict:

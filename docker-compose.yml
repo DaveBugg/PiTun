@@ -53,7 +53,11 @@ services:
                                                     # Read-only because the backend never writes here.
       - ./data:/app/data
       - /tmp/pitun:/tmp/pitun
-      - /etc/pitun/naive:/etc/pitun/naive    # naive sidecar configs (host-shared)
+      # Whole /etc/pitun, not just naive/: the DHCP and WiFi sidecars mount
+      # this path from the HOST, so a config written only inside the
+      # container's own mount namespace is invisible to them — the daemon
+      # then crash-loops while apply() reports success.
+      - /etc/pitun:/etc/pitun                # sidecar configs (host-shared)
       # Geo databases stay on host (bind-mount RW) so the user can
       # refresh them from the UI without an image rebuild.
       # The xray binary itself is baked into the backend image as of

@@ -1135,9 +1135,18 @@ async def update_settings(body: SettingsUpdate, session: AsyncSession = Depends(
     # error: the orchestrator has already rolled the dataplane back, so
     # leaving the setting saying "router" would mean the UI claims a mode the
     # box isn't in, and the next boot would retry a config we know fails.
+    # Every key router_mode.apply() reads. Omitting the wifi_*/wan_* ones meant
+    # a WiFi-only or WAN-only save persisted, returned 200 and regenerated
+    # nothing — an operator rotating a leaked WPA passphrase would believe the
+    # old one was dead while the AP kept serving it.
     _ROUTER_KEYS = {
         "operating_mode", "wan_interface", "lan_interface",
         "dhcp_enabled", "dhcp_pool_start", "dhcp_pool_end", "dhcp_lease_hours",
+        "wifi_enabled", "wifi_ssid", "wifi_passphrase", "wifi_country",
+        "wifi_band", "wifi_channel", "wifi_security", "wifi_hidden",
+        "wan_mode", "wan_vlan_id", "wan_mac_clone",
+        "wan_static_address", "wan_static_gateway", "wan_static_dns",
+        "wan_pppoe_user", "wan_pppoe_password", "wan_pppoe_service",
     }
     if _ROUTER_KEYS & set(patches):
         from app.core import router_mode, router_watchdog

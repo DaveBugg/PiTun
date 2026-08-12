@@ -84,9 +84,18 @@ async def lifespan(app: FastAPI):
         await router_watchdog.recover_on_boot()
         async with _AsyncSession(_engine()) as _s:
             await router_mode.apply(_s)
-        router_watchdog.router_watchdog.start()
     except Exception as exc:  # noqa: BLE001 — never block startup on this
         logger.warning("Router mode not applied on boot: %s", exc)
+
+    # Started separately, and deliberately NOT inside the try above: a boot
+    # reconcile that raised is exactly when the watchdog matters most, and
+    # sharing the try meant the only thing able to rescue a wedged box was
+    # disabled precisely on the boxes that were already misbehaving.
+    try:
+        from app.core.router_watchdog import router_watchdog as _watchdog
+        _watchdog.start()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Router watchdog failed to start: %s", exc)
 
     # Supervise naive sidecars: react to docker `die` events within ms,
     # rather than waiting for the 30 s HealthChecker tick.

@@ -294,7 +294,7 @@ def _start_sync(cfg: WifiConfig) -> dict:
         pass
 
     try:
-        client.containers.run(
+        c = client.containers.run(
             image=settings.hostapd_image,
             name=CONTAINER_NAME,
             detach=True,
@@ -309,6 +309,26 @@ def _start_sync(cfg: WifiConfig) -> dict:
             f"Image {settings.hostapd_image} not found — build it first: "
             f"docker build -t {settings.hostapd_image} docker/hostapd/"
         )
+
+    # A detached run returns as soon as the container is *started*, not as soon
+    # as it survives. Both daemons exit immediately on a config they can't use,
+    # and reporting success then makes the orchestrator's all-or-nothing
+    # rollback impossible for the two steps most likely to fail on first use.
+    import time as _time
+    _time.sleep(1.5)
+    try:
+        c.reload()
+        if c.status != "running":
+            tail = c.logs(tail=20).decode(errors="replace").strip()
+            c.remove(force=True)
+            raise WifiConfigError(
+                "hostapd started and exited immediately. Its own output:\n" + tail
+            )
+    except WifiConfigError:
+        raise
+    except Exception as exc:  # noqa: BLE001 — the check must not mask the start
+        logger.warning("Could not confirm hostapd stayed up: %s", exc)
+
     logger.info("Access point started on %s (%s GHz)", cfg.interface, cfg.band)
     return {"running": True, "interface": cfg.interface}
 

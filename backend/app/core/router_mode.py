@@ -182,6 +182,8 @@ async def apply(session: AsyncSession) -> dict:
         wan_mod.validate(wan_cfg)
     except wan_mod.WanConfigError as exc:
         raise RouterModeError(f"WAN settings are not usable: {exc}")
+    # Provisional: replaced by what apply() actually produced when the
+    # uplink has to be built (PPPoE in particular).
     wan_iface = wan_mod.effective_interface(wan_cfg)
 
     applied: list[str] = []
@@ -193,7 +195,11 @@ async def apply(session: AsyncSession) -> dict:
             wan_cfg.mode != "dhcp" or wan_cfg.vlan_id or wan_cfg.mac_clone
         )
         if needs_wan_setup:
-            wan_mod.apply(wan_cfg)
+            # Take the interface apply() reports rather than the pre-computed
+            # guess: for PPPoE the link only exists once the session is up, and
+            # the firewall matches on the NAME, so binding to the wrong one
+            # loads cleanly and protects nothing.
+            wan_iface = wan_mod.apply(wan_cfg).get("interface") or wan_iface
             applied.append("wan")
 
         if not set_ip_forward(True):
