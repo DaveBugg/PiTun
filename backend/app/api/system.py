@@ -760,6 +760,13 @@ async def get_settings(session: AsyncSession = Depends(get_session)):
         dhcp_pool_start=m.get("dhcp_pool_start", ""),
         dhcp_pool_end=m.get("dhcp_pool_end", ""),
         dhcp_lease_hours=_safe_int(m, "dhcp_lease_hours", 12),
+        wifi_enabled=(m.get("wifi_enabled", "false").lower() == "true"),
+        wifi_ssid=m.get("wifi_ssid", ""),
+        wifi_country=m.get("wifi_country", ""),
+        wifi_band=m.get("wifi_band", "2.4"),
+        wifi_channel=_safe_int(m, "wifi_channel", 0),
+        wifi_security=m.get("wifi_security", "wpa2"),
+        wifi_hidden=(m.get("wifi_hidden", "false").lower() == "true"),
         disable_ipv6=_detect_sysctl_bool("net.ipv6.conf.all.disable_ipv6", m.get("disable_ipv6", "false").lower() == "true"),
         dns_over_tcp=_detect_resolv_use_vc(m.get("dns_over_tcp", "false").lower() == "true"),
         health_interval=_int("health_interval", env_settings.health_interval),
@@ -953,6 +960,21 @@ async def update_settings(body: SettingsUpdate, session: AsyncSession = Depends(
             # Serving the LAN over WiFi means running an access point, which
             # only some radios can do. Catch it here rather than at hostapd
             # start, which happens after the working setup is torn down.
+            # One radio cannot be an access point and a client at the same
+            # time. Different netdevs on the SAME phy look like separate
+            # interfaces but share the hardware, so comparing names isn't
+            # enough — compare the phy behind them.
+            if wan and lan:
+                from app.core.network_config import _phy_for
+                wan_phy, lan_phy = _phy_for(wan), _phy_for(lan)
+                if wan_phy and lan_phy and wan_phy == lan_phy:
+                    raise HTTPException(
+                        400,
+                        f"'{wan}' and '{lan}' are the same radio ({wan_phy}). One "
+                        "adapter cannot be an access point for the LAN and a "
+                        "client on the WAN at once — use separate hardware for "
+                        "the two roles.",
+                    )
             if lan:
                 cap = wifi_capabilities(lan)
                 if cap["wireless"] and cap["ap_capable"] is False:

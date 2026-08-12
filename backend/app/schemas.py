@@ -1400,6 +1400,15 @@ class SettingsRead(BaseModel):
     dhcp_pool_start: str = ""
     dhcp_pool_end: str = ""
     dhcp_lease_hours: int = 12
+    wifi_enabled: bool = False
+    wifi_ssid: str = ""
+    # Never returned: the read model is what the UI renders, and a WiFi
+    # password has no business travelling back to a browser on every poll.
+    wifi_country: str = ""
+    wifi_band: str = "2.4"
+    wifi_channel: int = 0
+    wifi_security: str = "wpa2"
+    wifi_hidden: bool = False
     # IPv6
     disable_ipv6: bool = False
     # DNS over TCP
@@ -1436,6 +1445,14 @@ class SettingsUpdate(BaseModel):
     dhcp_pool_start: Optional[str] = None
     dhcp_pool_end: Optional[str] = None
     dhcp_lease_hours: Optional[int] = None
+    wifi_enabled: Optional[bool] = None
+    wifi_ssid: Optional[str] = None
+    wifi_passphrase: Optional[str] = None
+    wifi_country: Optional[str] = None
+    wifi_band: Optional[str] = None
+    wifi_channel: Optional[int] = None
+    wifi_security: Optional[str] = None
+    wifi_hidden: Optional[bool] = None
     active_node_id: Optional[int] = None
     failover_enabled: Optional[bool] = None
     failover_node_ids: Optional[List[int]] = None

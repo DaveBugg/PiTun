@@ -224,6 +224,17 @@ async def init_default_settings():
         "dhcp_pool_start": "",
         "dhcp_pool_end": "",
         "dhcp_lease_hours": "12",
+        # WiFi access point (router mode, only on an AP-capable radio).
+        # No default SSID/passphrase: an access point that comes up with a
+        # guessable name and password is worse than one that doesn't come up.
+        "wifi_enabled": "false",
+        "wifi_ssid": "",
+        "wifi_passphrase": "",
+        "wifi_country": "",
+        "wifi_band": "2.4",
+        "wifi_channel": "0",
+        "wifi_security": "wpa2",
+        "wifi_hidden": "false",
         "disable_ipv6": "true",
         "dns_over_tcp": "false",
         # LAN proxy authentication (since v1.3.0-beta.6). Applies to

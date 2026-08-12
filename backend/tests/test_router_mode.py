@@ -921,3 +921,103 @@ class TestLanBridge:
             with pytest.raises(wifi.WifiConfigError):
                 wifi.create_lan_bridge(bad_if, bad_cidr)
         assert not any("rm -rf" in c for c in calls)
+
+
+class TestSameRadioGuard:
+    """Different netdevs on one phy look like separate interfaces but share
+    the hardware — a radio can't be an AP for the LAN and a client on the WAN
+    at the same time, and comparing names would miss it."""
+
+    def _patch(self, client, headers, body, phys):
+        async def _noop_apply(_session):
+            return {"mode": "gateway"}
+
+        with mock.patch("app.core.network_config.list_interfaces",
+                        return_value=[{"name": "wlan0"}, {"name": "wlan1"}, {"name": "eth0"}]), \
+             mock.patch("app.core.network_config.wifi_capabilities",
+                        return_value={"wireless": True, "ap_capable": True,
+                                      "modes": ["AP"], "bands": [], "detail": ""}), \
+             mock.patch("app.core.network_config._phy_for", lambda i: phys.get(i)), \
+             mock.patch("app.core.router_mode.apply", _noop_apply):
+            return client.patch("/api/system/settings", headers=headers, json=body)
+
+    def test_two_netdevs_on_one_phy_are_rejected(self, client, admin_user, auth_headers):
+        r = self._patch(client, auth_headers,
+                        {"wan_interface": "wlan0", "lan_interface": "wlan1"},
+                        {"wlan0": "phy0", "wlan1": "phy0"})
+        assert r.status_code == 400
+        assert "same radio" in r.json()["detail"]
+
+    def test_separate_radios_are_allowed(self, client, admin_user, auth_headers):
+        r = self._patch(client, auth_headers,
+                        {"wan_interface": "wlan0", "lan_interface": "wlan1"},
+                        {"wlan0": "phy0", "wlan1": "phy1"})
+        assert r.status_code in (200, 204), r.text
+
+    def test_wired_wan_with_wireless_lan_is_fine(self, client, admin_user, auth_headers):
+        r = self._patch(client, auth_headers,
+                        {"wan_interface": "eth0", "lan_interface": "wlan0"},
+                        {"wlan0": "phy0"})
+        assert r.status_code in (200, 204), r.text
+
+
+class TestWifiOrchestration:
+    def test_wifi_on_a_wired_lan_is_refused(self, monkeypatch):
+        """Enabling WiFi with a wired LAN port is a contradiction — say so
+        instead of starting hostapd on an interface with no radio."""
+        import asyncio, pytest
+        from app.core import router_mode as rm
+
+        async def ok_nat(*a, **k):
+            return True
+
+        async def noop():
+            return {"running": False}
+
+        monkeypatch.setattr(rm.nft, "apply_router_nat", ok_nat)
+        monkeypatch.setattr(rm.nft, "remove_router_nat", lambda: noop())
+        monkeypatch.setattr(rm.dhcp_mod, "start", lambda cfg: noop())
+        monkeypatch.setattr(rm.dhcp_mod, "stop", noop)
+        monkeypatch.setattr(rm.wifi_mod, "stop", noop)
+        monkeypatch.setattr(rm, "set_ip_forward", lambda on: True)
+        monkeypatch.setattr(rm.nc, "list_interfaces",
+                            lambda: [{"name": "eth0"}, {"name": "eth1"}])
+        monkeypatch.setattr(rm.nc, "read_interface_address", lambda i: ("192.168.10.1", 24))
+        monkeypatch.setattr(rm.nc, "is_wireless", lambda i: False)
+
+        class S:
+            async def exec(self, statement=None, *a, **k):
+                if statement is not None and "device" in str(statement).lower():
+                    rows = []
+                else:
+                    rows = [type("R", (), {"key": k2, "value": v})() for k2, v in {
+                        "operating_mode": "router", "wan_interface": "eth0",
+                        "lan_interface": "eth1", "wifi_enabled": "true",
+                    }.items()]
+                return type("Res", (), {"all": lambda self: rows})()
+
+        with pytest.raises(rm.RouterModeError, match="not a wireless adapter"):
+            asyncio.run(rm.apply(S()))
+
+    def test_teardown_stops_the_access_point(self, monkeypatch):
+        import asyncio
+        from app.core import router_mode as rm
+        stopped = []
+
+        async def stop_dhcp():
+            return {"running": False}
+
+        async def stop_wifi():
+            stopped.append("wifi")
+            return {"running": False}
+
+        async def rm_nat():
+            return True
+
+        monkeypatch.setattr(rm.dhcp_mod, "stop", stop_dhcp)
+        monkeypatch.setattr(rm.wifi_mod, "stop", stop_wifi)
+        monkeypatch.setattr(rm.nft, "remove_router_nat", rm_nat)
+
+        res = asyncio.run(rm.teardown())
+        assert stopped == ["wifi"]
+        assert res["steps"]["wifi"] is True

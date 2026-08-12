@@ -20,6 +20,7 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.core import dhcp as dhcp_mod
 from app.core import nftables as nft
+from app.core import wifi as wifi_mod
 from app.core import network_config as nc
 from app.models import Settings as DBSettings
 
@@ -82,6 +83,11 @@ async def teardown() -> dict:
     except Exception as exc:  # noqa: BLE001 — never block the way back
         logger.warning("Teardown: could not stop the DHCP server: %s", exc)
         steps["dhcp"] = f"error: {exc}"
+    try:
+        steps["wifi"] = (await wifi_mod.stop())["running"] is False
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Teardown: could not stop the access point: %s", exc)
+        steps["wifi"] = f"error: {exc}"
     try:
         steps["nat"] = await nft.remove_router_nat()
     except Exception as exc:  # noqa: BLE001
@@ -161,6 +167,31 @@ async def apply(session: AsyncSession) -> dict:
         if (m.get("dhcp_enabled") or "true").lower() == "true":
             await dhcp_mod.start(dhcp_cfg)
             applied.append("dhcp")
+
+        # WiFi last: it's the only step that can take the LAN interface down
+        # while reconfiguring the radio, so everything else is already up if
+        # it fails and the rollback has less to undo.
+        if (m.get("wifi_enabled") or "false").lower() == "true":
+            if not nc.is_wireless(lan):
+                raise RouterModeError(
+                    f"WiFi is enabled but the LAN port '{lan}' is not a wireless "
+                    f"adapter. Either pick a wireless LAN port or turn WiFi off."
+                )
+            wifi_cfg = wifi_mod.WifiConfig(
+                interface=lan,
+                ssid=m.get("wifi_ssid", ""),
+                passphrase=m.get("wifi_passphrase", ""),
+                country=(m.get("wifi_country") or "").upper(),
+                band=m.get("wifi_band", "2.4"),
+                channel=int(m.get("wifi_channel") or 0),
+                security=m.get("wifi_security", "wpa2"),
+                hidden=(m.get("wifi_hidden") or "false").lower() == "true",
+            )
+            try:
+                await wifi_mod.start(wifi_cfg)
+            except wifi_mod.WifiConfigError as exc:
+                raise RouterModeError(f"WiFi could not start: {exc}")
+            applied.append("wifi")
     except Exception as exc:
         # Half-applied router mode is worse than none: the LAN would get
         # addresses pointing at a gateway that doesn't forward, or forwarding
