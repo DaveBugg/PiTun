@@ -531,10 +531,10 @@ async def apply_router_nat(
     rules = [
         "        # The uplink brings its own address up over DHCP, and those",
         "        # replies arrive as NEW — conntrack alone would not admit them.",
-        f'        iifname "{wan}" udp sport 67 udp dport 68 accept',
+        f'        iifname "{wan}" udp sport 67 udp dport 68 counter name "wan_dhcp_in" accept',
         "        # PMTU discovery and traceroute fail by hanging rather than",
         "        # erroring if these are dropped, which is miserable to debug.",
-        f'        iifname "{wan}" icmp type {{ echo-request, destination-unreachable, time-exceeded, parameter-problem }} accept',
+        f'        iifname "{wan}" icmp type {{ echo-request, destination-unreachable, time-exceeded, parameter-problem }} counter name "wan_icmp_in" accept',
     ]
     if tcp_ports:
         rules.append(
@@ -548,12 +548,20 @@ async def apply_router_nat(
         "        # Everything else arriving from the internet is refused. Every",
         "        # local service — panel, SSH, xray's DNS/SOCKS/HTTP — stays",
         "        # reachable over the LAN and invisible from the WAN.",
-        f'        iifname "{wan}" ct state new drop',
+        f'        iifname "{wan}" ct state new counter name "wan_blocked" drop',
     ]
     wan_service_rules = "\n".join(rules)
 
     script = f"""
 table inet {_ROUTER_TABLE} {{
+    # Named counters so the two silent failure modes are observable rather
+    # than guessed at: a WAN that never gets an address (no DHCP replies) and
+    # a PMTU black hole (no ICMP getting back in) look identical from the
+    # outside — "the internet is broken" — without these.
+    counter wan_dhcp_in {{}}
+    counter wan_icmp_in {{}}
+    counter wan_blocked {{}}
+
     chain postrouting {{
         type nat hook postrouting priority srcnat; policy accept;
         # Everything leaving the uplink is rewritten to the box's WAN address.
@@ -597,3 +605,24 @@ async def remove_router_nat() -> bool:
     await _nft(f"delete table inet {_ROUTER_TABLE}")
     logger.info("Router NAT removed")
     return True
+
+
+async def router_counters() -> dict:
+    """Read the WAN-side counters, or {} when router mode isn't applied."""
+    rc, out, _ = await _run_exec("nft", "-j", "list", "table", "inet", _ROUTER_TABLE)
+    if rc != 0:
+        return {}
+    import json as _json
+    try:
+        data = _json.loads(out)
+    except ValueError:
+        return {}
+    counters = {}
+    for item in data.get("nftables", []):
+        c = item.get("counter")
+        if isinstance(c, dict) and "name" in c:
+            counters[c["name"]] = {
+                "packets": c.get("packets", 0),
+                "bytes": c.get("bytes", 0),
+            }
+    return counters

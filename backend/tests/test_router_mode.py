@@ -432,7 +432,7 @@ class TestWanExposure:
         """One blanket rule instead of a port list — a list has to be
         maintained, and a forgotten port is an exposed service."""
         body = self._apply(monkeypatch)
-        assert 'iifname "eth0" ct state new drop' in body
+        assert 'iifname "eth0" ct state new counter name "wan_blocked" drop' in body
         assert "ct state established,related accept" in body
         assert "ct state invalid drop" in body
 
@@ -440,7 +440,7 @@ class TestWanExposure:
         """They arrive as NEW rather than RELATED, so the blanket drop would
         otherwise stop the uplink from ever getting an address."""
         body = self._apply(monkeypatch)
-        assert 'iifname "eth0" udp sport 67 udp dport 68 accept' in body
+        assert 'iifname "eth0" udp sport 67 udp dport 68 counter name "wan_dhcp_in" accept' in body
 
     def test_pmtu_and_traceroute_icmp_survive(self, monkeypatch):
         """Dropping these makes connections hang instead of fail — one of the
@@ -468,3 +468,165 @@ class TestWanExposure:
         assert "{ 443 }" in body
         for bad in ("70000", "-1"):
             assert bad not in body
+
+
+class TestOrchestration:
+    """Router mode is all-or-nothing. A box that NATs but hands out no
+    addresses — or hands out addresses pointing at a gateway that doesn't
+    forward — is broken in a way that reads as "the internet died" to
+    everyone on the LAN, so a partial apply must roll all the way back."""
+
+    def _mod(self, monkeypatch, *, nat_ok=True, dhcp_raises=None, forward_ok=True):
+        import asyncio
+        from app.core import router_mode as rm
+        calls = []
+
+        async def fake_nat(wan, lan, **kw):
+            calls.append(("nat", wan, lan))
+            return nat_ok
+
+        async def fake_remove():
+            calls.append(("nat_removed",))
+            return True
+
+        async def fake_dhcp_start(cfg):
+            calls.append(("dhcp_start", cfg.interface))
+            if dhcp_raises:
+                raise dhcp_raises
+            return {"running": True}
+
+        async def fake_dhcp_stop():
+            calls.append(("dhcp_stop",))
+            return {"running": False}
+
+        monkeypatch.setattr(rm.nft, "apply_router_nat", fake_nat)
+        monkeypatch.setattr(rm.nft, "remove_router_nat", fake_remove)
+        monkeypatch.setattr(rm.dhcp_mod, "start", fake_dhcp_start)
+        monkeypatch.setattr(rm.dhcp_mod, "stop", fake_dhcp_stop)
+        monkeypatch.setattr(rm, "set_ip_forward", lambda on: forward_ok)
+        monkeypatch.setattr(rm.nc, "list_interfaces",
+                            lambda: [{"name": "eth0"}, {"name": "eth1"}])
+        monkeypatch.setattr(rm.nc, "read_interface_address",
+                            lambda i: ("192.168.10.1", 24))
+        return rm, calls, asyncio
+
+    class _Session:
+        def __init__(self, mapping):
+            self._m = mapping
+
+        async def exec(self, *_a, **_kw):
+            rows = [type("R", (), {"key": k, "value": v})() for k, v in self._m.items()]
+            return type("Res", (), {"all": lambda self: rows})()
+
+    def test_gateway_mode_tears_everything_down(self, monkeypatch):
+        rm, calls, aio = self._mod(monkeypatch)
+        res = aio.run(rm.apply(self._Session({"operating_mode": "gateway"})))
+        assert res["mode"] == "gateway"
+        assert ("dhcp_stop",) in calls and ("nat_removed",) in calls
+
+    def test_full_apply_in_dependency_order(self, monkeypatch):
+        rm, calls, aio = self._mod(monkeypatch)
+        res = aio.run(rm.apply(self._Session({
+            "operating_mode": "router", "wan_interface": "eth0",
+            "lan_interface": "eth1",
+        })))
+        assert res["mode"] == "router"
+        assert res["applied"] == ["ip_forward", "nat", "dhcp"]
+        # A pool was chosen automatically and can't contain the gateway.
+        assert res["dhcp_pool"][0] != "192.168.10.1"
+
+    def test_dhcp_failure_rolls_back_the_firewall(self, monkeypatch):
+        """The dangerous case: NAT is up, DHCP isn't. Leaving that in place
+        means a LAN that can't get addresses but whose traffic is being
+        rewritten — undo it."""
+        import pytest
+        rm, calls, aio = self._mod(monkeypatch, dhcp_raises=RuntimeError("no image"))
+        with pytest.raises(rm.RouterModeError):
+            aio.run(rm.apply(self._Session({
+                "operating_mode": "router", "wan_interface": "eth0",
+                "lan_interface": "eth1",
+            })))
+        assert ("nat_removed",) in calls, "firewall must be removed on rollback"
+
+    def test_nat_failure_stops_before_dhcp_starts(self, monkeypatch):
+        import pytest
+        rm, calls, aio = self._mod(monkeypatch, nat_ok=False)
+        with pytest.raises(rm.RouterModeError):
+            aio.run(rm.apply(self._Session({
+                "operating_mode": "router", "wan_interface": "eth0",
+                "lan_interface": "eth1",
+            })))
+        assert not any(c[0] == "dhcp_start" for c in calls)
+
+    def test_missing_roles_refused_before_touching_anything(self, monkeypatch):
+        import pytest
+        rm, calls, aio = self._mod(monkeypatch)
+        with pytest.raises(rm.RouterModeError, match="WAN and a LAN"):
+            aio.run(rm.apply(self._Session({"operating_mode": "router"})))
+        assert calls == []
+
+    def test_lan_without_an_address_is_refused(self, monkeypatch):
+        """The LAN port has to *be* the gateway, so it needs an address."""
+        import pytest
+        rm, calls, aio = self._mod(monkeypatch)
+        monkeypatch.setattr(rm.nc, "read_interface_address", lambda i: (None, None))
+        with pytest.raises(rm.RouterModeError, match="no IPv4 address"):
+            aio.run(rm.apply(self._Session({
+                "operating_mode": "router", "wan_interface": "eth0",
+                "lan_interface": "eth1",
+            })))
+        assert calls == []
+
+
+class TestWanDiagnosis:
+    """Turning the two silent failures into something readable."""
+
+    def _diag(self, monkeypatch, counters):
+        import asyncio
+        from app.core import router_mode as rm
+
+        async def fake_counters():
+            return counters
+
+        monkeypatch.setattr(rm.nft, "router_counters", fake_counters)
+        return asyncio.run(rm.diagnose_wan())
+
+    def test_no_dhcp_replies_is_called_out(self, monkeypatch):
+        out = self._diag(monkeypatch, {
+            "wan_dhcp_in": {"packets": 0}, "wan_icmp_in": {"packets": 5},
+            "wan_blocked": {"packets": 100},
+        })
+        dhcp = [f for f in out if "DHCP" in f["title"]][0]
+        assert dhcp["level"] == "warn"
+
+    def test_pmtu_blackhole_is_explained_by_symptom(self, monkeypatch):
+        """The symptom — big transfers hang while small ones work — is what
+        the operator actually observes, so that's what we describe."""
+        out = self._diag(monkeypatch, {
+            "wan_dhcp_in": {"packets": 3}, "wan_icmp_in": {"packets": 0},
+            "wan_blocked": {"packets": 10},
+        })
+        icmp = [f for f in out if "ICMP" in f["title"]][0]
+        assert icmp["level"] == "warn"
+        assert "hang" in icmp["detail"]
+
+    def test_healthy_uplink_reports_ok(self, monkeypatch):
+        out = self._diag(monkeypatch, {
+            "wan_dhcp_in": {"packets": 4}, "wan_icmp_in": {"packets": 9},
+            "wan_blocked": {"packets": 2000},
+        })
+        assert all(f["level"] == "ok" for f in out)
+
+    def test_blocked_count_is_not_alarming(self, monkeypatch):
+        """Background scanning from the internet is constant and normal —
+        reporting it as a problem would train the operator to ignore us."""
+        out = self._diag(monkeypatch, {
+            "wan_dhcp_in": {"packets": 1}, "wan_icmp_in": {"packets": 1},
+            "wan_blocked": {"packets": 999999},
+        })
+        blocked = [f for f in out if "dropped" in f["title"]][0]
+        assert blocked["level"] == "ok"
+
+    def test_inactive_router_mode_is_not_an_error(self, monkeypatch):
+        out = self._diag(monkeypatch, {})
+        assert len(out) == 1 and out[0]["level"] == "ok"
