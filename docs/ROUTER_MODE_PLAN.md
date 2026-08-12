@@ -20,6 +20,7 @@ already have layered on top.
 | Hardware | 2+ NICs → router mode offered. 1 NIC → current mode only. |
 | Choice | Explicit, in the UI. Never auto-switched. |
 | Panel exposure | LAN-only from day one — never reachable from WAN. |
+| WiFi | In scope: PiTun can serve the WiFi itself (hostapd), gated on a chipset capability probe. |
 | Versioning | `1.6.0-beta.x` on this branch; merge to `master` when done. |
 | Install/update scripts | Full review once the feature work lands (phase 4). |
 
@@ -58,6 +59,7 @@ system and is not liftable; the daemons are ordinary software we can run.
 | Need | Take | Note |
 |---|---|---|
 | DHCP server | **dnsmasq** with `port=0` | `port=0` disables its DNS — **required**, xray already owns `:53` |
+| WiFi AP | **hostapd** + `iw` (capability probe) | phase 1b; `iw` is a new install dependency |
 | NAT / firewall | **nftables** | already ours; a masquerade chain + state rules |
 | PPPoE | **ppp** + `pppoe` plugin | generated config, like everything else we generate |
 | VLAN on WAN | `ip link ... type vlan` | no daemon needed |
@@ -122,6 +124,40 @@ fibre ISP), and the author explicitly does not support outside users.
   page** (MACs are already there).
 - NAT + forward/state rules in `table inet pitun`.
 - Panel bound to LAN only; WAN-side drop for the panel ports.
+
+### Phase 1b — WiFi access point *(decided in scope)*
+
+PiTun should be able to *be* the WiFi, not just route for it. hostapd fits our
+existing shape — a supervised sidecar with a generated config — but the WiFi
+side has hardware constraints the wired side doesn't:
+
+- **Not every chipset can be an AP.** This is the gate: `iw list` →
+  *Supported interface modes* must contain `AP`. Many USB dongles and some
+  built-in Realtek/Broadcom parts are client-only. AP mode must be offered
+  **only** after a positive capability probe — never assumed from "it's a
+  wireless NIC". (`iw` is therefore a new install dependency; it is not present
+  on the test box today.)
+- **Radio can't usually be AP and client at once.** If the wireless NIC serves
+  the LAN, it can't also be the WAN uplink on the same radio. The role model
+  must make those mutually exclusive rather than letting the operator pick both.
+- **Regulatory domain is mandatory.** Channel/power legality depends on the
+  country code; hostapd needs it set correctly, and a wrong value means either
+  no signal or illegal transmission.
+- **AP + wired LAN want one L2 segment.** That means a bridge (`br0`) over the
+  AP interface and the LAN port so one DHCP scope covers both — which changes
+  what our nftables `iifname` matches refer to. Worth designing before phase 1
+  hardens the rules.
+- **Expectation setting.** A mini-PC / RPi radio is not a real access point:
+  fewer clients, weaker range, and often a single band. The UI should say so,
+  because "PiTun replaced my router *and* my WiFi" is a support trap otherwise.
+
+Reference hardware note: the current test box is an Intel Wireless 8260
+(`iwlwifi`), which does support AP mode, with the usual Intel caveats around
+client count and WPA3.
+
+Work: capability probe endpoint, hostapd sidecar + config generation (SSID,
+band/channel, country, WPA2/WPA3), bridge management, and role rules that keep
+AP and WiFi-WAN off the same radio.
 
 ### Phase 2 — WAN side
 - WAN modes: DHCP client / static / PPPoE / VLAN tag / MAC clone.
