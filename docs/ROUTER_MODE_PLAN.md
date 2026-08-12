@@ -72,6 +72,42 @@ solved problem.
 `firewall4`'s generated ruleset is worth reading as a reference for a sane
 router nftables layout — reading, not vendoring.
 
+### Analogues for OpenWrt's glue (researched 2026-08-11)
+
+| OpenWrt | Analogue | Verdict |
+|---|---|---|
+| `netifd` | `systemd-networkd`, or NetworkManager | **partly already ours** — see below |
+| `uci` | our `Settings` table + API | not needed |
+| `ubus` | D-Bus / nothing | not needed — single FastAPI process |
+| `procd` | systemd + docker restart policy | already have it (naive sidecar) |
+| `firewall4` | `firewalld`, or **`python3-nftables`** (libnftables JSON) | see below |
+
+**We already own the netifd layer.** `network_config.detect_manager()` plus the
+apply paths abstract over **ifupdown and NetworkManager** (netplan/networkctl are
+already in the command allowlist). Two consequences:
+
+- `systemd-networkd` **cannot do PPPoE** — it needs a separate `pppd`/`rp-pppoe`
+  unit. NetworkManager **can**, and we already drive it via `nmcli`. So the
+  nastiest part of phase 2 (WAN auth) may reuse a path we already have rather
+  than introducing a new daemon. Decide per-manager in phase 2.
+- `networkctl reload` applies `.network` changes without a reboot, which matters
+  for the "apply, verify, roll back" loop.
+
+**`python3-nftables`** (Debian `python3-nftables`) is a ctypes binding to
+libnftables exposing the same JSON schema as `nft -j`, with `json_validate()`
+and batched ruleset updates. We currently emit a **string script** into `nft -f -`
+(`nftables._nft`), which is fine and already atomic for a full-table replace. The
+JSON API earns its keep only once the ruleset grows (NAT + conntrack state +
+WAN/LAN zones) — **evaluate in phase 3**, not before; it is a refactor of working
+code. `firewalld` is rejected: a heavy abstraction over exactly what we already
+do directly, and known to push very large JSON blobs through the same binding.
+
+**router7** (pure-Go home router, gokrazy appliance) is a useful *structural*
+reference — it cleanly separates `dhcp4` (WAN client) from `dhcp4d` (LAN server)
+and `radvd`, and keeps all state as human-readable JSON. Not adoptable: it's a
+whole appliance image in Go, has no PPPoE (built for a DHCP-provisioned Swiss
+fibre ISP), and the author explicitly does not support outside users.
+
 ## Phases
 
 ### Phase 0 — foundations (no behaviour change)
