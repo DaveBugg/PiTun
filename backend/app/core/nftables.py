@@ -26,6 +26,10 @@ class RoutingSetSpec:
 logger = logging.getLogger(__name__)
 
 _TABLE = "pitun"
+# Router-mode NAT/forward lives in its OWN table so it has an independent
+# lifecycle and cannot interfere with the TPROXY table above: applying or
+# tearing down one never touches the other.
+_ROUTER_TABLE = "pitun_router"
 
 # Private IPv4 ranges to bypass
 _PRIVATE_RANGES = [
@@ -456,3 +460,77 @@ table inet {_TABLE} {{
 
 
 nftables_manager = NftablesManager()
+
+
+# ── Router mode: NAT + forward filter ────────────────────────────────────────
+#
+# Only used when `operating_mode = router`. In the default gateway mode the
+# upstream router does this and these chains are absent entirely.
+#
+# Deliberately a separate table (`inet pitun_router`): the TPROXY table is
+# load-bearing for the proxy and is rewritten on every rule/DNS/settings edit,
+# so entangling the router dataplane with it would mean one bad router apply
+# could take out proxying too.
+
+_IFACE_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,15}$")
+
+
+def _validate_iface(name: str) -> bool:
+    """Interface names go into an nft script, so constrain them tightly.
+    Linux caps names at IFNAMSIZ-1 = 15 chars."""
+    return bool(name and _IFACE_RE.match(name))
+
+
+async def apply_router_nat(wan: str, lan: str) -> bool:
+    """Masquerade LAN→WAN and filter forwarding, statefully.
+
+    The forward chain defaults to DROP: a router that forwards everything by
+    default is not a router, it's a hole. Return traffic is allowed by
+    conntrack state rather than by an open policy, so the WAN side can't
+    initiate into the LAN.
+    """
+    if not (_validate_iface(wan) and _validate_iface(lan)):
+        logger.error("Router NAT: invalid interface names (wan=%r lan=%r)", wan, lan)
+        return False
+    if wan == lan:
+        logger.error("Router NAT: wan and lan must differ (both %r)", wan)
+        return False
+
+    script = f"""
+table inet {_ROUTER_TABLE} {{
+    chain postrouting {{
+        type nat hook postrouting priority srcnat; policy accept;
+        # Everything leaving the uplink is rewritten to the box's WAN address.
+        oifname "{wan}" masquerade
+    }}
+
+    chain forward {{
+        type filter hook forward priority filter; policy drop;
+        # Replies and related flows for connections the LAN opened.
+        ct state established,related accept
+        ct state invalid drop
+        # LAN out to the internet, and LAN talking to itself.
+        iifname "{lan}" oifname "{wan}" accept
+        iifname "{lan}" oifname "{lan}" accept
+        # xray's tunnel interface, when the proxy is carrying the traffic.
+        iifname "xray0" accept
+        oifname "xray0" accept
+        # Anything else — notably WAN-initiated into the LAN — hits policy drop.
+    }}
+}}
+"""
+    # Replace wholesale so a re-apply can't stack duplicate rules.
+    await _nft(f"delete table inet {_ROUTER_TABLE}")
+    ok = await _nft(script)
+    if ok:
+        logger.info("Router NAT applied: %s (LAN) -> %s (WAN)", lan, wan)
+    else:
+        logger.error("Router NAT apply FAILED for %s -> %s", lan, wan)
+    return ok
+
+
+async def remove_router_nat() -> bool:
+    """Drop the router table. Idempotent — absent table is success."""
+    await _nft(f"delete table inet {_ROUTER_TABLE}")
+    logger.info("Router NAT removed")
+    return True

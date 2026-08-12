@@ -254,3 +254,77 @@ class TestPortRoles:
         assert got["wan_interface"] == "eth0"
         assert got["lan_interface"] == "eth1"
         assert got["operating_mode"] == "gateway"
+
+
+class TestRouterNat:
+    """The forward chain is the security boundary in router mode: it must
+    default to drop and let the WAN back in only via conntrack."""
+
+    def _capture(self, monkeypatch):
+        """Collect the nft scripts that would be applied."""
+        from app.core import nftables as nft
+        scripts = []
+
+        async def fake_nft(script):
+            scripts.append(script)
+            return True
+
+        monkeypatch.setattr(nft, "_nft", fake_nft)
+        return nft, scripts
+
+    def test_masquerades_out_of_the_wan_port(self, monkeypatch):
+        import asyncio
+        nft, scripts = self._capture(monkeypatch)
+        assert asyncio.run(nft.apply_router_nat("eth0", "eth1")) is True
+        body = "\n".join(scripts)
+        assert 'oifname "eth0" masquerade' in body
+        assert "type nat hook postrouting" in body
+
+    def test_forward_defaults_to_drop_with_stateful_returns(self, monkeypatch):
+        import asyncio
+        nft, scripts = self._capture(monkeypatch)
+        asyncio.run(nft.apply_router_nat("eth0", "eth1"))
+        body = "\n".join(scripts)
+        assert "type filter hook forward priority filter; policy drop" in body
+        assert "ct state established,related accept" in body
+        assert "ct state invalid drop" in body
+        # LAN may reach the internet...
+        assert 'iifname "eth1" oifname "eth0" accept' in body
+        # ...but nothing grants WAN-initiated access into the LAN.
+        assert 'iifname "eth0" oifname "eth1" accept' not in body
+
+    def test_replaces_rather_than_stacking(self, monkeypatch):
+        """A re-apply must not leave two copies of the ruleset behind."""
+        import asyncio
+        nft, scripts = self._capture(monkeypatch)
+        asyncio.run(nft.apply_router_nat("eth0", "eth1"))
+        assert any(s.strip().startswith("delete table inet pitun_router") for s in scripts)
+
+    def test_rejects_bogus_interface_names(self, monkeypatch):
+        import asyncio
+        nft, scripts = self._capture(monkeypatch)
+        assert asyncio.run(nft.apply_router_nat("eth0; rm -rf /", "eth1")) is False
+        assert asyncio.run(nft.apply_router_nat("", "eth1")) is False
+        assert asyncio.run(nft.apply_router_nat("e" * 20, "eth1")) is False
+        assert scripts == [], "nothing should be applied for invalid input"
+
+    def test_rejects_same_port_for_both_sides(self, monkeypatch):
+        import asyncio
+        nft, scripts = self._capture(monkeypatch)
+        assert asyncio.run(nft.apply_router_nat("eth0", "eth0")) is False
+        assert scripts == []
+
+    def test_removal_is_idempotent(self, monkeypatch):
+        import asyncio
+        nft, scripts = self._capture(monkeypatch)
+        assert asyncio.run(nft.remove_router_nat()) is True
+        assert asyncio.run(nft.remove_router_nat()) is True
+
+    def test_router_table_is_separate_from_the_tproxy_table(self, monkeypatch):
+        """Applying router rules must never rewrite the proxy's own table."""
+        import asyncio
+        nft, scripts = self._capture(monkeypatch)
+        asyncio.run(nft.apply_router_nat("eth0", "eth1"))
+        body = "\n".join(scripts)
+        assert "pitun_router" in body
+        assert "table inet pitun " not in body and "table inet pitun\n" not in body
