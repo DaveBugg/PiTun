@@ -104,7 +104,13 @@ def render_dnsmasq_conf(cfg: DhcpConfig) -> str:
         f"interface={cfg.interface}",
         # Never answer on anything but the LAN port — a DHCP server replying
         # on the WAN side is both useless and hostile to the ISP's network.
-        "bind-interfaces",
+        #
+        # `bind-dynamic`, not `bind-interfaces`: DHCP starts before the access
+        # point, and hostapd taking the radio bounces the link. A
+        # bind-interfaces dnsmasq keeps the dead socket and never rebinds,
+        # while the container stays "running" — so DHCP would be silently gone
+        # on exactly the wifi-LAN path that has never been exercised.
+        "bind-dynamic",
         "except-interface=lo",
         "no-resolv",
         "",

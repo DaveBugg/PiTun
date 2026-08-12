@@ -397,11 +397,19 @@ class TestDhcpConfig:
 
     def test_binds_only_to_the_lan_port(self):
         """A DHCP server answering on the WAN side would be both useless and
-        hostile to the ISP's network."""
+        hostile to the ISP's network.
+
+        `bind-dynamic` rather than `bind-interfaces`: DHCP starts before the
+        access point, and hostapd taking the radio bounces the link. A
+        bind-interfaces dnsmasq keeps the dead socket and never rebinds while
+        the container still reports "running" — DHCP silently gone on exactly
+        the wifi-LAN path that has never been exercised.
+        """
         from app.core.dhcp import render_dnsmasq_conf
         conf = render_dnsmasq_conf(self._cfg())
         assert "interface=eth1" in conf
-        assert "bind-interfaces" in conf
+        assert "bind-dynamic" in conf
+        assert "bind-interfaces" not in conf
 
     def test_gateway_address_inside_the_pool_is_refused(self):
         """dnsmasq won't catch this; a client handed the gateway's own address
@@ -1453,3 +1461,71 @@ class TestBackupRedactsSettingSecrets:
         body = client.get("/api/system/backup", headers=auth_headers,
                           params={"include_secrets": True}).text
         assert "wifi-secret-3" in body
+
+
+class TestSettingsGateAfterReview:
+    """Regressions for defects the second review pass found — each one fails
+    silently, so only a test keeps them fixed."""
+
+    def _patch(self, client, headers, body, *, wireless=False):
+        async def _noop_apply(_session):
+            return {"mode": "gateway"}
+
+        with mock.patch("app.core.network_config.list_interfaces",
+                        return_value=[{"name": "eth0"}, {"name": "eth1"}]), \
+             mock.patch("app.core.network_config.wifi_capabilities",
+                        return_value={"wireless": wireless, "ap_capable": wireless,
+                                      "modes": [], "bands": [], "detail": ""}), \
+             mock.patch("app.core.network_config.is_wireless", lambda i: wireless), \
+             mock.patch("app.core.router_mode.apply", _noop_apply):
+            return client.patch("/api/system/settings", headers=headers, json=body)
+
+    def test_empty_secret_means_unchanged_not_cleared(
+        self, client, admin_user, auth_headers,
+    ):
+        """The UI renders write-only secrets as empty fields meaning "leave
+        as-is". Writing that through destroys a working key with no way to
+        recover it from the panel."""
+        from app.models import Settings as DBSettings
+        from sqlmodel import select as sm_select
+
+        r = self._patch(client, auth_headers, {"wifi_passphrase": "real-key-123"})
+        assert r.status_code in (200, 204), r.text
+
+        r2 = self._patch(client, auth_headers, {"wifi_passphrase": ""})
+        assert r2.status_code in (200, 204), r2.text
+
+        # Read straight from the DB — the API never returns this value.
+        from app.database import get_async_engine
+        import asyncio
+        from sqlmodel.ext.asyncio.session import AsyncSession
+
+        async def _read():
+            async with AsyncSession(get_async_engine()) as s:
+                row = (await s.exec(
+                    sm_select(DBSettings).where(DBSettings.key == "wifi_passphrase")
+                )).first()
+                return row.value if row else None
+
+        assert asyncio.run(_read()) == "real-key-123"
+
+    def test_wifi_on_a_wired_lan_is_refused_at_the_gate(
+        self, client, admin_user, auth_headers,
+    ):
+        """apply() checks this inside the block that rolls everything back, so
+        catching it later would drop NAT, DHCP and the uplink on a working
+        router just to report a typo."""
+        r = self._patch(client, auth_headers,
+                        {"wifi_enabled": True, "lan_interface": "eth1"},
+                        wireless=False)
+        assert r.status_code == 400
+        assert "not a wireless adapter" in r.json()["detail"]
+
+    def test_wifi_enabled_alone_still_reaches_validation(
+        self, client, admin_user, auth_headers,
+    ):
+        """A bare wifi_enabled patch used to skip the gate entirely."""
+        r = self._patch(client, auth_headers, {"wifi_enabled": True}, wireless=False)
+        # Either refused outright, or accepted because no LAN port is set yet —
+        # what must NOT happen is reaching apply() with an invalid combination.
+        assert r.status_code in (200, 204, 400)

@@ -933,7 +933,9 @@ async def update_settings(body: SettingsUpdate, session: AsyncSession = Depends(
     # completeness check when router mode is switched on — a router with no
     # WAN, or with one port doing both jobs, is not a configuration we should
     # ever persist and then try to apply.
-    if any(k in patches for k in ("wan_interface", "lan_interface", "operating_mode")):
+    if any(k in patches for k in (
+        "wan_interface", "lan_interface", "operating_mode", "wifi_enabled",
+    )):
         from app.core.network_config import list_interfaces, wifi_capabilities
 
         async def _current(key: str) -> str:
@@ -999,6 +1001,22 @@ async def update_settings(body: SettingsUpdate, session: AsyncSession = Depends(
                         "Resolve that before assigning it as the LAN port.",
                     )
 
+        # Enabling WiFi on a wired LAN port is refused here rather than by
+        # apply(): apply() checks it *inside* the block that rolls everything
+        # back, so the same mistake would drop NAT, DHCP and the uplink on a
+        # working router before returning the error.
+        wifi_on = patches.get("wifi_enabled")
+        if wifi_on is None:
+            wifi_on = (await _current("wifi_enabled")).lower() == "true"
+        if wifi_on and lan:
+            from app.core.network_config import is_wireless
+            if not is_wireless(lan):
+                raise HTTPException(
+                    400,
+                    f"WiFi is enabled but the LAN port '{lan}' is not a wireless "
+                    f"adapter. Pick a wireless LAN port, or turn WiFi off.",
+                )
+
         if mode == "router" and (not wan or not lan):
             missing = " and ".join(
                 r for r, v in (("a WAN port", wan), ("a LAN port", lan)) if not v
@@ -1014,8 +1032,17 @@ async def update_settings(body: SettingsUpdate, session: AsyncSession = Depends(
         )).first()
         inbound_mode_was = existing_row.value if existing_row else "tproxy"
 
+    # Secrets the API never returns. The UI renders them as empty fields
+    # meaning "leave as-is", so an empty value here is the *absence* of an
+    # edit, not a request to clear one. Writing it through would destroy a
+    # working WPA key or ISP password with no way to recover it from the
+    # panel — and then fail the next apply on the blank value.
+    _WRITE_ONLY_SECRETS = {"wifi_passphrase", "wan_pppoe_password"}
+
     for key, value in patches.items():
         if value is None:
+            continue
+        if key in _WRITE_ONLY_SECRETS and value == "":
             continue
         if key == "failover_node_ids":
             await _set_setting(session, key, json.dumps(value))
@@ -1158,9 +1185,13 @@ async def update_settings(body: SettingsUpdate, session: AsyncSession = Depends(
             if result.get("mode") == "router":
                 await router_watchdog.arm(session)
         except router_mode.RouterModeError as exc:
-            if patches.get("operating_mode") == "router":
-                await _set_setting(session, "operating_mode", "gateway")
-                await session.commit()
+            # Unconditional: apply() has already torn the dataplane down, so
+            # the box IS in gateway mode. Gating this on "did this request set
+            # the mode" left a row saying "router" over a gateway dataplane
+            # whenever some other router key triggered the failure — and the
+            # boot reconcile then repeated the same failure forever.
+            await _set_setting(session, "operating_mode", "gateway")
+            await session.commit()
             raise HTTPException(
                 400,
                 f"Router mode could not be applied — the box stays in gateway "

@@ -297,6 +297,14 @@ async def commit_restore(
             if not secrets_included:
                 for field in _SECRET_FIELDS.get(name, ()):
                     data.pop(field, None)
+                # `settings` is key/value, so per-column redaction never
+                # reached it: a redacted bundle carried empty strings that
+                # would overwrite the live WPA key and ISP password, and the
+                # next reconcile would then fail validation on the blank value
+                # and tear a working router down.
+                if name == "settings" and raw.get("key") in _SECRET_SETTING_KEYS:
+                    if not raw.get("value"):
+                        continue
             row = by_key.get(key)
             if row is None:
                 try:
@@ -315,6 +323,31 @@ async def commit_restore(
             for key, row in by_key.items():
                 if key not in seen:
                     await session.delete(row)
+
+    # A bundle is routinely restored onto different hardware — that is the
+    # feature. Port roles and radio settings from the old box describe
+    # interfaces this one may not have, and restore bypasses the settings
+    # validation entirely, so letting a restored `operating_mode=router`
+    # stand would either claim a mode the box isn't in or turn it into a
+    # router unattended, with no confirmation window to catch it.
+    restored_mode = next(
+        (r.get("value") for r in (sections.get("settings") or [])
+         if isinstance(r, dict) and r.get("key") == "operating_mode"),
+        None,
+    )
+    if restored_mode == "router":
+        row = (await session.exec(
+            select(DBSettings).where(DBSettings.key == "operating_mode")
+        )).first()
+        if row:
+            row.value = "gateway"
+            session.add(row)
+        warnings.append(
+            "The backup was taken on a box running in router mode. Router mode "
+            "was NOT enabled here — port roles and radio settings describe the "
+            "original hardware. Review them, then switch the mode on yourself "
+            "so the confirmation window can protect you."
+        )
 
     await session.commit()
     logger.info(
