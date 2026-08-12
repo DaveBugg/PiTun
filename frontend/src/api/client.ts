@@ -535,6 +535,20 @@ export interface BackupRestorePlan {
 
 /** Whole-box config backup. Export is a plain GET (the browser downloads it);
  *  restore is preview-then-commit so nothing is written unseen. */
+export interface RouterModeStatus {
+  configured_mode: string
+  wan_interface: string
+  lan_interface: string
+  dhcp: { exists: boolean; running: boolean; status: string }
+}
+
+export interface WanFinding {
+  level: 'ok' | 'warn' | 'error'
+  title: string
+  detail: string
+  hint: string
+}
+
 export interface HostInterface {
   wireless: boolean
   /** true = can be an AP, false = client-only, null = undetermined (no `iw`). */
@@ -1403,6 +1417,10 @@ export interface NetworkRollbackResult {
 export const networkApi = {
   interfaces: () =>
     http.get<InterfaceInventory>('/network/interfaces').then(r => r.data),
+  routerMode: () =>
+    http.get<RouterModeStatus>('/network/router-mode').then(r => r.data),
+  diagnoseWan: () =>
+    http.get<{ findings: WanFinding[] }>('/network/router-mode/diagnose').then(r => r.data),
   getState: async (): Promise<NetworkState> => {
     const r = await http.get('/network/state')
     return r.data

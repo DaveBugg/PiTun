@@ -217,6 +217,13 @@ async def init_default_settings():
         # wan_interface faces the ISP, lan_interface faces the home network.
         "wan_interface": "",
         "lan_interface": "",
+        # DHCP for router mode. Empty pool bounds mean "choose a sane range
+        # from the LAN subnet on apply" — see dhcp.default_pool_for, which
+        # also guarantees the gateway's own address stays outside it.
+        "dhcp_enabled": "true",
+        "dhcp_pool_start": "",
+        "dhcp_pool_end": "",
+        "dhcp_lease_hours": "12",
         "disable_ipv6": "true",
         "dns_over_tcp": "false",
         # LAN proxy authentication (since v1.3.0-beta.6). Applies to

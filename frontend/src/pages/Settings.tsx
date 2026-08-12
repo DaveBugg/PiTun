@@ -290,6 +290,13 @@ export function Settings() {
             wan={String(val('wan_interface') || '')}
             lan={String(val('lan_interface') || '')}
             onRoleChange={(role, iface) => set(role, iface)}
+            dhcp={{
+              enabled: isChecked('dhcp_enabled'),
+              poolStart: String(val('dhcp_pool_start') || ''),
+              poolEnd: String(val('dhcp_pool_end') || ''),
+              leaseHours: String(val('dhcp_lease_hours') || 12),
+            }}
+            onDhcpChange={(k, v) => set(k, v)}
           />
           <div className="border-t border-gray-800" />
           {/* xray-config knobs (DB-backed settings consumed by config_gen) */}

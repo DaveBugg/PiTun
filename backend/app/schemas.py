@@ -1396,6 +1396,10 @@ class SettingsRead(BaseModel):
     operating_mode: str = "gateway"
     wan_interface: str = ""
     lan_interface: str = ""
+    dhcp_enabled: bool = True
+    dhcp_pool_start: str = ""
+    dhcp_pool_end: str = ""
+    dhcp_lease_hours: int = 12
     # IPv6
     disable_ipv6: bool = False
     # DNS over TCP
@@ -1428,6 +1432,10 @@ class SettingsUpdate(BaseModel):
     operating_mode: Optional[str] = None
     wan_interface: Optional[str] = None
     lan_interface: Optional[str] = None
+    dhcp_enabled: Optional[bool] = None
+    dhcp_pool_start: Optional[str] = None
+    dhcp_pool_end: Optional[str] = None
+    dhcp_lease_hours: Optional[int] = None
     active_node_id: Optional[int] = None
     failover_enabled: Optional[bool] = None
     failover_node_ids: Optional[List[int]] = None

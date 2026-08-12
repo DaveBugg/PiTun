@@ -1,7 +1,7 @@
 import * as React from 'react'
 import { useState } from 'react'
 import { useQuery, useMutation } from '@tanstack/react-query'
-import { diagnosticsApi } from '@/api/client'
+import { diagnosticsApi, networkApi } from '@/api/client'
 import type { RouteExplainRequest } from '@/api/client'
 import {
   Activity,
@@ -662,6 +662,77 @@ function RouteExplainer() {
 
 // ── Main Page ───────────────────────────────────────────────────────────────
 
+
+/**
+ * WAN health in router mode.
+ *
+ * The uplink depends on two rules that fail silently: DHCP replies getting
+ * back in, and the ICMP that PMTU discovery needs. Without something like
+ * this, both present as "the internet is broken" with nothing to tell them
+ * apart. The rules carry nftables counters; this reads them.
+ *
+ * Hidden entirely in gateway mode, where none of it applies.
+ */
+function WanHealth() {
+  const t = useT()
+  const { data: status } = useQuery({
+    queryKey: ['router-mode'],
+    queryFn: () => networkApi.routerMode(),
+    refetchInterval: 30_000,
+  })
+  const active = status?.configured_mode === 'router'
+  const { data, isFetching, refetch } = useQuery({
+    queryKey: ['wan-diagnose'],
+    queryFn: () => networkApi.diagnoseWan(),
+    enabled: active,
+    refetchInterval: active ? 30_000 : false,
+  })
+
+  if (!active) return null
+
+  const tone = (level: string) =>
+    level === 'error'
+      ? 'border-red-200 dark:border-red-800/50 bg-red-50 dark:bg-red-950/30 text-red-800 dark:text-red-300'
+      : level === 'warn'
+      ? 'border-amber-200 dark:border-amber-800/50 bg-amber-50 dark:bg-amber-950/30 text-amber-800 dark:text-amber-300'
+      : 'border-gray-800 bg-gray-900/40 text-gray-300'
+
+  return (
+    <div className="rounded-xl border border-gray-800 bg-gray-900/50">
+      <div className="px-4 py-3 border-b border-gray-800 flex items-center justify-between">
+        <div>
+          <h2 className="text-sm font-semibold text-gray-200">
+            {t('Uplink health', 'Состояние аплинка')}
+          </h2>
+          <p className="text-[11px] text-gray-500 mt-0.5">
+            {t(
+              `WAN ${status?.wan_interface} · LAN ${status?.lan_interface} · DHCP ${status?.dhcp?.status}`,
+              `WAN ${status?.wan_interface} · LAN ${status?.lan_interface} · DHCP ${status?.dhcp?.status}`,
+            )}
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={() => refetch()}
+          disabled={isFetching}
+          className="rounded-md border border-gray-700 hover:border-brand-400/50 px-2 py-1 text-[11px] text-gray-300 disabled:opacity-50"
+        >
+          {t('Refresh', 'Обновить')}
+        </button>
+      </div>
+      <div className="p-4 space-y-2">
+        {(data?.findings ?? []).map((f, i) => (
+          <div key={i} className={`rounded-lg border p-2.5 text-[12px] ${tone(f.level)}`}>
+            <div className="font-medium">{f.title}</div>
+            <div className="mt-0.5 opacity-90">{f.detail}</div>
+            {f.hint && <div className="mt-1 text-[11px] opacity-75">{f.hint}</div>}
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
 export function Diagnostics() {
   const t = useT()
   return (
@@ -677,6 +748,7 @@ export function Diagnostics() {
       <RouteExplainer />
       <Resources />
       <NetworkInfo />
+      <WanHealth />
       <DockerLogs />
     </div>
   )

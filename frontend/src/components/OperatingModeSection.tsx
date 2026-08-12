@@ -16,13 +16,15 @@ import { useT } from '@/hooks/useT'
  * handling arrive in later phases.
  */
 export default function OperatingModeSection({
-  value, onChange, wan, lan, onRoleChange,
+  value, onChange, wan, lan, onRoleChange, dhcp, onDhcpChange,
 }: {
   value: string
   onChange: (mode: string) => void
   wan: string
   lan: string
   onRoleChange: (role: 'wan_interface' | 'lan_interface', iface: string) => void
+  dhcp: { enabled: boolean; poolStart: string; poolEnd: string; leaseHours: string }
+  onDhcpChange: (key: string, value: string | boolean) => void
 }) {
   const t = useT()
   const { data, isLoading } = useQuery({
@@ -219,6 +221,68 @@ export default function OperatingModeSection({
                 </p>
               )}
             </div>
+          </div>
+        )}
+
+        {value === 'router' && (
+          <div className="mt-3 space-y-2">
+            <label className="flex items-center gap-2 text-[12px] text-gray-300">
+              <input
+                type="checkbox"
+                checked={dhcp.enabled}
+                onChange={(e) => onDhcpChange('dhcp_enabled', e.target.checked)}
+                className="rounded-sm border-gray-600 bg-gray-800 text-brand-500"
+              />
+              {t('Hand out addresses on the LAN (DHCP)', 'Раздавать адреса в LAN (DHCP)')}
+            </label>
+            {dhcp.enabled && (
+              <div className="grid sm:grid-cols-3 gap-3">
+                <div>
+                  <label className="block text-[11px] font-medium text-gray-400 mb-1">
+                    {t('Pool start', 'Начало пула')}
+                  </label>
+                  <input
+                    type="text"
+                    value={dhcp.poolStart}
+                    onChange={(e) => onDhcpChange('dhcp_pool_start', e.target.value)}
+                    placeholder={t('auto', 'авто')}
+                    className="w-full rounded-lg bg-gray-950 border border-gray-800 px-3 py-2 text-sm font-mono text-gray-100 focus:outline-hidden focus:border-gray-600"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[11px] font-medium text-gray-400 mb-1">
+                    {t('Pool end', 'Конец пула')}
+                  </label>
+                  <input
+                    type="text"
+                    value={dhcp.poolEnd}
+                    onChange={(e) => onDhcpChange('dhcp_pool_end', e.target.value)}
+                    placeholder={t('auto', 'авто')}
+                    className="w-full rounded-lg bg-gray-950 border border-gray-800 px-3 py-2 text-sm font-mono text-gray-100 focus:outline-hidden focus:border-gray-600"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[11px] font-medium text-gray-400 mb-1">
+                    {t('Lease (hours)', 'Аренда (часы)')}
+                  </label>
+                  <input
+                    type="number"
+                    min={1}
+                    value={dhcp.leaseHours}
+                    onChange={(e) => onDhcpChange('dhcp_lease_hours', e.target.value)}
+                    className="w-full rounded-lg bg-gray-950 border border-gray-800 px-3 py-2 text-sm text-gray-100 focus:outline-hidden focus:border-gray-600"
+                  />
+                </div>
+              </div>
+            )}
+            {dhcp.enabled && !dhcp.poolStart && !dhcp.poolEnd && (
+              <p className="text-[10px] text-gray-600">
+                {t(
+                  'Left empty, a range is chosen from the LAN subnet that cannot include the gateway address.',
+                  'Если оставить пустым, диапазон подберётся из подсети LAN так, чтобы в него не попал адрес самой коробки.',
+                )}
+              </p>
+            )}
           </div>
         )}
 
