@@ -406,3 +406,56 @@ class TestDhcpConfig:
             # And the suggestion must actually render.
             render_dnsmasq_conf(self._cfg(
                 lan_address=gw, pool_start=start, pool_end=end))
+
+
+class TestWanExposure:
+    """Router mode is the first time PiTun has an interface facing the
+    internet. xray binds DNS/SOCKS/HTTP to 0.0.0.0, which was harmless when
+    every interface faced the LAN and is an open resolver plus a pair of open
+    proxies the moment there's an uplink."""
+
+    def _apply(self, monkeypatch, **kw):
+        import asyncio
+        from app.core import nftables as nft
+        scripts = []
+
+        async def fake_nft(script):
+            scripts.append(script)
+            return True
+
+        monkeypatch.setattr(nft, "_nft", fake_nft)
+        asyncio.run(nft.apply_router_nat("eth0", "eth1", **kw))
+        return "\n".join(scripts)
+
+    def test_local_services_are_closed_on_the_wan_side(self, monkeypatch):
+        body = self._apply(
+            monkeypatch,
+            tcp_services=[80, 443, 53, 1080, 8080],
+            udp_services=[53, 5353],
+        )
+        assert 'iifname "eth0" tcp dport { 53, 80, 443, 1080, 8080 } drop' in body
+        assert 'iifname "eth0" udp dport { 53, 5353 } drop' in body
+
+    def test_input_policy_stays_accept_so_ssh_survives(self, monkeypatch):
+        """Dropping by default would also cut SSH — locking the operator out
+        of a remote box while securing it is not a trade worth making."""
+        body = self._apply(monkeypatch, tcp_services=[80])
+        assert "type filter hook input priority filter; policy accept" in body
+        assert "ct state established,related accept" in body
+
+    def test_lan_side_is_not_restricted(self, monkeypatch):
+        """Only the WAN interface is matched — the LAN must still reach the
+        panel, DNS and the proxies."""
+        body = self._apply(monkeypatch, tcp_services=[80, 443])
+        assert 'iifname "eth1" tcp dport' not in body
+
+    def test_no_services_means_no_drop_rules(self, monkeypatch):
+        body = self._apply(monkeypatch)
+        assert "dport" not in body
+        assert "no local services to close" in body
+
+    def test_out_of_range_ports_are_ignored(self, monkeypatch):
+        body = self._apply(monkeypatch, tcp_services=[80, 0, 70000, -1])
+        assert "{ 80 }" in body
+        for bad in ("70000", "-1"):
+            assert bad not in body

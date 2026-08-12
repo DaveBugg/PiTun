@@ -481,13 +481,32 @@ def _validate_iface(name: str) -> bool:
     return bool(name and _IFACE_RE.match(name))
 
 
-async def apply_router_nat(wan: str, lan: str) -> bool:
+async def apply_router_nat(
+    wan: str,
+    lan: str,
+    *,
+    tcp_services: Sequence[int] = (),
+    udp_services: Sequence[int] = (),
+) -> bool:
     """Masquerade LAN→WAN and filter forwarding, statefully.
 
     The forward chain defaults to DROP: a router that forwards everything by
     default is not a router, it's a hole. Return traffic is allowed by
     conntrack state rather than by an open policy, so the WAN side can't
     initiate into the LAN.
+
+    The input chain closes what router mode newly exposes. In gateway mode
+    there is no WAN port, so it never mattered that xray binds its DNS, SOCKS
+    and HTTP inbounds to 0.0.0.0 — every interface faced the LAN. Give the box
+    an uplink and those same listeners face the internet: an open resolver
+    (DNS amplification) and open proxies (anyone routing traffic through your
+    line). `tcp_services` / `udp_services` are the local ports to close on the
+    WAN side — pass the panel, DNS, SOCKS, HTTP and TPROXY ports.
+
+    That chain's policy is deliberately ACCEPT, not drop: a drop policy on
+    input would also cut SSH, and locking the operator out of a remote box
+    while "securing" it is not a trade worth making. We close what we know we
+    opened, and leave the rest of the host's inbound posture alone.
     """
     if not (_validate_iface(wan) and _validate_iface(lan)):
         logger.error("Router NAT: invalid interface names (wan=%r lan=%r)", wan, lan)
@@ -496,12 +515,27 @@ async def apply_router_nat(wan: str, lan: str) -> bool:
         logger.error("Router NAT: wan and lan must differ (both %r)", wan)
         return False
 
+    tcp_ports = sorted({int(p) for p in tcp_services if 0 < int(p) < 65536})
+    udp_ports = sorted({int(p) for p in udp_services if 0 < int(p) < 65536})
+    rules = []
+    if tcp_ports:
+        rules.append(f'        iifname "{wan}" tcp dport {{ {", ".join(map(str, tcp_ports))} }} drop')
+    if udp_ports:
+        rules.append(f'        iifname "{wan}" udp dport {{ {", ".join(map(str, udp_ports))} }} drop')
+    wan_service_rules = "\n".join(rules) or "        # no local services to close"
+
     script = f"""
 table inet {_ROUTER_TABLE} {{
     chain postrouting {{
         type nat hook postrouting priority srcnat; policy accept;
         # Everything leaving the uplink is rewritten to the box's WAN address.
         oifname "{wan}" masquerade
+    }}
+
+    chain input {{
+        type filter hook input priority filter; policy accept;
+        ct state established,related accept
+{wan_service_rules}
     }}
 
     chain forward {{
