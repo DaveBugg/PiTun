@@ -247,6 +247,10 @@ async def init_default_settings():
         "wan_pppoe_user": "",
         "wan_pppoe_password": "",
         "wan_pppoe_service": "",
+        # Commit-confirm watchdog: ISO deadline of an unconfirmed router-mode
+        # apply, empty when nothing is pending. Persisted rather than held in
+        # memory so an apply that wedges the box does not survive a reboot.
+        "router_mode_confirm_deadline": "",
         "disable_ipv6": "true",
         "dns_over_tcp": "false",
         # LAN proxy authentication (since v1.3.0-beta.6). Applies to

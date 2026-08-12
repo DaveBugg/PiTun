@@ -1140,9 +1140,14 @@ async def update_settings(body: SettingsUpdate, session: AsyncSession = Depends(
         "dhcp_enabled", "dhcp_pool_start", "dhcp_pool_end", "dhcp_lease_hours",
     }
     if _ROUTER_KEYS & set(patches):
-        from app.core import router_mode
+        from app.core import router_mode, router_watchdog
         try:
-            await router_mode.apply(session)
+            result = await router_mode.apply(session)
+            # Arm the confirmation window only when the box actually went into
+            # router mode. Switching back to gateway is the safe direction and
+            # needs no undo timer.
+            if result.get("mode") == "router":
+                await router_watchdog.arm(session)
         except router_mode.RouterModeError as exc:
             if patches.get("operating_mode") == "router":
                 await _set_setting(session, "operating_mode", "gateway")

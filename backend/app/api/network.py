@@ -88,6 +88,35 @@ async def router_mode_status(session=Depends(get_session)) -> dict:
     return await router_mode.status(session)
 
 
+@router.post("/router-mode/confirm")
+async def confirm_router_mode(session=Depends(get_session)) -> dict:
+    """Tell the watchdog the network still works, cancelling the auto-revert.
+
+    Deliberately a separate action rather than something the apply implies:
+    the point is that a human confirms from a machine that can still reach the
+    panel. An apply that confirms itself proves nothing.
+    """
+    from app.core import router_watchdog
+    ok = await router_watchdog.confirm(session)
+    return {"confirmed": ok}
+
+
+@router.get("/router-mode/pending")
+async def router_mode_pending(session=Depends(get_session)) -> dict:
+    """Seconds remaining before an unconfirmed apply is rolled back."""
+    from app.core import router_watchdog
+    from datetime import datetime, timezone
+    deadline = await router_watchdog.pending(session)
+    if deadline is None:
+        return {"pending": False, "seconds_left": 0}
+    left = (deadline - datetime.now(timezone.utc)).total_seconds()
+    return {
+        "pending": True,
+        "deadline": deadline.isoformat(),
+        "seconds_left": max(0, int(left)),
+    }
+
+
 @router.get("/router-mode/diagnose")
 async def router_mode_diagnose() -> dict:
     """Read the WAN counters and explain them.

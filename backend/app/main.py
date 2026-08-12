@@ -77,9 +77,14 @@ async def lifespan(app: FastAPI):
     try:
         from sqlmodel.ext.asyncio.session import AsyncSession as _AsyncSession
         from app.database import get_async_engine as _engine
-        from app.core import router_mode
+        from app.core import router_mode, router_watchdog
+        # An unconfirmed apply found at boot was never proven to work — most
+        # likely it took the box down hard enough that nobody could confirm.
+        # Revert it before reconciling, or every boot repeats the failure.
+        await router_watchdog.recover_on_boot()
         async with _AsyncSession(_engine()) as _s:
             await router_mode.apply(_s)
+        router_watchdog.router_watchdog.start()
     except Exception as exc:  # noqa: BLE001 — never block startup on this
         logger.warning("Router mode not applied on boot: %s", exc)
 

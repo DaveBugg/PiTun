@@ -1243,3 +1243,120 @@ class TestWanInOrchestrator:
             self._run(monkeypatch, {"wan_mode": "static",
                                     "wan_static_address": "203.0.113.7",
                                     "wan_static_gateway": "203.0.113.1"})
+
+
+class TestWatchdog:
+    """Gateway mode has a fallback — point devices back at the router. Router
+    mode has none, so a bad apply needs an undo that doesn't depend on anyone
+    being able to reach the box."""
+
+    def _session(self):
+        import asyncio
+        from app.database import get_async_engine
+        from sqlmodel.ext.asyncio.session import AsyncSession
+        return AsyncSession, get_async_engine, asyncio
+
+    def test_arm_then_confirm_clears_the_deadline(self, client, admin_user,
+                                                  auth_headers, session):
+        import asyncio
+        from app.core import router_watchdog as w
+        from app.models import Settings as DBSettings
+        from sqlmodel import select
+
+        async def go():
+            from sqlmodel.ext.asyncio.session import AsyncSession
+            from app.database import get_async_engine
+            async with AsyncSession(get_async_engine()) as s:
+                await w.arm(s, 120)
+                assert await w.pending(s) is not None
+                assert await w.confirm(s) is True
+                assert await w.pending(s) is None
+                # A second confirm is a no-op, not an error.
+                assert await w.confirm(s) is False
+
+        asyncio.run(go())
+
+    def test_expired_window_reverts_to_gateway(self, monkeypatch):
+        """The whole point: nobody confirmed, so the box goes back to the mode
+        that keeps the LAN working."""
+        import asyncio
+        from app.core import router_watchdog as w
+
+        reverted = {}
+
+        async def fake_teardown():
+            reverted["torn_down"] = True
+            return {"mode": "gateway"}
+
+        async def fake_get(session, key):
+            from datetime import datetime, timedelta, timezone
+            if key == w.PENDING_KEY:
+                return (datetime.now(timezone.utc) - timedelta(seconds=5)).isoformat()
+            return ""
+
+        sets = {}
+
+        async def fake_set(session, key, value):
+            sets[key] = value
+
+        import app.core.router_mode as rm
+        monkeypatch.setattr(rm, "teardown", fake_teardown)
+        monkeypatch.setattr(w, "_get", fake_get)
+        monkeypatch.setattr(w, "_set", fake_set)
+
+        async def go():
+            class S:
+                pass
+            return await w.revert(S(), "test")
+
+        asyncio.run(go())
+        assert reverted["torn_down"] is True
+        assert sets["operating_mode"] == "gateway"
+        assert sets[w.PENDING_KEY] == ""
+
+    def test_unparseable_deadline_is_treated_as_expired(self, monkeypatch):
+        """Erring toward the safe mode: an unreadable deadline must not mean
+        'pending forever'."""
+        import asyncio
+        from datetime import datetime, timezone
+        from app.core import router_watchdog as w
+
+        async def fake_get(session, key):
+            return "not-a-date"
+
+        monkeypatch.setattr(w, "_get", fake_get)
+
+        async def go():
+            class S:
+                pass
+            return await w.pending(S())
+
+        result = asyncio.run(go())
+        assert result is not None and result < datetime.now(timezone.utc)
+
+    def test_confirm_endpoint_reports_nothing_pending(self, client, admin_user,
+                                                      auth_headers):
+        r = client.post("/api/network/router-mode/confirm", headers=auth_headers)
+        assert r.status_code == 200
+        assert r.json()["confirmed"] is False
+
+    def test_pending_endpoint_counts_down(self, client, admin_user, auth_headers):
+        import asyncio
+        from app.core import router_watchdog as w
+
+        async def go():
+            from sqlmodel.ext.asyncio.session import AsyncSession
+            from app.database import get_async_engine
+            async with AsyncSession(get_async_engine()) as s:
+                await w.arm(s, 120)
+
+        asyncio.run(go())
+        body = client.get("/api/network/router-mode/pending",
+                          headers=auth_headers).json()
+        assert body["pending"] is True
+        assert 0 < body["seconds_left"] <= 120
+
+        client.post("/api/network/router-mode/confirm", headers=auth_headers)
+        after = client.get("/api/network/router-mode/pending",
+                           headers=auth_headers).json()
+        assert after["pending"] is False
