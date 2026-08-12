@@ -21,6 +21,7 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 from app.core import dhcp as dhcp_mod
 from app.core import nftables as nft
 from app.core import wifi as wifi_mod
+from app.core import wan as wan_mod
 from app.core import network_config as nc
 from app.models import Settings as DBSettings
 
@@ -89,6 +90,13 @@ async def teardown() -> dict:
         logger.warning("Teardown: could not stop the access point: %s", exc)
         steps["wifi"] = f"error: {exc}"
     try:
+        # Only PiTun-created uplink connections are removed; a plain DHCP
+        # uplink was never ours to take down.
+        steps["wan"] = wan_mod.teardown()["removed"]
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Teardown: could not remove the uplink connection: %s", exc)
+        steps["wan"] = f"error: {exc}"
+    try:
         steps["nat"] = await nft.remove_router_nat()
     except Exception as exc:  # noqa: BLE001
         logger.warning("Teardown: could not remove the router firewall: %s", exc)
@@ -154,13 +162,45 @@ async def apply(session: AsyncSession) -> dict:
     except dhcp_mod.DhcpConfigError as exc:
         raise RouterModeError(f"DHCP settings are not usable: {exc}")
 
+    # The uplink is built first and everything downstream keys off the
+    # interface it actually produces: PPPoE moves traffic to ppp0 and a VLAN
+    # tag to eth0.<id>. NAT on the physical port while traffic leaves
+    # elsewhere is a router that forwards nothing and explains nothing.
+    wan_cfg = wan_mod.WanConfig(
+        interface=wan,
+        mode=m.get("wan_mode", "dhcp"),
+        vlan_id=int(m.get("wan_vlan_id") or 0),
+        mac_clone=(m.get("wan_mac_clone") or "").strip(),
+        address=(m.get("wan_static_address") or "").strip(),
+        gateway=(m.get("wan_static_gateway") or "").strip(),
+        dns=[d.strip() for d in (m.get("wan_static_dns") or "").split(",") if d.strip()],
+        username=(m.get("wan_pppoe_user") or "").strip(),
+        password=m.get("wan_pppoe_password", ""),
+        service=(m.get("wan_pppoe_service") or "").strip(),
+    )
+    try:
+        wan_mod.validate(wan_cfg)
+    except wan_mod.WanConfigError as exc:
+        raise RouterModeError(f"WAN settings are not usable: {exc}")
+    wan_iface = wan_mod.effective_interface(wan_cfg)
+
     applied: list[str] = []
     try:
+        # Only touch the uplink when it needs building. Plain DHCP on an
+        # untagged port with no MAC clone is what the host already does, and
+        # replacing that connection would drop the line for no gain.
+        needs_wan_setup = (
+            wan_cfg.mode != "dhcp" or wan_cfg.vlan_id or wan_cfg.mac_clone
+        )
+        if needs_wan_setup:
+            wan_mod.apply(wan_cfg)
+            applied.append("wan")
+
         if not set_ip_forward(True):
             raise RouterModeError("Could not enable IPv4 forwarding on the host.")
         applied.append("ip_forward")
 
-        if not await nft.apply_router_nat(wan, lan):
+        if not await nft.apply_router_nat(wan_iface, lan):
             raise RouterModeError("Could not apply the router firewall/NAT rules.")
         applied.append("nat")
 
@@ -205,7 +245,8 @@ async def apply(session: AsyncSession) -> dict:
     logger.info("Router mode active: WAN=%s LAN=%s pool=%s-%s",
                 wan, lan, pool_start, pool_end)
     return {
-        "mode": "router", "wan": wan, "lan": lan,
+        "mode": "router", "wan": wan, "wan_interface": wan_iface,
+        "wan_mode": wan_cfg.mode, "lan": lan,
         "lan_address": lan_address, "lan_cidr": lan_cidr,
         "dhcp_pool": [pool_start, pool_end], "reservations": len(leases),
         "applied": applied,

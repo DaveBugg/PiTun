@@ -1021,3 +1021,225 @@ class TestWifiOrchestration:
         res = asyncio.run(rm.teardown())
         assert stopped == ["wifi"]
         assert res["steps"]["wifi"] is True
+
+
+class TestWanConfig:
+    """Uplink acquisition. The failures here are the ones that look like a
+    dead line rather than a configuration error."""
+
+    def _cfg(self, **over):
+        from app.core.wan import WanConfig
+        base = dict(interface="eth0", mode="dhcp")
+        base.update(over)
+        return WanConfig(**base)
+
+    def test_effective_interface_follows_pppoe_and_vlan(self):
+        """NAT keyed to the physical port while traffic leaves on ppp0 gives a
+        router that forwards nothing, with nothing to explain it."""
+        from app.core.wan import effective_interface
+        assert effective_interface(self._cfg()) == "eth0"
+        assert effective_interface(self._cfg(vlan_id=835)) == "eth0.835"
+        assert effective_interface(self._cfg(mode="pppoe", username="u", password="p")) == "ppp0"
+        # PPPoE wins: the session runs over the tagged link, and traffic still
+        # leaves on ppp0.
+        assert effective_interface(
+            self._cfg(mode="pppoe", vlan_id=835, username="u", password="p")) == "ppp0"
+
+    def test_vlan_id_range(self):
+        from app.core.wan import validate, WanConfigError
+        import pytest
+        for bad in (4095, 9999, -1):
+            with pytest.raises(WanConfigError, match="1-4094"):
+                validate(self._cfg(vlan_id=bad))
+        validate(self._cfg(vlan_id=1))
+        validate(self._cfg(vlan_id=4094))
+
+    def test_static_gateway_must_be_reachable(self):
+        """An unreachable gateway surfaces as "no internet" long after this
+        screen, so it's caught while the operator is still looking at it."""
+        from app.core.wan import validate, WanConfigError
+        import pytest
+        with pytest.raises(WanConfigError, match="outside the WAN subnet"):
+            validate(self._cfg(mode="static", address="203.0.113.7/24",
+                               gateway="198.51.100.1"))
+        validate(self._cfg(mode="static", address="203.0.113.7/24",
+                           gateway="203.0.113.1"))
+
+    def test_static_address_needs_a_prefix(self):
+        from app.core.wan import validate, WanConfigError
+        import pytest
+        with pytest.raises(WanConfigError, match="prefix"):
+            validate(self._cfg(mode="static", address="203.0.113.7",
+                               gateway="203.0.113.1"))
+
+    def test_pppoe_requires_credentials(self):
+        from app.core.wan import validate, WanConfigError
+        import pytest
+        with pytest.raises(WanConfigError, match="username"):
+            validate(self._cfg(mode="pppoe", password="p"))
+        with pytest.raises(WanConfigError, match="password"):
+            validate(self._cfg(mode="pppoe", username="u"))
+
+    def test_mac_clone_must_look_like_a_mac(self):
+        from app.core.wan import validate, WanConfigError
+        import pytest
+        with pytest.raises(WanConfigError, match="not a MAC"):
+            validate(self._cfg(mac_clone="00-11-22-33-44-55"))
+        validate(self._cfg(mac_clone="00:11:22:33:44:55"))
+
+    def test_password_never_appears_in_the_loggable_view(self):
+        from app.core.wan import redact
+        cfg = self._cfg(mode="pppoe", username="user@isp", password="hunter2")
+        out = redact(cfg)
+        assert out["password"] == "********"
+        assert "hunter2" not in str(out)
+
+
+class TestWanApply:
+    def _apply(self, monkeypatch, cfg, *, manager="networkmanager", fail_on=None):
+        from app.core import wan
+        calls = []
+
+        def fake_nmcli(*args, **kw):
+            calls.append(" ".join(args))
+            rc = 1 if (fail_on and fail_on in " ".join(args)) else 0
+            return type("R", (), {"returncode": rc, "stdout": "", "stderr": "nope"})()
+
+        monkeypatch.setattr(wan, "_nmcli", fake_nmcli)
+        monkeypatch.setattr(wan, "detect_manager", lambda: manager)
+        return wan, calls
+
+    def test_non_networkmanager_says_so_plainly(self, monkeypatch):
+        """Rather than half-working: networkd cannot do PPPoE at all."""
+        import pytest
+        from app.core.wan import WanConfig
+        wan, _ = self._apply(monkeypatch, None, manager="networkd")
+        with pytest.raises(wan.WanConfigError, match="NetworkManager"):
+            wan.apply(WanConfig(interface="eth0", mode="dhcp"))
+
+    def test_old_connection_is_replaced_not_stacked(self, monkeypatch):
+        """Two profiles claiming the same port come up as whichever NM picked,
+        which is worse to debug than a clean failure."""
+        from app.core.wan import WanConfig
+        wan, calls = self._apply(monkeypatch, None)
+        wan.apply(WanConfig(interface="eth0", mode="dhcp"))
+        assert any(c.startswith("connection delete pitun-wan") for c in calls)
+        delete_i = next(i for i, c in enumerate(calls) if "delete pitun-wan" in c)
+        add_i = next(i for i, c in enumerate(calls) if "connection add" in c)
+        assert delete_i < add_i
+
+    def test_vlan_carries_the_addressing(self, monkeypatch):
+        """The addressing mode belongs on the tagged link, not the raw port."""
+        from app.core.wan import WanConfig
+        wan, calls = self._apply(monkeypatch, None)
+        wan.apply(WanConfig(interface="eth0", mode="dhcp", vlan_id=835))
+        joined = " | ".join(calls)
+        assert "type vlan" in joined and "id 835" in joined
+        eth_conn = [c for c in calls if "type ethernet" in c][0]
+        assert "ifname eth0.835" in eth_conn
+
+    def test_static_passes_address_gateway_and_dns(self, monkeypatch):
+        from app.core.wan import WanConfig
+        wan, calls = self._apply(monkeypatch, None)
+        wan.apply(WanConfig(interface="eth0", mode="static",
+                            address="203.0.113.7/24", gateway="203.0.113.1",
+                            dns=["1.1.1.1", "8.8.8.8"]))
+        add = [c for c in calls if "connection add" in c][0]
+        assert "ipv4.method manual" in add
+        assert "ipv4.addresses 203.0.113.7/24" in add
+        assert "ipv4.gateway 203.0.113.1" in add
+        assert "ipv4.dns 1.1.1.1,8.8.8.8" in add
+
+    def test_mac_clone_is_set_on_the_connection(self, monkeypatch):
+        """On the device it would be lost on reconnect, and an ISP that binds
+        to a MAC refuses service the moment the original reappears."""
+        from app.core.wan import WanConfig
+        wan, calls = self._apply(monkeypatch, None)
+        wan.apply(WanConfig(interface="eth0", mode="dhcp", mac_clone="00:11:22:33:44:55"))
+        mod = [c for c in calls if "cloned-mac-address" in c]
+        assert mod and "connection modify pitun-wan" in mod[0]
+
+    def test_a_link_that_will_not_come_up_is_an_error(self, monkeypatch):
+        import pytest
+        from app.core.wan import WanConfig
+        wan, calls = self._apply(monkeypatch, None, fail_on="connection up")
+        with pytest.raises(wan.WanConfigError, match="would not come up"):
+            wan.apply(WanConfig(interface="eth0", mode="dhcp"))
+
+
+class TestWanInOrchestrator:
+    """The uplink shapes everything downstream: NAT must follow the interface
+    traffic actually leaves on, not the port the cable is in."""
+
+    def _run(self, monkeypatch, settings_extra):
+        import asyncio
+        from app.core import router_mode as rm
+        seen = {}
+
+        async def fake_nat(wan, lan, **kw):
+            seen["nat_wan"] = wan
+            return True
+
+        async def noop_dict():
+            return {"running": False}
+
+        monkeypatch.setattr(rm.nft, "apply_router_nat", fake_nat)
+        monkeypatch.setattr(rm.nft, "remove_router_nat", lambda: noop_dict())
+        monkeypatch.setattr(rm.dhcp_mod, "start", lambda cfg: noop_dict())
+        monkeypatch.setattr(rm.dhcp_mod, "stop", noop_dict)
+        monkeypatch.setattr(rm.wifi_mod, "stop", noop_dict)
+        monkeypatch.setattr(rm, "set_ip_forward", lambda on: True)
+        monkeypatch.setattr(rm.nc, "list_interfaces",
+                            lambda: [{"name": "eth0"}, {"name": "eth1"}])
+        monkeypatch.setattr(rm.nc, "read_interface_address", lambda i: ("192.168.10.1", 24))
+        monkeypatch.setattr(rm.wan_mod, "apply",
+                            lambda cfg: seen.setdefault("wan_applied", cfg.mode))
+
+        base = {"operating_mode": "router", "wan_interface": "eth0",
+                "lan_interface": "eth1"}
+        base.update(settings_extra)
+
+        class S:
+            async def exec(self, statement=None, *a, **k):
+                if statement is not None and "device" in str(statement).lower():
+                    rows = []
+                else:
+                    rows = [type("R", (), {"key": k2, "value": v})()
+                            for k2, v in base.items()]
+                return type("Res", (), {"all": lambda self: rows})()
+
+        return asyncio.run(rm.apply(S())), seen
+
+    def test_plain_dhcp_uplink_is_left_alone(self, monkeypatch):
+        """Replacing a working DHCP connection would drop the line for no
+        gain — the host already does exactly this."""
+        res, seen = self._run(monkeypatch, {})
+        assert "wan" not in res["applied"]
+        assert "wan_applied" not in seen
+        assert seen["nat_wan"] == "eth0"
+
+    def test_vlan_moves_nat_to_the_tagged_interface(self, monkeypatch):
+        res, seen = self._run(monkeypatch, {"wan_vlan_id": "835"})
+        assert seen["nat_wan"] == "eth0.835"
+        assert res["wan_interface"] == "eth0.835"
+        assert "wan" in res["applied"]
+
+    def test_pppoe_moves_nat_to_ppp0(self, monkeypatch):
+        res, seen = self._run(monkeypatch, {
+            "wan_mode": "pppoe", "wan_pppoe_user": "u", "wan_pppoe_password": "p",
+        })
+        assert seen["nat_wan"] == "ppp0"
+        assert res["wan_mode"] == "pppoe"
+
+    def test_mac_clone_alone_still_builds_the_connection(self, monkeypatch):
+        res, seen = self._run(monkeypatch, {"wan_mac_clone": "00:11:22:33:44:55"})
+        assert "wan" in res["applied"]
+        assert seen["nat_wan"] == "eth0"
+
+    def test_bad_wan_settings_fail_before_anything_is_applied(self, monkeypatch):
+        import pytest
+        from app.core import router_mode as rm
+        with pytest.raises(rm.RouterModeError, match="WAN settings are not usable"):
+            self._run(monkeypatch, {"wan_mode": "static",
+                                    "wan_static_address": "203.0.113.7",
+                                    "wan_static_gateway": "203.0.113.1"})

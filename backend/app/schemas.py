@@ -1409,6 +1409,15 @@ class SettingsRead(BaseModel):
     wifi_channel: int = 0
     wifi_security: str = "wpa2"
     wifi_hidden: bool = False
+    wan_mode: str = "dhcp"
+    wan_vlan_id: int = 0
+    wan_mac_clone: str = ""
+    wan_static_address: str = ""
+    wan_static_gateway: str = ""
+    wan_static_dns: str = ""
+    wan_pppoe_user: str = ""
+    # PPPoE password is write-only, like the WiFi passphrase.
+    wan_pppoe_service: str = ""
     # IPv6
     disable_ipv6: bool = False
     # DNS over TCP
@@ -1453,6 +1462,15 @@ class SettingsUpdate(BaseModel):
     wifi_channel: Optional[int] = None
     wifi_security: Optional[str] = None
     wifi_hidden: Optional[bool] = None
+    wan_mode: Optional[str] = None
+    wan_vlan_id: Optional[int] = None
+    wan_mac_clone: Optional[str] = None
+    wan_static_address: Optional[str] = None
+    wan_static_gateway: Optional[str] = None
+    wan_static_dns: Optional[str] = None
+    wan_pppoe_user: Optional[str] = None
+    wan_pppoe_password: Optional[str] = None
+    wan_pppoe_service: Optional[str] = None
     active_node_id: Optional[int] = None
     failover_enabled: Optional[bool] = None
     failover_node_ids: Optional[List[int]] = None

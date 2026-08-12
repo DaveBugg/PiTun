@@ -235,6 +235,18 @@ async def init_default_settings():
         "wifi_channel": "0",
         "wifi_security": "wpa2",
         "wifi_hidden": "false",
+        # WAN acquisition. "dhcp" covers most ISPs; the others exist because
+        # a line that needs PPPoE, a VLAN tag or a cloned MAC looks exactly
+        # like a dead line until it is configured.
+        "wan_mode": "dhcp",
+        "wan_vlan_id": "0",
+        "wan_mac_clone": "",
+        "wan_static_address": "",
+        "wan_static_gateway": "",
+        "wan_static_dns": "",
+        "wan_pppoe_user": "",
+        "wan_pppoe_password": "",
+        "wan_pppoe_service": "",
         "disable_ipv6": "true",
         "dns_over_tcp": "false",
         # LAN proxy authentication (since v1.3.0-beta.6). Applies to
