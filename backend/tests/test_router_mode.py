@@ -2197,3 +2197,59 @@ class TestIcmpCounterCanActuallySeeWhatItClaims:
                    if "icmp type" in ln and ln.strip().endswith("accept")]
         assert len(accepts) == 1
         assert "wan_icmp_in" not in accepts[0]
+
+
+class TestANoOpSaveDoesNotRebuildTheNetwork:
+    """Applying router mode tears the LAN bridge down and rebuilds it, and
+    restarts hostapd and dnsmasq. From a client's point of view that is
+    indistinguishable from the router going down and coming back. Doing it
+    for a save that changed nothing kicked everyone off a working router —
+    and re-armed the confirm window, so a box nobody thought to confirm
+    again reverted three minutes later."""
+
+    def test_rewriting_the_same_values_leaves_the_dataplane_alone(
+        self, client, admin_user, auth_headers, monkeypatch,
+    ):
+        from app.core import router_mode as rm
+        applied = []
+        armed = []
+
+        async def spy_apply(session):
+            applied.append(True)
+            return {"mode": "gateway"}
+
+        monkeypatch.setattr(rm, "apply", spy_apply)
+        from app.core import router_watchdog as rw
+        monkeypatch.setattr(rw, "arm", lambda *a, **k: armed.append(True))
+
+        # Store a value first: writing a setting that has no row yet IS a
+        # change, so the no-op has to be measured against a box that already
+        # holds the value — which is every real one.
+        first = client.patch("/api/system/settings", headers=auth_headers,
+                             json={"dhcp_lease_hours": 12})
+        assert first.status_code in (200, 204), first.text
+        applied.clear()
+        armed.clear()
+
+        same = client.patch("/api/system/settings", headers=auth_headers,
+                            json={"dhcp_lease_hours": 12})
+        assert same.status_code in (200, 204), same.text
+        assert applied == [], "a no-op save must not reconcile the dataplane"
+        assert armed == []
+
+    def test_a_real_change_still_reconciles(
+        self, client, admin_user, auth_headers, monkeypatch,
+    ):
+        from app.core import router_mode as rm
+        applied = []
+
+        async def spy_apply(session):
+            applied.append(True)
+            return {"mode": "gateway"}
+
+        monkeypatch.setattr(rm, "apply", spy_apply)
+        cur = client.get("/api/system/settings", headers=auth_headers).json()
+        r = client.patch("/api/system/settings", headers=auth_headers,
+                         json={"dhcp_lease_hours": int(cur["dhcp_lease_hours"]) + 1})
+        assert r.status_code in (200, 204), r.text
+        assert applied == [True]

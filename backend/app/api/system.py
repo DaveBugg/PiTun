@@ -1138,6 +1138,20 @@ async def update_settings(body: SettingsUpdate, session: AsyncSession = Depends(
     # panel — and then fail the next apply on the blank value.
     _WRITE_ONLY_SECRETS = {"wifi_passphrase", "wan_pppoe_password"}
 
+    # What the settings actually looked like before this request. Used below to
+    # tell a real change from a save that rewrites the same values: applying
+    # router mode tears the bridge down and rebuilds it, restarts hostapd and
+    # dnsmasq, and drops every client connection on the LAN. Doing that for a
+    # no-op is how a settings save kicked everyone off a working router — and
+    # re-armed the confirm window, so a box nobody thought to confirm again
+    # reverted three minutes later.
+    _before = {r.key: r.value for r in (await session.exec(select(DBSettings))).all()}
+
+    def _as_stored(value) -> str:
+        if isinstance(value, bool):
+            return str(value).lower()
+        return json.dumps(value) if isinstance(value, list) else str(value)
+
     for key, value in patches.items():
         if value is None:
             continue
@@ -1276,7 +1290,19 @@ async def update_settings(body: SettingsUpdate, session: AsyncSession = Depends(
         "wan_static_address", "wan_static_gateway", "wan_static_dns",
         "wan_pppoe_user", "wan_pppoe_password", "wan_pppoe_service",
     }
-    if _ROUTER_KEYS & set(patches):
+    # Only keys whose value actually moved. A save that rewrites what was
+    # already there must not touch the network: rebuilding the dataplane is
+    # indistinguishable, from a client's point of view, from the router going
+    # down and coming back.
+    _router_changed = {
+        k for k in _ROUTER_KEYS & set(patches)
+        if patches[k] is not None
+        and not (k in _WRITE_ONLY_SECRETS and patches[k] == "")
+        and _as_stored(patches[k]) != _before.get(k, "")
+    }
+    if _router_changed:
+        logger.info("Router settings changed: %s — reconciling dataplane",
+                    ", ".join(sorted(_router_changed)))
         from app.core import router_mode, router_watchdog
         going_router = (
             patches.get("operating_mode") == "router"
