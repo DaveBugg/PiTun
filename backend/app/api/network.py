@@ -170,8 +170,31 @@ def probe(ip: str = Query(..., description="Candidate gateway IPv4 address")) ->
         raise HTTPException(400, detail=str(e))
 
 
+async def _refuse_in_router_mode(session) -> None:
+    """Block host-network edits while PiTun is the router.
+
+    These endpoints rewrite the default route and the manager's persistent
+    config. In gateway mode that only affects the box itself. In router mode
+    the box IS the route for every LAN client, so one click from a Settings
+    tab left open since before the switch takes the whole network off the
+    internet — and the change survives a reboot. Router mode owns the uplink
+    through its own WAN settings; there is no reason for both paths to be live.
+    """
+    from sqlmodel import select as _sel
+    from app.models import Settings as _S
+    row = (await session.exec(_sel(_S).where(_S.key == "operating_mode"))).first()
+    if row and row.value == "router":
+        raise HTTPException(
+            409,
+            "This box is running as a router, so its uplink is managed under "
+            "Settings → Network → Internet connection. Changing the host route "
+            "here would cut every LAN client off. Switch back to gateway mode "
+            "first if you really need this.",
+        )
+
+
 @router.post("/apply")
-def apply_changes(body: ApplyBody) -> dict:
+async def apply_changes(body: ApplyBody, session=Depends(get_session)) -> dict:
     """Apply gateway and/or DNS changes.
 
     Captures a backup of the current config FIRST so /rollback can
@@ -180,6 +203,7 @@ def apply_changes(body: ApplyBody) -> dict:
     edits the persistent manager config (interfaces / nmconnection)
     so the change survives reboot.
     """
+    await _refuse_in_router_mode(session)
     try:
         backup = network_apply.apply(
             network_apply.ApplyRequest(gateway=body.gateway, dns=body.dns),
@@ -204,7 +228,9 @@ def apply_changes(body: ApplyBody) -> dict:
 
 
 @router.post("/rollback")
-def rollback(body: Optional[RollbackBody] = None) -> dict:
+async def rollback(
+    body: Optional[RollbackBody] = None, session=Depends(get_session),
+) -> dict:
     """Restore a backup.
 
     Default (no body or empty backup_id) → newest backup. Explicit
@@ -217,6 +243,7 @@ def rollback(body: Optional[RollbackBody] = None) -> dict:
     button in the UI sends a body-less POST, so this 422 was a real
     UX paper cut.
     """
+    await _refuse_in_router_mode(session)
     backup_id = body.backup_id if body is not None else None
     try:
         backup = network_apply.rollback(backup_id)

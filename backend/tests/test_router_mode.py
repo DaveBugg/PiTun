@@ -1662,3 +1662,60 @@ class TestLeaseNameCannotBreakDnsmasq:
         from app.core.router_mode import _safe_lease_name
         assert _safe_lease_name("Living Room TV") == "Living-Room-TV"
         assert _safe_lease_name("nas-01") == "nas-01"
+
+
+class TestRouterModeOwnsTheUplink:
+    """Two legacy paths assumed PiTun was never the router itself."""
+
+    def test_gateway_ip_is_not_overwritten_with_the_wan_address(
+        self, client, admin_user, auth_headers, session,
+    ):
+        """`interface` is the legacy install-time key and in router mode often
+        names the port now facing the ISP. Reading it here meant every panel
+        poll committed the ISP address as "us on the LAN"."""
+        from app.models import Settings as DBSettings
+        for k, v in (("operating_mode", "router"), ("interface", "eth0"),
+                     ("lan_interface", "eth1"), ("wan_interface", "eth0"),
+                     ("gateway_ip", "192.168.10.1")):
+            session.add(DBSettings(key=k, value=v))
+        session.commit()
+
+        with mock.patch("app.api.system._detect_ip", return_value="203.0.113.7"):
+            r = client.get("/api/system/settings", headers=auth_headers)
+        assert r.status_code == 200
+
+        session.expire_all()
+        from sqlmodel import select as sm_select
+        row = session.exec(
+            sm_select(DBSettings).where(DBSettings.key == "gateway_ip")
+        ).first()
+        assert row.value == "192.168.10.1", "the WAN address must not land here"
+
+    def test_legacy_network_apply_is_refused_in_router_mode(
+        self, client, admin_user, auth_headers, session,
+    ):
+        """One click from a stale Settings tab would rewrite the default route
+        every LAN client depends on — and it survives a reboot."""
+        from app.models import Settings as DBSettings
+        session.add(DBSettings(key="operating_mode", value="router"))
+        session.commit()
+
+        r = client.post("/api/network/apply", headers=auth_headers,
+                        json={"gateway": "192.168.1.1"})
+        assert r.status_code == 409
+        assert "running as a router" in r.json()["detail"]
+
+        r2 = client.post("/api/network/rollback", headers=auth_headers, json={})
+        assert r2.status_code == 409
+
+    def test_legacy_network_apply_still_works_in_gateway_mode(
+        self, client, admin_user, auth_headers,
+    ):
+        """The guard must not break the feature for everyone else."""
+        with mock.patch("app.api.network.network_apply.apply") as m_apply:
+            m_apply.return_value = mock.Mock(
+                id="b1", to_dict=lambda: {"id": "b1"},
+            )
+            r = client.post("/api/network/apply", headers=auth_headers,
+                            json={"gateway": "192.168.1.1"})
+        assert r.status_code != 409

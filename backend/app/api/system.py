@@ -685,11 +685,24 @@ async def get_settings(session: AsyncSession = Depends(get_session)):
         except (ValueError, TypeError):
             return default
 
-    # Auto-detect PiTun IP from interface; sync to DB so device_scanner sees it
-    iface = m.get("interface") or env_settings.interface
+    # Auto-detect PiTun IP from interface; sync to DB so device_scanner sees it.
+    #
+    # In router mode the LAN lives on `lan_interface`, and the legacy
+    # `interface` key still names whichever NIC the box was installed on —
+    # frequently the one now facing the ISP. Reading that here meant every
+    # panel poll committed the ISP-assigned WAN address as `gateway_ip`, which
+    # the device scanner and the UI both treat as "us on the LAN". The
+    # write-back is skipped entirely in router mode: the LAN address is
+    # operator-chosen there, not something to be inferred and overwritten.
+    router_mode_on = m.get("operating_mode", "gateway") == "router"
+    iface = (
+        (m.get("lan_interface") or m.get("interface") or env_settings.interface)
+        if router_mode_on
+        else (m.get("interface") or env_settings.interface)
+    )
     detected_ip = _detect_ip(iface)
     effective_ip = detected_ip or m.get("gateway_ip") or env_settings.gateway_ip
-    if detected_ip and m.get("gateway_ip") != detected_ip:
+    if detected_ip and m.get("gateway_ip") != detected_ip and not router_mode_on:
         row = await session.exec(select(DBSettings).where(DBSettings.key == "gateway_ip"))
         s = row.first()
         if s:
@@ -1177,13 +1190,29 @@ async def update_settings(body: SettingsUpdate, session: AsyncSession = Depends(
     }
     if _ROUTER_KEYS & set(patches):
         from app.core import router_mode, router_watchdog
+        going_router = (
+            patches.get("operating_mode") == "router"
+            or (patches.get("operating_mode") is None
+                and (await _get_setting(session, "operating_mode")) == "router")
+        )
+        # Armed BEFORE the apply, not after. The watchdog exists for applies
+        # that wedge the box — and those are exactly the ones that never reach
+        # a line after `apply()`. Arming afterwards meant the rescue timer was
+        # set only for applies that didn't need it, while a wedging one left
+        # nothing pending, so `recover_on_boot()` found nothing to undo and the
+        # boot reconcile re-applied the same broken config forever.
+        #
+        # Arming early is harmless if the apply then fails: teardown has
+        # already run, and the disarm below clears the window.
+        if going_router:
+            await router_watchdog.arm(session)
         try:
             result = await router_mode.apply(session)
-            # Arm the confirmation window only when the box actually went into
-            # router mode. Switching back to gateway is the safe direction and
-            # needs no undo timer.
-            if result.get("mode") == "router":
-                await router_watchdog.arm(session)
+            # Switching back to gateway is the safe direction — no undo timer,
+            # and any window left over from a previous attempt is cleared so
+            # the banner doesn't keep counting down against a gateway box.
+            if result.get("mode") != "router":
+                await router_watchdog.confirm(session)
         except router_mode.RouterModeError as exc:
             # Unconditional: apply() has already torn the dataplane down, so
             # the box IS in gateway mode. Gating this on "did this request set
@@ -1191,6 +1220,10 @@ async def update_settings(body: SettingsUpdate, session: AsyncSession = Depends(
             # whenever some other router key triggered the failure — and the
             # boot reconcile then repeated the same failure forever.
             await _set_setting(session, "operating_mode", "gateway")
+            # The dataplane is already back in gateway, so a pending window
+            # would only fire an alarming "reverted automatically" event
+            # against a box that is already safe.
+            await router_watchdog.confirm(session)
             await session.commit()
             raise HTTPException(
                 400,
