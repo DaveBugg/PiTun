@@ -4,6 +4,93 @@ All notable user-facing changes to PiTun. Full per-release detail lives in the
 [GitHub Releases](https://github.com/DaveBugg/PiTun/releases); this file is the
 committed summary.
 
+## v1.6.0-beta.1 — 2026-08-13
+
+**Beta — router mode.** PiTun can now *be* the router instead of sitting beside
+one: it takes the ISP uplink, hands out addresses on the LAN, does NAT, and
+optionally serves the WiFi itself. Gateway mode is untouched and remains the
+default; nothing changes for existing installs unless the mode is switched on
+deliberately. Ships DB migrations 023-025.
+
+**This has never been enabled on real hardware.** Treat the first switch-on as
+an experiment: do it with physical access to the box, not over SSH from the
+LAN it is about to reconfigure.
+
+### Added
+
+- **Router mode.** Offered only on hardware with two or more physical NICs, and
+  never switched on automatically. One port faces the ISP, the other the home
+  network; the choice is explicit in **Settings → Network**.
+- **DHCP server** for the LAN (dnsmasq sidecar), with pool, lease time and
+  per-device reserved addresses assigned from the Devices page. PiTun
+  advertises itself as the resolver, so routing rules and the DNS query log
+  apply to devices that never opted in to anything.
+- **WAN acquisition**: DHCP, static, **PPPoE**, VLAN tagging and MAC cloning —
+  the shapes an ISP link actually comes in. With PPPoE or a VLAN the traffic
+  leaves on a different interface than the port the cable is in, and NAT, the
+  firewall and the counters follow it.
+- **WiFi access point** (hostapd), gated on a capability probe: many adapters
+  can only join networks, not create them, and finding that out when hostapd
+  refuses to start means the working setup is already dismantled. An
+  undetermined answer says so rather than blaming the hardware.
+- **Commit-confirm watchdog.** Router mode has no fallback — PiTun *is* the
+  router — so an apply that breaks the network would otherwise leave nobody
+  able to undo it. The box reverts to gateway unless a human confirms the
+  network still works, and an unconfirmed apply never survives a reboot.
+- **Uplink diagnosis** built on nftables counters, because the two rules the
+  WAN depends on fail silently: no DHCP replies at all, versus no ICMP coming
+  back — the path-MTU black hole where large transfers hang while DNS and ping
+  look fine.
+- **Connection-lifetime policy** (X-ui page), for the box's own xray and every
+  panel at once. Xray's defaults are tuned for short browser sessions: an idle
+  *pooled* connection dies after five minutes and the next request on that
+  socket hangs, and the half-close timers cut a streaming answer after 2–5
+  seconds — the "works, then it doesn't" that SDK and agent clients hit.
+  Nothing in PiTun set any of it before. Panels are patched rather than
+  overwritten, so outbounds, routing and stats flags survive; applied
+  automatically on deploy and on registration, and **Apply to all panels**
+  pushes a change to the fleet. Inbound TCP keep-alive comes with it — with an
+  hour-long idle timeout, a client that vanished without a FIN would otherwise
+  hold its slot the whole hour.
+
+### Changed
+
+- **The uplink accepts nothing new from the internet.** One blanket rule rather
+  than a list of ports to close, because a list has to be maintained and a
+  forgotten port is an exposed service. The panel, SSH and xray's DNS / SOCKS /
+  HTTP inbounds — all of which bind 0.0.0.0 — are reachable over the LAN and
+  invisible from outside. Two exceptions keep the link working: DHCP replies
+  arrive as NEW rather than RELATED, and PMTU discovery needs its ICMP back.
+- **Install paths now build the router-mode sidecars.** dnsmasq and hostapd are
+  not compose services (the backend starts them on demand), so `compose up`
+  never built them and boxes installed through the one-liner had no images at
+  all. Extracted into `scripts/build-sidecars.sh`, called from every path.
+
+### Fixed
+
+- The offline deploy shipped neither `nginx.conf` nor `frontend/nginx-spa.conf`,
+  both mounted as files — Docker created the missing sources as empty
+  directories and the stack could not come up. It also generated no TLS
+  certificate, as did `setup-vm.sh`; nginx aborts on `listen 443 ssl` without
+  one, and since it is the only service publishing 80 and 443, that took the
+  panel down on both ports rather than just HTTPS.
+- Four assignments aborted their install script under `set -euo pipefail`, each
+  taking the fallback written directly below it with them — including one in
+  `01-first-boot.sh` that died after restarting sshd but before setting the
+  static IP, forwarding and hostname.
+- A failed port probe in the panel reported "this box has 0 physical ports",
+  which is a claim about the hardware that was never established. It now says
+  the probe failed, and names a 404 as an out-of-date backend.
+
+### Notes
+
+- Migrations 023-025: `nodecircle.subscription_id`, `device.dhcp_reserved_ip`,
+  and a unique index on the latter. All additive; gateway-mode behaviour is
+  unchanged.
+- The WiFi passphrase and the PPPoE password are write-only — set but never
+  returned, and redacted from backups unless secrets are explicitly included.
+- 30 commits, reviewed adversarially in four passes before release.
+
 ## v1.5.3 — 2026-08-11
 
 Two ways to stop hand-maintaining state: a NodeCircle can now track a

@@ -225,7 +225,8 @@ log "Waiting for backend..."
 for i in $(seq 1 30); do
     # Port 80/443, not 3000: nothing has ever published 3000, so this loop
     # could only ever time out and then declare success anyway.
-    if curl -sk https://localhost/health > /dev/null 2>&1 \n       || curl -s http://localhost/health > /dev/null 2>&1; then
+    if curl -sk https://localhost/health > /dev/null 2>&1 \
+       || curl -s http://localhost/health > /dev/null 2>&1; then
         break
     fi
     sleep 1
