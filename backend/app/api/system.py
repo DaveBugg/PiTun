@@ -999,6 +999,12 @@ async def update_settings(body: SettingsUpdate, session: AsyncSession = Depends(
         if mode is None:
             mode = await _current("operating_mode") or "gateway"
 
+        extras_raw = patches.get("lan_extra_interfaces")
+        if extras_raw is None:
+            extras_raw = await _current("lan_extra_interfaces")
+        extras = [p for p in (extras_raw or "").replace(",", " ").split() if p]
+        members = ([lan] if lan else []) + [p for p in extras if p != lan]
+
         # Leaving router mode is never blocked. These checks describe what a
         # working router needs; a box on its way back to gateway needs none of
         # it, and refusing the request because the stored router config no
@@ -1028,12 +1034,6 @@ async def update_settings(body: SettingsUpdate, session: AsyncSession = Depends(
             # primary, so every one of them must be a real port on this box
             # and none of them may be the uplink — bridging the WAN into the
             # LAN would put the ISP and the home network on one wire.
-            extras_raw = patches.get("lan_extra_interfaces")
-            if extras_raw is None:
-                extras_raw = await _current("lan_extra_interfaces")
-            extras = [
-                p for p in (extras_raw or "").replace(",", " ").split() if p
-            ]
             for value in extras:
                 if value not in names:
                     raise HTTPException(
@@ -1047,7 +1047,6 @@ async def update_settings(body: SettingsUpdate, session: AsyncSession = Depends(
                         f"'{value}' is the uplink. Bridging it into the LAN would "
                         f"put the ISP and your network on the same segment.",
                     )
-            members = ([lan] if lan else []) + [p for p in extras if p != lan]
             radios = [p for p in members if wifi_capabilities(p)["wireless"]]
             if len(radios) > 1:
                 raise HTTPException(
@@ -1105,11 +1104,16 @@ async def update_settings(body: SettingsUpdate, session: AsyncSession = Depends(
             wifi_on = (await _current("wifi_enabled")).lower() == "true"
         if wifi_on and lan:
             from app.core.network_config import is_wireless
-            if not is_wireless(lan):
+            # Any LAN member may be the radio, not just the primary. The
+            # natural multi-port setup is a wired port carrying the address
+            # with the radio bridged alongside it — refusing that would rule
+            # out the configuration this feature exists for.
+            if not any(is_wireless(p) for p in members):
                 raise HTTPException(
                     400,
-                    f"WiFi is enabled but the LAN port '{lan}' is not a wireless "
-                    f"adapter. Pick a wireless LAN port, or turn WiFi off.",
+                    f"WiFi is enabled but none of the LAN ports "
+                    f"({', '.join(members)}) is a wireless adapter. Add the "
+                    f"radio to the LAN, or turn WiFi off.",
                 )
 
         if mode == "router" and (not wan or not lan):

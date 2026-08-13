@@ -1607,7 +1607,7 @@ class TestSettingsGateAfterReview:
                         {"wifi_enabled": True, "lan_interface": "eth1"},
                         wireless=False)
         assert r.status_code == 400
-        assert "not a wireless adapter" in r.json()["detail"]
+        assert "none of the LAN ports" in r.json()["detail"]
 
     def test_wifi_enabled_alone_still_reaches_validation(
         self, client, admin_user, auth_headers,
