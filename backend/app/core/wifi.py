@@ -123,9 +123,23 @@ def _validate(cfg: WifiConfig) -> None:
         raise WifiConfigError("Security must be 'wpa2' or 'wpa2wpa3'")
 
 
+# Fallback channels for "auto". Non-overlapping in 2.4 GHz; the lowest
+# universally-legal indoor channel in 5 GHz (36 is allowed everywhere 5 GHz
+# is, and needs no DFS wait).
+_AUTO_CHANNEL = {"2.4": 6, "5": 36}
+
+
 def render_hostapd_conf(cfg: WifiConfig) -> str:
     """Produce the hostapd config, or raise WifiConfigError."""
     _validate(cfg)
+
+    # `channel=0` asks hostapd to run ACS, which needs noise-floor figures in
+    # the driver's survey data. Plenty of chips never report it — mt7921 is one
+    # — and hostapd then loops "insufficient survey data" over every channel
+    # forever instead of failing. The process stays alive, so the container
+    # looks healthy while nothing is on the air. Pick a channel ourselves: a
+    # fixed one that works beats an automatic one that hangs.
+    channel = cfg.channel or _AUTO_CHANNEL[cfg.band]
 
     hw_mode = "g" if cfg.band == "2.4" else "a"
     lines = [
@@ -146,7 +160,7 @@ def render_hostapd_conf(cfg: WifiConfig) -> str:
         # the hardware is physically capable of.
         "ieee80211d=1",
         f"hw_mode={hw_mode}",
-        f"channel={cfg.channel}",
+        f"channel={channel}",
         f"ignore_broadcast_ssid={1 if cfg.hidden else 0}",
         "auth_algs=1",
         "wmm_enabled=1",
@@ -345,8 +359,45 @@ def _start_sync(cfg: WifiConfig) -> dict:
     except Exception as exc:  # noqa: BLE001 — the check must not mask the start
         logger.warning("Could not confirm hostapd stayed up: %s", exc)
 
+    # "The process is alive" is not "there is a WiFi network". hostapd can sit
+    # in channel selection or fail to bring the radio up while staying
+    # running — the container looks healthy and no client can see an SSID.
+    # Ask the radio instead: it reports AP mode only once the AP is actually
+    # on the air, which is what the caller's rollback needs to know.
+    if not _radio_is_ap(cfg.interface, timeout=15.0):
+        tail = ""
+        try:
+            tail = c.logs(tail=25).decode(errors="replace").strip()
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            c.remove(force=True)
+        except Exception:  # noqa: BLE001
+            pass
+        raise WifiConfigError(
+            f"hostapd is running but {cfg.interface} never entered AP mode, so "
+            "no network is being broadcast. Its own output:\n" + tail
+        )
+
     logger.info("Access point started on %s (%s GHz)", cfg.interface, cfg.band)
     return {"running": True, "interface": cfg.interface}
+
+
+def _radio_is_ap(interface: str, *, timeout: float = 15.0) -> bool:
+    """True once `iw` reports the interface in AP mode, else False on timeout."""
+    import time as _time
+    from app.core.network_config import host_run
+
+    deadline = _time.monotonic() + timeout
+    while _time.monotonic() < deadline:
+        try:
+            proc = host_run(["iw", "dev", interface, "info"], timeout=5)
+            if proc.returncode == 0 and "type AP" in (proc.stdout or ""):
+                return True
+        except Exception:  # noqa: BLE001 — probing must never raise
+            pass
+        _time.sleep(1.0)
+    return False
 
 
 def _stop_sync() -> dict:

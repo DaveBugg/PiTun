@@ -863,6 +863,25 @@ class TestWifiConfig:
         conf = render_hostapd_conf(self._cfg(band="5", channel=36))
         assert "hw_mode=a" in conf and "channel=36" in conf
 
+    def test_auto_channel_never_asks_hostapd_to_choose(self):
+        """`channel=0` turns on hostapd's ACS, which needs noise-floor data
+        the driver may not report (mt7921 doesn't). hostapd then loops
+        "insufficient survey data" forever WITHOUT exiting, so the container
+        stays healthy while nothing is on the air. Verified on real hardware:
+        channel 0 never associates, channel 6 reaches AP-ENABLED."""
+        from app.core.wifi import render_hostapd_conf
+        conf = render_hostapd_conf(self._cfg(band="2.4", channel=0))
+        assert "channel=0" not in conf
+        assert "channel=6" in conf
+
+        conf5 = render_hostapd_conf(self._cfg(band="5", channel=0))
+        assert "channel=0" not in conf5
+        assert "channel=36" in conf5
+
+    def test_an_explicit_channel_is_left_alone(self):
+        from app.core.wifi import render_hostapd_conf
+        assert "channel=11" in render_hostapd_conf(self._cfg(band="2.4", channel=11))
+
     def test_passphrase_length_is_a_protocol_limit(self):
         from app.core.wifi import render_hostapd_conf, WifiConfigError
         import pytest
@@ -901,6 +920,53 @@ class TestWifiConfig:
         conf = render_hostapd_conf(self._cfg(passphrase="supersecret123"))
         assert "supersecret123" not in redact(conf)
         assert "wpa_passphrase=********" in redact(conf)
+
+
+class TestAccessPointReallyOnTheAir:
+    """"The process is alive" is not "there is a WiFi network". hostapd can
+    stay running while the radio never leaves managed mode, which is what a
+    stuck channel selection looks like: healthy container, no SSID. The
+    orchestrator rolls back on failure, so it has to be told."""
+
+    def test_radio_probe_reports_ap_mode(self, monkeypatch):
+        from app.core import wifi as w
+
+        def fake_run(argv, **kw):
+            assert argv[:2] == ["iw", "dev"]
+            return mock.Mock(returncode=0, stdout="\ttype AP\n\tssid PiTun\n")
+
+        monkeypatch.setattr("app.core.network_config.host_run", fake_run)
+        assert w._radio_is_ap("wlan0", timeout=2.0) is True
+
+    def test_radio_probe_gives_up_when_it_stays_managed(self, monkeypatch):
+        from app.core import wifi as w
+        monkeypatch.setattr(
+            "app.core.network_config.host_run",
+            lambda argv, **kw: mock.Mock(returncode=0, stdout="\ttype managed\n"),
+        )
+        assert w._radio_is_ap("wlan0", timeout=2.0) is False
+
+    def test_start_fails_when_the_radio_never_reaches_ap_mode(self, monkeypatch):
+        import pytest
+        from app.core import wifi as w
+
+        container = mock.Mock()
+        container.status = "running"
+        container.logs.return_value = b"ACS: Channel 1 has insufficient survey data"
+        client = mock.Mock()
+        client.containers.run.return_value = container
+
+        monkeypatch.setattr(w, "write_conf", lambda *a, **k: None)
+        monkeypatch.setattr(w, "_docker_client", lambda: client)
+        monkeypatch.setattr(w, "_radio_is_ap", lambda *a, **k: False)
+
+        cfg = w.WifiConfig(interface="wlan0", ssid="PiTun",
+                           passphrase="correcthorse", country="DE",
+                           band="2.4", channel=6)
+        with pytest.raises(w.WifiConfigError, match="never entered AP mode"):
+            w._start_sync(cfg)
+        # A half-started AP must not be left behind for the next attempt.
+        container.remove.assert_called_once()
 
 
 class TestLanBridge:
