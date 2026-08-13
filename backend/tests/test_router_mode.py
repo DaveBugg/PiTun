@@ -311,12 +311,23 @@ class TestRouterNat:
         # ...but nothing grants WAN-initiated access into the LAN.
         assert 'iifname "eth0" oifname "eth1" accept' not in body
 
-    def test_replaces_rather_than_stacking(self, monkeypatch):
-        """A re-apply must not leave two copies of the ruleset behind."""
+    def test_replaces_atomically_rather_than_stacking(self, monkeypatch):
+        """A re-apply must not leave two copies of the ruleset behind — and it
+        must not leave *none* either. As a separate `delete` followed by a
+        load, a script that failed to parse left the box with no firewall at
+        all, which is worse than either version of it."""
         import asyncio
         nft, scripts = self._capture(monkeypatch)
         asyncio.run(nft.apply_router_nat("eth0", "eth1"))
-        assert any(s.strip().startswith("delete table inet pitun_router") for s in scripts)
+
+        assert len(scripts) == 1, "replacing the ruleset must be one transaction"
+        body = scripts[0]
+        # Declaring the table empty first makes the delete valid even on the
+        # very first apply, so it isn't an error on a fresh box.
+        create_empty = body.index("table inet pitun_router {}")
+        delete = body.index("delete table inet pitun_router")
+        rules = body.index("chain postrouting")
+        assert create_empty < delete < rules
 
     def test_rejects_bogus_interface_names(self, monkeypatch):
         import asyncio
@@ -1719,3 +1730,95 @@ class TestRouterModeOwnsTheUplink:
             r = client.post("/api/network/apply", headers=auth_headers,
                             json={"gateway": "192.168.1.1"})
         assert r.status_code != 409
+
+
+class TestWifiValidationMatchesTheRadio:
+    """Validation that is looser than hostapd now costs more than a warning:
+    a rejected AP start rolls the whole router back, so a typo in the WiFi
+    password would drop NAT, DHCP and the uplink with it."""
+
+    def _cfg(self, **over):
+        from app.core.wifi import WifiConfig
+        base = dict(interface="wlan0", ssid="PiTun", passphrase="correcthorse",
+                    country="DE", band="2.4", channel=6)
+        base.update(over)
+        return WifiConfig(**base)
+
+    def test_passphrase_is_counted_in_bytes(self):
+        """WPA-PSK is defined over bytes. A Cyrillic passphrase of 8
+        characters is 16 bytes — len() would wave it through and hostapd
+        would refuse."""
+        from app.core.wifi import render_hostapd_conf, WifiConfigError
+        import pytest
+        with pytest.raises(WifiConfigError, match="ASCII"):
+            render_hostapd_conf(self._cfg(passphrase="парольчик"))
+
+    def test_non_ascii_is_named_as_the_problem(self):
+        from app.core.wifi import render_hostapd_conf, WifiConfigError
+        import pytest
+        with pytest.raises(WifiConfigError, match="ASCII"):
+            render_hostapd_conf(self._cfg(passphrase="passwörd123"))
+
+    def test_control_characters_in_the_ssid_are_rejected(self):
+        """The SSID is written verbatim into a line-oriented config, so a
+        newline injects a directive rather than naming a network."""
+        from app.core.wifi import render_hostapd_conf, WifiConfigError
+        import pytest
+        with pytest.raises(WifiConfigError, match="control characters"):
+            render_hostapd_conf(self._cfg(ssid="Home\nwpa_passphrase=hacked"))
+
+    def test_ordinary_ascii_passphrase_still_works(self):
+        from app.core.wifi import render_hostapd_conf
+        conf = render_hostapd_conf(self._cfg(passphrase="Str0ng-Pass!"))
+        assert "wpa_passphrase=Str0ng-Pass!" in conf
+
+
+class TestReservationUniqueness:
+    """Two devices on one reserved address renders two dhcp-host lines for it,
+    which dnsmasq treats as fatal — DHCP for the whole LAN goes with it."""
+
+    def test_duplicate_reservation_is_refused_with_the_holder_named(
+        self, client, admin_user, auth_headers, session,
+    ):
+        from app.models import Device
+        a = Device(mac="aa:11:22:33:44:55", name="NAS")
+        b = Device(mac="bb:11:22:33:44:55", name="Printer")
+        session.add(a); session.add(b)
+        session.commit()
+        session.refresh(a); session.refresh(b)
+
+        r1 = client.patch(f"/api/devices/{a.id}", headers=auth_headers,
+                          json={"dhcp_reserved_ip": "192.168.10.50"})
+        assert r1.status_code in (200, 204), r1.text
+
+        r2 = client.patch(f"/api/devices/{b.id}", headers=auth_headers,
+                          json={"dhcp_reserved_ip": "192.168.10.50"})
+        assert r2.status_code == 400
+        # Naming the current holder is the difference between a fixable error
+        # and a puzzle.
+        assert "NAS" in r2.json()["detail"]
+
+    def test_keeping_your_own_reservation_is_not_a_clash(
+        self, client, admin_user, auth_headers, session,
+    ):
+        from app.models import Device
+        d = Device(mac="cc:11:22:33:44:55", name="TV",
+                   dhcp_reserved_ip="192.168.10.51")
+        session.add(d)
+        session.commit()
+        session.refresh(d)
+
+        r = client.patch(f"/api/devices/{d.id}", headers=auth_headers,
+                         json={"dhcp_reserved_ip": "192.168.10.51", "name": "Telly"})
+        assert r.status_code in (200, 204), r.text
+
+    def test_many_devices_without_reservations_do_not_collide(
+        self, client, admin_user, auth_headers, session,
+    ):
+        """SQLite treats NULLs as distinct, so the unreserved majority is
+        unaffected by the unique index."""
+        from app.models import Device
+        for i in range(5):
+            session.add(Device(mac=f"dd:11:22:33:44:{i:02x}"))
+        session.commit()
+        assert client.get("/api/devices", headers=auth_headers).status_code == 200

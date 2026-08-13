@@ -552,7 +552,15 @@ async def apply_router_nat(
     ]
     wan_service_rules = "\n".join(rules)
 
+    # One transaction, not two. `delete table` followed by a separate load
+    # meant a script that failed to parse left NO ruleset behind — the box
+    # ends up with neither the old firewall nor the new one. Declaring the
+    # table empty first makes `delete` valid even on the very first apply,
+    # which also stops that run logging an nft error for normal operation.
     script = f"""
+table inet {_ROUTER_TABLE} {{}}
+delete table inet {_ROUTER_TABLE}
+
 table inet {_ROUTER_TABLE} {{
     # Named counters so the two silent failure modes are observable rather
     # than guessed at: a WAN that never gets an address (no DHCP replies) and
@@ -612,8 +620,11 @@ table inet {_ROUTER_TABLE} {{
     }}
 }}
 """
-    # Replace wholesale so a re-apply can't stack duplicate rules.
-    await _nft(f"delete table inet {_ROUTER_TABLE}")
+    # The delete now lives inside `script`, so replacing the ruleset is a
+    # single nft transaction. As two calls, a script that failed to parse left
+    # the box with no ruleset at all — worse than either the old or the new one
+    # — and the first-ever apply logged an nft error for deleting a table that
+    # was never supposed to exist yet.
     ok = await _nft(script)
     if ok:
         logger.info("Router NAT applied: %s (LAN) -> %s (WAN)", lan, wan)

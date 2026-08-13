@@ -81,6 +81,23 @@ async def update_device(
                 raise HTTPException(
                     400, f"'{raw}' is not a valid IPv4 address for a DHCP reservation",
                 )
+            # Two devices on one address makes dnsmasq refuse to start, which
+            # takes DHCP down for the whole LAN. There is a unique index
+            # behind this, but an IntegrityError surfaces as a 500 — say which
+            # device already holds it instead.
+            clash = (await session.exec(
+                select(Device).where(
+                    Device.dhcp_reserved_ip == raw, Device.id != device_id,
+                )
+            )).first()
+            if clash:
+                raise HTTPException(
+                    400,
+                    f"{raw} is already reserved for "
+                    f"{clash.name or clash.hostname or clash.mac}. Two devices "
+                    f"sharing a reserved address stops the DHCP server from "
+                    f"starting at all.",
+                )
             patch["dhcp_reserved_ip"] = raw
         else:
             patch["dhcp_reserved_ip"] = None

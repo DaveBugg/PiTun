@@ -493,7 +493,7 @@ class Device(SQLModel, table=True):
     # mode. Distinct from `ip`, which is whatever ARP scanning last observed:
     # promoting an observation to a reservation would pin an address the
     # device merely happened to hold. NULL = no reservation.
-    dhcp_reserved_ip: Optional[str] = None
+    dhcp_reserved_ip: Optional[str] = Field(default=None, unique=True)
 
     # NULL = unassigned (device sees only global rules — preserves old
     # behaviour on upgrade). Set to a RoutingSet.id to apply that set's

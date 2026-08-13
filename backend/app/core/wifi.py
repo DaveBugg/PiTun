@@ -78,11 +78,27 @@ def _validate(cfg: WifiConfig) -> None:
             f"Network name must be 1-32 bytes (this one is {ssid_bytes})"
         )
 
-    if not 8 <= len(cfg.passphrase) <= 63:
+    # WPA-PSK counts BYTES of printable ASCII, not characters. A Cyrillic
+    # passphrase passes a len() check and is then rejected by hostapd — and
+    # since a failed AP start now rolls the whole router back, a typo in the
+    # WiFi password would drop NAT, DHCP and the uplink with it.
+    pass_bytes = len(cfg.passphrase.encode("utf-8"))
+    if not 8 <= pass_bytes <= 63:
         raise WifiConfigError(
-            "WiFi password must be 8-63 characters — that's the WPA standard, "
-            "not a policy we chose; hostapd refuses to start outside it."
+            f"WiFi password must be 8-63 bytes (this one is {pass_bytes}) — "
+            f"that's the WPA standard, not a policy we chose; hostapd refuses "
+            f"to start outside it."
         )
+    if not all(32 <= ord(c) <= 126 for c in cfg.passphrase):
+        raise WifiConfigError(
+            "WiFi password must use printable ASCII only. WPA-PSK is defined "
+            "over ASCII, so anything else is accepted here and then rejected "
+            "by the radio."
+        )
+    # The SSID is written verbatim into a line-oriented config file, so a
+    # newline in it would inject a directive rather than name a network.
+    if any(ord(c) < 32 or ord(c) == 127 for c in cfg.ssid):
+        raise WifiConfigError("Network name cannot contain control characters")
 
     if not _COUNTRY_RE.match(cfg.country or ""):
         raise WifiConfigError(
