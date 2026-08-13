@@ -1218,6 +1218,13 @@ if [[ "$DRY_RUN" != "1" ]]; then
     else
         docker compose up -d
     fi
+    # Router-mode sidecars are not compose services (the backend starts them
+    # on demand), so `compose up` never builds them. Boxes installed through
+    # this path had no dnsmasq/hostapd image at all and router mode failed on
+    # first enable. Warn-only: a box without them is still a fine proxy.
+    if [ -f "$INSTALL_DIR/scripts/build-sidecars.sh" ]; then
+        bash "$INSTALL_DIR/scripts/build-sidecars.sh" "$INSTALL_DIR" "docker" || true
+    fi
 fi
 
 # ── Static IP / DHCP sanity check (both modes) ───────────────────────────────

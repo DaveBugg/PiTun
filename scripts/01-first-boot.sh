@@ -127,7 +127,11 @@ log "Using interface: $IFACE"
 # Check which network manager is in use
 if command -v nmcli &> /dev/null; then
     # NetworkManager (RPi OS Trixie/Bookworm)
-    CON_NAME=$(nmcli -t -f NAME,DEVICE con show --active | grep ":$IFACE$" | cut -d: -f1)
+    # `|| true`: with no active profile for $IFACE the grep exits 1, and under
+    # `set -euo pipefail` that killed the script right here — after sshd was
+    # restarted but before the static IP, forwarding and hostname were applied.
+    # It also made the fallback two lines down unreachable.
+    CON_NAME=$(nmcli -t -f NAME,DEVICE con show --active | grep ":$IFACE$" | cut -d: -f1 || true)
     if [ -z "$CON_NAME" ]; then
         CON_NAME="Wired connection 1"
     fi

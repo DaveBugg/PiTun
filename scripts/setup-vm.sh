@@ -15,8 +15,8 @@
 #   chmod +x setup-vm.sh && sudo ./setup-vm.sh
 #
 # After setup:
-#   - PiTun UI: http://<VM_IP>:3000
-#   - API: http://<VM_IP>:3000/api/docs
+#   - PiTun UI: https://<VM_IP>  (HTTP on :80 also works)
+#   - API: https://<VM_IP>/api/docs
 #   - Default login: admin / password
 #
 # To test TPROXY: set a device's gateway to <VM_IP>
@@ -208,12 +208,24 @@ fi
 # ── 5. Build and start ──
 log "Building Docker containers..."
 mkdir -p data
+# The stack cannot come up without a TLS certificate: nginx aborts on
+# `listen 443 ssl` when the files are missing, and it is the only service
+# publishing 80 and 443 — so the panel is unreachable on both ports, which
+# reads as "the install did nothing".
+bash "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/gen-cert.sh" "$VM_IP"     || warn "cert generation failed — the panel may not start"
+
+# Router-mode sidecars aren't compose services, so `compose up` never builds
+# them and router mode would fail on first enable.
+bash "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/build-sidecars.sh" "$PITUN_DIR" "docker" || true
+
 docker compose up -d --build 2>&1 | tail -5
 
 # Wait for backend to be ready
 log "Waiting for backend..."
 for i in $(seq 1 30); do
-    if curl -s http://localhost:3000/health > /dev/null 2>&1; then
+    # Port 80/443, not 3000: nothing has ever published 3000, so this loop
+    # could only ever time out and then declare success anyway.
+    if curl -sk https://localhost/health > /dev/null 2>&1 \n       || curl -s http://localhost/health > /dev/null 2>&1; then
         break
     fi
     sleep 1
@@ -225,11 +237,11 @@ log "============================================"
 log "  PiTun is ready!"
 log "============================================"
 echo ""
-HEALTH=$(curl -s http://localhost:3000/health)
+HEALTH=$(curl -sk https://localhost/health 2>/dev/null || curl -s http://localhost/health)
 echo "Health check: $HEALTH"
 echo ""
-echo "  UI:       http://${VM_IP}:3000"
-echo "  API docs: http://${VM_IP}:3000/api/docs"
+echo "  UI:       https://${VM_IP}  (or http://${VM_IP})"
+echo "  API docs: https://${VM_IP}/api/docs"
 echo "  Login:    admin / password"
 echo ""
 echo "  To proxy a device, set its gateway to: ${VM_IP}"

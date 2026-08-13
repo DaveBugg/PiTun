@@ -194,7 +194,12 @@ echo "nft_tproxy" > /etc/modules-load.d/pitun.conf 2>/dev/null || true
 # Static IP is set in 01-first-boot.sh. Verify it's active — if PiTun uses DHCP,
 # it will receive its own DHCP option 3 (gateway) and route to itself, breaking everything.
 PRIMARY_IF=$(ip -o -4 route show to default 2>/dev/null | awk '{print $5}' | head -n1)
-    METHOD=$(nmcli -t -f ipv4.method con show "$(nmcli -t -f NAME,DEVICE con show --active | grep ":${PRIMARY_IF}$" | cut -d: -f1)" 2>/dev/null | cut -d: -f2)
+# `|| true`, because pipefail hands this assignment the pipeline's status:
+# 127 with no nmcli at all, or an error from `con show ""` when the inner grep
+# finds nothing. On any dhcpcd/ifupdown box everything above installed fine and
+# the script then died silently here — no DHCP warning, no completion banner,
+# non-zero exit.
+METHOD=$(nmcli -t -f ipv4.method con show "$(nmcli -t -f NAME,DEVICE con show --active | grep ":${PRIMARY_IF}$" | cut -d: -f1)" 2>/dev/null | cut -d: -f2 || true)
 if [ "$METHOD" = "manual" ]; then
     log "Static IP verified (set in 01-first-boot.sh)"
 else

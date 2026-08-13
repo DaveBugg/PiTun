@@ -116,7 +116,11 @@ if [ ! -f .env ]; then
     # and simply never sees any traffic.
     DETECTED_IF=$(ip -o -4 route show to default 2>/dev/null | awk '{print $5}' | head -n1)
     [ -z "$DETECTED_IF" ] && DETECTED_IF=eth0
-    DETECTED_CIDR=$(ip -o -4 addr show dev "$DETECTED_IF" 2>/dev/null         | awk '{print $4}' | head -n1)
+    # `|| true` for the same reason as the line above: `ip addr show dev` exits
+    # 1 when the interface doesn't exist, and under pipefail that killed the
+    # deploy right after "Generating .env…" — no message, no .env, and the
+    # fallback below never reached.
+    DETECTED_CIDR=$(ip -o -4 addr show dev "$DETECTED_IF" 2>/dev/null | awk '{print $4}' | head -n1 || true)
     if [ -n "$DETECTED_CIDR" ] && command -v python3 >/dev/null 2>&1; then
         DETECTED_CIDR=$(python3 -c "import ipaddress,sys; print(ipaddress.ip_network(sys.argv[1], strict=False))" "$DETECTED_CIDR" 2>/dev/null || true)
     fi
@@ -204,6 +208,23 @@ fi
 # and routing rules). We temporarily flush the pitun nftables table so that
 # the build/pull traffic goes direct via the default gateway, then rely on
 # the backend's own startup path to re-apply the rules after the rebuild.
+# HTTPS: generate the panel's per-install cert + local CA BEFORE nginx comes
+# up — `listen 443 ssl` aborts without the files. Idempotent: reuses the CA,
+# re-issues the leaf only when the LAN IP changed. See scripts/gen-cert.sh.
+#
+# Deliberately ABOVE the nftables flush below. This step can abort (`|| err`),
+# and once the pitun table and the fwmark rule are gone, aborting leaves a live
+# box with xray running and no interception — every LAN client silently
+# egresses unproxied, with nothing said about it. Nothing here needs Docker or
+# the flushed state, so it costs nothing to do first.
+log "Ensuring HTTPS certificate for the panel (443)..."
+# Absolute path: line 27 already ran `cd "$PITUN_DIR"`, so `dirname "$0"` is
+# "." for the documented `bash 03-deploy.sh` invocation and this looked for
+# ~/pitun/gen-cert.sh — turning a missing file into a hard abort whose message
+# blamed openssl.
+sudo bash "$PITUN_DIR/scripts/gen-cert.sh" "$VM_IP" \
+    || err "HTTPS cert generation failed — aborting before nginx start (fix openssl, re-run)"
+
 REBUILD_FLUSHED=0
 if sudo nft list table inet pitun > /dev/null 2>&1; then
     warn "Active tproxy detected — flushing nftables for the duration of the rebuild"
@@ -212,13 +233,6 @@ if sudo nft list table inet pitun > /dev/null 2>&1; then
     sudo ip route del local 0.0.0.0/0 dev lo table 100 2>/dev/null || true
     REBUILD_FLUSHED=1
 fi
-
-# HTTPS: generate the panel's per-install cert + local CA BEFORE nginx comes
-# up — `listen 443 ssl` aborts without the files. Idempotent: reuses the CA,
-# re-issues the leaf only when the LAN IP changed. See scripts/gen-cert.sh.
-log "Ensuring HTTPS certificate for the panel (443)..."
-sudo bash "$(dirname "$0")/gen-cert.sh" "$VM_IP" \
-    || err "HTTPS cert generation failed — aborting before nginx start (fix openssl, re-run)"
 
 log "Building Docker containers (this may take 5-10 minutes on first run)..."
 $DOCKER compose up -d --build 2>&1
@@ -230,14 +244,7 @@ if [ -f "$PITUN_DIR/docker/naive/Dockerfile" ]; then
     # would otherwise land at the worst moment — the operator switches to
     # router mode, and DHCP refuses to start because an image nobody ever
     # built is missing. Both are tiny and the build is cached.
-    for sidecar in dnsmasq hostapd; do
-        if [ -d "$PITUN_DIR/docker/$sidecar" ]; then
-            log "Building pitun-$sidecar sidecar image..."
-            if ! $DOCKER build -q -t "pitun-$sidecar:latest" "$PITUN_DIR/docker/$sidecar" >/dev/null 2>&1; then
-                warn "Failed to build pitun-$sidecar — router mode will not be able to start it"
-            fi
-        fi
-    done
+    bash "$PITUN_DIR/scripts/build-sidecars.sh" "$PITUN_DIR" "$DOCKER"
 
     log "Building pitun-naive sidecar image..."
     if ! $DOCKER build -t pitun-naive:latest "$PITUN_DIR/docker/naive" 2>&1; then
@@ -254,7 +261,10 @@ if [ "$REBUILD_FLUSHED" = "1" ]; then
         fi
         sleep 2
     done
-    $DOCKER exec pitun-backend python3 - <<'PYEOF' 2>/dev/null || warn "Could not re-apply nftables automatically; reload from UI (Settings → Apply)"
+    # `-i`, or the heredoc goes nowhere: with no stdin attached `python3 -`
+    # reads an empty program and exits 0, so the re-apply silently never ran
+    # and the `|| warn` fallback could never fire either.
+    $DOCKER exec -i pitun-backend python3 - <<'PYEOF' 2>/dev/null || warn "Could not re-apply nftables automatically; reload from UI (Settings → Apply)"
 import asyncio
 from sqlmodel.ext.asyncio.session import AsyncSession
 from app.database import get_async_engine
