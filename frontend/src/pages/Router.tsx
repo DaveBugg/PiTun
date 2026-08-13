@@ -187,6 +187,7 @@ export default function RouterPage() {
           onChange={(m) => set('operating_mode', m)}
           wan={String(val('wan_interface') || '')}
           lan={String(val('lan_interface') || '')}
+          lanExtra={String(val('lan_extra_interfaces') || '')}
           onRoleChange={(role, iface) => set(role, iface)}
           dhcp={{
             enabled: isChecked('dhcp_enabled'),

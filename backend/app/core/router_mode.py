@@ -51,23 +51,50 @@ async def _settings_map(session: AsyncSession) -> dict:
     return {r.key: r.value for r in rows}
 
 
-def _lan_addressing(lan: str, m: dict) -> tuple[str, str]:
-    """(lan_address, lan_cidr) for the LAN port.
+def _lan_members(m: dict) -> list[str]:
+    """Every port on the LAN side, primary first.
+
+    `lan_interface` is the one that carries the address and stays the primary;
+    `lan_extra_interfaces` adds the rest. Order matters: the primary is where
+    the address goes back to when the bridge is torn down.
+    """
+    primary = (m.get("lan_interface") or "").strip()
+    extras = [
+        p for p in (m.get("lan_extra_interfaces") or "").replace(",", " ").split()
+        if p and p != primary
+    ]
+    seen, out = set(), []
+    for p in ([primary] if primary else []) + extras:
+        if p not in seen:
+            seen.add(p)
+            out.append(p)
+    return out
+
+
+def _lan_addressing(lan: str, m: dict) -> tuple[str, int]:
+    """(address, prefix length) for the LAN side.
 
     Prefers what the interface actually has — router mode can't invent an
-    address the kernel doesn't hold — and falls back to the configured
-    `lan_cidr` only to describe the subnet shape.
+    address the kernel doesn't hold. When the LAN is bridged the address may
+    already have moved to the bridge, so that is checked too rather than
+    demanding it be put back on the port first.
     """
     ip, prefix = nc.read_interface_address(lan)
+    if not ip or prefix is None:
+        # A fallback probe must not be the thing that fails: on a host without
+        # `ip` at all this raises rather than answering "no bridge".
+        try:
+            if wifi_mod.bridge_exists():
+                ip, prefix = nc.read_interface_address(wifi_mod.BRIDGE_NAME)
+        except Exception:  # noqa: BLE001
+            pass
     if not ip or prefix is None:
         raise RouterModeError(
             f"LAN port '{lan}' has no IPv4 address. Give it a static address "
             f"before enabling router mode — it has to be the gateway the LAN "
             f"talks to."
         )
-    import ipaddress
-    net = ipaddress.ip_network(f"{ip}/{prefix}", strict=False)
-    return ip, str(net)
+    return ip, int(prefix)
 
 
 # Ports nginx publishes for the panel. Opening the uplink for "the admin
@@ -183,6 +210,14 @@ async def teardown() -> dict:
     except Exception as exc:  # noqa: BLE001
         logger.warning("Teardown: could not remove the router firewall: %s", exc)
         steps["nat"] = f"error: {exc}"
+    try:
+        # After hostapd, so the radio has already left the bridge, and after
+        # the firewall, which matched on the bridge name. Leaving the bridge
+        # behind would strand the LAN address on an interface nothing routes.
+        steps["lan_bridge"] = wifi_mod.dissolve_lan_bridge()["removed"]
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Teardown: could not dissolve the LAN bridge: %s", exc)
+        steps["lan_bridge"] = f"error: {exc}"
     # IP forwarding is left ON: the TPROXY path in gateway mode needs it too,
     # and turning it off here would break proxying for everyone.
     logger.info("Router mode torn down: %s", steps)
@@ -204,12 +239,35 @@ async def apply(session: AsyncSession) -> dict:
     if not wan or not lan:
         raise RouterModeError("Router mode needs both a WAN and a LAN port assigned.")
 
+    lan_members = _lan_members(m)
     present = {i["name"] for i in nc.list_interfaces()}
-    for role, value in (("WAN", wan), ("LAN", lan)):
+    for role, value in [("WAN", wan)] + [("LAN", p) for p in lan_members]:
         if value not in present:
             raise RouterModeError(f"{role} port '{value}' is not present on this box.")
+    if wan in lan_members:
+        raise RouterModeError(
+            f"'{wan}' is assigned to both the uplink and the LAN. One port "
+            f"cannot be both sides of the router."
+        )
 
-    lan_address, lan_cidr = _lan_addressing(lan, m)
+    lan_address, lan_prefix = _lan_addressing(lan_members[0], m)
+    lan_cidr = str(__import__("ipaddress").ip_network(
+        f"{lan_address}/{lan_prefix}", strict=False))
+
+    # More than one LAN port means they have to be one segment: same subnet,
+    # one DHCP scope, clients able to see each other. That is a bridge, and
+    # everything downstream — the firewall, dnsmasq, the address itself —
+    # must name the bridge rather than any single port. A wireless member is
+    # NOT enslaved here; hostapd joins it via `bridge=`, and doing it from
+    # both sides races.
+    wired_lan = [p for p in lan_members if not nc.is_wireless(p)]
+    bridged = len(lan_members) > 1
+    if bridged and not wired_lan:
+        raise RouterModeError(
+            "A LAN of several ports needs at least one wired one to build the "
+            "bridge on."
+        )
+    lan_link = wifi_mod.BRIDGE_NAME if bridged else lan_members[0]
 
     # DHCP config is built (and validated) BEFORE anything is applied, so a bad
     # pool fails while the network is still untouched.
@@ -241,7 +299,7 @@ async def apply(session: AsyncSession) -> dict:
     ]
 
     dhcp_cfg = dhcp_mod.DhcpConfig(
-        interface=lan, lan_cidr=lan_cidr, lan_address=lan_address,
+        interface=lan_link, lan_cidr=lan_cidr, lan_address=lan_address,
         pool_start=pool_start, pool_end=pool_end, lease_hours=lease_hours,
         static_leases=leases,
     )
@@ -297,11 +355,18 @@ async def apply(session: AsyncSession) -> dict:
         # Checked against the interface we actually ended up on: with PPPoE or
         # a VLAN the address lives somewhere other than the port in the config,
         # and the public/private question is about the address that faces out.
+        # Before NAT and before anything binds: the firewall matches on the
+        # interface NAME, and dnsmasq and hostapd both have to be handed the
+        # bridge rather than a port that is about to become a bridge member.
+        if bridged:
+            wifi_mod.create_lan_bridge(wired_lan, f"{lan_address}/{lan_prefix}")
+            applied.append("lan_bridge")
+
         wan_tcp, wan_udp = _wan_allowed_ports(m)
         _refuse_public_wan_exposure(wan_iface, wan_tcp, wan_udp)
 
         if not await nft.apply_router_nat(
-            wan_iface, lan, wan_allow_tcp=wan_tcp, wan_allow_udp=wan_udp,
+            wan_iface, lan_link, wan_allow_tcp=wan_tcp, wan_allow_udp=wan_udp,
         ):
             raise RouterModeError("Could not apply the router firewall/NAT rules.")
         applied.append("nat")
@@ -320,13 +385,15 @@ async def apply(session: AsyncSession) -> dict:
         # while reconfiguring the radio, so everything else is already up if
         # it fails and the rollback has less to undo.
         if (m.get("wifi_enabled") or "false").lower() == "true":
-            if not nc.is_wireless(lan):
+            radio = next((p for p in lan_members if nc.is_wireless(p)), "")
+            if not radio:
                 raise RouterModeError(
-                    f"WiFi is enabled but the LAN port '{lan}' is not a wireless "
-                    f"adapter. Either pick a wireless LAN port or turn WiFi off."
+                    f"WiFi is enabled but no LAN port is a wireless adapter "
+                    f"({', '.join(lan_members)}). Add the radio to the LAN, or "
+                    f"turn WiFi off."
                 )
             wifi_cfg = wifi_mod.WifiConfig(
-                interface=lan,
+                interface=radio,
                 ssid=m.get("wifi_ssid", ""),
                 passphrase=m.get("wifi_passphrase", ""),
                 country=(m.get("wifi_country") or "").upper(),
@@ -334,6 +401,11 @@ async def apply(session: AsyncSession) -> dict:
                 channel=int(m.get("wifi_channel") or 0),
                 security=m.get("wifi_security", "wpa2"),
                 hidden=(m.get("wifi_hidden") or "false").lower() == "true",
+                # hostapd puts the AP into the bridge itself. Enslaving it from
+                # our side as well races with hostapd bringing the interface up,
+                # and the loser silently leaves wireless clients on their own
+                # segment — same SSID, no route to the wired half.
+                bridge=wifi_mod.BRIDGE_NAME if bridged else "",
             )
             try:
                 await wifi_mod.start(wifi_cfg)

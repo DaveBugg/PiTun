@@ -217,70 +217,152 @@ def bridge_exists(name: str = BRIDGE_NAME) -> bool:
     return _ip("link", "show", name).returncode == 0
 
 
-def create_lan_bridge(wired_lan: str, address_cidr: str,
+def create_lan_bridge(wired_lan, address_cidr: str,
                       name: str = BRIDGE_NAME) -> dict:
-    """Put `wired_lan` into a bridge and move its address there.
+    """Put the wired LAN ports into a bridge and move the address there.
 
-    `address_cidr` is the LAN address the bridge must end up holding (e.g.
-    "192.168.10.1/24") — the gateway address clients talk to. Passing it
-    explicitly rather than discovering it means the caller has already decided
-    what the LAN's identity is, instead of this depending on whatever state
-    the interface happens to be in mid-operation.
+    `wired_lan` is one interface name or a sequence of them — a LAN can be
+    several sockets plus the radio, and clients on any of them belong to the
+    same subnet and the same DHCP scope. The AP is not enslaved here: hostapd
+    adds its own interface via `bridge=`, and doing it from both sides races.
+
+    `address_cidr` is the address the bridge must end up holding (e.g.
+    "192.168.10.1/24") — the gateway clients talk to. Passing it explicitly
+    rather than discovering it means the caller has already decided what the
+    LAN's identity is, instead of this depending on whatever state an
+    interface happens to be in mid-operation.
 
     Returns a summary of the steps taken. Raises WifiConfigError on failure,
-    having attempted to put the address back.
+    having attempted to put the address back where it came from.
     """
+    members = [wired_lan] if isinstance(wired_lan, str) else list(wired_lan)
+    members = [m for m in members if m]
+
     # These become arguments to `ip`, so constrain them the same way the
     # firewall does rather than trusting the caller.
-    if not _IFACE_RE.match(wired_lan or "") or not _IFACE_RE.match(name or ""):
-        raise WifiConfigError(f"Invalid interface name ({wired_lan!r} / {name!r})")
+    for m in members:
+        if not _IFACE_RE.match(m):
+            raise WifiConfigError(f"Invalid interface name ({m!r})")
+    if not _IFACE_RE.match(name or ""):
+        raise WifiConfigError(f"Invalid bridge name ({name!r})")
     if not _CIDR_RE.match(address_cidr or ""):
         raise WifiConfigError(f"{address_cidr!r} is not an address in CIDR form")
+    if not members:
+        raise WifiConfigError("A LAN bridge needs at least one wired port")
 
+    primary = members[0]
     steps: list[str] = []
+
     if bridge_exists(name):
-        # Already bridged — make sure the port is enslaved and move on.
-        if _ip("link", "set", wired_lan, "master", name).returncode == 0:
-            steps.append(f"{wired_lan} already/now enslaved to {name}")
-        return {"bridge": name, "steps": steps, "created": False}
+        # Already bridged — reconcile membership and move on. Ports may have
+        # been added to the LAN since the bridge was built.
+        for m in members:
+            if _ip("link", "set", m, "master", name).returncode == 0:
+                _ip("link", "set", m, "up")
+                steps.append(f"{m} already/now enslaved to {name}")
+        return {"bridge": name, "members": members, "steps": steps, "created": False}
 
     if _ip("link", "add", "name", name, "type", "bridge").returncode != 0:
         raise WifiConfigError(f"Could not create bridge {name}")
     steps.append(f"created {name}")
 
-    # Order matters: flush the address only after the bridge exists, so a
-    # failure leaves the smallest possible window with no address anywhere.
-    _ip("addr", "flush", "dev", wired_lan)
-    steps.append(f"flushed address from {wired_lan}")
-
-    if _ip("link", "set", wired_lan, "master", name).returncode != 0:
-        # Put it back — better a working un-bridged LAN than neither.
-        _ip("addr", "add", address_cidr, "dev", wired_lan)
+    def _undo(reason: str):
+        """Leave a working un-bridged LAN rather than neither."""
+        for m in members:
+            _ip("link", "set", m, "nomaster")
         _ip("link", "delete", name)
-        raise WifiConfigError(f"Could not enslave {wired_lan} to {name}")
-    steps.append(f"enslaved {wired_lan}")
+        _ip("addr", "add", address_cidr, "dev", primary)
+        _ip("link", "set", primary, "up")
+        raise WifiConfigError(reason)
+
+    # Order matters: flush addresses only after the bridge exists, so a failure
+    # leaves the smallest possible window with no address anywhere. Every
+    # member is flushed — a secondary port carrying its own address would
+    # otherwise keep answering on a subnet nothing routes any more.
+    for m in members:
+        _ip("addr", "flush", "dev", m)
+    steps.append(f"flushed addresses from {', '.join(members)}")
+
+    for m in members:
+        if _ip("link", "set", m, "master", name).returncode != 0:
+            _undo(f"Could not enslave {m} to {name}")
+        _ip("link", "set", m, "up")
+        steps.append(f"enslaved {m}")
 
     if _ip("addr", "add", address_cidr, "dev", name).returncode != 0:
-        raise WifiConfigError(f"Could not move {address_cidr} onto {name}")
+        _undo(f"Could not move {address_cidr} onto {name}")
     _ip("link", "set", name, "up")
-    _ip("link", "set", wired_lan, "up")
     steps.append(f"{name} holds {address_cidr}")
     logger.info("LAN bridge ready: %s", steps)
-    return {"bridge": name, "steps": steps, "created": True}
+    return {"bridge": name, "members": members, "steps": steps, "created": True}
 
 
-def remove_lan_bridge(wired_lan: str, address_cidr: str,
-                      name: str = BRIDGE_NAME) -> dict:
-    """Undo `create_lan_bridge`, returning the address to the wired port."""
+def bridge_members(name: str = BRIDGE_NAME) -> list[str]:
+    """Interfaces currently enslaved to the bridge, as the kernel sees it."""
+    r = _ip("-o", "link", "show", "master", name)
+    if r.returncode != 0:
+        return []
+    out = []
+    for line in (r.stdout or "").splitlines():
+        # "3: enp2s0: <BROADCAST,...> mtu 1500 master br-lan ..."
+        parts = line.split(":", 2)
+        if len(parts) >= 2:
+            iface = parts[1].strip().split("@")[0]
+            if iface:
+                out.append(iface)
+    return out
+
+
+def dissolve_lan_bridge(name: str = BRIDGE_NAME) -> dict:
+    """Take the bridge apart using only what the kernel currently reports.
+
+    Teardown is the escape hatch and runs from states nobody planned, including
+    after the settings that built the bridge have changed. Reading the members
+    and the address off the live bridge means it undoes what is actually there
+    rather than what a config file believes.
+    """
     if not bridge_exists(name):
         return {"bridge": name, "removed": False}
-    _ip("link", "set", wired_lan, "nomaster")
+
+    from app.core.network_config import read_interface_address
+    ip, prefix = read_interface_address(name)
+    members = bridge_members(name)
+    # The address goes back to a wired member: a radio in AP mode is torn down
+    # with hostapd and would not keep it.
+    from app.core.network_config import is_wireless
+    target = next((m for m in members if not is_wireless(m)), members[0] if members else "")
+
+    for m in members:
+        _ip("link", "set", m, "nomaster")
     _ip("addr", "flush", "dev", name)
     _ip("link", "delete", name)
-    _ip("addr", "add", address_cidr, "dev", wired_lan)
-    _ip("link", "set", wired_lan, "up")
-    logger.info("LAN bridge %s removed; %s holds %s", name, wired_lan, address_cidr)
-    return {"bridge": name, "removed": True}
+    if target and ip and prefix is not None:
+        _ip("addr", "add", f"{ip}/{prefix}", "dev", target)
+        _ip("link", "set", target, "up")
+    logger.info("LAN bridge %s dissolved; %s holds %s/%s", name, target or "-", ip, prefix)
+    return {"bridge": name, "removed": True, "members": members, "address_on": target}
+
+
+def remove_lan_bridge(wired_lan, address_cidr: str,
+                      name: str = BRIDGE_NAME) -> dict:
+    """Undo `create_lan_bridge`, returning the address to the primary port."""
+    members = [wired_lan] if isinstance(wired_lan, str) else list(wired_lan)
+    members = [m for m in members if m]
+    if not bridge_exists(name):
+        return {"bridge": name, "removed": False}
+    for m in members:
+        _ip("link", "set", m, "nomaster")
+    _ip("addr", "flush", "dev", name)
+    _ip("link", "delete", name)
+    if members:
+        # Back onto the port the operator nominated, not spread across all of
+        # them: two ports holding the same address on one segment is a fault,
+        # not a fallback.
+        _ip("addr", "add", address_cidr, "dev", members[0])
+        _ip("link", "set", members[0], "up")
+    logger.info("LAN bridge %s removed; %s holds %s",
+                name, members[0] if members else "-", address_cidr)
+    return {"bridge": name, "members": members, "removed": True}
 
 
 # ── Container lifecycle ──────────────────────────────────────────────────────

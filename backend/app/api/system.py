@@ -774,6 +774,7 @@ async def get_settings(session: AsyncSession = Depends(get_session)):
         dhcp_pool_end=m.get("dhcp_pool_end", ""),
         dhcp_lease_hours=_safe_int(m, "dhcp_lease_hours", 12),
         wifi_enabled=(m.get("wifi_enabled", "false").lower() == "true"),
+        lan_extra_interfaces=m.get("lan_extra_interfaces", ""),
         wan_admin_access=m.get("wan_admin_access", "false").lower() == "true",
         wan_ssh_access=m.get("wan_ssh_access", "false").lower() == "true",
         wan_allow_tcp=m.get("wan_allow_tcp", ""),
@@ -979,7 +980,8 @@ async def update_settings(body: SettingsUpdate, session: AsyncSession = Depends(
     # WAN, or with one port doing both jobs, is not a configuration we should
     # ever persist and then try to apply.
     if any(k in patches for k in (
-        "wan_interface", "lan_interface", "operating_mode", "wifi_enabled",
+        "wan_interface", "lan_interface", "lan_extra_interfaces",
+        "operating_mode", "wifi_enabled",
     )):
         from app.core.network_config import list_interfaces, wifi_capabilities
 
@@ -1011,6 +1013,45 @@ async def update_settings(body: SettingsUpdate, session: AsyncSession = Depends(
                     400,
                     f"WAN and LAN cannot be the same port ('{wan}') — router mode "
                     "needs one port facing the ISP and another facing the network.",
+                )
+
+            # Extra LAN ports. They get bridged into one segment with the
+            # primary, so every one of them must be a real port on this box
+            # and none of them may be the uplink — bridging the WAN into the
+            # LAN would put the ISP and the home network on one wire.
+            extras_raw = patches.get("lan_extra_interfaces")
+            if extras_raw is None:
+                extras_raw = await _current("lan_extra_interfaces")
+            extras = [
+                p for p in (extras_raw or "").replace(",", " ").split() if p
+            ]
+            for value in extras:
+                if value not in names:
+                    raise HTTPException(
+                        400,
+                        f"LAN port '{value}' is not a physical interface on this "
+                        f"box ({', '.join(sorted(names)) or 'none detected'})",
+                    )
+                if wan and value == wan:
+                    raise HTTPException(
+                        400,
+                        f"'{value}' is the uplink. Bridging it into the LAN would "
+                        f"put the ISP and your network on the same segment.",
+                    )
+            members = ([lan] if lan else []) + [p for p in extras if p != lan]
+            radios = [p for p in members if wifi_capabilities(p)["wireless"]]
+            if len(radios) > 1:
+                raise HTTPException(
+                    400,
+                    f"Only one radio can serve the LAN ({', '.join(radios)}). "
+                    f"A second access point needs its own SSID and channel, "
+                    f"which is not something this page configures.",
+                )
+            if len(members) > 1 and len(radios) == len(members):
+                raise HTTPException(
+                    400,
+                    "A LAN of several ports is built as a bridge, which needs "
+                    "at least one wired port to build on.",
                 )
             # Serving the LAN over WiFi means running an access point, which
             # only some radios can do. Catch it here rather than at hostapd
@@ -1216,6 +1257,7 @@ async def update_settings(body: SettingsUpdate, session: AsyncSession = Depends(
         "dhcp_enabled", "dhcp_pool_start", "dhcp_pool_end", "dhcp_lease_hours",
         "wifi_enabled", "wifi_ssid", "wifi_passphrase", "wifi_country",
         "wifi_band", "wifi_channel", "wifi_security", "wifi_hidden",
+        "lan_extra_interfaces",
         "wan_admin_access", "wan_ssh_access", "wan_allow_tcp", "wan_allow_udp",
         "wan_mode", "wan_vlan_id", "wan_mac_clone",
         "wan_static_address", "wan_static_gateway", "wan_static_dns",

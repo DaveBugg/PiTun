@@ -20,13 +20,17 @@ import { translateWifiDetail } from '@/lib/wifiDetail'
  * between "recorded" and "the network just changed" is the whole risk here.
  */
 export default function OperatingModeSection({
-  value, onChange, wan, lan, onRoleChange, dhcp, onDhcpChange,
+  value, onChange, wan, lan, lanExtra, onRoleChange, dhcp, onDhcpChange,
 }: {
   value: string
   onChange: (mode: string) => void
   wan: string
   lan: string
-  onRoleChange: (role: 'wan_interface' | 'lan_interface', iface: string) => void
+  lanExtra: string
+  onRoleChange: (
+    role: 'wan_interface' | 'lan_interface' | 'lan_extra_interfaces',
+    iface: string,
+  ) => void
   dhcp: { enabled: boolean; poolStart: string; poolEnd: string; leaseHours: string }
   onDhcpChange: (key: string, value: string | boolean) => void
 }) {
@@ -45,6 +49,8 @@ export default function OperatingModeSection({
   // that we never established — and on a box running an older backend, where
   // this endpoint 404s, that reads as "your NICs vanished".
   const detectionFailed = isError && !isLoading
+  const lanExtras = (lanExtra || '').split(',').map((s) => s.trim()).filter(Boolean)
+  const lanIsWireless = nics.find((n) => n.name === lan)?.wireless ?? false
 
   return (
     <div className="space-y-3">
@@ -251,6 +257,69 @@ export default function OperatingModeSection({
                     'Беспроводные адаптеры без поддержки точки доступа не показаны.',
                   )}
                 </p>
+              )}
+
+              {/* A LAN of several ports is bridged into one segment, so the
+                  extra ones are picked here rather than being separate
+                  networks. The primary keeps the address; the bridge takes it
+                  over while router mode is on. */}
+              {lan && nics.filter((n) => n.name !== wan && n.name !== lan
+                                         && (!n.wireless || n.ap_capable === true)).length > 0 && (
+                <div className="mt-2">
+                  <div className="text-[11px] text-gray-500 mb-1">
+                    {t('Also on the LAN (bridged with it)',
+                       'Тоже в LAN (объединяются в один сегмент)')}
+                  </div>
+                  <div className="space-y-1">
+                    {nics
+                      .filter((n) => n.name !== wan && n.name !== lan)
+                      .filter((n) => !n.wireless || n.ap_capable === true)
+                      .map((n) => {
+                        const on = lanExtras.includes(n.name)
+                        // One radio only: a second access point needs its own
+                        // SSID and channel, which this page doesn't configure.
+                        const radioTaken =
+                          n.wireless
+                          && !on
+                          && (lanIsWireless
+                              || lanExtras.some((e) => nics.find((i) => i.name === e)?.wireless))
+                        return (
+                          <label
+                            key={n.name}
+                            className={clsx(
+                              'flex items-center gap-2 text-[12px]',
+                              radioTaken ? 'text-gray-600 cursor-not-allowed' : 'text-gray-300 cursor-pointer',
+                            )}
+                            title={radioTaken
+                              ? t('Only one radio can serve the LAN',
+                                  'LAN может обслуживать только одно радио')
+                              : undefined}
+                          >
+                            <input
+                              type="checkbox"
+                              checked={on}
+                              disabled={radioTaken}
+                              onChange={(e) => {
+                                const next = e.target.checked
+                                  ? [...lanExtras, n.name]
+                                  : lanExtras.filter((x) => x !== n.name)
+                                onRoleChange('lan_extra_interfaces', next.join(','))
+                              }}
+                            />
+                            {n.name}{n.wireless ? t(' (WiFi AP)', ' (WiFi AP)') : ''}
+                          </label>
+                        )
+                      })}
+                  </div>
+                  {lanExtras.length > 0 && (
+                    <p className="mt-1 text-[10px] text-gray-600">
+                      {t(
+                        `These ports and ${lan} become one network on a bridge, sharing the subnet and the DHCP pool. Their own addresses are removed while router mode is on.`,
+                        `Эти порты и ${lan} станут одной сетью на мосту с общей подсетью и общим пулом DHCP. Их собственные адреса на время режима роутера снимаются.`,
+                      )}
+                    </p>
+                  )}
+                </div>
               )}
             </div>
           </div>

@@ -1117,7 +1117,7 @@ class TestWifiOrchestration:
                     }.items()]
                 return type("Res", (), {"all": lambda self: rows})()
 
-        with pytest.raises(rm.RouterModeError, match="not a wireless adapter"):
+        with pytest.raises(rm.RouterModeError, match="no LAN port is a wireless adapter"):
             asyncio.run(rm.apply(S()))
 
     def test_teardown_stops_the_access_point(self, monkeypatch):
@@ -1961,3 +1961,109 @@ class TestUplinkExposure:
         from app.core import router_mode as rm
         monkeypatch.setattr(rm.nc, "read_interface_address", lambda i: (None, None))
         rm._refuse_public_wan_exposure("eth0", [443], [])
+
+
+class TestMultiPortLan:
+    """A LAN can be several sockets plus the radio. They have to end up as one
+    segment — same subnet, one DHCP scope, clients able to see each other —
+    which means a bridge, and it means every downstream consumer must be told
+    the bridge's name rather than any single port's."""
+
+    def test_members_keep_the_primary_first(self):
+        from app.core.router_mode import _lan_members
+        assert _lan_members(
+            {"lan_interface": "enp2s0", "lan_extra_interfaces": "wlp3s0, eth2"}
+        ) == ["enp2s0", "wlp3s0", "eth2"]
+
+    def test_duplicates_and_blanks_are_dropped(self):
+        from app.core.router_mode import _lan_members
+        assert _lan_members(
+            {"lan_interface": "enp2s0", "lan_extra_interfaces": "enp2s0,, enp2s0 wlp3s0"}
+        ) == ["enp2s0", "wlp3s0"]
+
+    def test_a_single_port_lan_has_one_member(self):
+        from app.core.router_mode import _lan_members
+        assert _lan_members({"lan_interface": "wlp3s0"}) == ["wlp3s0"]
+        assert _lan_members({}) == []
+
+    def test_bridge_enslaves_every_wired_member(self, monkeypatch):
+        from app.core import wifi as w
+        calls = []
+
+        def fake_ip(*args, **kw):
+            calls.append(" ".join(args))
+            # The bridge does not exist until we create it.
+            rc = 1 if args[:3] == ("link", "show", w.BRIDGE_NAME) else 0
+            return mock.Mock(returncode=rc, stdout="", stderr="")
+
+        monkeypatch.setattr(w, "_ip", fake_ip)
+        res = w.create_lan_bridge(["enp2s0", "eth2"], "192.168.50.1/24")
+        assert res["created"] is True
+        assert f"link add name {w.BRIDGE_NAME} type bridge" in calls
+        for port in ("enp2s0", "eth2"):
+            assert f"link set {port} master {w.BRIDGE_NAME}" in calls
+            # Every member is flushed: a secondary still holding its own
+            # address would answer on a subnet nothing routes any more.
+            assert f"addr flush dev {port}" in calls
+        assert f"addr add 192.168.50.1/24 dev {w.BRIDGE_NAME}" in calls
+
+    def test_a_failed_enslave_puts_the_address_back(self, monkeypatch):
+        import pytest
+        from app.core import wifi as w
+        calls = []
+
+        def fake_ip(*args, **kw):
+            calls.append(" ".join(args))
+            if args[:3] == ("link", "show", w.BRIDGE_NAME):
+                return mock.Mock(returncode=1, stdout="", stderr="")
+            if args[:2] == ("link", "set") and args[2] == "eth2":
+                return mock.Mock(returncode=1, stdout="", stderr="")
+            return mock.Mock(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(w, "_ip", fake_ip)
+        with pytest.raises(w.WifiConfigError, match="Could not enslave eth2"):
+            w.create_lan_bridge(["enp2s0", "eth2"], "192.168.50.1/24")
+        # Better a working un-bridged LAN than neither: the address returns to
+        # the primary and the half-built bridge is removed.
+        assert "addr add 192.168.50.1/24 dev enp2s0" in calls
+        assert f"link delete {w.BRIDGE_NAME}" in calls
+
+    def test_dissolve_reads_the_kernel_not_the_config(self, monkeypatch):
+        """Teardown runs from states nobody planned, including after the
+        settings that built the bridge changed underneath it."""
+        from app.core import wifi as w
+        calls = []
+
+        def fake_ip(*args, **kw):
+            calls.append(" ".join(args))
+            if args[:3] == ("link", "show", w.BRIDGE_NAME):
+                return mock.Mock(returncode=0, stdout="", stderr="")
+            if args[:4] == ("-o", "link", "show", "master"):
+                return mock.Mock(
+                    returncode=0,
+                    stdout=(
+                        "3: enp2s0: <BROADCAST> mtu 1500 master br-lan\n"
+                        "4: wlp3s0: <BROADCAST> mtu 1500 master br-lan\n"
+                    ),
+                    stderr="")
+            return mock.Mock(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(w, "_ip", fake_ip)
+        monkeypatch.setattr("app.core.network_config.read_interface_address",
+                            lambda n: ("192.168.50.1", 24))
+        monkeypatch.setattr("app.core.network_config.is_wireless",
+                            lambda n: n == "wlp3s0")
+
+        res = w.dissolve_lan_bridge()
+        assert res["removed"] is True
+        assert set(res["members"]) == {"enp2s0", "wlp3s0"}
+        # The address goes to the wired member: the radio is torn down with
+        # hostapd and would not keep it.
+        assert res["address_on"] == "enp2s0"
+        assert "addr add 192.168.50.1/24 dev enp2s0" in calls
+        assert f"link delete {w.BRIDGE_NAME}" in calls
+
+    def test_dissolving_nothing_is_not_an_error(self, monkeypatch):
+        from app.core import wifi as w
+        monkeypatch.setattr(w, "_ip", lambda *a, **k: mock.Mock(returncode=1, stdout="", stderr=""))
+        assert w.dissolve_lan_bridge()["removed"] is False

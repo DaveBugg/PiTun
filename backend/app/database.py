@@ -230,6 +230,9 @@ async def init_default_settings():
         # Uplink exposure. Empty and off by default: the WAN accepts nothing
         # new. Meant for a PiTun that sits behind another router, where the
         # "WAN" is the home network; apply() refuses to open a public address.
+        # Additional LAN ports, bridged with lan_interface into one
+        # segment. Empty = a single-port LAN, which needs no bridge.
+        "lan_extra_interfaces": "",
         "wan_admin_access": "false",
         "wan_ssh_access": "false",
         "wan_allow_tcp": "",

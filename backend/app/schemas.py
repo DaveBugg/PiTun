@@ -1402,6 +1402,7 @@ class SettingsRead(BaseModel):
     dhcp_lease_hours: int = 12
     wifi_enabled: bool = False
     # Uplink exposure — see core/router_mode._refuse_public_wan_exposure.
+    lan_extra_interfaces: str = ""
     wan_admin_access: bool = False
     wan_ssh_access: bool = False
     wan_allow_tcp: str = ""
@@ -1470,6 +1471,7 @@ class SettingsUpdate(BaseModel):
     dhcp_pool_end: Optional[str] = None
     dhcp_lease_hours: Optional[int] = None
     wifi_enabled: Optional[bool] = None
+    lan_extra_interfaces: Optional[str] = None
     wan_admin_access: Optional[bool] = None
     wan_ssh_access: Optional[bool] = None
     wan_allow_tcp: Optional[str] = None
