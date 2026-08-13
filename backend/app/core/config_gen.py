@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Optional, TYPE_CHECKING
 from sqlmodel import select
 
 from app.config import settings
+from app.core.xray_policy import inbound_keepalive, level_zero
 from app.models import BalancerGroup, Device, DNSRule, Node, RoutingRule, RoutingSet
 
 if TYPE_CHECKING:
@@ -1126,6 +1127,20 @@ def generate_config(
     if inbound_mode in ("tun", "both"):
         inbounds.insert(0, _build_tun_inbound(settings_map))
 
+    # TCP keep-alive on the LAN-facing proxy inbounds. Xray leaves inbound
+    # keep-alive off by default, so with `connIdle` at an hour a client
+    # that vanished without a FIN (slept laptop, dropped NAT mapping) would
+    # hold its slot for that whole hour. Probing detects the dead ones
+    # without touching connections that are merely idle. Outbounds are left
+    # alone — xray already keeps those alive at Chrome's 45 s/45 s.
+    keepalive = inbound_keepalive(settings_map)
+    if keepalive:
+        for inbound in inbounds:
+            if inbound.get("tag") not in ("socks-in", "http-in"):
+                continue
+            stream = inbound.setdefault("streamSettings", {})
+            stream.setdefault("sockopt", {}).update(keepalive)
+
     # Outbounds
     outbounds: List[Dict[str, Any]] = []
 
@@ -1380,7 +1395,11 @@ def generate_config(
             "tag": "api",
             "services": ["StatsService", "HandlerService", "RoutingService"],
         },
+        # Level 0 carries the connection-lifetime timeouts; without it
+        # xray's defaults apply and a pooled LAN connection idle for
+        # 5 minutes gets killed under the client. See core/xray_policy.py.
         "policy": {
+            "levels": {"0": level_zero(settings_map)},
             "system": {
                 "statsOutboundUplink": True,
                 "statsOutboundDownlink": True,

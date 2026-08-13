@@ -772,6 +772,15 @@ async def get_settings(session: AsyncSession = Depends(get_session)):
         lan_proxy_auth_enabled=m.get("lan_proxy_auth_enabled", "false").lower() == "true",
         lan_proxy_auth_user=m.get("lan_proxy_auth_user", ""),
         lan_proxy_auth_pass=m.get("lan_proxy_auth_pass", ""),
+        **{
+            key: _safe_int(m, key, default)
+            for key, default in (
+                ("xray_handshake", 10), ("xray_conn_idle", 3600),
+                ("xray_uplink_only", 0), ("xray_downlink_only", 0),
+                ("xray_tcp_keepalive_idle", 100),
+                ("xray_tcp_keepalive_interval", 15),
+            )
+        },
     )
 
 
@@ -851,6 +860,25 @@ async def get_system_metrics(
 @router.patch("/settings", status_code=204)
 async def update_settings(body: SettingsUpdate, session: AsyncSession = Depends(get_session)):
     patches = body.model_dump(exclude_unset=True)
+
+    # Xray policy bounds. These knobs are easy to get wrong and the
+    # symptom of a bad value (`connIdle: 30`) looks like a flaky network,
+    # not a misconfiguration — so reject out-of-range values at the API
+    # boundary with a message that says what the range is.
+    from app.core.xray_policy import BOUNDS as _POLICY_BOUNDS
+
+    for key, (low, high) in _POLICY_BOUNDS.items():
+        value = patches.get(key)
+        if value is None:
+            continue
+        if not (low <= int(value) <= high):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"{key} must be between {low} and {high} seconds "
+                    f"(got {value})."
+                ),
+            )
 
     # LAN proxy auth invariant — when the user enables auth, both
     # username and password must be non-empty. Validate against the

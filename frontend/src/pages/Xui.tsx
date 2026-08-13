@@ -8,6 +8,7 @@ import {
 
 import { xuiApi, diagnosticsApi, type SniScanResult } from '@/api/client'
 import { useT } from '@/hooks/useT'
+import { XrayPolicySection } from '@/components/XrayPolicySection'
 import { useConfirm } from '@/components/ConfirmModal'
 import { ModalShell } from '@/components/ModalShell'
 import { ClientQrModal } from '@/components/ClientQrModal'
@@ -99,6 +100,10 @@ export default function XuiPage() {
           </div>
         </div>
       )}
+
+      {/* Connection-lifetime policy — global values, shown here because
+          this is the page that owns the panels they get pushed to. */}
+      {servers.length > 0 && <XrayPolicySection servers={servers} />}
 
       {servers.length > 0 && (
         <div className="grid grid-cols-1 lg:grid-cols-[280px_1fr] gap-4">

@@ -1105,6 +1105,21 @@ export const xuiApi = {
    *  `XuiClient` cache with what's actually on the panel right now.
    *  Counts what was added / updated / removed; cascade-cleans Node
    *  rows whose backing client vanished from the panel. */
+  /** POST /api/xui/servers/{id}/apply-policy — write the connection
+   *  timeouts from Settings into the panel's xray template. Patches what
+   *  the panel already has; idempotent (`changed:false` on a repeat). */
+  applyPolicy: async (id: number, restart = true): Promise<{
+    xui_server_id: number
+    changed: boolean
+    applied: Record<string, number>
+    detail: string
+  }> => {
+    const r = await http.post(
+      `/xui/servers/${id}/apply-policy`, null, { params: { restart } },
+    )
+    return r.data
+  },
+
   syncServer: async (id: number, direct = false): Promise<{
     xui_server_id: number
     added: number
