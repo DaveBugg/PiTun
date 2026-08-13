@@ -34,6 +34,7 @@ import { useSystemStatus } from '@/hooks/useSystem'
 import { useEscapeKey } from '@/hooks/useEscapeKey'
 import { authApi } from '@/api/client'
 import { VersionPopover } from '@/components/VersionPopover'
+import PanelUnreachableBanner from '@/components/PanelUnreachableBanner'
 import RouterConfirmBanner from '@/components/RouterConfirmBanner'
 
 function getUsername(): string {
@@ -444,6 +445,7 @@ export function Layout() {
       <main className="flex-1 min-w-0 overflow-x-hidden overflow-y-auto pb-20 md:pb-0 bg-gray-900 dark:bg-surface">
         {/* Whoever must confirm may have reloaded onto any page — the undo
            timer can't live inside one settings section. */}
+        <PanelUnreachableBanner />
         <RouterConfirmBanner />
         {/* Validation-error banner — shown at the top of every page when
             the most recent xray config write failed validation. The hint

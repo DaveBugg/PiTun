@@ -70,6 +70,82 @@ def _lan_addressing(lan: str, m: dict) -> tuple[str, str]:
     return ip, str(net)
 
 
+# Ports nginx publishes for the panel. Opening the uplink for "the admin
+# interface" has to mean something specific, and this is it.
+_PANEL_PORTS = (80, 443)
+_SSH_PORT = 22
+
+
+def _parse_ports(raw: str) -> list[int]:
+    """Comma/space separated port numbers, ignoring anything that isn't one."""
+    out: set[int] = set()
+    for chunk in (raw or "").replace(",", " ").split():
+        try:
+            port = int(chunk)
+        except ValueError:
+            continue
+        if 0 < port < 65536:
+            out.add(port)
+    return sorted(out)
+
+
+def _wan_allowed_ports(m: dict) -> tuple[list[int], list[int]]:
+    """(tcp, udp) ports to accept on the uplink.
+
+    Both toggles are off by default and both are ordinary settings, so they can
+    be turned on BEFORE the switch to router mode — which is the only moment
+    they are useful. Deciding you want SSH on the uplink after the uplink has
+    stopped accepting SSH means finding a cable.
+    """
+    tcp = set(_parse_ports(m.get("wan_allow_tcp", "")))
+    if (m.get("wan_admin_access") or "false").lower() == "true":
+        tcp |= set(_PANEL_PORTS)
+    if (m.get("wan_ssh_access") or "false").lower() == "true":
+        tcp.add(_SSH_PORT)
+    return sorted(tcp), _parse_ports(m.get("wan_allow_udp", ""))
+
+
+def _refuse_public_wan_exposure(wan: str, tcp: list[int], udp: list[int]) -> None:
+    """Stop the uplink being opened when it faces the actual internet.
+
+    Publishing the panel on the WAN is a reasonable thing to want when PiTun
+    sits behind another router — that "WAN" is the home network, and it is
+    where the operator already is. On a public address the same switch puts
+    the login page, and anything else listed, in front of the whole internet.
+
+    The distinction is the address, not the operator's intent, so it is
+    enforced rather than warned about. An address we cannot read yet (DHCP
+    still in flight) is not proof of anything and doesn't block the apply.
+    """
+    if not (tcp or udp):
+        return
+    ip, _ = nc.read_interface_address(wan)
+    if not ip:
+        logger.warning(
+            "WAN ports %s/%s opened before %s has an address — cannot check "
+            "whether the uplink is public", tcp, udp, wan,
+        )
+        return
+    import ipaddress
+    try:
+        addr = ipaddress.ip_address(ip)
+    except ValueError:
+        return
+    # `is_global` is the question being asked — can the internet reach this —
+    # rather than a list of private ranges to keep in sync. It also gets
+    # carrier-grade NAT right: 100.64/10 is not globally reachable, and a box
+    # behind the ISP's NAT is in the same position as one behind a router.
+    if not addr.is_global:
+        return
+    raise RouterModeError(
+        f"The uplink address {ip} is a public one, so opening ports on it "
+        f"would expose them to the internet — not just to your own network. "
+        f"Refusing to open TCP {tcp or '-'} / UDP {udp or '-'}. This setting "
+        f"is meant for a PiTun that sits behind another router; reach the "
+        f"panel from the LAN side instead."
+    )
+
+
 def _safe_lease_name(raw: str) -> str:
     """A dhcp-host name dnsmasq will accept, or empty."""
     import re
@@ -218,7 +294,15 @@ async def apply(session: AsyncSession) -> dict:
             raise RouterModeError("Could not enable IPv4 forwarding on the host.")
         applied.append("ip_forward")
 
-        if not await nft.apply_router_nat(wan_iface, lan):
+        # Checked against the interface we actually ended up on: with PPPoE or
+        # a VLAN the address lives somewhere other than the port in the config,
+        # and the public/private question is about the address that faces out.
+        wan_tcp, wan_udp = _wan_allowed_ports(m)
+        _refuse_public_wan_exposure(wan_iface, wan_tcp, wan_udp)
+
+        if not await nft.apply_router_nat(
+            wan_iface, lan, wan_allow_tcp=wan_tcp, wan_allow_udp=wan_udp,
+        ):
             raise RouterModeError("Could not apply the router firewall/NAT rules.")
         applied.append("nat")
 
@@ -296,10 +380,15 @@ async def status(session: AsyncSession) -> dict:
 # neither logs anything, so they get diagnosed by guesswork. The counters
 # attached to the WAN rules turn them into something we can just read off.
 
-async def diagnose_wan() -> list[dict]:
+async def diagnose_wan(wan: str = "") -> list[dict]:
     """Findings about the uplink, in plain language.
 
     Each finding: {level, title, detail, hint}. `level` is ok | warn | error.
+
+    `wan` lets the findings account for what the port actually holds. Without
+    it every check can only report packet counters, and counters alone can't
+    tell a broken uplink from a working one that simply hasn't renewed its
+    lease yet — which produced a permanent scary warning on a healthy link.
     """
     findings: list[dict] = []
     counters = await nft.router_counters()
@@ -320,15 +409,38 @@ async def diagnose_wan() -> list[dict]:
     # If the WAN has an address, DHCP obviously worked (or it's static) and the
     # counter only matters for renewals. If it has none AND no replies were
     # ever seen, that's the diagnosis rather than a guess.
-    if dhcp_in == 0:
+    wan_ip = ""
+    if wan:
+        try:
+            wan_ip = (nc.read_interface_address(wan)[0] or "")
+        except Exception:  # noqa: BLE001 — a diagnosis must not fail to render
+            wan_ip = ""
+
+    if dhcp_in == 0 and wan_ip:
+        # The counter starts at zero when the ruleset is applied, and a lease
+        # obtained before that is renewed only at half its lifetime — often
+        # hours away. Reporting "no DHCP replies" for a port that visibly holds
+        # an address sends people to check a cable that is plainly fine.
+        findings.append({
+            "level": "ok",
+            "title": f"The uplink has an address ({wan_ip})",
+            "detail": (
+                "No DHCP reply has been counted yet, which is expected: the "
+                "counter starts when the firewall is applied, and an existing "
+                "lease is not renewed until roughly halfway through its life. "
+                "A static or PPPoE uplink never counts one at all."
+            ),
+            "hint": "",
+        })
+    elif dhcp_in == 0:
         findings.append({
             "level": "warn",
             "title": "No DHCP replies have arrived on the WAN port",
             "detail": (
-                "Nothing has come back from an upstream DHCP server since the "
-                "firewall was applied. That's expected if the uplink uses a "
-                "static address or PPPoE; it's the cause to look at first if "
-                "the WAN has no address at all."
+                "The port has no IPv4 address and nothing has come back from an "
+                "upstream DHCP server since the firewall was applied. If the "
+                "uplink is meant to get its address by DHCP, this is the cause "
+                "to look at first."
             ),
             "hint": "Check the cable and whether the ISP hands out addresses by DHCP.",
         })
@@ -369,10 +481,29 @@ async def diagnose_wan() -> list[dict]:
             "hint": "",
         })
 
+    # Where the uplink points changes what these drops mean. On a public
+    # address they're background scanning and can be ignored; behind another
+    # router they're usually something on that network trying to reach PiTun —
+    # including the operator's own SSH or panel, which is worth saying plainly
+    # rather than leaving them to wonder why the box stopped answering.
+    private_wan = False
+    if wan_ip:
+        try:
+            import ipaddress
+            private_wan = ipaddress.ip_address(wan_ip).is_private
+        except ValueError:
+            private_wan = False
+
     findings.append({
         "level": "ok",
-        "title": f"{blocked} unsolicited packets dropped from the internet",
+        "title": f"{blocked} unsolicited packets dropped on the WAN port",
         "detail": (
+            "Connection attempts refused on the uplink. This port sits on a "
+            "private network, so these are most likely devices on that network "
+            "trying to reach PiTun — an SSH session or the panel from the old "
+            "address — rather than scanning. Reach the box from the LAN side "
+            "instead."
+            if private_wan else
             "Connection attempts from the WAN that were refused. A steady count "
             "here is ordinary background scanning, not a problem."
         ),

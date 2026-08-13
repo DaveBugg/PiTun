@@ -227,6 +227,13 @@ async def init_default_settings():
         # WiFi access point (router mode, only on an AP-capable radio).
         # No default SSID/passphrase: an access point that comes up with a
         # guessable name and password is worse than one that doesn't come up.
+        # Uplink exposure. Empty and off by default: the WAN accepts nothing
+        # new. Meant for a PiTun that sits behind another router, where the
+        # "WAN" is the home network; apply() refuses to open a public address.
+        "wan_admin_access": "false",
+        "wan_ssh_access": "false",
+        "wan_allow_tcp": "",
+        "wan_allow_udp": "",
         "wifi_enabled": "false",
         "wifi_ssid": "PiTun",
         "wifi_passphrase": "",

@@ -1,3 +1,4 @@
+import { noteRequestOutcome } from '@/lib/panelReachability'
 import axios from 'axios'
 import type {
   LoginRequest, TokenResponse, ChangePasswordRequest, UserInfo,
@@ -49,10 +50,19 @@ http.interceptors.request.use((config) => {
   return config
 })
 
-// 401 interceptor — redirect to login
+// 401 interceptor — redirect to login. Also tracks whether the box is
+// answering AT ALL: after a switch to router mode this address stops serving
+// the panel, and without this the page just fills the console with empty
+// responses. See lib/panelReachability.ts.
 http.interceptors.response.use(
-  (response) => response,
+  (response) => {
+    noteRequestOutcome(true)
+    return response
+  },
   (error) => {
+    // A status means the box replied; only a transport failure counts as
+    // "this address is dark".
+    noteRequestOutcome(Boolean(error.response))
     if (error.response?.status === 401 && !error.config?.url?.includes('/auth/') && window.location.pathname !== '/login') {
       localStorage.removeItem('pitun_token')
       window.location.href = '/login'

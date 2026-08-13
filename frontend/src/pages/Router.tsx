@@ -1,5 +1,6 @@
 import {
   CheckCircle2,
+  ShieldAlert,
   Cable,
   Info,
   RefreshCw,
@@ -15,6 +16,10 @@ import WanSection from '@/components/WanSection'
 import WifiApSection from '@/components/WifiApSection'
 import WanDiagnosticsSection from '@/components/WanDiagnosticsSection'
 import { useSettingsDraft } from '@/hooks/useSettingsDraft'
+import { networkApi } from '@/api/client'
+import { rememberLanPanel } from '@/lib/panelReachability'
+import { useQuery } from '@tanstack/react-query'
+import { useEffect } from 'react'
 import { useT } from '@/hooks/useT'
 
 /**
@@ -36,6 +41,18 @@ export default function RouterPage() {
     isLoading, draft, val, isChecked, set,
     hasChanges, save, saving, saved, error,
   } = useSettingsDraft()
+
+  const lanIface = String(val('lan_interface') || '')
+  const { data: ports } = useQuery({
+    queryKey: ['network-interfaces'],
+    queryFn: () => networkApi.interfaces(),
+  })
+  // Remember where the panel will still answer once the uplink stops
+  // accepting connections — the switch is made from this page.
+  useEffect(() => {
+    const lan = ports?.items.find((i) => i.name === lanIface)
+    rememberLanPanel(lan?.ipv4)
+  }, [ports, lanIface])
 
   const mode = String(val('operating_mode') || 'gateway')
   const isRouter = mode === 'router'
@@ -231,6 +248,89 @@ export default function RouterPage() {
           <WanDiagnosticsSection />
         </>
       )}
+
+        {section(
+          ShieldAlert,
+          t('Access from the uplink side', 'Доступ со стороны аплинка'),
+          t('By default the uplink accepts nothing new — the panel and SSH are reachable from the LAN only',
+            'По умолчанию аплинк не принимает новых соединений — панель и SSH доступны только из LAN'),
+          <div className="space-y-3">
+            <label className="flex items-start gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                className="mt-0.5"
+                checked={isChecked('wan_admin_access')}
+                onChange={(e) => set('wan_admin_access', e.target.checked)}
+              />
+              <div>
+                <div className="text-[12px] text-gray-200">
+                  {t('Allow the panel on the uplink (ports 80 and 443)',
+                     'Разрешить панель со стороны аплинка (порты 80 и 443)')}
+                </div>
+                <div className="text-[11px] text-gray-500 mt-0.5">
+                  {t(
+                    "Useful when PiTun sits behind another router: that uplink is your own network, and it's where you already are. Refused outright if the uplink turns out to hold a public address — that would put the login page in front of the internet.",
+                    'Полезно, когда PiTun стоит за другим роутером: этот аплинк — ваша же сеть, и вы уже находитесь в ней. Если у аплинка окажется публичный адрес, включение будет отклонено — это выставило бы страницу входа в интернет.',
+                  )}
+                </div>
+              </div>
+            </label>
+
+            <label className="flex items-start gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                className="mt-0.5"
+                checked={isChecked('wan_ssh_access')}
+                onChange={(e) => set('wan_ssh_access', e.target.checked)}
+              />
+              <div>
+                <div className="text-[12px] text-gray-200">
+                  {t('Allow SSH on the uplink (port 22)',
+                     'Разрешить SSH со стороны аплинка (порт 22)')}
+                </div>
+                <div className="text-[11px] text-gray-500 mt-0.5">
+                  {t(
+                    'Set this before switching, not after: once the uplink stops accepting connections, turning it on requires reaching the box some other way.',
+                    'Включайте до переключения, а не после: когда аплинк перестанет принимать соединения, включить это можно будет только добравшись до коробки иначе.',
+                  )}
+                </div>
+              </div>
+            </label>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div>
+                <label htmlFor="wan_allow_tcp" className="block text-[11px] font-medium text-gray-400 mb-1">
+                  {t('Additional TCP ports', 'Дополнительные TCP-порты')}
+                </label>
+                <input
+                  id="wan_allow_tcp"
+                  type="text"
+                  value={String(val('wan_allow_tcp') || '')}
+                  onChange={(e) => set('wan_allow_tcp', e.target.value)}
+                  placeholder="22, 8443"
+                  className="w-full rounded-lg bg-gray-950 border border-gray-800 px-3 py-2 text-sm font-mono text-gray-100 focus:outline-hidden focus:border-gray-600"
+                />
+              </div>
+              <div>
+                <label htmlFor="wan_allow_udp" className="block text-[11px] font-medium text-gray-400 mb-1">
+                  {t('Additional UDP ports', 'Дополнительные UDP-порты')}
+                </label>
+                <input
+                  id="wan_allow_udp"
+                  type="text"
+                  value={String(val('wan_allow_udp') || '')}
+                  onChange={(e) => set('wan_allow_udp', e.target.value)}
+                  placeholder="51820"
+                  className="w-full rounded-lg bg-gray-950 border border-gray-800 px-3 py-2 text-sm font-mono text-gray-100 focus:outline-hidden focus:border-gray-600"
+                />
+              </div>
+            </div>
+            <p className="text-[10px] text-gray-600">
+              {t('Same rule applies: nothing is opened on a public uplink.',
+                 'Правило то же: на публичном аплинке ничего не открывается.')}
+            </p>
+          </div>,
+        )}
     </div>
   )
 }

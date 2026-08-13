@@ -118,15 +118,28 @@ async def router_mode_pending(session=Depends(get_session)) -> dict:
 
 
 @router.get("/router-mode/diagnose")
-async def router_mode_diagnose() -> dict:
+async def router_mode_diagnose(session=Depends(get_session)) -> dict:
     """Read the WAN counters and explain them.
 
     Exists because the two rules the uplink depends on — DHCP replies and the
     ICMP that PMTU discovery needs — fail silently. Without this the operator
     is left with "the internet is broken" and no way to tell which.
+
+    The configured WAN port is passed through so the findings can look at what
+    it actually holds: a counter at zero means something different on a port
+    that already has an address than on one that has none.
     """
+    from sqlmodel import select as _sel
+    from app.models import Settings as _S
     from app.core import router_mode
-    return {"findings": await router_mode.diagnose_wan()}
+
+    wan = ""
+    try:
+        row = (await session.exec(_sel(_S).where(_S.key == "wan_interface"))).first()
+        wan = (row.value or "").strip() if row else ""
+    except Exception:  # noqa: BLE001 — diagnosis degrades, it doesn't fail
+        wan = ""
+    return {"findings": await router_mode.diagnose_wan(wan)}
 
 
 @router.get("/backups")

@@ -655,7 +655,7 @@ export function Devices() {
                             className={clsx(
                               'rounded-sm border px-1 py-0.5 text-[10px] leading-none',
                               d.dhcp_reserved_ip
-                                ? 'border-brand-200 bg-brand-50 text-brand-700 dark:border-brand-800/50 dark:bg-brand-950/30 dark:text-brand-300'
+                                ? 'border-brand-200 bg-brand-50 text-brand-700 dark:border-brand-800/50 dark:bg-brand-900/30 dark:text-brand-300'
                                 : 'border-gray-800 text-gray-600 hover:text-gray-300',
                             )}
                           >

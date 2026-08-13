@@ -310,7 +310,7 @@ function RuleForm({
     setForm((prev) => ({ ...prev, [k]: v }))
 
   return (
-    <div className="rounded-lg border border-gray-700 bg-gray-850 p-4 space-y-3">
+    <div className="rounded-lg border border-gray-700 bg-gray-900 p-4 space-y-3">
       <div className="grid grid-cols-2 gap-3">
         <Input
           label="Name (optional)"

@@ -1401,6 +1401,11 @@ class SettingsRead(BaseModel):
     dhcp_pool_end: str = ""
     dhcp_lease_hours: int = 12
     wifi_enabled: bool = False
+    # Uplink exposure — see core/router_mode._refuse_public_wan_exposure.
+    wan_admin_access: bool = False
+    wan_ssh_access: bool = False
+    wan_allow_tcp: str = ""
+    wan_allow_udp: str = ""
     wifi_ssid: str = "PiTun"
     # Never returned: the read model is what the UI renders, and a WiFi
     # password has no business travelling back to a browser on every poll.
@@ -1465,6 +1470,10 @@ class SettingsUpdate(BaseModel):
     dhcp_pool_end: Optional[str] = None
     dhcp_lease_hours: Optional[int] = None
     wifi_enabled: Optional[bool] = None
+    wan_admin_access: Optional[bool] = None
+    wan_ssh_access: Optional[bool] = None
+    wan_allow_tcp: Optional[str] = None
+    wan_allow_udp: Optional[str] = None
     wifi_ssid: Optional[str] = None
     wifi_passphrase: Optional[str] = None
     wifi_country: Optional[str] = None

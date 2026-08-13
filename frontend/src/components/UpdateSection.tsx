@@ -123,7 +123,7 @@ ${base}` : base,
 
       {/* ── In-flight update ─────────────────────────────────────── */}
       {busy && (
-        <div className="rounded-lg border border-brand-800/50 bg-brand-950/30 p-3 space-y-2">
+        <div className="rounded-lg border border-brand-800/50 bg-brand-900/30 p-3 space-y-2">
           <div className="flex items-center gap-2 text-sm text-brand-700 dark:text-brand-200">
             <Loader2 className="h-4 w-4 animate-spin" />
             <span>

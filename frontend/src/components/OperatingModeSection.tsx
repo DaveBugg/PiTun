@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query'
-import { Cable, Loader2, AlertTriangle, CheckCircle2 } from 'lucide-react'
+import { Cable, Loader2, AlertTriangle } from 'lucide-react'
 import { clsx } from 'clsx'
 
 import { networkApi } from '@/api/client'
@@ -8,14 +8,16 @@ import { useAppStore } from '@/store'
 import { translateWifiDetail } from '@/lib/wifiDetail'
 
 /**
- * Operating mode + physical NIC inventory (router mode, phase 0).
+ * Operating mode + physical NIC inventory.
  *
  * "Router" is only offered when the box actually has two or more real NICs —
  * it needs one facing the ISP and one facing the LAN. The backend enforces the
  * same rule; this is the explanation, not the gate.
  *
- * Phase 0 records the choice and changes nothing else: DHCP, NAT and WAN
- * handling arrive in later phases.
+ * Saving a switch to router applies immediately: WAN firewall, NAT, DHCP and
+ * the access point all come up together, guarded by the commit-confirm
+ * watchdog. The warning below the selector says so, because the difference
+ * between "recorded" and "the network just changed" is the whole risk here.
  */
 export default function OperatingModeSection({
   value, onChange, wan, lan, onRoleChange, dhcp, onDhcpChange,
@@ -96,7 +98,7 @@ export default function OperatingModeSection({
                   </span>
                 )}
                 {n.is_default_route && (
-                  <span className="rounded-sm border border-brand-200 bg-brand-50 text-brand-700 dark:border-brand-800/50 dark:bg-brand-950/30 dark:text-brand-300 px-1.5 py-0.5 text-[10px]">
+                  <span className="rounded-sm border border-brand-200 bg-brand-50 text-brand-700 dark:border-brand-800/50 dark:bg-brand-900/30 dark:text-brand-300 px-1.5 py-0.5 text-[10px]">
                     {t('uplink', 'аплинк')}
                   </span>
                 )}
@@ -317,11 +319,11 @@ export default function OperatingModeSection({
         )}
 
         {value === 'router' && (
-          <div className="mt-2 flex items-start gap-2 rounded-md border border-brand-200 dark:border-brand-800/50 bg-brand-50 dark:bg-brand-950/30 p-2 text-[11px] text-brand-800 dark:text-brand-300">
-            <CheckCircle2 className="h-3.5 w-3.5 shrink-0 mt-0.5" />
+          <div className="mt-2 flex items-start gap-2 rounded-md border border-amber-200 dark:border-amber-800/50 bg-amber-50 dark:bg-amber-950/30 p-2 text-[11px] text-amber-800 dark:text-amber-300">
+            <AlertTriangle className="h-3.5 w-3.5 shrink-0 mt-0.5" />
             {t(
-              'Recorded. Port roles, DHCP, NAT and WAN setup arrive in the next releases — nothing has changed on the network yet.',
-              'Записано. Роли портов, DHCP, NAT и настройка WAN появятся в следующих релизах — в сети пока ничего не изменилось.',
+              'Saving this reconfigures the network immediately: the WAN port stops accepting new connections from outside, and the LAN port starts serving DHCP. If it goes wrong, PiTun reverts to gateway on its own unless you confirm — but do this with physical access to the box, not over SSH from the network it is about to change.',
+              'Сохранение сразу перестраивает сеть: WAN-порт перестанет принимать новые входящие соединения, а LAN-порт начнёт раздавать DHCP. Если что-то пойдёт не так, PiTun сам вернётся в режим шлюза, пока вы не подтвердите, — но делайте это с физическим доступом к коробке, а не по SSH из той самой сети, которую перестраиваете.',
             )}
           </div>
         )}

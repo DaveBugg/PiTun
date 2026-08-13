@@ -20,20 +20,25 @@ import { useT } from '@/hooks/useT'
 export default function RouterConfirmBanner() {
   const t = useT()
   const qc = useQueryClient()
-  const [now, setNow] = useState(Date.now())
 
-  const { data } = useQuery({
+  const { data, dataUpdatedAt } = useQuery({
     queryKey: ['router-mode-pending'],
     queryFn: () => networkApi.routerModePending(),
     refetchInterval: 5_000,
   })
 
-  // Local ticking so the countdown moves smoothly between polls instead of
-  // jumping in five-second steps.
+  // Count down from the server's own `seconds_left`, not from its absolute
+  // deadline. The watchdog fires on the BOX's clock, and the two clocks need
+  // not agree: a box whose RTC is local time while Linux reads it as UTC puts
+  // the deadline hours away, and the banner then promised three hours where
+  // three minutes were left — the one number here that must never be wrong.
+  // A relative figure is immune to the offset; only elapsed time matters.
+  const [elapsed, setElapsed] = useState(0)
   useEffect(() => {
-    const id = setInterval(() => setNow(Date.now()), 1000)
+    setElapsed(0)
+    const id = setInterval(() => setElapsed((e) => e + 1), 1000)
     return () => clearInterval(id)
-  }, [])
+  }, [dataUpdatedAt])
 
   const confirm = useMutation({
     mutationFn: () => networkApi.confirmRouterMode(),
@@ -42,8 +47,7 @@ export default function RouterConfirmBanner() {
 
   if (!data?.pending) return null
 
-  const deadline = data.deadline ? new Date(data.deadline).getTime() : 0
-  const left = deadline ? Math.max(0, Math.round((deadline - now) / 1000)) : data.seconds_left
+  const left = Math.max(0, Math.round((data.seconds_left ?? 0) - elapsed))
   const mm = String(Math.floor(left / 60)).padStart(2, '0')
   const ss = String(left % 60).padStart(2, '0')
 

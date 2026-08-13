@@ -1888,3 +1888,76 @@ class TestReservationUniqueness:
             session.add(Device(mac=f"dd:11:22:33:44:{i:02x}"))
         session.commit()
         assert client.get("/api/devices", headers=auth_headers).status_code == 200
+
+
+class TestUplinkExposure:
+    """Publishing the panel on the WAN is reasonable behind another router and
+    reckless in front of the internet. The address decides which it is, so the
+    check is enforced rather than left to the operator's memory of their own
+    topology."""
+
+    def test_ports_are_parsed_forgivingly(self):
+        from app.core.router_mode import _parse_ports
+        assert _parse_ports("22, 443 8080") == [22, 443, 8080]
+        assert _parse_ports("22,22,22") == [22]
+        # Junk is dropped rather than failing the apply: a stray character in
+        # a port list should not take the router down.
+        assert _parse_ports("22, https, -1, 70000, ") == [22]
+        assert _parse_ports("") == []
+
+    def test_admin_access_adds_the_panel_ports(self):
+        from app.core.router_mode import _wan_allowed_ports
+        tcp, udp = _wan_allowed_ports({"wan_admin_access": "true"})
+        assert tcp == [80, 443] and udp == []
+
+        tcp, _ = _wan_allowed_ports({"wan_admin_access": "true", "wan_allow_tcp": "22"})
+        assert tcp == [22, 80, 443]
+
+    def test_ssh_access_adds_only_ssh(self):
+        from app.core.router_mode import _wan_allowed_ports
+        tcp, udp = _wan_allowed_ports({"wan_ssh_access": "true"})
+        assert tcp == [22] and udp == []
+
+    def test_both_toggles_combine(self):
+        from app.core.router_mode import _wan_allowed_ports
+        tcp, _ = _wan_allowed_ports(
+            {"wan_ssh_access": "true", "wan_admin_access": "true"})
+        assert tcp == [22, 80, 443]
+
+    def test_nothing_is_opened_by_default(self):
+        from app.core.router_mode import _wan_allowed_ports
+        assert _wan_allowed_ports({}) == ([], [])
+        assert _wan_allowed_ports(
+            {"wan_admin_access": "false", "wan_ssh_access": "false"}) == ([], [])
+
+    def test_public_uplink_refuses_to_be_opened(self, monkeypatch):
+        import pytest
+        from app.core import router_mode as rm
+        # A genuinely routable address. Note 203.0.113.0/24 and the other
+        # documentation ranges would NOT do: Python already reports them as
+        # not globally reachable, so they'd pass the check.
+        monkeypatch.setattr(rm.nc, "read_interface_address", lambda i: ("93.184.216.34", 24))
+        with pytest.raises(rm.RouterModeError, match="public one"):
+            rm._refuse_public_wan_exposure("eth0", [443], [])
+
+    def test_carrier_grade_nat_counts_as_behind_something(self, monkeypatch):
+        """100.64/10 is the ISP's own NAT — as unreachable as a home LAN."""
+        from app.core import router_mode as rm
+        monkeypatch.setattr(rm.nc, "read_interface_address", lambda i: ("100.72.3.9", 10))
+        rm._refuse_public_wan_exposure("eth0", [443], [])
+
+    def test_private_uplink_may_be_opened(self, monkeypatch):
+        from app.core import router_mode as rm
+        monkeypatch.setattr(rm.nc, "read_interface_address", lambda i: ("192.168.1.6", 24))
+        rm._refuse_public_wan_exposure("eth0", [80, 443], [])
+
+    def test_opening_nothing_is_never_refused(self, monkeypatch):
+        from app.core import router_mode as rm
+        monkeypatch.setattr(rm.nc, "read_interface_address", lambda i: ("93.184.216.34", 24))
+        rm._refuse_public_wan_exposure("eth0", [], [])
+
+    def test_an_address_we_cannot_read_does_not_block(self, monkeypatch):
+        """DHCP may still be in flight; absence of proof is not proof."""
+        from app.core import router_mode as rm
+        monkeypatch.setattr(rm.nc, "read_interface_address", lambda i: (None, None))
+        rm._refuse_public_wan_exposure("eth0", [443], [])

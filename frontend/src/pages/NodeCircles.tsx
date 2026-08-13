@@ -474,7 +474,7 @@ export function NodeCircles() {
 
                 {circle.subscription_id != null && (
                   <span
-                    className="inline-flex items-center gap-1 rounded-sm border border-brand-200 bg-brand-50 text-brand-700 dark:border-brand-800/50 dark:bg-brand-950/30 dark:text-brand-300 px-1.5 py-0.5 text-[11px]"
+                    className="inline-flex items-center gap-1 rounded-sm border border-brand-200 bg-brand-50 text-brand-700 dark:border-brand-800/50 dark:bg-brand-900/30 dark:text-brand-300 px-1.5 py-0.5 text-[11px]"
                     title={t(
                       'Membership is kept in sync with this subscription on every refresh. Manually added nodes are preserved.',
                       'Состав синхронизируется с этой подпиской при каждом обновлении. Ноды, добавленные вручную, сохраняются.',
