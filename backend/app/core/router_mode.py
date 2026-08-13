@@ -548,7 +548,24 @@ async def diagnose_wan(wan: str = "") -> list[dict]:
     # Small requests (DNS, a ping, an SSH handshake) succeed while large
     # transfers hang forever: pages half-load, downloads stall at a few KB.
     # It happens when ICMP "fragmentation needed" can't get back to us.
-    if icmp_in == 0:
+    if icmp_in == 0 and wan_ip:
+        # Zero is the normal reading on a healthy link: this counts ICMP
+        # arriving from the uplink, and a path that never needs to fragment
+        # produces none. It only becomes evidence alongside the symptom.
+        findings.append({
+            "level": "ok",
+            "title": "No ICMP has arrived on the WAN port yet",
+            "detail": (
+                "Nothing to report — a path that never has to fragment sends "
+                "no ICMP back. This becomes worth looking at only if large "
+                "transfers hang while small requests work: pages that "
+                "half-load and downloads that stall, rather than a clean "
+                "error. That is a path-MTU black hole, and it shows up here "
+                "as this staying at zero while the symptom is present."
+            ),
+            "hint": "",
+        })
+    elif icmp_in == 0:
         findings.append({
             "level": "warn",
             "title": "No ICMP has returned on the WAN port",

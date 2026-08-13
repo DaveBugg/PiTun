@@ -534,7 +534,7 @@ async def apply_router_nat(
         f'        iifname "{wan}" udp sport 67 udp dport 68 counter name "wan_dhcp_in" accept',
         "        # PMTU discovery and traceroute fail by hanging rather than",
         "        # erroring if these are dropped, which is miserable to debug.",
-        f'        iifname "{wan}" icmp type {{ echo-request, destination-unreachable, time-exceeded, parameter-problem }} counter name "wan_icmp_in" accept',
+        f'        iifname "{wan}" icmp type {{ echo-request, destination-unreachable, time-exceeded, parameter-problem }} accept',
     ]
     if tcp_ports:
         rules.append(
@@ -578,6 +578,13 @@ table inet {_ROUTER_TABLE} {{
 
     chain input {{
         type filter hook input priority filter; policy accept;
+        # Counted BEFORE conntrack, and with no verdict of its own so the rule
+        # falls through. The ICMP this exists to observe — "fragmentation
+        # needed" for a flow already in progress — is exactly what conntrack
+        # marks RELATED, so a counter placed after the accept below can never
+        # see it. Sitting there, it read zero on a perfectly healthy link and
+        # could not have detected the PMTU black hole it was added for.
+        iifname "{wan}" meta l4proto icmp counter name "wan_icmp_in"
         ct state established,related accept
         ct state invalid drop
 {wan_service_rules}

@@ -2144,3 +2144,56 @@ class TestLeavingRouterModeIsNeverBlocked:
                          headers=auth_headers,
                          json={"operating_mode": "gateway"})
         assert r.status_code in (200, 204), r.text
+
+
+class TestIcmpCounterCanActuallySeeWhatItClaims:
+    """The counter exists to detect a path-MTU black hole. `fragmentation
+    needed` for a flow already in progress is what conntrack marks RELATED,
+    so a counter placed after `ct state established,related accept` never
+    sees one — it read zero on a healthy link and could not have detected
+    the failure it was added for."""
+
+    def _ruleset(self, **kw):
+        import asyncio
+        from app.core import nftables as nft
+        cap = {}
+
+        async def fake(script):
+            cap["s"] = script
+            return True
+
+        original, nft._nft = nft._nft, fake
+        try:
+            asyncio.run(nft.apply_router_nat("eth0", "eth1", **kw))
+        finally:
+            nft._nft = original
+        return cap["s"]
+
+    def test_icmp_is_counted_before_conntrack(self):
+        script = self._ruleset()
+        body = script.split("chain input")[1].split("chain forward")[0]
+        lines = [ln.strip() for ln in body.splitlines()
+                 if ln.strip() and not ln.strip().startswith("#")]
+        counter = next(i for i, ln in enumerate(lines) if "wan_icmp_in" in ln)
+        conntrack = next(i for i, ln in enumerate(lines)
+                         if "ct state established,related accept" in ln)
+        assert counter < conntrack
+
+    def test_the_counting_rule_has_no_verdict(self):
+        """It must fall through: giving it `accept` would admit unsolicited
+        ICMP that the blanket drop below is there to refuse."""
+        script = self._ruleset()
+        rule = next(ln for ln in script.splitlines() if "wan_icmp_in" in ln
+                    and "counter" in ln)
+        for verdict in (" accept", " drop", " reject"):
+            assert not rule.rstrip().endswith(verdict)
+
+    def test_unsolicited_icmp_is_still_accepted_once(self):
+        """Exactly one rule admits ICMP, and it is not the counting one —
+        otherwise every packet would be counted twice."""
+        script = self._ruleset()
+        body = script.split("chain input")[1].split("chain forward")[0]
+        accepts = [ln for ln in body.splitlines()
+                   if "icmp type" in ln and ln.strip().endswith("accept")]
+        assert len(accepts) == 1
+        assert "wan_icmp_in" not in accepts[0]
