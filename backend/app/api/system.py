@@ -999,7 +999,16 @@ async def update_settings(body: SettingsUpdate, session: AsyncSession = Depends(
         if mode is None:
             mode = await _current("operating_mode") or "gateway"
 
-        if wan or lan:
+        # Leaving router mode is never blocked. These checks describe what a
+        # working router needs; a box on its way back to gateway needs none of
+        # it, and refusing the request because the stored router config no
+        # longer validates is how an operator gets stranded — which is exactly
+        # what happened once the LAN ports were bridged and stopped looking
+        # like standalone role candidates. Gateway is the safe resting state
+        # and nothing may stand between the operator and it.
+        if patches.get("operating_mode") == "gateway":
+            pass
+        elif wan or lan:
             names = {i["name"] for i in list_interfaces()}
             for role, value in (("wan_interface", wan), ("lan_interface", lan)):
                 if value and value not in names:

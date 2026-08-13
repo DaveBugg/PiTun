@@ -631,10 +631,15 @@ def _is_physical(name: str, link: dict) -> bool:
         return False
     if link.get("link_type") != "ether":
         return False
-    # VLAN sub-interfaces (eth0.835) and anything enslaved to a bridge/bond
-    # are not standalone role candidates.
-    if "." in name or link.get("master"):
+    # VLAN sub-interfaces (eth0.835) are not standalone role candidates.
+    if "." in name:
         return False
+    # Being enslaved is NOT disqualifying. Router mode bridges the LAN ports
+    # into `br-lan` itself, so the moment it comes up, the very ports the
+    # operator assigned would vanish from this inventory — the panel would
+    # report one port on a three-port box, and role validation would reject
+    # the stored configuration, including the request to switch back to
+    # gateway. Callers that care can look at `master`.
     return True
 
 
@@ -687,6 +692,9 @@ def list_interfaces() -> List[dict]:
             "ipv4": ip,
             "cidr": cidr,
             "is_default_route": name == default_iface,
+            # Set while router mode has the port in the LAN bridge; the
+            # address then lives on the bridge, not here.
+            "master": link.get("master") or "",
         })
     out.sort(key=lambda i: i["name"])
     return out

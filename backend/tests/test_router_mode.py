@@ -39,8 +39,12 @@ class TestPhysicalFilter:
     def test_vlan_subinterface_and_bridge_slave_rejected(self):
         # A VLAN sub-interface is a role *result*, not a role candidate.
         assert not nc._is_physical("eth0.835", _link("eth0.835"))
-        # An interface enslaved to a bridge/bond isn't standalone either.
-        assert not nc._is_physical("eth1", _link("eth1", master="br0"))
+        # Being enslaved is NOT disqualifying. Router mode puts the LAN ports
+        # into its own bridge, and hiding them at that moment made the panel
+        # report one port on a three-port box — and made role validation
+        # reject the stored config, including the request to leave router
+        # mode. The bridge is reported as `master` instead.
+        assert nc._is_physical("eth1", _link("eth1", master="br0"))
 
     def test_non_ethernet_link_rejected(self):
         assert not nc._is_physical("lo", _link("lo", link_type="loopback"))
@@ -2090,3 +2094,28 @@ class TestMultiPortLan:
         from app.core import wifi as w
         monkeypatch.setattr(w, "_ip", lambda *a, **k: mock.Mock(returncode=1, stdout="", stderr=""))
         assert w.dissolve_lan_bridge()["removed"] is False
+
+
+class TestLeavingRouterModeIsNeverBlocked:
+    """Gateway is the resting state and the escape hatch. Role validation
+    describes what a working ROUTER needs; applying it to a request that
+    switches the router off is how an operator gets stranded — which is
+    exactly what happened once the LAN ports were bridged and stopped
+    looking like standalone role candidates."""
+
+    def test_switch_to_gateway_survives_an_unusable_router_config(
+        self, client, admin_user, auth_headers, monkeypatch,
+    ):
+        from app.core import network_config as nc
+        # The box reports only the uplink: the LAN ports are enslaved to the
+        # bridge router mode built, or simply gone.
+        monkeypatch.setattr(nc, "list_interfaces", lambda: [
+            {"name": "eno1", "mac": "aa:bb:cc:dd:ee:01", "up": True,
+             "carrier": True, "ipv4": "192.168.1.6", "cidr": 24,
+             "is_default_route": True, "wireless": False, "ap_capable": False,
+             "wifi_detail": "", "wifi_modes": [], "master": ""},
+        ])
+        r = client.patch("/api/system/settings",
+                         headers=auth_headers,
+                         json={"operating_mode": "gateway"})
+        assert r.status_code in (200, 204), r.text
