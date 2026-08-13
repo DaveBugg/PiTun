@@ -75,19 +75,32 @@ def _lan_addressing(lan: str, m: dict) -> tuple[str, int]:
     """(address, prefix length) for the LAN side.
 
     Prefers what the interface actually has — router mode can't invent an
-    address the kernel doesn't hold. When the LAN is bridged the address may
-    already have moved to the bridge, so that is checked too rather than
-    demanding it be put back on the port first.
+    address the kernel doesn't hold. The address belongs to the LAN rather
+    than to one port of it, so the search widens from the nominated primary:
+    to the bridge while one is up, and then to the other members. Tearing a
+    bridge down leaves the address on a WIRED member (a radio goes down with
+    hostapd and could not keep it), which is not necessarily the port named
+    as primary — and demanding the operator move it back by hand before the
+    next apply would be a rake laid by our own teardown.
     """
-    ip, prefix = nc.read_interface_address(lan)
-    if not ip or prefix is None:
-        # A fallback probe must not be the thing that fails: on a host without
-        # `ip` at all this raises rather than answering "no bridge".
-        try:
-            if wifi_mod.bridge_exists():
-                ip, prefix = nc.read_interface_address(wifi_mod.BRIDGE_NAME)
-        except Exception:  # noqa: BLE001
-            pass
+    candidates = [lan]
+    try:
+        if wifi_mod.bridge_exists():
+            candidates.append(wifi_mod.BRIDGE_NAME)
+    except Exception:  # noqa: BLE001 — a probe must not be what fails
+        pass
+    candidates += [p for p in _lan_members(m) if p != lan]
+
+    ip = prefix = None
+    for cand in candidates:
+        ip, prefix = nc.read_interface_address(cand)
+        if ip and prefix is not None:
+            if cand != lan:
+                logger.info(
+                    "LAN address %s/%s found on %s rather than the primary %s",
+                    ip, prefix, cand, lan,
+                )
+            break
     if not ip or prefix is None:
         raise RouterModeError(
             f"LAN port '{lan}' has no IPv4 address. Give it a static address "

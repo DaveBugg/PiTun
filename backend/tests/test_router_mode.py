@@ -1990,6 +1990,31 @@ class TestMultiPortLan:
         assert _lan_members({"lan_interface": "wlp3s0"}) == ["wlp3s0"]
         assert _lan_members({}) == []
 
+
+    def test_the_address_is_found_on_whichever_member_holds_it(self, monkeypatch):
+        """Tearing the bridge down leaves the address on a wired member, which
+        need not be the port named as primary. Demanding it be moved back by
+        hand before the next apply would be a rake laid by our own teardown."""
+        from app.core import router_mode as rm
+
+        held = {"enp2s0": ("192.168.50.1", 24)}
+        monkeypatch.setattr(rm.nc, "read_interface_address",
+                            lambda n: held.get(n, (None, None)))
+        monkeypatch.setattr(rm.wifi_mod, "bridge_exists", lambda *a, **k: False)
+
+        ip, prefix = rm._lan_addressing(
+            "wlp3s0", {"lan_interface": "wlp3s0", "lan_extra_interfaces": "enp2s0"})
+        assert (ip, prefix) == ("192.168.50.1", 24)
+
+    def test_no_member_has_an_address_is_still_an_error(self, monkeypatch):
+        import pytest
+        from app.core import router_mode as rm
+        monkeypatch.setattr(rm.nc, "read_interface_address", lambda n: (None, None))
+        monkeypatch.setattr(rm.wifi_mod, "bridge_exists", lambda *a, **k: False)
+        with pytest.raises(rm.RouterModeError, match="has no IPv4 address"):
+            rm._lan_addressing(
+                "wlp3s0", {"lan_interface": "wlp3s0", "lan_extra_interfaces": "enp2s0"})
+
     def test_bridge_enslaves_every_wired_member(self, monkeypatch):
         from app.core import wifi as w
         calls = []
