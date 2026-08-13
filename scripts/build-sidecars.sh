@@ -33,12 +33,12 @@ for sidecar in dnsmasq hostapd; do
         warn "docker/$sidecar not found — skipping (router mode will not be able to start it)"
         continue
     fi
-    if $DOCKER image inspect "pitun-$sidecar:latest" >/dev/null 2>&1; then
+    if $DOCKER_CMD image inspect "pitun-$sidecar:latest" >/dev/null 2>&1; then
         log "pitun-$sidecar image already present"
         continue
     fi
     log "Building pitun-$sidecar sidecar image..."
-    if ! $DOCKER build -q -t "pitun-$sidecar:latest" "$dir" >/dev/null 2>&1; then
+    if ! $DOCKER_CMD build -q -t "pitun-$sidecar:latest" "$dir" >/dev/null 2>&1; then
         warn "Failed to build pitun-$sidecar — router mode will not be able to start it"
     fi
 done

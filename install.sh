@@ -818,11 +818,26 @@ if [[ "$SKIP_HOST_PREP" != "1" ]]; then
         sqlite3 git
 
     # avahi-daemon binds UDP/5353 — same port xray uses for DNS forwarding.
-    if systemctl is-active --quiet avahi-daemon 2>/dev/null; then
+    # Stopping the service is not enough: the SOCKET unit re-activates it, and
+    # Debian also ships a D-Bus activation file, so the daemon comes back
+    # within seconds and still owns 5353. Mask both units, then stop again —
+    # masking never kills a process that is already running.
+    if systemctl is-active --quiet avahi-daemon 2>/dev/null \
+       || systemctl is-active --quiet avahi-daemon.socket 2>/dev/null; then
         info "Disabling avahi-daemon (frees UDP/5353)…"
+        run systemctl disable --now avahi-daemon avahi-daemon.socket || true
+        run systemctl mask avahi-daemon avahi-daemon.socket || true
         run systemctl stop avahi-daemon avahi-daemon.socket || true
-        run systemctl disable avahi-daemon avahi-daemon.socket || true
-        run systemctl mask avahi-daemon || true
+        if pgrep -x avahi-daemon >/dev/null 2>&1; then
+            warn "avahi-daemon survived masking — killing it (it holds UDP/5353)."
+            run pkill -x avahi-daemon || true
+        fi
+    fi
+    # Whoever holds 5353, say so: xray's DNS inbound will fail to bind and
+    # name resolution through PiTun silently stops working.
+    if [[ "$DRY_RUN" != "1" ]] && command -v ss >/dev/null 2>&1; then
+        HOLDER=$(ss -lnupH 2>/dev/null | grep -m1 ':5353 ' || true)
+        [[ -n "$HOLDER" ]] && warn "UDP/5353 is still in use — xray DNS will not start: $HOLDER"
     fi
 
     info "Configuring sysctl (IP forwarding + TPROXY loopback)…"
@@ -1211,6 +1226,21 @@ fi
 step "Starting Docker stack"
 if [[ "$DRY_RUN" != "1" ]]; then
     cd "$INSTALL_DIR"
+
+    # TLS cert MUST exist before nginx starts. `nginx.conf` has carried an
+    # unconditional `listen 443 ssl` since v1.5.2, and nginx aborts outright
+    # when the cert files are missing — taking port 80 down with it, since
+    # nginx is the only service publishing either port. The symptom is a
+    # crash-looping container and a panel unreachable on both ports, which
+    # reads as "the installer did nothing". Idempotent: reuses the existing
+    # CA and reissues the leaf only if the box's IP changed.
+    if [[ -f "$INSTALL_DIR/scripts/gen-cert.sh" ]]; then
+        bash "$INSTALL_DIR/scripts/gen-cert.sh" \
+            || warn "Certificate generation failed — nginx will not start and the panel will be unreachable on 80 and 443. Run scripts/gen-cert.sh manually, then: docker compose up -d"
+    else
+        warn "scripts/gen-cert.sh missing — nginx cannot start without a TLS cert."
+    fi
+
     if [[ "$USE_BUILD" == "1" ]]; then
         # Source-build path: needs constant internet for pip + npm pulls.
         warn "Build mode — Docker will rebuild images. This needs reliable internet."
@@ -1269,8 +1299,31 @@ fi
 
 # ── Summary ──────────────────────────────────────────────────────────────────
 HOST_IP=$(hostname -I 2>/dev/null | awk '{print $1}')
+
+# Don't claim success without looking. A container that starts and then dies
+# leaves `compose up -d` reporting success, so the installer used to print
+# "PiTun is up" over a crash-looping nginx and an unreachable panel.
+STACK_OK=1
+if [[ "$DRY_RUN" != "1" ]]; then
+    for _ in $(seq 1 20); do
+        curl -sk -o /dev/null --max-time 3 "https://localhost/health" && break
+        curl -s  -o /dev/null --max-time 3 "http://localhost/health"  && break
+        sleep 2
+    done
+    DEAD=$(docker compose -f "$INSTALL_DIR/docker-compose.yml" ps \
+             --format '{{.Name}} {{.State}}' 2>/dev/null \
+           | awk '$2 != "running" {print $1}' | tr '\n' ' ')
+    if [[ -n "${DEAD// /}" ]]; then
+        STACK_OK=0
+        warn "These containers are not running: ${DEAD}"
+        warn "Inspect with: docker compose -f $INSTALL_DIR/docker-compose.yml logs"
+    fi
+fi
+
 echo ""
-if [[ "$IS_UPDATE" == "1" ]]; then
+if [[ "$STACK_OK" != "1" ]]; then
+    warn "Install finished, but the stack is NOT healthy — see the warnings above."
+elif [[ "$IS_UPDATE" == "1" ]]; then
     info "PiTun upgraded: $RUNNING_VERSION → $DISPLAY_VERSION"
 else
     info "PiTun is up."
