@@ -477,6 +477,53 @@ async def deploy_to_server(
                         await s.flush()
                         new_xui_server_id = xs.id
                     await s.commit()
+
+                # A fresh panel runs on xray's defaults, where `connIdle`
+                # kills an idle pooled connection after 5 minutes and the
+                # half-close timers cut streaming responses. Set our
+                # timeouts now so a newly deployed server doesn't
+                # reintroduce the problem every time. Best-effort: this
+                # must never fail an install that otherwise succeeded.
+                try:
+                    # Function-level imports: `api.xui` owns the base-URL
+                    # composition (bare vs xui-pro differ), and importing
+                    # it at module scope would close a router cycle.
+                    from app.api.system import _load_settings_map
+                    from app.api.xui import _api_base_url
+                    from app.core.xui_policy import apply_policy_to_panel
+
+                    async with AsyncSession(get_async_engine()) as s:
+                        xs_row = await s.get(XuiServer, new_xui_server_id)
+                        srv_row = await s.get(Server, srv_id)
+                        base_url = (
+                            _api_base_url(xs_row, srv_row)
+                            if xs_row and srv_row else None
+                        )
+                        # Operator-tuned values, not the built-in
+                        # recommendations: otherwise every new deploy lands
+                        # on a different policy than the rest of the fleet
+                        # and the next "apply to all" silently rewrites it.
+                        settings_map = await _load_settings_map(s)
+                    if base_url is None:
+                        raise RuntimeError("panel row vanished after commit")
+
+                    policy_res = await apply_policy_to_panel(
+                        base_url=base_url,
+                        api_token=xui_cfg.api_token,
+                        panel_user=xui_cfg.panel_user,
+                        panel_pass=xui_cfg.panel_pass,
+                        settings_map=settings_map,
+                    )
+                    logger.info(
+                        "Deploy: xray policy on panel %s — %s",
+                        new_xui_server_id, policy_res.detail,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(
+                        "Deploy: could not apply xray policy to panel %s: %s — "
+                        "apply it manually from the X-ui page",
+                        new_xui_server_id, exc,
+                    )
                 final_status = "deployed"
             else:
                 final_status = "deployed_no_uri"

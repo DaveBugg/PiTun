@@ -48,6 +48,7 @@ from typing import Any, Dict, List, Optional
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.core.ssh import exec_remote_script
+from app.core.xray_policy import level_zero
 from app.core.xui_api import XuiAPIError, XuiClient
 from app.models import (
     ChainChannel,
@@ -533,7 +534,9 @@ def build_xray_template_config(
         },
         "policy": {
             "levels": {
-                "0": {"statsUserDownlink": True, "statsUserUplink": True},
+                "0": level_zero(
+                    statsUserDownlink=True, statsUserUplink=True,
+                ),
             },
             "system": {
                 "statsInboundDownlink": True,
@@ -679,7 +682,9 @@ async def build_combined_relay_template(
         },
         "policy": {
             "levels": {
-                "0": {"statsUserDownlink": True, "statsUserUplink": True},
+                "0": level_zero(
+                    statsUserDownlink=True, statsUserUplink=True,
+                ),
             },
             "system": {
                 "statsInboundDownlink": True, "statsInboundUplink": True,

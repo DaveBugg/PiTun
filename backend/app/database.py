@@ -264,6 +264,23 @@ async def init_default_settings():
         "lan_proxy_auth_enabled": "false",
         "lan_proxy_auth_user": "",
         "lan_proxy_auth_pass": "",
+
+        # Xray connection-lifetime policy. Defaults are the recommended
+        # values from core/xray_policy.py — xray's own defaults kill idle
+        # pooled connections after 5 min and cut half-closed streams after
+        # 2–5 s, which is what makes long-lived clients drop. Surfaced in
+        # the UI because the right numbers depend on the workload; they
+        # feed BOTH PiTun's own xray and the panels' templates.
+        "xray_handshake": "10",
+        "xray_conn_idle": "3600",
+        "xray_uplink_only": "0",
+        "xray_downlink_only": "0",
+        # TCP keep-alive for INBOUND sockets only. Xray already keeps
+        # outbounds alive at Chrome's 45/45; inbound is off by default, so
+        # with connIdle at an hour a vanished client (slept laptop, dropped
+        # NAT mapping) would be held that whole hour. 0 = leave it off.
+        "xray_tcp_keepalive_idle": "100",
+        "xray_tcp_keepalive_interval": "15",
     }
 
     # Race-safe upsert: INSERT OR IGNORE on (key). Avoids the TOCTOU gap

@@ -276,9 +276,39 @@ async def list_xui_servers(session: AsyncSession = Depends(get_session)):
     return out
 
 
+async def _best_effort_policy(xs: XuiServer, srv: Server) -> None:
+    """Apply the recommended xray timeouts, never failing the caller.
+
+    A panel PiTun manages should not sit on xray's defaults (`connIdle`
+    300 s kills idle pooled connections; the half-close timers cut
+    streaming responses). Registration is the natural moment to fix that,
+    and the merge preserves everything the operator already configured.
+    """
+    from app.api.system import _load_settings_map
+    from app.core.xui_policy import apply_policy_to_panel
+
+    try:
+        from app.database import get_async_engine
+        from sqlmodel.ext.asyncio.session import AsyncSession as _AS
+        async with _AS(get_async_engine()) as s:
+            settings_map = await _load_settings_map(s)
+        res = await apply_policy_to_panel(
+            base_url=_api_base_url(xs, srv), api_token=xs.api_token,
+            panel_user=xs.panel_user, panel_pass=xs.panel_pass,
+            settings_map=settings_map,
+        )
+        logger.info("Panel %s policy: %s", xs.id, res.detail)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "Panel %s: could not apply xray policy: %s — use the "
+            "apply-policy action once the panel is reachable", xs.id, exc,
+        )
+
+
 @router.post("/servers/import", response_model=XuiServerRead, status_code=201)
 async def import_xui_server(
     body: XuiServerImportBody,
+    apply_policy: bool = True,
     session: AsyncSession = Depends(get_session),
 ):
     """Register a panel against an existing Server row.
@@ -371,6 +401,8 @@ async def import_xui_server(
         await session.commit()
         await session.refresh(existing)
         await session.refresh(srv)
+        if apply_policy:
+            await _best_effort_policy(existing, srv)
         return _xui_to_read(existing, srv)
 
     xs = XuiServer(
@@ -388,6 +420,8 @@ async def import_xui_server(
     await session.commit()
     await session.refresh(xs)
     await session.refresh(srv)
+    if apply_policy:
+        await _best_effort_policy(xs, srv)
     return _xui_to_read(xs, srv)
 
 
@@ -1040,6 +1074,66 @@ class XuiServerSyncResponse(BaseModel):
     removed: int
     chain_skipped: int
     orphan_nodes_removed: int
+
+
+class XuiPolicyResponse(BaseModel):
+    xui_server_id: int
+    changed: bool
+    applied: Dict[str, Any]
+    detail: str
+
+
+@router.post(
+    "/servers/{xui_server_id}/apply-policy",
+    response_model=XuiPolicyResponse,
+)
+async def apply_xray_policy(
+    xui_server_id: int,
+    restart: bool = True,
+    direct: bool = False,
+    session: AsyncSession = Depends(get_session),
+):
+    """Set the connection-lifetime timeouts in the panel's xray template.
+
+    Xray's defaults kill an idle pooled connection after 5 minutes and
+    give a half-closed stream 2–5 seconds to finish, which is what makes
+    long-lived clients (agent SDKs, streaming responses) drop for no
+    visible reason. Nothing set these before: chains got PiTun's template
+    without timeouts, and a plain panel had no template at all and ran on
+    the built-in defaults.
+
+    We PATCH whatever the panel currently has rather than pushing a
+    template of our own — the operator's outbounds, routing rules and
+    stats flags are preserved, only the four timeout keys are written.
+    That keeps the action safe on a panel PiTun doesn't otherwise manage.
+
+    Idempotent: re-running reports `changed=false` and skips the restart.
+    """
+    from app.api.system import _load_settings_map
+    from app.core.xray_policy import timeouts_from_settings
+    from app.core.xui_policy import apply_policy_to_panel
+
+    xs, srv = await _get_xs_or_404(xui_server_id, session)
+    settings_map = await _load_settings_map(session)
+    try:
+        result = await apply_policy_to_panel(
+            base_url=_api_base_url(xs, srv),
+            api_token=xs.api_token,
+            panel_user=xs.panel_user,
+            panel_pass=xs.panel_pass,
+            direct=direct,
+            restart=restart,
+            settings_map=settings_map,
+        )
+    except XuiAPIError as exc:
+        raise HTTPException(
+            502, detail=f"Panel policy update failed ({exc.kind}): {exc}",
+        )
+
+    return XuiPolicyResponse(
+        xui_server_id=xui_server_id, changed=result.changed,
+        applied=timeouts_from_settings(settings_map), detail=result.detail,
+    )
 
 
 @router.post(

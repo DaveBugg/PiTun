@@ -1441,6 +1441,16 @@ class SettingsRead(BaseModel):
     lan_proxy_auth_enabled: bool = False
     lan_proxy_auth_user: str = ""
     lan_proxy_auth_pass: str = ""
+    # Xray connection-lifetime policy. Feeds PiTun's own xray AND the
+    # panels' templates, so one place decides how long a connection may
+    # sit idle and whether a half-closed stream gets cut. See
+    # core/xray_policy.py for why the defaults are what they are.
+    xray_handshake: int = 10
+    xray_conn_idle: int = 3600
+    xray_uplink_only: int = 0
+    xray_downlink_only: int = 0
+    xray_tcp_keepalive_idle: int = 100
+    xray_tcp_keepalive_interval: int = 15
 
 
 class SettingsUpdate(BaseModel):
@@ -1541,6 +1551,15 @@ class SettingsUpdate(BaseModel):
     lan_proxy_auth_enabled: Optional[bool] = None
     lan_proxy_auth_user: Optional[str] = None
     lan_proxy_auth_pass: Optional[str] = None
+    # Xray policy (see SettingsRead). Bounds are enforced in the endpoint
+    # against core/xray_policy.BOUNDS — a too-small connIdle looks like a
+    # flaky network, which is miserable to debug from the symptom.
+    xray_handshake: Optional[int] = None
+    xray_conn_idle: Optional[int] = None
+    xray_uplink_only: Optional[int] = None
+    xray_downlink_only: Optional[int] = None
+    xray_tcp_keepalive_idle: Optional[int] = None
+    xray_tcp_keepalive_interval: Optional[int] = None
 
 
 # ─── GeoData ──────────────────────────────────────────────────────────────────
