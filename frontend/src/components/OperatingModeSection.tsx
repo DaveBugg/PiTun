@@ -27,7 +27,7 @@ export default function OperatingModeSection({
   onDhcpChange: (key: string, value: string | boolean) => void
 }) {
   const t = useT()
-  const { data, isLoading } = useQuery({
+  const { data, isLoading, isError, error } = useQuery({
     queryKey: ['network-interfaces'],
     queryFn: () => networkApi.interfaces(),
     refetchInterval: 30_000,
@@ -35,6 +35,11 @@ export default function OperatingModeSection({
 
   const capable = data?.router_capable ?? false
   const nics = data?.items ?? []
+  // "We could not ask" is not "the box has no ports". Rendering a failed
+  // request as `0 ports` tells the operator something about their hardware
+  // that we never established — and on a box running an older backend, where
+  // this endpoint 404s, that reads as "your NICs vanished".
+  const detectionFailed = isError && !isLoading
 
   return (
     <div className="space-y-3">
@@ -48,6 +53,24 @@ export default function OperatingModeSection({
           <div className="flex items-center gap-2 text-[12px] text-gray-500">
             <Loader2 className="h-3.5 w-3.5 animate-spin" />
             {t('Detecting…', 'Определяем…')}
+          </div>
+        ) : detectionFailed ? (
+          <div className="flex items-start gap-2 rounded-md border border-amber-200 dark:border-amber-800/50 bg-amber-50 dark:bg-amber-950/30 p-2 text-[11px] text-amber-800 dark:text-amber-300">
+            <AlertTriangle className="h-3.5 w-3.5 shrink-0 mt-0.5" />
+            <div>
+              {t(
+                'Could not read the network ports from the backend, so nothing below reflects this hardware.',
+                'Не удалось получить список сетевых портов от бэкенда — всё ниже не отражает это железо.',
+              )}
+              <div className="mt-0.5 opacity-80 font-mono">
+                {(error as { response?: { status?: number } })?.response?.status === 404
+                  ? t(
+                      'The endpoint is missing — this box is running a backend older than router mode.',
+                      'Эндпоинта нет — на этой машине бэкенд старее, чем режим роутера.',
+                    )
+                  : String((error as Error)?.message ?? '')}
+              </div>
+            </div>
           </div>
         ) : nics.length === 0 ? (
           <div className="text-[12px] text-gray-500">
@@ -141,6 +164,10 @@ export default function OperatingModeSection({
               type="radio"
               className="mt-0.5"
               disabled={!capable}
+              title={detectionFailed
+                ? t('Port detection failed — cannot tell whether this box can be a router.',
+                    'Определить порты не удалось — неизвестно, может ли эта машина быть роутером.')
+                : undefined}
               checked={value === 'router'}
               onChange={() => onChange('router')}
             />
@@ -158,7 +185,7 @@ export default function OperatingModeSection({
           </label>
         </div>
 
-        {!capable && !isLoading && (
+        {!capable && !isLoading && !detectionFailed && (
           <div className="mt-2 flex items-start gap-2 rounded-md border border-amber-200 dark:border-amber-800/50 bg-amber-50 dark:bg-amber-950/30 p-2 text-[11px] text-amber-800 dark:text-amber-300">
             <AlertTriangle className="h-3.5 w-3.5 shrink-0 mt-0.5" />
             {t(
