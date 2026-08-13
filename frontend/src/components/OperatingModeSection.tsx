@@ -4,6 +4,8 @@ import { clsx } from 'clsx'
 
 import { networkApi } from '@/api/client'
 import { useT } from '@/hooks/useT'
+import { useAppStore } from '@/store'
+import { translateWifiDetail } from '@/lib/wifiDetail'
 
 /**
  * Operating mode + physical NIC inventory (router mode, phase 0).
@@ -27,6 +29,7 @@ export default function OperatingModeSection({
   onDhcpChange: (key: string, value: string | boolean) => void
 }) {
   const t = useT()
+  const lang = useAppStore((s) => s.lang)
   const { data, isLoading, isError, error } = useQuery({
     queryKey: ['network-interfaces'],
     queryFn: () => networkApi.interfaces(),
@@ -107,7 +110,7 @@ export default function OperatingModeSection({
                         ? 'border-gray-700 text-gray-500'
                         : 'border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-800/50 dark:bg-amber-950/30 dark:text-amber-300',
                     )}
-                    title={n.wifi_detail}
+                    title={translateWifiDetail(n.wifi_detail, lang)}
                   >
                     {n.ap_capable === true
                       ? t('WiFi · can serve', 'WiFi · может раздавать')

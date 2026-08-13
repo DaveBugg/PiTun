@@ -228,7 +228,7 @@ async def init_default_settings():
         # No default SSID/passphrase: an access point that comes up with a
         # guessable name and password is worse than one that doesn't come up.
         "wifi_enabled": "false",
-        "wifi_ssid": "",
+        "wifi_ssid": "PiTun",
         "wifi_passphrase": "",
         "wifi_country": "",
         "wifi_band": "2.4",

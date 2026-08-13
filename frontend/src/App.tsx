@@ -13,6 +13,7 @@ import { Balancers } from '@/pages/Balancers'
 import { NodeCircles } from '@/pages/NodeCircles'
 import { Devices } from '@/pages/Devices'
 import { Diagnostics } from '@/pages/Diagnostics'
+import RouterPage from '@/pages/Router'
 import { Settings } from '@/pages/Settings'
 import { Servers } from '@/pages/Servers'
 import { ServerTasks } from '@/pages/ServerTasks'
@@ -66,6 +67,7 @@ export default function App() {
         <Route path="/geodata"       element={<GeoData />} />
         <Route path="/logs"          element={<Logs />} />
         <Route path="/diagnostics"   element={<Diagnostics />} />
+        <Route path="/router"        element={<RouterPage />} />
         <Route path="/settings"      element={<Settings />} />
         <Route path="/kb"            element={<KnowledgeBase />} />
       </Route>

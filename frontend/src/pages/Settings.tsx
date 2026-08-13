@@ -1,12 +1,9 @@
 import { useState } from 'react'
+import { Link } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { systemApi } from '@/api/client'
 import HostNetworkSection from '@/components/HostNetworkSection'
 import BackupSection from '@/components/BackupSection'
-import OperatingModeSection from '@/components/OperatingModeSection'
-import WifiApSection from '@/components/WifiApSection'
-import WanSection from '@/components/WanSection'
-import WanDiagnosticsSection from '@/components/WanDiagnosticsSection'
 import { UpdateSection } from '@/components/UpdateSection'
 import {
   Settings as SettingsIcon,
@@ -287,56 +284,24 @@ export function Settings() {
       {/* Network */}
       {section(Network, 'Network', t('Interface, gateway and LAN configuration', 'Интерфейс, шлюз и настройки LAN'), (
         <div className="space-y-5">
-          <OperatingModeSection
-            value={String(val('operating_mode') || 'gateway')}
-            onChange={(m) => set('operating_mode', m)}
-            wan={String(val('wan_interface') || '')}
-            lan={String(val('lan_interface') || '')}
-            onRoleChange={(role, iface) => set(role, iface)}
-            dhcp={{
-              enabled: isChecked('dhcp_enabled'),
-              poolStart: String(val('dhcp_pool_start') || ''),
-              poolEnd: String(val('dhcp_pool_end') || ''),
-              leaseHours: String(val('dhcp_lease_hours') || 12),
-            }}
-            onDhcpChange={(k, v) => set(k, v)}
-          />
-          {String(val('operating_mode') || 'gateway') === 'router' && (
-            <>
-              <WanSection
-                wan={String(val('wan_interface') || '')}
-                values={{
-                  mode: String(val('wan_mode') || 'dhcp'),
-                  vlanId: String(val('wan_vlan_id') ?? 0),
-                  macClone: String(val('wan_mac_clone') || ''),
-                  address: String(val('wan_static_address') || ''),
-                  gateway: String(val('wan_static_gateway') || ''),
-                  dns: String(val('wan_static_dns') || ''),
-                  pppoeUser: String(val('wan_pppoe_user') || ''),
-                  // Write-only on the backend, same as the WiFi passphrase.
-                  pppoePassword: String(draft['wan_pppoe_password'] ?? ''),
-                }}
-                onChange={(k, v) => set(k, k === 'wan_vlan_id' ? Number(v) || 0 : v)}
-              />
-              <WifiApSection
-                lan={String(val('lan_interface') || '')}
-                wifi={{
-                  enabled: isChecked('wifi_enabled'),
-                  ssid: String(val('wifi_ssid') || ''),
-                  // Write-only on the backend: starts empty and only sends
-                  // when the operator actually types a new one.
-                  passphrase: String(draft['wifi_passphrase'] ?? ''),
-                  country: String(val('wifi_country') || ''),
-                  band: String(val('wifi_band') || '2.4'),
-                  channel: String(val('wifi_channel') ?? 0),
-                  security: String(val('wifi_security') || 'wpa2'),
-                  hidden: isChecked('wifi_hidden'),
-                }}
-                onChange={(k, v) => set(k, v)}
-              />
-              <WanDiagnosticsSection />
-            </>
-          )}
+          {/* Operating mode, WAN and WiFi moved to their own Router page.
+              They are the only settings that can take the network down, and
+              they are read as a set — leaving a copy here would be a second
+              place to change them from, with its own unsaved draft. */}
+          <Link
+            to="/router"
+            className="flex items-center justify-between gap-3 rounded-lg border border-gray-800 bg-gray-950/40 px-3 py-2.5 hover:border-gray-700 transition-colors"
+          >
+            <span className="text-xs text-gray-400">
+              {t(
+                'Operating mode, uplink (WAN) and the wireless network are on the Router page.',
+                'Режим работы, аплинк (WAN) и беспроводная сеть — на странице «Роутер».',
+              )}
+            </span>
+            <span className="text-xs text-brand-400 shrink-0">
+              {t('Open', 'Открыть')} →
+            </span>
+          </Link>
           <div className="border-t border-gray-800" />
           {/* xray-config knobs (DB-backed settings consumed by config_gen) */}
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">

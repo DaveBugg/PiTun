@@ -21,6 +21,7 @@ import {
   X,
   Monitor,
   Activity,
+  Router as RouterIcon,
   Settings2,
   Sun,
   Moon,
@@ -61,12 +62,13 @@ const NAV = [
   { to: '/devices',      icon: Monitor,         label: 'Devices'       },
   { to: '/logs',         icon: ScrollText,      label: 'Logs'          },
   { to: '/diagnostics',  icon: Activity,        label: 'Diagnostics'   },
+  { to: '/router',       icon: RouterIcon,      label: 'Router'        },
   { to: '/settings',     icon: Settings2,       label: 'Settings'      },
   { to: '/kb',           icon: BookOpen,        label: 'Knowledge Base'},
 ]
 
 // Routes after which a thin separator line groups the nav visually.
-const DIVIDE_AFTER = new Set(['/routing', '/subscriptions', '/chains', '/devices', '/settings'])
+const DIVIDE_AFTER = new Set(['/routing', '/subscriptions', '/chains', '/devices', '/router', '/settings'])
 
 export function Layout() {
   const {

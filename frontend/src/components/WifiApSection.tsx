@@ -3,6 +3,8 @@ import { Wifi, AlertTriangle } from 'lucide-react'
 
 import { networkApi } from '@/api/client'
 import { useT } from '@/hooks/useT'
+import { useAppStore } from '@/store'
+import { translateWifiDetail } from '@/lib/wifiDetail'
 
 /**
  * WiFi access point settings (router mode, phase 1b).
@@ -31,6 +33,7 @@ export default function WifiApSection({
   onChange: (key: string, value: string | boolean | number) => void
 }) {
   const t = useT()
+  const lang = useAppStore((s) => s.lang)
   const { data } = useQuery({
     queryKey: ['network-interfaces'],
     queryFn: () => networkApi.interfaces(),
@@ -50,8 +53,8 @@ export default function WifiApSection({
                 `${lan} — адаптер только для подключения: он умеет входить в сети, но не создавать их. Используйте проводной LAN-порт или Wi-Fi-адаптер с поддержкой режима точки доступа.`,
               )
             : t(
-                `Can't tell whether ${lan} supports access-point mode: ${port.wifi_detail}`,
-                `Не удалось определить, поддерживает ли ${lan} режим точки доступа: ${port.wifi_detail}`,
+                `Can't tell whether ${lan} supports access-point mode: ${translateWifiDetail(port.wifi_detail, lang)}`,
+                `Не удалось определить, поддерживает ли ${lan} режим точки доступа: ${translateWifiDetail(port.wifi_detail, lang)}`,
               )}
         </div>
       </div>

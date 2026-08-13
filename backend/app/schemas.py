@@ -1401,7 +1401,7 @@ class SettingsRead(BaseModel):
     dhcp_pool_end: str = ""
     dhcp_lease_hours: int = 12
     wifi_enabled: bool = False
-    wifi_ssid: str = ""
+    wifi_ssid: str = "PiTun"
     # Never returned: the read model is what the UI renders, and a WiFi
     # password has no business travelling back to a browser on every poll.
     wifi_country: str = ""

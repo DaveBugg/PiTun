@@ -774,7 +774,7 @@ async def get_settings(session: AsyncSession = Depends(get_session)):
         dhcp_pool_end=m.get("dhcp_pool_end", ""),
         dhcp_lease_hours=_safe_int(m, "dhcp_lease_hours", 12),
         wifi_enabled=(m.get("wifi_enabled", "false").lower() == "true"),
-        wifi_ssid=m.get("wifi_ssid", ""),
+        wifi_ssid=m.get("wifi_ssid") or "PiTun",
         wifi_country=m.get("wifi_country", ""),
         wifi_band=m.get("wifi_band", "2.4"),
         wifi_channel=_safe_int(m, "wifi_channel", 0),
