@@ -359,7 +359,13 @@ async def apply(session: AsyncSession) -> dict:
         # interface NAME, and dnsmasq and hostapd both have to be handed the
         # bridge rather than a port that is about to become a bridge member.
         if bridged:
-            wifi_mod.create_lan_bridge(wired_lan, f"{lan_address}/{lan_prefix}")
+            wifi_mod.create_lan_bridge(
+                wired_lan, f"{lan_address}/{lan_prefix}",
+                # The radio keeps no address of its own: hostapd will put it
+                # in the bridge, and until then the gateway address must live
+                # in exactly one place.
+                also_flush=[p for p in lan_members if p not in wired_lan],
+            )
             applied.append("lan_bridge")
 
         wan_tcp, wan_udp = _wan_allowed_ports(m)

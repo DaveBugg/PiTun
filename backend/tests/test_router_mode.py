@@ -2028,6 +2028,29 @@ class TestMultiPortLan:
         assert "addr add 192.168.50.1/24 dev enp2s0" in calls
         assert f"link delete {w.BRIDGE_NAME}" in calls
 
+
+    def test_the_radio_gives_up_its_address_without_being_enslaved(self, monkeypatch):
+        """When the operator nominated the radio as the primary LAN port, the
+        gateway address starts out on it. hostapd enslaves it later — but if
+        the address stays there in the meantime, the same address answers on
+        both the radio and the bridge and which one a client reaches is a
+        coin toss."""
+        from app.core import wifi as w
+        calls = []
+
+        def fake_ip(*args, **kw):
+            calls.append(" ".join(args))
+            rc = 1 if args[:3] == ("link", "show", w.BRIDGE_NAME) else 0
+            return mock.Mock(returncode=rc, stdout="", stderr="")
+
+        monkeypatch.setattr(w, "_ip", fake_ip)
+        w.create_lan_bridge(["enp2s0"], "192.168.50.1/24", also_flush=["wlp3s0"])
+
+        assert "addr flush dev wlp3s0" in calls
+        # Flushed, but NOT enslaved: hostapd does that itself via `bridge=`.
+        assert f"link set wlp3s0 master {w.BRIDGE_NAME}" not in calls
+        assert f"link set enp2s0 master {w.BRIDGE_NAME}" in calls
+
     def test_dissolve_reads_the_kernel_not_the_config(self, monkeypatch):
         """Teardown runs from states nobody planned, including after the
         settings that built the bridge changed underneath it."""

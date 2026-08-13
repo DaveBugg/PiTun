@@ -218,13 +218,19 @@ def bridge_exists(name: str = BRIDGE_NAME) -> bool:
 
 
 def create_lan_bridge(wired_lan, address_cidr: str,
-                      name: str = BRIDGE_NAME) -> dict:
+                      name: str = BRIDGE_NAME, also_flush=()) -> dict:
     """Put the wired LAN ports into a bridge and move the address there.
 
     `wired_lan` is one interface name or a sequence of them — a LAN can be
     several sockets plus the radio, and clients on any of them belong to the
     same subnet and the same DHCP scope. The AP is not enslaved here: hostapd
     adds its own interface via `bridge=`, and doing it from both sides races.
+
+    `also_flush` names interfaces that must give up their addresses without
+    being enslaved — the radio, when it is the port the operator nominated as
+    primary. hostapd enslaves it later, but the address has to leave now:
+    otherwise the same gateway address answers on both the radio and the
+    bridge, and which one a client reaches is a coin toss.
 
     `address_cidr` is the address the bridge must end up holding (e.g.
     "192.168.10.1/24") — the gateway clients talk to. Passing it explicitly
@@ -279,9 +285,10 @@ def create_lan_bridge(wired_lan, address_cidr: str,
     # leaves the smallest possible window with no address anywhere. Every
     # member is flushed — a secondary port carrying its own address would
     # otherwise keep answering on a subnet nothing routes any more.
-    for m in members:
+    extra_flush = [f for f in (also_flush or ()) if f and f not in members]
+    for m in members + extra_flush:
         _ip("addr", "flush", "dev", m)
-    steps.append(f"flushed addresses from {', '.join(members)}")
+    steps.append(f"flushed addresses from {', '.join(members + extra_flush)}")
 
     for m in members:
         if _ip("link", "set", m, "master", name).returncode != 0:
