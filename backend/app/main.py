@@ -71,6 +71,15 @@ async def lifespan(app: FastAPI):
     geo_scheduler.start()
     autocheck_scheduler.start()
 
+    # Country-flag prefixes, applied at the model rather than at each of the
+    # nine places a node gets created — which is how nodes from a server
+    # deploy ended up without one while imported nodes had them.
+    try:
+        from app.core.geoip_lookup import install_node_listener
+        install_node_listener()
+    except Exception as exc:  # noqa: BLE001 — cosmetic, never blocks startup
+        logger.warning("Country-flag enrichment not installed: %s", exc)
+
     # Reconcile router mode with the dataplane on boot: nftables tables and
     # the DHCP container don't survive a reboot, so a box configured as a
     # router would come back up as a plain host and take the LAN with it.

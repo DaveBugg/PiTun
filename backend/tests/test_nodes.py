@@ -409,3 +409,91 @@ class TestNodeExportImportJSON:
         assert body["imported"] == 1
         assert len(body["errors"]) == 1
         assert "bad-protocol" in body["errors"][0]
+
+
+class TestApplyCountryFlags:
+    """Nodes that already existed when the GeoLite2 database was added keep
+    the name they were created with — enrichment happens as a node is
+    written. This is the one-off that brings them in line."""
+
+    class _R:
+        def get(self, ip):
+            return {"country": {"iso_code": "NL"}} if ip == "5.6.7.8" else None
+
+        def close(self):
+            pass
+
+    @pytest.fixture
+    def no_geoip_yet(self, monkeypatch):
+        """Start with no database installed — the state a node created before
+        the operator added GeoLite2 was written in. Hand back a switch that
+        turns it on, so the test can reproduce "added the mmdb afterwards"."""
+        from app.core import geoip_lookup as g
+        g.reset()
+        monkeypatch.setattr(g, "_reader", None)
+        monkeypatch.setattr(g, "_reader_loaded", True)
+
+        def enable():
+            monkeypatch.setattr(g, "_reader", self._R())
+            monkeypatch.setattr(g, "_reader_loaded", True)
+
+        yield enable
+        g.reset()
+
+    @pytest.fixture
+    def geoip(self, monkeypatch):
+        from app.core import geoip_lookup as g
+        g.reset()
+        monkeypatch.setattr(g, "_reader", self._R())
+        monkeypatch.setattr(g, "_reader_loaded", True)
+        yield
+        g.reset()
+
+    def _make(self, client, auth_headers, name, address):
+        r = client.post("/api/nodes", headers=auth_headers, json={
+            "name": name, "protocol": "vless", "address": address,
+            "port": 443, "uuid": "u",
+        })
+        assert r.status_code == 201, r.text
+        return r.json()["id"]
+
+    def test_a_node_written_before_the_database_existed_gets_its_flag(
+        self, client, admin_user, auth_headers, no_geoip_yet,
+    ):
+        nid = self._make(client, auth_headers, "deployed-node", "5.6.7.8")
+        got = client.get(f"/api/nodes/{nid}", headers=auth_headers).json()
+        assert got["name"] == "deployed-node", "no database yet — no flag"
+
+        no_geoip_yet()          # operator drops GeoLite2-Country.mmdb in
+        r = client.post("/api/nodes/apply-country-flags", headers=auth_headers)
+        assert r.status_code == 200, r.text
+        assert r.json()["renamed"] == 1
+        got = client.get(f"/api/nodes/{nid}", headers=auth_headers).json()
+        assert got["name"] == "🇳🇱 deployed-node"
+
+    def test_a_node_created_with_the_database_present_is_already_flagged(
+        self, client, admin_user, auth_headers, geoip,
+    ):
+        """The write-time hook is the actual fix; the backfill only exists
+        for what predates it."""
+        nid = self._make(client, auth_headers, "fresh-node", "5.6.7.8")
+        got = client.get(f"/api/nodes/{nid}", headers=auth_headers).json()
+        assert got["name"] == "🇳🇱 fresh-node"
+
+        r = client.post("/api/nodes/apply-country-flags", headers=auth_headers)
+        assert r.json()["renamed"] == 0, "nothing left to do"
+
+    def test_a_node_whose_country_is_unknown_keeps_its_name(
+        self, client, admin_user, auth_headers, geoip,
+    ):
+        nid = self._make(client, auth_headers, "mystery", "203.0.113.9")
+        client.post("/api/nodes/apply-country-flags", headers=auth_headers)
+        got = client.get(f"/api/nodes/{nid}", headers=auth_headers).json()
+        assert got["name"] == "mystery"
+
+    def test_without_a_database_it_says_so(self, client, admin_user, auth_headers):
+        from app.core import geoip_lookup as g
+        g.reset()
+        r = client.post("/api/nodes/apply-country-flags", headers=auth_headers)
+        assert r.status_code == 400
+        assert "GeoLite2" in r.json()["detail"]

@@ -477,7 +477,7 @@ Frontend is a single-page React app served by nginx.
 - **User-Agent templates** — an editable table (add / edit / delete)
   replacing the old hardcoded presets; each row carries a UA string and
   optional custom request headers, with catalogue export / import
-- Optional **GeoIP country flags** on imported node names (`🇳🇱 vless-nl`)
+- Optional **GeoIP country flags** on node names (`🇳🇱 vless-nl`)
   — opt-in and licence-clean (drop a MaxMind `GeoLite2-Country.mmdb`
   next to the geo data; absent it's a silent no-op)
 - Optional regex filter, configurable interval

@@ -88,13 +88,20 @@ def strip_leading_flag(name: str) -> str:
     return name
 
 
-def _to_ip(address: str) -> Optional[str]:
-    """Return an IP literal for `address`, resolving a hostname best-effort."""
+def _to_ip(address: str, *, resolve: bool = True) -> Optional[str]:
+    """Return an IP literal for `address`, resolving a hostname best-effort.
+
+    `resolve=False` answers only for addresses that are already literals.
+    The lookup below is blocking, and one caller runs inside a database
+    flush where a stalled DNS server would hold up the write.
+    """
     try:
         ipaddress.ip_address(address)
         return address
     except ValueError:
         pass
+    if not resolve:
+        return None
     try:
         return socket.gethostbyname(address)
     except OSError:
@@ -115,13 +122,17 @@ def country_code(ip: str) -> Optional[str]:
     return (rec.get("country") or {}).get("iso_code")
 
 
-def enrich_name(name: str, address: str) -> str:
+def enrich_name(name: str, address: str, *, resolve: bool = True) -> str:
     """`name` prefixed with the flag for `address`'s country. Returns the
-    name unchanged (minus any stale flag) when disabled or on a miss."""
+    name unchanged (minus any stale flag) when disabled or on a miss.
+
+    `resolve=False` skips the DNS lookup for hostname addresses — see
+    `_to_ip`. Such a node simply gets no flag rather than a stalled write.
+    """
     stripped = strip_leading_flag(name)
     if _get_reader() is None or not address:
         return stripped
-    ip = _to_ip(address)
+    ip = _to_ip(address, resolve=resolve)
     if not ip:
         return stripped
     flag = flag_emoji(country_code(ip) or "")
@@ -138,3 +149,31 @@ def enrich_parsed_nodes(nodes: List[dict]) -> None:
         name = n.get("name")
         if addr and name:
             n["name"] = enrich_name(name, addr)
+
+
+def install_node_listener() -> None:
+    """Flag every Node as it is written, whatever created it.
+
+    Enrichment used to be called at the two import paths, and nodes are
+    created at nine — so a node from a server deploy or an x-ui panel never
+    got a flag, and the feature looked broken to anyone whose nodes came
+    from there. Hooking the model instead of the call sites means the next
+    path added gets it for free, which is the failure this had already.
+
+    DNS is deliberately skipped here: this runs inside the flush, and a
+    stalled resolver would hold up the write. A hostname address gets no
+    flag from this path — the import paths, which run outside a flush, still
+    resolve and enrich normally.
+    """
+    from sqlalchemy import event
+    from app.models import Node
+
+    def _apply(_mapper, _conn, target) -> None:
+        try:
+            if getattr(target, "name", None) and getattr(target, "address", None):
+                target.name = enrich_name(target.name, target.address, resolve=False)
+        except Exception:  # noqa: BLE001 — a cosmetic prefix must never
+            pass          # block writing the node itself
+
+    for when in ("before_insert", "before_update"):
+        event.listen(Node, when, _apply)

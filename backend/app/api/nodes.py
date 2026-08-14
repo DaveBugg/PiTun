@@ -1110,3 +1110,55 @@ async def speedtest_all_nodes(session: AsyncSession = Depends(get_session)):
         results.append(SpeedTestResult(**result))
     await session.commit()
     return results
+
+
+@router.post("/apply-country-flags")
+async def apply_country_flags(session: AsyncSession = Depends(get_session)):
+    """Put a country flag on every existing node's name.
+
+    Enrichment happens as a node is written, so nodes that already existed
+    when the GeoLite2 database was added — or that predate the flag feature
+    — keep the name they were created with. This is the one-off that brings
+    them in line.
+
+    Unlike the write-time hook, this resolves hostnames: it runs in a worker
+    thread rather than inside a flush, so a slow DNS server costs time here
+    instead of stalling a database write. Idempotent — a stale flag is
+    stripped before the current one is applied, so running it twice is the
+    same as running it once, and a node whose country can't be determined
+    simply keeps its bare name.
+    """
+    import anyio
+    from app.core.geoip_lookup import _get_reader, enrich_name
+
+    if _get_reader() is None:
+        raise HTTPException(
+            400,
+            "No GeoLite2 country database is installed, so there is nothing "
+            "to look names up in. Add GeoLite2-Country.mmdb next to the geo "
+            "data and restart the backend.",
+        )
+
+    nodes = (await session.exec(select(Node))).all()
+
+    def _resolve_all(pairs: List[tuple]) -> List[tuple]:
+        # One thread for the whole batch: each name may cost a DNS lookup.
+        return [(nid, enrich_name(name, addr)) for nid, name, addr in pairs]
+
+    renamed = await anyio.to_thread.run_sync(
+        _resolve_all, [(n.id, n.name, n.address) for n in nodes],
+    )
+
+    by_id = {nid: new_name for nid, new_name in renamed}
+    changed = 0
+    for node in nodes:
+        new_name = by_id.get(node.id)
+        if new_name and new_name != node.name:
+            node.name = new_name
+            changed += 1
+    await session.commit()
+    import logging
+    logging.getLogger(__name__).info(
+        "Country flags applied: %d of %d nodes renamed", changed, len(nodes),
+    )
+    return {"total": len(nodes), "renamed": changed}

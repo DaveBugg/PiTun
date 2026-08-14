@@ -92,3 +92,72 @@ class TestEnrich:
             raise OSError("no dns")
         monkeypatch.setattr(g.socket, "gethostbyname", boom)
         assert g.enrich_name("node", "nxdomain.invalid") == "node"
+
+
+class TestResolveSwitch:
+    """The model hook runs inside a database flush, where the blocking DNS
+    lookup this module otherwise does would hold up the write."""
+
+    def test_hostname_gets_no_flag_without_resolving(self, fake_geoip, monkeypatch):
+        def boom(_h):
+            raise AssertionError("DNS must not be consulted with resolve=False")
+
+        monkeypatch.setattr(g.socket, "gethostbyname", boom)
+        assert g.enrich_name("node", "vpn.example.com", resolve=False) == "node"
+
+    def test_an_ip_literal_still_gets_one(self, fake_geoip):
+        assert g.enrich_name("node", "5.5.5.5", resolve=False) == "🇳🇱 node"
+
+
+class TestModelListener:
+    """Enrichment used to be called at the two import paths while nodes are
+    created at nine, so a node from a server deploy or an x-ui panel never
+    got a flag — which is exactly how the feature came to look broken."""
+
+    def _target(self, name, address):
+        class _N:
+            pass
+        n = _N()
+        n.name, n.address = name, address
+        return n
+
+    def _hook(self, monkeypatch):
+        """Install the listener against a stand-in and hand back the callback."""
+        captured = {}
+
+        class _FakeEvent:
+            @staticmethod
+            def listen(_model, when, fn):
+                captured.setdefault("whens", []).append(when)
+                captured["fn"] = fn
+
+        import sys, types
+        fake_sa = types.ModuleType("sqlalchemy")
+        fake_sa.event = _FakeEvent
+        monkeypatch.setitem(sys.modules, "sqlalchemy", fake_sa)
+        g.install_node_listener()
+        return captured
+
+    def test_it_hooks_both_insert_and_update(self, fake_geoip, monkeypatch):
+        cap = self._hook(monkeypatch)
+        assert set(cap["whens"]) == {"before_insert", "before_update"}
+
+    def test_a_node_written_by_any_path_gets_flagged(self, fake_geoip, monkeypatch):
+        cap = self._hook(monkeypatch)
+        node = self._target("vless-reality-deployed", "5.5.5.5")
+        cap["fn"](None, None, node)
+        assert node.name == "🇳🇱 vless-reality-deployed"
+
+    def test_flags_do_not_stack_on_rewrite(self, fake_geoip, monkeypatch):
+        cap = self._hook(monkeypatch)
+        node = self._target("🇳🇱 vless", "5.5.5.5")
+        cap["fn"](None, None, node)
+        cap["fn"](None, None, node)
+        assert node.name == "🇳🇱 vless"
+
+    def test_a_broken_lookup_never_blocks_the_write(self, fake_geoip, monkeypatch):
+        cap = self._hook(monkeypatch)
+        monkeypatch.setattr(g, "enrich_name", lambda *a, **k: 1 / 0)
+        node = self._target("vless", "5.5.5.5")
+        cap["fn"](None, None, node)          # must not raise
+        assert node.name == "vless"
