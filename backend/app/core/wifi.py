@@ -217,6 +217,27 @@ def bridge_exists(name: str = BRIDGE_NAME) -> bool:
     return _ip("link", "show", name).returncode == 0
 
 
+def _set_nm_managed(iface: str, managed: bool) -> None:
+    """Hand a port to NetworkManager, or take it back. Best-effort.
+
+    A port that NM has a profile for keeps getting its address re-applied,
+    which is how the LAN address ended up on both the bridge and the member
+    at once: PiTun moves it to the bridge, NM notices its configured address
+    is gone from the port and puts it back. Two interfaces answering for the
+    same address on one segment.
+
+    So a member is taken out of NM's hands while it is enslaved, and handed
+    back on teardown — which is also what restores the persistent address the
+    next apply reads. Silent on hosts that don't run NM at all.
+    """
+    from app.core.network_config import host_run
+    try:
+        host_run(["nmcli", "device", "set", iface, "managed",
+                  "yes" if managed else "no"], timeout=10)
+    except Exception as exc:  # noqa: BLE001 — not every host runs NM
+        logger.debug("nmcli managed=%s for %s: %s", managed, iface, exc)
+
+
 def create_lan_bridge(wired_lan, address_cidr: str,
                       name: str = BRIDGE_NAME, also_flush=()) -> dict:
     """Put the wired LAN ports into a bridge and move the address there.
@@ -262,10 +283,20 @@ def create_lan_bridge(wired_lan, address_cidr: str,
     if bridge_exists(name):
         # Already bridged — reconcile membership and move on. Ports may have
         # been added to the LAN since the bridge was built.
+        #
+        # This path does the same address work as a fresh build, not just the
+        # enslaving: a member that NetworkManager has since re-addressed would
+        # otherwise keep the gateway address alongside the bridge, and re-applying
+        # settings is exactly when that has happened.
+        for m in members + [f for f in (also_flush or ()) if f and f not in members]:
+            _set_nm_managed(m, False)
+            _ip("addr", "flush", "dev", m)
         for m in members:
             if _ip("link", "set", m, "master", name).returncode == 0:
                 _ip("link", "set", m, "up")
                 steps.append(f"{m} already/now enslaved to {name}")
+        # The bridge itself may have lost the address along the way.
+        _ip("addr", "replace", address_cidr, "dev", name)
         return {"bridge": name, "members": members, "steps": steps, "created": False}
 
     if _ip("link", "add", "name", name, "type", "bridge").returncode != 0:
@@ -286,6 +317,11 @@ def create_lan_bridge(wired_lan, address_cidr: str,
     # member is flushed — a secondary port carrying its own address would
     # otherwise keep answering on a subnet nothing routes any more.
     extra_flush = [f for f in (also_flush or ()) if f and f not in members]
+    # Before flushing, not after: NetworkManager re-applies a profile's
+    # address the moment it sees it disappear, so taking the port out of its
+    # hands first is what makes the flush stick.
+    for m in members + extra_flush:
+        _set_nm_managed(m, False)
     for m in members + extra_flush:
         _ip("addr", "flush", "dev", m)
     steps.append(f"flushed addresses from {', '.join(members + extra_flush)}")
@@ -343,6 +379,10 @@ def dissolve_lan_bridge(name: str = BRIDGE_NAME) -> dict:
         _ip("link", "set", m, "nomaster")
     _ip("addr", "flush", "dev", name)
     _ip("link", "delete", name)
+    # Handing the ports back also restores whatever persistent address their
+    # profiles carry, which is what the next apply reads.
+    for m in members:
+        _set_nm_managed(m, True)
     if target and ip and prefix is not None:
         _ip("addr", "add", f"{ip}/{prefix}", "dev", target)
         _ip("link", "set", target, "up")

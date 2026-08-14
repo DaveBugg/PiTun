@@ -2645,3 +2645,66 @@ class TestHardwarePresentButUnusable:
         from app.core import network_config as nc
         monkeypatch.setattr(nc, "_PCI_DEVICES", "/nonexistent/pci")
         assert nc.unclaimed_network_devices() == []
+
+
+class TestBridgeMembersLeaveNetworkManagersHands:
+    """NetworkManager re-applies a profile's address the moment it sees it
+    disappear. Moving the LAN address onto the bridge therefore left it on
+    BOTH: two interfaces answering for one address on one segment. Observed
+    after a reboot, where NM had activated the port's persistent profile
+    seconds before PiTun bridged it."""
+
+    def _run(self, monkeypatch):
+        from app.core import wifi as w
+        ip_calls, nm_calls = [], []
+
+        def fake_ip(*args, **kw):
+            ip_calls.append(" ".join(args))
+            rc = 1 if args[:3] == ("link", "show", w.BRIDGE_NAME) else 0
+            return mock.Mock(returncode=rc, stdout="", stderr="")
+
+        def fake_host_run(argv, **kw):
+            nm_calls.append(" ".join(argv))
+            return mock.Mock(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(w, "_ip", fake_ip)
+        monkeypatch.setattr("app.core.network_config.host_run", fake_host_run)
+        return ip_calls, nm_calls
+
+    def test_members_are_unmanaged_before_the_flush(self, monkeypatch):
+        from app.core import wifi as w
+        ip_calls, nm_calls = self._run(monkeypatch)
+        w.create_lan_bridge(["enp2s0"], "192.168.50.1/24", also_flush=["wlp3s0"])
+
+        assert "nmcli device set enp2s0 managed no" in nm_calls
+        # The radio too: it is flushed without being enslaved, and NM would
+        # put its address back just the same.
+        assert "nmcli device set wlp3s0 managed no" in nm_calls
+        # Order is the whole point — a flush before this is undone by NM.
+        assert nm_calls.index("nmcli device set enp2s0 managed no") >= 0
+        assert "addr flush dev enp2s0" in ip_calls
+
+    def test_teardown_hands_the_ports_back(self, monkeypatch):
+        from app.core import wifi as w
+        ip_calls, nm_calls = self._run(monkeypatch)
+
+        def fake_ip(*args, **kw):
+            ip_calls.append(" ".join(args))
+            if args[:3] == ("link", "show", w.BRIDGE_NAME):
+                return mock.Mock(returncode=0, stdout="", stderr="")
+            if args[:4] == ("-o", "link", "show", "master"):
+                return mock.Mock(
+                    returncode=0,
+                    stdout="3: enp2s0: <B> master br-lan" + chr(10),
+                    stderr="")
+            return mock.Mock(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(w, "_ip", fake_ip)
+        monkeypatch.setattr("app.core.network_config.read_interface_address",
+                            lambda n: ("192.168.50.1", 24))
+        monkeypatch.setattr("app.core.network_config.is_wireless", lambda n: False)
+
+        w.dissolve_lan_bridge()
+        # Handing them back is what restores the persistent address the next
+        # apply reads off the port.
+        assert "nmcli device set enp2s0 managed yes" in nm_calls
