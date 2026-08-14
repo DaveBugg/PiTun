@@ -135,8 +135,11 @@ async def router_mode_diagnose(session=Depends(get_session)) -> dict:
 
     wan = ""
     try:
-        row = (await session.exec(_sel(_S).where(_S.key == "wan_interface"))).first()
-        wan = (row.value or "").strip() if row else ""
+        # The interface traffic actually leaves by, not the port in the
+        # settings: PPPoE moves it to a ppp link and a VLAN tag renames it,
+        # and every rule and counter the findings read is attached to that.
+        rows = (await session.exec(_sel(_S))).all()
+        wan = router_mode.effective_wan({r.key: r.value for r in rows})
     except Exception:  # noqa: BLE001 — diagnosis degrades, it doesn't fail
         wan = ""
     return {"findings": await router_mode.diagnose_wan(wan)}

@@ -2305,3 +2305,55 @@ class TestMssClamping:
         clamp = next(i for i, ln in enumerate(lines) if "maxseg" in ln)
         first_accept = next(i for i, ln in enumerate(lines) if ln.endswith("accept"))
         assert clamp < first_accept
+
+
+class TestTrafficActuallyUsesTheUplink:
+    """A default route leaving by some other port means the ISP link is up,
+    NAT and the firewall are attached to it, and not one packet uses it.
+    Everything else reads healthy while the router does nothing."""
+
+    def test_effective_wan_follows_pppoe_and_vlan(self, monkeypatch):
+        from app.core import router_mode as rm
+        monkeypatch.setattr(rm.wan_mod, "live_pppoe_interface", lambda: "ppp1")
+        assert rm.effective_wan(
+            {"wan_interface": "eth0", "wan_mode": "pppoe"}) == "ppp1"
+        assert rm.effective_wan(
+            {"wan_interface": "eth0", "wan_mode": "dhcp", "wan_vlan_id": "835"}
+        ) == "eth0.835"
+        assert rm.effective_wan(
+            {"wan_interface": "eth0", "wan_mode": "dhcp"}) == "eth0"
+        assert rm.effective_wan({}) == ""
+
+    def test_a_default_route_off_the_uplink_is_reported(self, monkeypatch):
+        import asyncio
+        from app.core import router_mode as rm
+        monkeypatch.setattr(rm.nft, "router_counters", _async({
+            "wan_dhcp_in": {"packets": 0}, "wan_icmp_in": {"packets": 0},
+            "wan_blocked": {"packets": 0},
+        }))
+        monkeypatch.setattr(rm.nc, "read_interface_address", lambda n: ("10.0.0.2", 24))
+        monkeypatch.setattr(rm.nc, "read_default_route", lambda: ("eno1", "192.168.1.1"))
+
+        findings = asyncio.run(rm.diagnose_wan("ppp0"))
+        hit = [f for f in findings if "not the uplink" in f["title"]]
+        assert hit and hit[0]["level"] == "warn"
+        assert "eno1" in hit[0]["title"]
+
+    def test_nothing_reported_when_the_route_uses_the_uplink(self, monkeypatch):
+        import asyncio
+        from app.core import router_mode as rm
+        monkeypatch.setattr(rm.nft, "router_counters", _async({
+            "wan_dhcp_in": {"packets": 0}, "wan_icmp_in": {"packets": 0},
+            "wan_blocked": {"packets": 0},
+        }))
+        monkeypatch.setattr(rm.nc, "read_interface_address", lambda n: ("10.0.0.2", 24))
+        monkeypatch.setattr(rm.nc, "read_default_route", lambda: ("ppp0", "10.0.0.1"))
+
+        findings = asyncio.run(rm.diagnose_wan("ppp0"))
+        assert not [f for f in findings if "not the uplink" in f["title"]]
+
+
+def _async(value):
+    async def _fn(*a, **k):
+        return value
+    return _fn

@@ -186,6 +186,30 @@ def _refuse_public_wan_exposure(wan: str, tcp: list[int], udp: list[int]) -> Non
     )
 
 
+def effective_wan(m: dict) -> str:
+    """The interface the uplink's traffic actually leaves by.
+
+    PPPoE moves it to a ppp link and a VLAN tag to `eth0.<id>`, so the port in
+    the settings is not the one the firewall, the counters or the route are
+    attached to. Prefers the ppp link the kernel reports over the name we
+    would have guessed — a session that came up as ppp1 is still the uplink.
+    """
+    wan = (m.get("wan_interface") or "").strip()
+    if not wan:
+        return ""
+    mode = (m.get("wan_mode") or "dhcp").strip()
+    if mode == "pppoe":
+        try:
+            return wan_mod.live_pppoe_interface() or "ppp0"
+        except Exception:  # noqa: BLE001 — fall back to the configured name
+            return "ppp0"
+    try:
+        vlan = int(m.get("wan_vlan_id") or 0)
+    except (TypeError, ValueError):
+        vlan = 0
+    return f"{wan}.{vlan}" if vlan else wan
+
+
 def _safe_lease_name(raw: str) -> str:
     """A dhcp-host name dnsmasq will accept, or empty."""
     import re
@@ -587,6 +611,32 @@ async def diagnose_wan(wan: str = "") -> list[dict]:
             "title": f"ICMP returning normally ({icmp_in} packets)",
             "detail": "PMTU discovery and traceroute have a working return path.",
             "hint": "",
+        })
+
+    # 3. Is the uplink actually carrying anything?
+    #
+    # A default route that leaves by some other port means the ISP link is up,
+    # NAT and the firewall are attached to it, and not one packet uses it —
+    # traffic goes out whatever else still has a gateway. Everything above
+    # reads healthy while the router does nothing, which is the hardest kind
+    # of fault to spot from the inside. Seen on the PPPoE rig, where the
+    # physical port kept a lower-metric route than the tunnel.
+    live_iface, _ = nc.read_default_route()
+    if wan and live_iface and live_iface != wan:
+        findings.append({
+            "level": "warn",
+            "title": f"Traffic is leaving by {live_iface}, not the uplink",
+            "detail": (
+                f"Router mode has the firewall and NAT on '{wan}', but the "
+                f"default route points out of '{live_iface}'. Nothing is using "
+                f"the uplink, so its rules and counters describe a path no "
+                f"packet takes — and traffic is leaving by a port that is not "
+                f"meant to be routing."
+            ),
+            "hint": (
+                "Usually a leftover gateway on another port: the LAN side "
+                "should have an address but no default route."
+            ),
         })
 
     # Where the uplink points changes what these drops mean. On a public
