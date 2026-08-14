@@ -4,6 +4,32 @@ All notable user-facing changes to PiTun. Full per-release detail lives in the
 [GitHub Releases](https://github.com/DaveBugg/PiTun/releases); this file is the
 committed summary.
 
+## v1.6.3 — 2026-08-14
+
+**Country flags on nodes actually appear now** — and look the same on every
+platform.
+
+### Fixed
+
+- **Flags reached two of the nine ways a node is created.** The GeoLite2
+  lookup was never broken; enrichment was simply called at the two import
+  paths while nodes are created in nine places, so a node from a server
+  deploy or an x-ui panel never got one, and existing nodes were never
+  revisited. It is now applied at the model — every path goes through that by
+  construction, including the tenth one somebody adds later. DNS is skipped
+  there deliberately, since it runs inside the database write; the import
+  paths still resolve hostnames as before.
+
+  For nodes that predate all this: `POST /api/nodes/apply-country-flags`,
+  which does resolve, and is idempotent.
+
+- **Windows drew the flags as bare letters.** It ships no flag glyphs, so
+  `🇨🇭 vless-…` rendered as `CH vless-…`, flush against the name. PiTun now
+  carries the glyphs itself — [Twemoji Country Flags](https://github.com/talkjs/country-flag-emoji-polyfill),
+  self-hosted, flags only, 78 KB — so a flag looks the same everywhere. The
+  country is also lifted out of the name into its own badge, rather than
+  reading as the first word of it.
+
 ## v1.6.2 — 2026-08-14
 
 **The Update button in the panel now works.** It never could.

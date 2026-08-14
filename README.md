@@ -1328,6 +1328,11 @@ projects. Without them, none of this would exist:
 - **[React Router](https://reactrouter.com/)** — routing
 - **[Recharts](https://recharts.org/)** — metrics charts
 - **[Lucide](https://lucide.dev/)** — icons
+- **[Twemoji](https://github.com/jdecked/twemoji)** — the flag artwork
+  (CC-BY 4.0), carried as the **[Twemoji Country Flags](https://github.com/talkjs/country-flag-emoji-polyfill)**
+  webfont built by TalkJS (MIT). Self-hosted, flags only, 78 KB: Windows
+  ships no flag glyphs at all, so without it a node named `🇨🇭 vless-…`
+  renders as the bare letters `CH vless-…`
 - **[axios](https://github.com/axios/axios)** — HTTP client
 - **[Vitest](https://vitest.dev/)** + **[Testing Library](https://testing-library.com/)** — tests
 

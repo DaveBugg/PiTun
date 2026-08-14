@@ -5,6 +5,7 @@ import { clsx } from 'clsx'
 import type { Node } from '@/types'
 import { StatusBadge } from './StatusBadge'
 import { useServers } from '@/hooks/useServers'
+import { splitCountryPrefix } from '@/lib/countryPrefix'
 
 // Readings older than this render in a warning colour — the speed is
 // probably stale and worth re-testing.
@@ -84,6 +85,9 @@ export function NodeCard({
   // peers exported via PiTun). Imported nodes / hand-typed nodes don't
   // get this label.
   const isFromServerClient = !!(node.from_deployment_client_id && sourceServer)
+  // The country prefix is part of the stored name; shown as its own badge so
+  // it reads as a label rather than as the first word of the node's name.
+  const country = splitCountryPrefix(node.name)
   return (
     <div
       className={clsx(
@@ -111,7 +115,15 @@ export function NodeCard({
           <div className="min-w-0">
             <div className="flex items-center gap-2 flex-wrap">
               <span className="text-xs text-gray-500 font-mono shrink-0">#{node.id}</span>
-              <span className="text-sm font-medium text-gray-100 truncate">{node.name}</span>
+              {country.code && (
+                <span
+                  className="shrink-0 rounded-sm border border-gray-700 bg-gray-800/60 px-1.5 py-0.5 text-[10px] font-medium tracking-wide text-gray-300"
+                  title={country.code}
+                >
+                  {country.flag}<span className="ml-0.5">{country.code}</span>
+                </span>
+              )}
+              <span className="text-sm font-medium text-gray-100 truncate">{country.name}</span>
               {isActive && (
                 <span className="rounded-full bg-brand-50 dark:bg-brand-600/20 px-2 py-0.5 text-xs text-brand-400">
                   Active

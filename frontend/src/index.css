@@ -35,8 +35,31 @@
   --color-gray-900: rgb(var(--ch-gray-900));
   --color-gray-950: rgb(var(--ch-gray-950));
 
-  --font-sans: Inter, system-ui, sans-serif;
-  --font-mono: JetBrains Mono, Fira Code, monospace;
+  /* The flag font goes FIRST and carries nothing but flags, so every other
+     character falls straight through to Inter. See the @font-face below. */
+  --font-sans: "Twemoji Country Flags", Inter, system-ui, sans-serif;
+  --font-mono: "Twemoji Country Flags", JetBrains Mono, Fira Code, monospace;
+}
+
+/*
+  Country flags, self-hosted.
+
+  Windows ships no flag glyphs at all: Chrome there draws a regional-indicator
+  pair as the bare letters — a node named "🇨🇭 vless-…" reads as "CH vless-…".
+  Rather than detect the platform and render something different on each, we
+  carry the glyphs ourselves, so a flag looks the same everywhere.
+
+  Twemoji Country Flags — 78 KB, flags only, no other emoji. Art from Twemoji
+  (twitter.github.io/twemoji), CC-BY 4.0; the font is built and distributed by
+  TalkJS under MIT. Licence text sits next to the file.
+*/
+@font-face {
+  font-family: "Twemoji Country Flags";
+  src: url("./assets/fonts/TwemojiCountryFlags.woff2") format("woff2");
+  /* The glyphs are needed as soon as a node list renders, and swapping them
+     in late would shift the row; 78 KB local is not worth a flash. */
+  font-display: block;
+  unicode-range: U+1F1E6-1F1FF;
 }
 
 /*

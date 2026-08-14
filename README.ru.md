@@ -1009,6 +1009,10 @@ PiTun — это glue-код поверх зрелых проектов, без 
 - **[React Router](https://reactrouter.com/)** — роутинг
 - **[Recharts](https://recharts.org/)** — графики метрик
 - **[Lucide](https://lucide.dev/)** — иконки
+- **[Twemoji](https://github.com/jdecked/twemoji)** — рисунки флагов
+  (CC-BY 4.0) в виде вебшрифта **[Twemoji Country Flags](https://github.com/talkjs/country-flag-emoji-polyfill)**
+  сборки TalkJS (MIT). Лежит у нас, только флаги, 78 КБ: в Windows глифов
+  флагов нет вовсе, и без него нода `🇨🇭 vless-…` выглядит как `CH vless-…`
 - **[axios](https://github.com/axios/axios)** — HTTP-клиент
 - **[Vitest](https://vitest.dev/)** + **[Testing Library](https://testing-library.com/)** — тесты
 
