@@ -4,6 +4,104 @@ All notable user-facing changes to PiTun. Full per-release detail lives in the
 [GitHub Releases](https://github.com/DaveBugg/PiTun/releases); this file is the
 committed summary.
 
+## v1.6.0-beta.2 — 2026-08-14
+
+**Beta — router mode, first hardware run.** beta.1 had never been switched on
+outside tests. This is what a two-port mini PC found: a clean install that left
+the panel unreachable, an access point that broadcast nothing while reporting
+success, and a router you could not switch back off. Everything below was
+observed on real hardware, not reasoned about.
+
+Upgrading from beta.1 is worthwhile even if you never enable router mode — the
+installer and X-ui fixes apply to every box.
+
+### Fixed — install
+
+- **The one-liner install left the panel unreachable on both 80 and 443.**
+  `nginx.conf` has carried an unconditional `listen 443 ssl` since v1.5.2, but
+  `install.sh` never generated a certificate — the word does not appear in it.
+  nginx aborts outright when the files are missing, and since it is the only
+  service publishing either port, the panel was gone from *both* while the
+  container crash-looped. Every one-liner install since v1.5.2 landed this way;
+  it went unnoticed because our own boxes were provisioned through
+  `03-deploy.sh`, which does generate the cert.
+- **The sidecar build shipped inert.** `build-sidecars.sh` referenced `$DOCKER`
+  while declaring `DOCKER_CMD`; under `set -u` that aborts on the first loop
+  iteration, so the dnsmasq and hostapd images were never built by any caller —
+  the exact failure the script had just been extracted to fix.
+- **avahi came back within seconds** of being disabled and kept UDP/5353, which
+  xray needs for DNS. Only the service was masked, not the socket unit that
+  re-activates it, and masking never kills a running process.
+- The installer no longer claims success without looking: `compose up -d`
+  returns 0 for a container that starts and immediately dies, so it printed
+  "PiTun is up" over a dead stack.
+
+### Fixed — router mode
+
+- **"Auto" WiFi channel put nothing on the air.** `channel=0` runs hostapd's
+  ACS, which needs noise-floor figures the driver may not report — mt7921
+  doesn't — and hostapd then loops over every channel forever *without
+  exiting*. The container looked healthy while no SSID existed. Auto now
+  resolves to a fixed channel, and the start path asks the radio whether it
+  actually entered AP mode rather than trusting that the process survived.
+- **Bridging the LAN stranded the operator in router mode.** Enslaved ports
+  were dropped from the inventory, so the moment the bridge came up the
+  assigned ports vanished, the panel reported one port on a three-port box, and
+  validation rejected the stored configuration — including the request to turn
+  router mode *off*. Leaving router mode is no longer validated at all: gateway
+  is the resting state and the escape hatch.
+- **A save that changed nothing rebuilt the network.** Any patch touching a
+  router key tore the bridge down and back up and restarted hostapd and
+  dnsmasq — indistinguishable, from a client, from the router rebooting — and
+  re-armed the confirm window on an already-confirmed router, which then
+  reverted itself three minutes later.
+- **No TCP MSS clamping.** A PPPoE uplink carries 1492 bytes; LAN clients
+  announce MSS for their own 1500. Without clamping the router depends on ICMP
+  "fragmentation needed" reaching the sender, which the public internet drops
+  often enough that it is not a plan. DNS resolves, ping works, small pages
+  load, large transfers hang forever.
+- **The ICMP counter could not see what it counted.** It sat after
+  `ct state established,related accept`, and the packets it exists to observe
+  are exactly what conntrack marks RELATED — so it read zero on a healthy link
+  and could never have detected the path-MTU black hole it was added for.
+- The LAN address is found on whichever member holds it, the radio may be any
+  LAN member rather than only the primary, and the confirm countdown is driven
+  by the box's own `seconds_left` — a box whose clock is hours off used to
+  promise three hours where three minutes were left.
+
+### Added
+
+- **A LAN can be several ports.** `br-lan` bridges them into one segment —
+  same subnet, one DHCP pool, wired and wireless clients seeing each other.
+  The radio is joined by hostapd itself rather than from both ends, which
+  races.
+- **The uplink can publish the panel and SSH** (both off by default). Useful
+  when PiTun sits behind another router, where that "WAN" is your own network.
+  Refused outright if the uplink address is public. Turn it on *before*
+  switching, not after.
+- **A dedicated Router page** between Diagnostics and Settings, naming the two
+  deployments — behind an existing router, or first in line facing the ISP —
+  so it is clear which fields apply.
+- **Country picker with names and flags** for the WiFi regulatory domain,
+  searchable, no new dependency.
+- **A banner when the panel stops answering at this address**, pointing at the
+  LAN one — the switch to router mode is made from a page served by the port
+  that is about to stop serving it.
+- **`scripts/pppoe-test-rig.sh`** — a local PPPoE concentrator on a veth pair.
+  PPPoE frames don't route, so it cannot be tested remotely and was shipping
+  unexercised. The rig proved the path works and found the MSS and default-route
+  faults above.
+- Diagnosis now reports when traffic is leaving by a port that isn't the
+  uplink: NAT and firewall on a link nothing uses, while every other check
+  reads healthy.
+
+### Notes
+
+- No new migrations; head remains 025.
+- The default WiFi network name is now `PiTun`. Broadcasting stays **off**
+  until switched on.
+- 13 commits. Tests: 1299 backend, 96 frontend.
+
 ## v1.6.0-beta.1 — 2026-08-13
 
 **Beta — router mode.** PiTun can now *be* the router instead of sitting beside

@@ -1952,7 +1952,7 @@ class TestUplinkExposure:
 
     def test_private_uplink_may_be_opened(self, monkeypatch):
         from app.core import router_mode as rm
-        monkeypatch.setattr(rm.nc, "read_interface_address", lambda i: ("192.168.1.6", 24))
+        monkeypatch.setattr(rm.nc, "read_interface_address", lambda i: ("192.168.1.50", 24))
         rm._refuse_public_wan_exposure("eth0", [80, 443], [])
 
     def test_opening_nothing_is_never_refused(self, monkeypatch):
@@ -2136,7 +2136,7 @@ class TestLeavingRouterModeIsNeverBlocked:
         # bridge router mode built, or simply gone.
         monkeypatch.setattr(nc, "list_interfaces", lambda: [
             {"name": "eno1", "mac": "aa:bb:cc:dd:ee:01", "up": True,
-             "carrier": True, "ipv4": "192.168.1.6", "cidr": 24,
+             "carrier": True, "ipv4": "192.168.1.50", "cidr": 24,
              "is_default_route": True, "wireless": False, "ap_capable": False,
              "wifi_detail": "", "wifi_modes": [], "master": ""},
         ])
