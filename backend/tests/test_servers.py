@@ -747,13 +747,14 @@ class TestEnvelopeV2Deployments:
     they just produce empty deployments per server.
     """
 
-    def test_export_uses_envelope_version_2(
+    def test_export_uses_the_current_envelope_version(
         self, client, admin_user, auth_headers, sample_server
     ):
+        """v3 added the nested panel registration. Older bundles simply
+        carry no panel and restore exactly as they did."""
         resp = client.get("/api/servers/export-json", headers=auth_headers)
         assert resp.status_code == 200
-        body = resp.json()
-        assert body["version"] == 2
+        assert resp.json()["version"] == 3
 
     def test_export_nests_deployments_under_server(
         self, client, admin_user, auth_headers, sample_server, session
@@ -931,3 +932,115 @@ class TestEnvelopeV2Deployments:
         assert len(deps) == 2
         protocols = {d.protocol for d in deps}
         assert protocols == {"naive", "wireguard"}
+
+
+class TestPanelTravelsWithTheServer:
+    """A server exported with its secrets and restored elsewhere used to
+    arrive with x-ui plainly installed and the X-ui page empty: the panel
+    registration lives in its own table and was left behind, so the operator
+    reconnected it by hand on every migration."""
+
+    def _seed_panel(self, session, server_id):
+        from app.models import XuiServer
+        row = XuiServer(
+            server_id=server_id, api_token="tok-abc",
+            panel_user="admin", panel_pass="s3cret",
+            panel_port=2053, panel_basepath="/xyz", mode="bare",
+        )
+        session.add(row)
+        session.commit()
+        return row
+
+    def test_export_with_secrets_carries_the_panel(
+        self, client, admin_user, auth_headers, sample_server, session,
+    ):
+        self._seed_panel(session, sample_server.id)
+        body = client.get("/api/servers/export-json?include_secrets=true",
+                          headers=auth_headers).json()
+        panel = body["servers"][0]["panel"]
+        assert panel["panel_port"] == 2053
+        assert panel["panel_basepath"] == "/xyz"
+        assert panel["api_token"] == "tok-abc"
+        assert panel["panel_pass"] == "s3cret"
+
+    def test_export_without_secrets_keeps_the_shape_and_drops_the_keys(
+        self, client, admin_user, auth_headers, sample_server, session,
+    ):
+        """Saying "a panel was here" is useful; handing out its token in a
+        file meant for sharing is not — same rule as the SSH credentials."""
+        self._seed_panel(session, sample_server.id)
+        body = client.get("/api/servers/export-json", headers=auth_headers).json()
+        panel = body["servers"][0]["panel"]
+        assert panel["panel_port"] == 2053
+        assert "api_token" not in panel
+        assert "panel_pass" not in panel
+
+    def test_a_server_without_a_panel_carries_none(
+        self, client, admin_user, auth_headers, sample_server,
+    ):
+        body = client.get("/api/servers/export-json", headers=auth_headers).json()
+        assert "panel" not in body["servers"][0]
+
+    def test_import_restores_the_panel(
+        self, client, admin_user, auth_headers, session,
+    ):
+        from app.models import XuiServer
+        bundle = {
+            "kind": "pitun-servers-export", "version": 3,
+            "include_secrets": True,
+            "servers": [{
+                "name": "vps-with-panel", "host": "198.51.100.9", "port": 22,
+                "user": "root", "auth_type": "password", "password": "pw",
+                "deployments": [],
+                "panel": {
+                    "panel_port": 2053, "panel_basepath": "/xyz", "mode": "bare",
+                    "panel_user": "admin", "panel_pass": "s3cret",
+                    "api_token": "tok-abc",
+                },
+            }],
+        }
+        r = client.post("/api/servers/import-json", json=bundle, headers=auth_headers)
+        assert r.status_code == 200, r.text
+        assert r.json()["panels_restored"] == 1
+
+        rows = session.query(XuiServer).all() if hasattr(session, "query") else None
+        if rows is None:
+            from sqlmodel import select
+            rows = session.exec(select(XuiServer)).all()
+        assert len(rows) == 1
+        assert rows[0].api_token == "tok-abc"
+        assert rows[0].panel_port == 2053
+
+    def test_a_panel_with_no_credentials_is_counted_not_dropped(
+        self, client, admin_user, auth_headers,
+    ):
+        """A secret-stripped bundle says a panel was there but carries
+        nothing to authenticate with. The operator should be told, not left
+        wondering why the X-ui page is empty again."""
+        bundle = {
+            "kind": "pitun-servers-export", "version": 3,
+            "include_secrets": False,
+            "servers": [{
+                "name": "vps-stripped", "host": "198.51.100.10", "port": 22,
+                "user": "root", "auth_type": "password",
+                "deployments": [],
+                "panel": {"panel_port": 2053, "panel_basepath": "/xyz",
+                          "mode": "bare", "panel_user": "admin"},
+            }],
+        }
+        r = client.post("/api/servers/import-json", json=bundle, headers=auth_headers)
+        assert r.status_code == 200, r.text
+        assert r.json()["panels_restored"] == 0
+        assert r.json()["panels_without_credentials"] == 1
+
+    def test_older_bundles_still_import(self, client, admin_user, auth_headers):
+        bundle = {
+            "kind": "pitun-servers-export", "version": 2,
+            "servers": [{"name": "old", "host": "198.51.100.11", "port": 22,
+                         "user": "root", "auth_type": "password",
+                         "deployments": []}],
+        }
+        r = client.post("/api/servers/import-json", json=bundle, headers=auth_headers)
+        assert r.status_code == 200, r.text
+        assert r.json()["imported"] == 1
+        assert r.json()["panels_restored"] == 0

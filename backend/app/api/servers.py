@@ -1674,6 +1674,13 @@ async def export_servers_json(
     for d in deployments:
         by_server.setdefault(d.server_id, []).append(d)
 
+    # The panel registration lives in its own table, and without it a
+    # restored server arrives with x-ui plainly installed and the X-ui page
+    # empty — the operator has to reconnect it by hand on every migration.
+    from app.models import XuiServer as _XuiServer
+    panels = (await session.exec(select(_XuiServer))).all()
+    panel_by_server = {p.server_id: p for p in panels}
+
     servers_out: List[dict] = []
     for s in rows:
         item = {
@@ -1706,11 +1713,30 @@ async def export_servers_json(
             }
             for d in deps
         ]
+
+        # The panel, when there is one. Its shape travels either way so a
+        # secret-stripped bundle still says "this server had a panel here";
+        # the token and password follow the same opt-in as the SSH
+        # credentials above, because they are exactly as sensitive.
+        panel = panel_by_server.get(s.id)
+        if panel is not None:
+            panel_out = {
+                "panel_port": panel.panel_port,
+                "panel_basepath": panel.panel_basepath,
+                "domain": panel.domain,
+                "mode": panel.mode,
+                "panel_user": panel.panel_user,
+            }
+            if include_secrets:
+                panel_out["api_token"] = panel.api_token
+                panel_out["panel_pass"] = panel.panel_pass
+            item["panel"] = panel_out
+
         servers_out.append(item)
 
     payload = {
         "kind": "pitun-servers-export",
-        "version": 2,
+        "version": 3,
         "exported_at": _dt.now(_tz.utc).isoformat(timespec="seconds"),
         "pitun_version": _APP_VERSION,
         "include_secrets": include_secrets,
@@ -1750,7 +1776,9 @@ async def import_servers_json(
     # deployments — since 1.2.5). v1 imports skip deployments restoration
     # entirely. Anything else is rejected so we don't silently lose data
     # if a future v3 introduces structural changes.
-    if bundle_version not in (1, 2):
+    # v3 adds the nested x-ui panel registration. Older bundles simply
+    # don't carry one, which restores exactly as before.
+    if bundle_version not in (1, 2, 3):
         raise HTTPException(400, f"Unsupported export version: {bundle_version}")
     servers_in = payload.get("servers")
     if not isinstance(servers_in, list):
@@ -1779,6 +1807,8 @@ async def import_servers_json(
     imported = 0
     skipped = 0
     deployments_restored = 0
+    panels_restored = 0
+    panels_without_credentials = 0
     errors: List[str] = []
     for sd in servers_in:
         try:
@@ -1833,6 +1863,39 @@ async def import_servers_json(
                     )
                     session.add(new_dep)
                     deployments_restored += 1
+
+            # v3 envelope: the panel registration. Restored WITHOUT probing
+            # it — a bundle is a copy of state that already worked, and a
+            # box restoring one may not have a route to the panel yet
+            # (fresh install, node not up, VPS still booting). Refusing the
+            # row for that would lose the credentials the operator has, and
+            # the existing probe on the X-ui page surfaces a dead panel
+            # anyway.
+            panel_in = sd.get("panel")
+            if isinstance(panel_in, dict):
+                from app.models import XuiServer as _XuiServer
+                token = panel_in.get("api_token") or ""
+                p_user = panel_in.get("panel_user") or ""
+                p_pass = panel_in.get("panel_pass") or ""
+                # Either is enough to reach the panel later: the token
+                # directly, or the login the backend can fetch one with.
+                if token or (p_user and p_pass):
+                    session.add(_XuiServer(
+                        server_id=server.id,
+                        api_token=token,
+                        panel_user=p_user or None,
+                        panel_pass=p_pass or None,
+                        panel_port=int(panel_in.get("panel_port") or 0) or None,
+                        panel_basepath=panel_in.get("panel_basepath") or "/",
+                        domain=panel_in.get("domain") or None,
+                        mode=panel_in.get("mode") or "bare",
+                    ))
+                    panels_restored += 1
+                else:
+                    # A secret-stripped bundle says a panel was here but
+                    # carries nothing to authenticate with. Counted rather
+                    # than silently dropped, so the UI can say so.
+                    panels_without_credentials += 1
         except Exception as exc:  # noqa: BLE001 — per-row error reporting
             # Three colliding concerns (CWE-209/532/117) — see
             # api/nodes.py for the full layered defence rationale.
@@ -1857,6 +1920,8 @@ async def import_servers_json(
         "imported": imported,
         "skipped": skipped,
         "deployments_restored": deployments_restored,
+        "panels_restored": panels_restored,
+        "panels_without_credentials": panels_without_credentials,
         "errors": errors,
         "has_secrets": has_secrets,
     }
