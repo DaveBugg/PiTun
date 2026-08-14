@@ -74,10 +74,18 @@ def get_interfaces() -> dict:
     what it says.
     """
     ifaces = network_config.list_interfaces()
+    # Cards on the bus that produced no interface. Reporting an absence when
+    # the hardware is physically present sends people looking anywhere but at
+    # the driver — a purged firmware package cost an evening here.
+    try:
+        unclaimed = network_config.unclaimed_network_devices()
+    except Exception:  # noqa: BLE001 — an extra hint must never break the list
+        unclaimed = []
     return {
         "items": ifaces,
         "count": len(ifaces),
         "router_capable": len(ifaces) >= 2,
+        "unclaimed": unclaimed,
     }
 
 

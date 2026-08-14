@@ -574,11 +574,24 @@ export interface HostInterface {
   is_default_route: boolean
 }
 
+/** A network card on the bus that produced no interface. Reporting "none
+ *  found" about hardware that is physically present sends people looking
+ *  anywhere but at the driver — usually a firmware blob that isn't installed. */
+export interface UnclaimedNic {
+  slot: string
+  kind: 'wireless' | 'wired'
+  vendor: string
+  device: string
+  driver: string
+  reason: 'no_driver' | 'driver_but_no_interface'
+}
+
 export interface InterfaceInventory {
   items: HostInterface[]
   count: number
   /** True when the box has 2+ physical NICs, i.e. router mode is possible. */
   router_capable: boolean
+  unclaimed?: UnclaimedNic[]
 }
 
 export const backupApi = {

@@ -700,6 +700,74 @@ def list_interfaces() -> List[dict]:
     return out
 
 
+# ── Hardware present but not usable ──────────────────────────────────────────
+
+# `/sys/bus/pci/devices/*/class` — 0x02xxxx is a network controller of some
+# kind (0x0200 Ethernet, 0x0280 "other", which is where wifi lands).
+_PCI_DEVICES = "/sys/bus/pci/devices"
+
+
+def _read_sysfs(path: str) -> str:
+    try:
+        with open(path) as f:
+            return f.read().strip()
+    except OSError:
+        return ""
+
+
+def unclaimed_network_devices() -> List[dict]:
+    """Network controllers on the bus that produced no interface.
+
+    "No wireless adapters found" is the wrong thing to tell someone whose card
+    is sitting right there on the PCI bus. It happened here: a firmware package
+    had been purged, mt7921e loaded, `hardware init failed`, and no netdev was
+    ever created — so every layer above reported an absence and nobody would
+    have thought to look for a missing binary blob.
+
+    The distinction the caller needs is between:
+      * nothing bound the device at all — no driver for this hardware, and
+      * a driver IS bound and still produced no interface — which in practice
+        is almost always firmware it could not load.
+    """
+    out: List[dict] = []
+    try:
+        slots = sorted(os.listdir(_PCI_DEVICES))
+    except OSError:
+        return out
+
+    for slot in slots:
+        base = os.path.join(_PCI_DEVICES, slot)
+        cls = _read_sysfs(os.path.join(base, "class"))
+        if not cls.startswith("0x02"):
+            continue
+        # A device that produced an interface is working by definition.
+        try:
+            if os.listdir(os.path.join(base, "net")):
+                continue
+        except OSError:
+            pass
+
+        # `uevent` carries `DRIVER=` when something is bound, and it is a
+        # plain file — unlike the `driver` symlink, which needs privileges to
+        # even create on some hosts, making this awkward to test.
+        driver = ""
+        for line in _read_sysfs(os.path.join(base, "uevent")).splitlines():
+            if line.startswith("DRIVER="):
+                driver = line.partition("=")[2].strip()
+                break
+
+        out.append({
+            "slot": slot,
+            "kind": "wireless" if cls.startswith("0x0280") else "wired",
+            "vendor": _read_sysfs(os.path.join(base, "vendor")).replace("0x", ""),
+            "device": _read_sysfs(os.path.join(base, "device")).replace("0x", ""),
+            "driver": driver,
+            # Both readings are actionable, and they point somewhere different.
+            "reason": "no_driver" if not driver else "driver_but_no_interface",
+        })
+    return out
+
+
 # ── Wireless capability probe (router mode, phase 1b gate) ───────────────────
 #
 # Serving WiFi means putting the radio into AP mode, and that is a property of

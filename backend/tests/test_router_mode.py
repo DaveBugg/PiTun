@@ -2566,3 +2566,82 @@ class TestRouterModeKeepsTrying:
 
         asyncio.run(rw._retry_router_mode(_S()))
         assert again == []
+
+
+class TestHardwarePresentButUnusable:
+    """"No wireless adapters found" is the wrong thing to tell someone whose
+    card is sitting on the PCI bus. It happened here: a firmware package had
+    been purged, the driver loaded, hardware init failed, and no netdev was
+    created — every layer above reported an absence and nobody would have
+    thought to look for a missing binary blob."""
+
+    def _sysfs(self, tmp_path, devices):
+        """Build a fake /sys/bus/pci/devices tree.
+
+        Slot names here use dashes where a real bus uses colons: Windows
+        cannot put a colon in a filename, and the code treats the name as an
+        opaque label it never parses.
+        """
+        for slot, spec in devices.items():
+            d = tmp_path / slot
+            d.mkdir(parents=True)
+            (d / "class").write_text(spec["class"])
+            (d / "vendor").write_text(spec.get("vendor", "0x0000"))
+            (d / "device").write_text(spec.get("device", "0x0000"))
+            if spec.get("net"):
+                (d / "net" / spec["net"]).mkdir(parents=True)
+            # `uevent` is how the real thing reports the bound driver, and it
+            # is a plain file — no symlink privileges needed to fake it.
+            lines = []
+            if spec.get("driver"):
+                lines.append("DRIVER=" + spec["driver"])
+            lines.append("PCI_SLOT_NAME=" + slot)
+            uevent = "\n".join(lines) + "\n"
+            (d / "uevent").write_text(uevent)
+        return str(tmp_path)
+
+    def test_a_card_with_a_driver_and_no_interface_is_flagged(self, tmp_path, monkeypatch):
+        from app.core import network_config as nc
+        root = self._sysfs(tmp_path, {
+            # Working wired port — has a netdev, so it is not a finding.
+            "0000-01-00.0": {"class": "0x020000", "driver": "r8169", "net": "eno1"},
+            # The radio: driver bound, no interface. Firmware, in practice.
+            "0000-03-00.0": {"class": "0x028000", "vendor": "0x14c3",
+                             "device": "0x0616", "driver": "mt7921e"},
+        })
+        monkeypatch.setattr(nc, "_PCI_DEVICES", root)
+        found = nc.unclaimed_network_devices()
+        assert len(found) == 1
+        assert found[0]["slot"] == "0000-03-00.0"
+        assert found[0]["kind"] == "wireless"
+        assert found[0]["driver"] == "mt7921e"
+        assert found[0]["reason"] == "driver_but_no_interface"
+        assert found[0]["vendor"] == "14c3" and found[0]["device"] == "0616"
+
+    def test_a_card_with_no_driver_reads_differently(self, tmp_path, monkeypatch):
+        """The two cases point somewhere different: one needs a driver, the
+        other has one and needs firmware."""
+        from app.core import network_config as nc
+        root = self._sysfs(tmp_path, {
+            "0000-04-00.0": {"class": "0x020000", "vendor": "0x8086", "device": "0x1234"},
+        })
+        monkeypatch.setattr(nc, "_PCI_DEVICES", root)
+        found = nc.unclaimed_network_devices()
+        assert [f["reason"] for f in found] == ["no_driver"]
+        assert found[0]["kind"] == "wired"
+
+    def test_working_hardware_produces_no_findings(self, tmp_path, monkeypatch):
+        from app.core import network_config as nc
+        root = self._sysfs(tmp_path, {
+            "0000-01-00.0": {"class": "0x020000", "driver": "r8169", "net": "eno1"},
+            "0000-03-00.0": {"class": "0x028000", "driver": "mt7921e", "net": "wlp3s0"},
+            # Not a network controller at all.
+            "0000-00-02.0": {"class": "0x030000", "driver": "i915"},
+        })
+        monkeypatch.setattr(nc, "_PCI_DEVICES", root)
+        assert nc.unclaimed_network_devices() == []
+
+    def test_a_missing_sysfs_is_not_an_error(self, monkeypatch):
+        from app.core import network_config as nc
+        monkeypatch.setattr(nc, "_PCI_DEVICES", "/nonexistent/pci")
+        assert nc.unclaimed_network_devices() == []

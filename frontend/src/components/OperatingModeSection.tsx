@@ -51,6 +51,7 @@ export default function OperatingModeSection({
   const detectionFailed = isError && !isLoading
   const lanExtras = (lanExtra || '').split(',').map((s) => s.trim()).filter(Boolean)
   const lanIsWireless = nics.find((n) => n.name === lan)?.wireless ?? false
+  const unclaimed = data?.unclaimed ?? []
 
   return (
     <div className="space-y-3">
@@ -83,7 +84,7 @@ export default function OperatingModeSection({
               </div>
             </div>
           </div>
-        ) : nics.length === 0 ? (
+        ) : nics.length === 0 && unclaimed.length === 0 ? (
           <div className="text-[12px] text-gray-500">
             {t('No physical interfaces detected.', 'Физические интерфейсы не найдены.')}
           </div>
@@ -132,6 +133,42 @@ export default function OperatingModeSection({
                 </span>
               </div>
             ))}
+          </div>
+        )}
+
+        {/* Hardware on the bus that produced no interface. Saying "not found"
+            about a card that is physically present sends people looking
+            anywhere but at the driver. */}
+        {unclaimed.length > 0 && (
+          <div className="mt-2 flex items-start gap-2 rounded-md border border-amber-200 dark:border-amber-800/50 bg-amber-50 dark:bg-amber-950/30 p-2 text-[11px] text-amber-800 dark:text-amber-300">
+            <AlertTriangle className="h-3.5 w-3.5 shrink-0 mt-0.5" />
+            <div className="space-y-1">
+              <div>
+                {t(
+                  'A network card is present but produced no interface, so PiTun cannot use it.',
+                  'Сетевая карта присутствует, но интерфейс не создан — PiTun её использовать не может.',
+                )}
+              </div>
+              {unclaimed.map((u) => (
+                <div key={u.slot} className="font-mono opacity-90">
+                  {u.slot} · {u.vendor}:{u.device}
+                  {u.kind === 'wireless' ? t(' · wireless', ' · беспроводная') : ''}
+                  {' — '}
+                  {u.reason === 'no_driver'
+                    ? t('no driver is bound to it', 'к ней не привязан драйвер')
+                    : t(
+                        `driver ${u.driver} is loaded but the device never came up — usually missing firmware`,
+                        `драйвер ${u.driver} загружен, но устройство не поднялось — как правило, нет прошивки`,
+                      )}
+                </div>
+              ))}
+              <div className="opacity-80">
+                {t(
+                  'On Debian, firmware for most adapters lives in the non-free-firmware component, which a slimmed-down image often has disabled.',
+                  'В Debian прошивки большинства адаптеров лежат в компоненте non-free-firmware, который в урезанных образах часто отключён.',
+                )}
+              </div>
+            </div>
           </div>
         )}
       </div>
