@@ -552,6 +552,31 @@ async def apply_router_nat(
     ]
     wan_service_rules = "\n".join(rules)
 
+    # The same ports again, in FORWARD — because opening them in INPUT is only
+    # half the story. Services on the host (SSH) are delivered locally and hit
+    # INPUT. The panel is an nginx container with published ports, so a request
+    # to this box's address is DNAT'd and then FORWARDED to the container: it
+    # never reaches INPUT at all, and the forward policy is drop.
+    #
+    # Observed exactly that: with both toggles on, SSH answered from the uplink
+    # and the panel did not.
+    #
+    # Scoped to `ct status dnat` AND the allowed ports, so this admits the
+    # services the operator published and not every other container port that
+    # happens to be mapped.
+    fwd = []
+    if tcp_ports:
+        fwd.append(
+            f'        iifname "{wan}" ct status dnat tcp dport '
+            f'{{ {", ".join(map(str, tcp_ports))} }} accept'
+        )
+    if udp_ports:
+        fwd.append(
+            f'        iifname "{wan}" ct status dnat udp dport '
+            f'{{ {", ".join(map(str, udp_ports))} }} accept'
+        )
+    wan_published_rules = ("\n" + "\n".join(fwd)) if fwd else ""
+
     # One transaction, not two. `delete table` followed by a separate load
     # meant a script that failed to parse left NO ruleset behind — the box
     # ends up with neither the old firewall nor the new one. Declaring the
@@ -621,7 +646,7 @@ table inet {_ROUTER_TABLE} {{
         # first apply cuts every LAN device off the panel, which also means
         # nobody can press the confirm button and the watchdog reverts a
         # working router purely because we blocked the way to its own UI.
-        iifname "{lan}" ct status dnat accept
+        iifname "{lan}" ct status dnat accept{wan_published_rules}
         # Container-to-container (the reverse proxy reaching the SPA) once
         # bridge-nf-call-iptables puts bridged traffic through this hook.
         iifname "br-*" oifname "br-*" accept

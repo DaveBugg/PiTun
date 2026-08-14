@@ -2357,3 +2357,57 @@ def _async(value):
     async def _fn(*a, **k):
         return value
     return _fn
+
+
+class TestPublishingThePanelOnTheUplink:
+    """Opening a port in INPUT is only half the story. Services on the host —
+    SSH — are delivered locally and hit INPUT. The panel is an nginx container
+    with published ports, so a request to the box's address is DNAT'd and then
+    FORWARDED to the container, never reaching INPUT at all, and the forward
+    policy is drop. Observed on hardware: with both toggles on, SSH answered
+    from the uplink and the panel did not."""
+
+    def _chains(self, **kw):
+        import asyncio
+        from app.core import nftables as nft
+        cap = {}
+
+        async def fake(script):
+            cap["s"] = script
+            return True
+
+        original, nft._nft = nft._nft, fake
+        try:
+            asyncio.run(nft.apply_router_nat("eth0", "br-lan", **kw))
+        finally:
+            nft._nft = original
+        s = cap["s"]
+        return (s.split("chain input")[1].split("chain forward")[0],
+                s.split("chain forward")[1].split("chain ")[0])
+
+    def test_published_ports_are_allowed_in_forward_too(self):
+        _, fwd = self._chains(wan_allow_tcp=[22, 80, 443])
+        rule = [ln.strip() for ln in fwd.splitlines()
+                if "ct status dnat" in ln and "eth0" in ln]
+        assert len(rule) == 1
+        assert "tcp dport { 22, 80, 443 }" in rule[0]
+
+    def test_the_forward_allowance_is_scoped_to_the_published_ports(self):
+        """Not a blanket `ct status dnat accept` on the uplink: that would
+        expose every other container port that happens to be mapped."""
+        _, fwd = self._chains(wan_allow_tcp=[80])
+        rule = next(ln.strip() for ln in fwd.splitlines()
+                    if "ct status dnat" in ln and "eth0" in ln)
+        assert "dport" in rule
+        assert rule != 'iifname "eth0" ct status dnat accept'
+
+    def test_nothing_is_published_when_no_ports_are_opened(self):
+        _, fwd = self._chains()
+        assert not [ln for ln in fwd.splitlines()
+                    if "ct status dnat" in ln and "eth0" in ln]
+
+    def test_udp_ports_get_the_same_treatment(self):
+        _, fwd = self._chains(wan_allow_udp=[51820])
+        rule = [ln.strip() for ln in fwd.splitlines()
+                if "ct status dnat" in ln and "udp dport" in ln]
+        assert len(rule) == 1 and "51820" in rule[0]
