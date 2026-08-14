@@ -4,6 +4,51 @@ All notable user-facing changes to PiTun. Full per-release detail lives in the
 [GitHub Releases](https://github.com/DaveBugg/PiTun/releases); this file is the
 committed summary.
 
+## v1.6.1 — 2026-08-14
+
+**A panel PiTun didn't install can now be connected to it.** Everything here
+came from using 1.6.0 on real boxes.
+
+### Added
+
+- **Connect an existing x-ui panel.** The X-ui page shows registered panels,
+  and a panel only became one by being deployed through PiTun — its install
+  script ends by registering it. Import a server that already runs x-ui and
+  the page stayed empty, with nothing on it suggesting another route, so
+  reinstalling over a working panel looked like the only option. There is now
+  a button, taking either the `xui://` line from the install or, if that is
+  long gone, the login you use for the panel yourself.
+
+  **The API token is no longer asked for.** It is what every call needs and
+  what nobody has lying around — the install script obtains it by logging in
+  and reading, or creating, a token named `pitun`. PiTun now does the same, so
+  you supply only the port, the base path and your panel login. An existing
+  token is reused rather than a new one minted per attempt, which keeps any
+  `xui://` handed out earlier valid.
+
+- **The panel travels with its server.** Exporting a server with secrets and
+  restoring it elsewhere left the panel behind — it lives in its own table —
+  so the server arrived with x-ui plainly installed and the X-ui page empty.
+  The bundle (envelope v3) now nests it. Its shape travels either way, so a
+  secret-stripped file still says a panel was here; the token and password
+  follow the same opt-in as the SSH credentials. Older bundles import exactly
+  as before.
+
+### Fixed
+
+- **Upgrading from a beta to its own release was refused as a downgrade.**
+  `sort -V` is not semver aware: it reads `1.6.0-beta.3` as `1.6.0` plus extra
+  characters and sorts it *after* the finished release, so the guard against
+  an accidental rollback fired on the single most common upgrade there is.
+  Hit while updating the test box to 1.6.0.
+- A client that has no API token yet — the one that logs in precisely to fetch
+  one — sent a bare `Bearer `, which the HTTP layer refuses to encode: the
+  request failed before reaching the panel, reporting a header problem rather
+  than a missing token. The underlying failure was unreadable too, printing
+  "transport error: " and stopping; it now names what went wrong and the URL
+  it could not reach, which is the error you get when the port or base path is
+  wrong.
+
 ## v1.6.0 — 2026-08-14
 
 **PiTun can be the router.** On a box with two or more physical ports it takes
