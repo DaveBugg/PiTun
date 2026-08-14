@@ -4,6 +4,31 @@ All notable user-facing changes to PiTun. Full per-release detail lives in the
 [GitHub Releases](https://github.com/DaveBugg/PiTun/releases); this file is the
 committed summary.
 
+## v1.6.2 — 2026-08-14
+
+**The Update button in the panel now works.** It never could.
+
+### Fixed
+
+- **The panel's Update button waited for an agent nobody installed.** The
+  button writes a request file, and a host-side systemd path unit is what
+  carries it out — but `install.sh` never installed that unit, on any box it
+  ever produced. The button reported "waiting for the update agent" and sat at
+  0% forever.
+
+  The hint shown underneath made it worse: it named `--install-timer`, which is
+  the separate daily scheduled check and does not service the button at all, so
+  an operator who followed the message installed a timer and watched the same
+  0%.
+
+  The installer now sets the agent up. This does **not** enable unattended
+  updates — the agent acts only on a request you made from the panel, and the
+  scheduled timer stays opt-in. The hint and the knowledge base name the right
+  flag and say plainly that the two are different things.
+
+  Existing boxes need the agent once, by hand:
+  `bash /opt/pitun/scripts/pitun-update.sh --install-agent`
+
 ## v1.6.1 — 2026-08-14
 
 **A panel PiTun didn't install can now be connected to it.** Everything here
