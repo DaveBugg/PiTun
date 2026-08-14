@@ -573,12 +573,22 @@ fi
 # Use `sort -V` (version sort) as a cheap semver comparator. Strips a
 # leading `v`, then asks whether running > resolved. If yes, abort.
 # Same-version (running == resolved) handled separately below.
+#
+# The prerelease separator is swapped for `~` first. `sort -V` is not semver
+# aware: it reads `1.6.0-beta.3` as `1.6.0` plus extra characters and sorts it
+# AFTER the finished release, so upgrading from any beta to the release it was
+# a beta of looked like a downgrade and was refused — which is the single most
+# common upgrade there is. `~` is the one character version sort orders before
+# end-of-string, which is exactly the semver rule that a prerelease precedes
+# the version it leads to.
 if [[ "$IS_UPDATE" == "1" \
       && -n "$RUNNING_VERSION" && "$RUNNING_VERSION" != "?" ]]; then
     _running_num="${RUNNING_VERSION#v}"
     _target_num="${DISPLAY_VERSION#v}"
+    _running_cmp="${_running_num/-/\~}"
+    _target_cmp="${_target_num/-/\~}"
     if [[ "$_running_num" != "$_target_num" \
-          && "$(printf '%s\n%s\n' "$_running_num" "$_target_num" | sort -V | tail -1)" == "$_running_num" ]]; then
+          && "$(printf '%s\n%s\n' "$_running_cmp" "$_target_cmp" | sort -V | tail -1)" == "$_running_cmp" ]]; then
         echo ""
         warn "════════════════════════════════════════════════════════════════════"
         warn "  ⛔ DOWNGRADE DETECTED — aborting."
