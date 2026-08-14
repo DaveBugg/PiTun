@@ -2,11 +2,12 @@
 
 **🌐 Languages:** **English** · [Русский](README.ru.md)
 
-> Self-hosted transparent proxy manager for Raspberry Pi 4/5 (and any
-> other Linux box). Drops in next to your router, intercepts LAN
-> traffic via nftables TPROXY, and routes it through xray-core based
-> on your rules — domain, GeoIP, GeoSite, MAC, port, protocol — with a
-> web UI.
+> Self-hosted router and transparent proxy manager for Raspberry Pi 4/5
+> (and any other Linux box). Sit it **beside** your router, or let it
+> **be** the router — taking the ISP uplink, handing out addresses,
+> doing NAT and serving the WiFi. Either way it intercepts LAN traffic
+> via nftables TPROXY and routes it through xray-core by your rules —
+> domain, GeoIP, GeoSite, MAC, port, protocol — from a web UI.
 
 [![CI](https://img.shields.io/github/actions/workflow/status/DaveBugg/PiTun/ci.yml?branch=master&label=CI)](#)
 [![License](https://img.shields.io/badge/license-BSD--3--Clause-blue)](LICENSE)
@@ -19,6 +20,7 @@
 ## Table of contents
 
 - [What it is](#what-it-is)
+- [Router mode](#router-mode)
 - [Why PiTun?](#why-pitun)
 - [Screenshots](#screenshots)
 - [Architecture](#architecture)
@@ -26,6 +28,7 @@
 - [Supported protocols](#supported-protocols)
 - [Quick start](#quick-start)
 - [Server-side proxy install](#server-side-proxy-install)
+- [Updating](#updating)
 - [Configuration](#configuration)
 - [Troubleshooting](#troubleshooting)
 - [Uninstall](#uninstall)
@@ -40,11 +43,27 @@
 ## What it is
 
 PiTun turns a small Linux box into a **transparent proxy gateway** for
-your home network. Devices that use the box as their default gateway
-have their outbound traffic intercepted at the kernel level, routed
+your home network — and, since v1.6.0, into **the router itself** if you
+want it to be. Traffic is intercepted at the kernel level, routed
 through one of several supported VPN protocols, and either tunnelled,
 sent direct, or dropped — all according to rules you set up in the
 web UI.
+
+**Two shapes, one box.** Which one you run is a single choice in the
+panel, and gateway is the default:
+
+|  | **Gateway** — beside your router | **Router** — instead of it |
+|---|---|---|
+| Who hands out addresses | your existing router | PiTun |
+| Who does NAT | your existing router | PiTun |
+| How devices are covered | point their gateway at PiTun | just by being on the network |
+| Hardware needed | any box, one port is enough | two or more ports |
+| WiFi | your router's | PiTun's, if the adapter can serve it |
+
+The gateway shape is the gentle one: nothing about your network
+changes, and only the devices you point at PiTun go through it. The
+router shape covers everything on the LAN by construction — including
+the devices that have no proxy settings to speak of.
 
 It was built for and primarily tested on the **Raspberry Pi 4 / 5**
 (64-bit Raspberry Pi OS), but the project ships **linux/amd64** images
@@ -65,6 +84,55 @@ routing rule set:**
 | TPROXY | `7893` | Transparent gateway — devices set the box as gateway |
 | SOCKS5 | `1080` | Explicit proxy for browsers and apps |
 | HTTP | `8080` | For apps without SOCKS5 support |
+
+## Router mode
+
+**Since v1.6.0 PiTun is a complete router.** Not a proxy that happens to
+forward — it takes the ISP line, runs the DHCP server, does the NAT, is
+the firewall, and puts the WiFi on the air. Everything the proxy already
+did keeps working on top: rules, node rotation, chains, the DNS log.
+
+Turn it on in **Router → Operating mode**. It is offered only on hardware
+with two or more physical ports, and never switched on by itself.
+
+**The uplink**, in the shapes an ISP line actually comes in:
+
+| Mode | What it means |
+|---|---|
+| DHCP | Address from the provider. What most providers call **IPoE** |
+| Static | Address, gateway and DNS you were given |
+| PPPoE | Login and password, the session dialled by PiTun |
+| VLAN tag | 802.1Q id on the uplink port, on its own or with any of the above |
+| MAC clone | Present the provider a specific MAC — for lines bound to one |
+
+**The network below.** DHCP with your own pool and lease time, and
+per-device reserved addresses assigned from the Devices page. PiTun
+announces itself as the resolver, so routing rules and the DNS query log
+cover devices that never opted in to anything. A LAN can be several
+ports — sockets and the radio bridged into one segment, so a laptop on
+the cable and a phone on the WiFi share a subnet and see each other.
+
+**The WiFi.** WPA2 or WPA2/WPA3-transitional, band and channel, hidden if
+you like, country code obeyed. PiTun checks the adapter can serve an
+access point before it tries: plenty of cards can only join networks, and
+finding that out when hostapd refuses to start means the working setup is
+already dismantled.
+
+**The firewall.** The uplink accepts nothing new from the internet — one
+blanket rule rather than a list of ports to remember. The panel, SSH and
+xray's own listeners all bind `0.0.0.0`: they stay reachable from the LAN
+and invisible from outside. Two exceptions keep the line working — DHCP
+replies, which arrive as NEW rather than RELATED, and the ICMP that path-
+MTU discovery needs. If PiTun sits behind another router, its "WAN" is
+your own network, and you can publish the panel and SSH there on purpose;
+that switch refuses outright if the uplink address turns out to be public.
+
+> **Switching modes changes the network under you.** Router mode has no
+> fallback — PiTun *is* the router — so a bad apply would leave nobody
+> able to undo it. PiTun therefore reverts to gateway unless you confirm
+> the network still works, and an unconfirmed change never survives a
+> reboot. Do the first switch where you can reach the box, not over SSH
+> from the network it is about to rebuild.
 
 ## Why PiTun?
 
@@ -115,21 +183,36 @@ router-bound options:
   the whole LAN (TPROXY), SOCKS5 for apps that want an explicit proxy,
   HTTP for legacy clients. Most tools force you to pick one.
 
+- **It can replace the router entirely.** Those packages run *on* a
+  router because they need one. PiTun can be it: ISP uplink (DHCP,
+  static, PPPoE, VLAN, MAC clone), DHCP server, NAT, firewall and WiFi
+  — see [Router mode](#router-mode). One box instead of two, and the
+  proxy policy applies to everything on the network by construction,
+  not only to the devices you remembered to point at it.
+
 vs. **router-based packages** (podkop, passwall, passwall2,
 homeproxy, xKeen): they're brilliant at "all my devices, minimal
-setup" on a $30 router with 64 MB RAM. PiTun is for the case where
+setup" on a $30 router with 64 MB RAM, and if that is your whole
+requirement they are the lighter answer. PiTun is for the case where
 you want **server-side orchestration** (deploy & manage your own
 VPS), **multi-tier traffic policy** (different rules per device
-group), and **a modern web UI with a mobile-friendly layout — tweak
-a rule from your phone, even from the bathroom if you must** — at
-the cost of needing an RPi 4/5 (or any small Linux box) with 64 GB+
-disk.
+group), **a box that can be the router rather than ride on one**, and
+**a modern web UI with a mobile-friendly layout — tweak a rule from
+your phone, even from the bathroom if you must** — at the cost of
+needing an RPi 4/5 (or any small Linux box) with 64 GB+ disk.
 
 ## Screenshots
+
+<details>
+<summary><strong>Dashboard</strong> — click to expand · 1 screenshot</summary>
+
+<br>
 
 <a href="docs/screenshots/dashboard.jpg">
   <img src="docs/screenshots/dashboard.jpg" alt="Dashboard" width="800">
 </a>
+
+</details>
 
 <details>
 <summary><strong>VPS provisioning & x-ui orchestration</strong> (since v1.3.0) — click to expand · 6 screenshots</summary>
@@ -245,6 +328,9 @@ disk.
 
 ## Architecture
 
+**Gateway mode** — PiTun sits beside the router and proxies the devices
+pointed at it:
+
 ```
                  ┌──────────────────────────────────────────────┐
   Devices  ────► │  PiTun host (RPi / mini-PC)                  │
@@ -265,11 +351,57 @@ disk.
                  └──────────────────────────────────────────────┘
 ```
 
+**Router mode** — the same engine, with PiTun holding both ends of the
+network. The proxy layer above is unchanged; what is added is everything
+a router does:
+
+```
+                 ┌──────────────────────────────────────────────┐
+   ISP  ────────►│ WAN  dhcp / static / pppoe / vlan / mac-clone│
+                 │  │                                           │
+                 │  ├─ nftables: NAT (masquerade) + firewall    │
+                 │  │    uplink accepts nothing new inbound     │
+                 │  │    TCP MSS clamped to the path MTU        │
+                 │  │                                           │
+                 │  ▼                                           │
+                 │ ┌────────── the proxy engine above ────────┐ │
+                 │ └──────────────────────────────────────────┘ │
+                 │  │                                           │
+                 │  ├─ dnsmasq: DHCP + reserved addresses       │
+                 │  ├─ hostapd: WiFi access point               │
+                 │  │                                           │
+   Devices ◄─────┤ LAN  one or more ports, bridged: br-lan      │
+   (wired+WiFi)  │      cable and radio in one subnet           │
+                 └──────────────────────────────────────────────┘
+                    commit-confirm watchdog guards every change
+```
+
 Web UI talks to a FastAPI backend that owns the xray-core process,
 the nftables ruleset, and a SQLite database with all configuration.
 Frontend is a single-page React app served by nginx.
 
 ## Features
+
+**Router** (v1.6.0 — see [Router mode](#router-mode))
+- Two operating modes: **gateway** beside your router, or **router**
+  instead of it. Explicit choice, gateway by default
+- Uplink: DHCP (IPoE), static, **PPPoE**, 802.1Q VLAN tag, MAC clone —
+  with NAT, the firewall and the counters following the interface the
+  traffic actually leaves by, ppp link or tagged sub-interface included
+- DHCP server with pool, lease time and per-device reserved addresses
+- **A LAN of several ports** — sockets and the radio bridged into one
+  segment, one subnet, one DHCP scope
+- **WiFi access point** — WPA2 or WPA2/WPA3-transitional, band, channel,
+  hidden SSID, regulatory domain; gated on an AP-capability probe of the
+  adapter
+- A WAN that accepts nothing new from the internet, with the panel and
+  SSH publishable on the uplink on purpose when PiTun sits behind another
+  router — refused if that address turns out to be public
+- **Commit-confirm watchdog** — a change that breaks the network reverts
+  itself unless a human confirms, and never survives a reboot unconfirmed
+- Uplink diagnosis on nftables counters, for the failures that are
+  otherwise silent: no DHCP replies, no ICMP coming back, traffic leaving
+  by a port that isn't the uplink
 
 **Core**
 - Transparent proxy via TPROXY + nftables, no per-device client
@@ -359,7 +491,9 @@ Frontend is a single-page React app served by nginx.
 - **Host network controls** — change the box's own gateway / DNS from
   Settings → Network with an auto-backup + one-click rollback; warns on
   a routing self-loop (gateway pointing at the box itself) or a
-  double-hop through another PiTun
+  double-hop through another PiTun. (In router mode PiTun owns its own
+  uplink, so these are configured on the **Router** page instead and
+  this section refuses to fight it)
 
 **Servers & deployments**
 - Inventory of remote VPS hosts (host, SSH credentials, tags) separate
@@ -378,8 +512,24 @@ Frontend is a single-page React app served by nginx.
   healthcheck (panel API, xray, nginx, UFW, TLS cert, disk, mem),
   cache↔panel sync for hand-added clients, random / custom
   fakesite rotation
-- **SNI / REALITY-dest scanner** in the node form — probe a candidate
-  host for TLS 1.3 + HTTP/2 before saving it as the masquerade target
+
+- **Connect a panel PiTun didn't install.** Import a server that already
+  runs x-ui and the X-ui page used to stay empty — a panel became one only
+  by being deployed through PiTun. Paste the `xui://` line from the
+  install, or just your panel login: the API token is fetched for you,
+  reusing an existing one rather than minting a new one per attempt
+- **The panel travels with its server** — a server exported with secrets
+  carries its panel registration (bundle envelope v3), so restoring it
+  elsewhere doesn't leave x-ui installed and unlisted
+- **REALITY dest / SNI scanner** where the inbound is created — probe a
+  candidate IP or domain *through the active node* for TLS 1.3 + HTTP/2 and
+  see what actually answers, instead of guessing a masquerade target from a
+  hardcoded list
+- **Connection-lifetime policy for Xray** — one set of timeouts for the
+  box's own instance and every registered panel. Xray's default kills an
+  idle *pooled* connection after five minutes, which is the "works, then
+  it doesn't" that SDK and agent clients hit; panels are patched rather
+  than overwritten, and one button pushes a change to the whole fleet
 
 **Operations**
 - One-click GeoIP / GeoSite refresh — three switchable upstream
@@ -395,6 +545,12 @@ Frontend is a single-page React app served by nginx.
   your node list with any v2rayN-compatible client; symmetric
   `Import` button auto-detects URI list vs JSON bundle. Single-node URI
   export straight from a node card too
+- **Whole-box configuration backup** — Settings → Backup & Restore
+  exports settings, subscriptions, nodes, routing sets and rules, DNS
+  rules, balancers, circles, devices and UA templates as one file, and
+  restores it onto a fresh box. Secrets are opt-in, so the file you share
+  for debugging carries no credentials; restore previews per-section
+  add/update/delete counts before it writes anything
 - **Login lockout** — five consecutive failed logins lock an account
   for 15 minutes (HTTP 429 + `Retry-After`); the primary LAN-only
   brute-force guard
@@ -426,6 +582,7 @@ Frontend is a single-page React app served by nginx.
 | **RAM** | 1 GB | 2 GB+ (helps with naive sidecars and large geo data refresh) |
 | **Disk** | 4 GB free | 8 GB+ (docker images + DB growth + DNS query log) |
 | **Network** | 1 LAN interface, static IP, wired preferred | 1× wired GbE for LAN |
+| **Network — [router mode](#router-mode)** | 2 physical ports (one for the ISP, one for the LAN) | 2× wired GbE, plus an AP-capable WiFi adapter to serve wireless |
 | **OS** | Any modern 64-bit Linux with kernel ≥ 5.4 (TPROXY support) | Raspberry Pi OS 64-bit, Debian 12+, Ubuntu 22.04+ |
 | **Architectures** | `linux/arm64` *(RPi 4/5)* · `linux/amd64` *(Intel/AMD mini-PC, NUC, x86_64 server)* | — |
 
@@ -435,6 +592,10 @@ Frontend is a single-page React app served by nginx.
 - Docker + Docker Compose v2
 - Root access on the host (nftables + raw socket binding)
 - A static LAN IP for the host
+- For [router mode](#router-mode): two or more physical ports, and — if
+  PiTun is to serve the WiFi — an adapter that can run an access point.
+  PiTun checks the adapter for you and says so before anything is torn
+  down
 
 ### Install — one-liner
 
@@ -737,6 +898,46 @@ added directly via the panel UI, and (xui-pro only) fakesite
 rotation — random pick from the bundled archive or upload a custom
 `.zip`. Chain orchestration (see **Proxy Chains** below) glues two
 registered panels into a two-hop VLESS+Reality tunnel.
+
+## Updating
+
+**From the panel.** Settings → Updates checks GitHub — through the active
+node, so a throttled direct route isn't a blocker — shows what changed, and
+applies it with live progress.
+
+The button does not update the box itself: it writes a request that a
+host-side agent carries out, because the update replaces the very container
+the panel is served from. The installer sets that agent up. On a box
+installed before v1.6.2 it isn't there, and the button will sit at 0%
+forever — install it once:
+
+```bash
+bash /opt/pitun/scripts/pitun-update.sh --install-agent
+```
+
+This does **not** enable unattended updates. The agent only acts on a
+request you made.
+
+**From the command line.** Re-run the installer with a version; it detects
+an existing install, snapshots the database first, and refuses to go
+backwards:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/DaveBugg/PiTun/master/install.sh      -o /tmp/pitun-install.sh
+sudo bash /tmp/pitun-install.sh --version v1.6.2
+```
+
+**On a schedule**, opt-in and separate from the button — a daily systemd
+timer that only reports unless you ask it to act:
+
+```bash
+bash /opt/pitun/scripts/pitun-update.sh --install-timer          # check and report
+bash /opt/pitun/scripts/pitun-update.sh --install-timer --apply  # check and update
+```
+
+Every path takes a SQLite snapshot to
+`/opt/pitun/data-backup-pre-vX.Y.Z-*.db` before touching anything, and
+router mode comes back on its own after the containers are recreated.
 
 ## Configuration
 
