@@ -4,6 +4,82 @@ All notable user-facing changes to PiTun. Full per-release detail lives in the
 [GitHub Releases](https://github.com/DaveBugg/PiTun/releases); this file is the
 committed summary.
 
+## v1.6.0 — 2026-08-14
+
+**PiTun can be the router.** On a box with two or more physical ports it takes
+the ISP uplink, hands out addresses, does NAT, and can serve the WiFi itself.
+Gateway mode is untouched and remains the default: nothing changes for an
+existing install unless the mode is switched on deliberately.
+
+Three betas of hardware testing went into this. Everything below was run on a
+real box, not reasoned about — the reboot alone found three faults that no
+amount of reading would have.
+
+### Router mode
+
+**Where:** Settings → Router. Offered only when the box actually has two or
+more physical NICs, and never switched on automatically.
+
+- **DHCP for the LAN**, with pool, lease time and per-device reserved
+  addresses assigned from the Devices page. PiTun advertises itself as the
+  resolver, so routing rules and the DNS query log cover devices that never
+  opted in to anything.
+- **A LAN of several ports.** Sockets and the radio are bridged into one
+  segment — same subnet, one DHCP scope, clients on either side see each
+  other.
+- **WAN in the shapes an ISP link comes in**: DHCP (what providers call IPoE),
+  static, **PPPoE**, VLAN tagging, MAC cloning. With PPPoE or a VLAN the
+  traffic leaves on a different interface than the port the cable is in, and
+  NAT, the firewall and the counters follow it.
+- **WiFi access point**, gated on a capability probe: plenty of adapters can
+  only join networks, not create them, and discovering that when hostapd
+  refuses to start means the working setup is already dismantled.
+- **Commit-confirm watchdog.** Router mode has no fallback — PiTun *is* the
+  router — so an apply that breaks the network would leave nobody able to undo
+  it. The box reverts to gateway unless a human confirms, and an unconfirmed
+  apply never survives a reboot.
+- **The uplink accepts nothing new from the internet.** One blanket rule
+  rather than a list of ports to close. The panel, SSH and xray's inbounds all
+  bind `0.0.0.0` — they stay reachable over the LAN and invisible from
+  outside. Two exceptions keep the link working: DHCP replies, which arrive as
+  NEW rather than RELATED, and the ICMP that PMTU discovery needs.
+- **Optional access from the uplink**, off by default, for a PiTun that sits
+  behind another router — that "WAN" is your own network. Refused outright if
+  the uplink address turns out to be public.
+- **Uplink diagnosis** built on nftables counters, because the rules a WAN
+  depends on fail silently.
+
+### Also in this release
+
+- **Connection-lifetime policy for Xray**, for the box's own instance and every
+  registered panel. Xray's `connIdle` of 300 s kills an idle *pooled*
+  connection, so the next request on that socket hangs — the "works, then it
+  doesn't" that SDK and agent clients hit — and the half-close timers cut long
+  streaming answers. Nothing set any of it before. Panels are patched, never
+  overwritten, and **Apply to all panels** pushes a change to the fleet.
+- **The installer produced a box with no panel at all.** `nginx.conf` has
+  carried an unconditional `listen 443 ssl` since v1.5.2 while `install.sh`
+  generated no certificate, so nginx aborted — taking port 80 with it, since
+  it is the only service publishing either. Every one-liner install since
+  v1.5.2 landed that way.
+- **A network card present but unusable is now named as such** — "no adapters
+  found" is the wrong thing to say about hardware sitting on the PCI bus.
+- Searchable country picker for the WiFi regulatory domain, with flags and
+  localised names.
+
+### Upgrading
+
+Standard update path, verified from v1.6.0-beta.2 through to this release: the
+database is backed up first, migrations run, and a box in router mode brings
+itself back without help. Ships migrations **023–025**, all additive. Nothing
+about router mode activates until you choose it.
+
+**Secrets:** the WiFi passphrase and the PPPoE password are write-only — set
+but never returned, and redacted from configuration backups unless secrets are
+explicitly included.
+
+**Full diff:** https://github.com/DaveBugg/PiTun/compare/v1.5.3...v1.6.0
+
 ## v1.6.0-beta.3 — 2026-08-14
 
 **Beta — what a reboot found.** beta.2 had run on hardware but had never been
