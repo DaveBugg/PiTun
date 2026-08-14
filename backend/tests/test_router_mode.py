@@ -2411,3 +2411,158 @@ class TestPublishingThePanelOnTheUplink:
         rule = [ln.strip() for ln in fwd.splitlines()
                 if "ct status dnat" in ln and "udp dport" in ln]
         assert len(rule) == 1 and "51820" in rule[0]
+
+
+class TestBootReconcile:
+    """Boot is not an operator pressing Save. The hardware may still be
+    arriving — a wifi adapter appears only once its firmware has loaded — and
+    a failure is unattended, so the half-state it leaves behind matters more
+    than the error message."""
+
+    def test_waits_for_a_port_that_arrives_late(self, monkeypatch):
+        import asyncio
+        from app.core import router_mode as rm
+
+        seen = {"calls": 0}
+
+        def late(*_a, **_k):
+            seen["calls"] += 1
+            # The radio shows up on the third look, as it does on real
+            # hardware once mt7921 has loaded its firmware.
+            names = ["eno1", "enp2s0"] + (["wlp3s0"] if seen["calls"] >= 3 else [])
+            return [{"name": n} for n in names]
+
+        monkeypatch.setattr(rm.nc, "list_interfaces", late)
+        missing = asyncio.run(rm.wait_for_ports(["eno1", "wlp3s0"], timeout=30))
+        assert missing == []
+        assert seen["calls"] >= 3
+
+    def test_gives_up_on_a_port_that_never_arrives(self, monkeypatch):
+        import asyncio
+        from app.core import router_mode as rm
+        monkeypatch.setattr(rm.nc, "list_interfaces", lambda: [{"name": "eno1"}])
+        missing = asyncio.run(rm.wait_for_ports(["eno1", "usb0"], timeout=3))
+        assert missing == ["usb0"]
+
+    def test_a_boot_that_cannot_restore_leaves_a_clean_gateway(self, monkeypatch):
+        """The failure mode this exists to prevent: settings claiming router,
+        no NAT, no bridge, and the sidecars resurrected by Docker's restart
+        policy — one serving DHCP for a bridge that no longer exists, the
+        other crash-looping on a missing radio."""
+        import asyncio, pytest
+        from app.core import router_mode as rm
+
+        torn = []
+
+        async def spy_teardown():
+            torn.append(True)
+            return {"mode": "gateway"}
+
+        monkeypatch.setattr(rm, "teardown", spy_teardown)
+        monkeypatch.setattr(rm.nc, "list_interfaces", lambda: [{"name": "eno1"}])
+
+        async def settings(_s):
+            return {"operating_mode": "router", "wan_interface": "eno1",
+                    "lan_interface": "wlp3s0"}
+
+        monkeypatch.setattr(rm, "_settings_map", settings)
+
+        with pytest.raises(rm.RouterModeError, match="did not appear"):
+            asyncio.run(rm.reconcile_on_boot(object()))
+        assert torn == [True], "the dataplane must be torn down, not left half-applied"
+
+    def test_gateway_at_boot_just_tears_down(self, monkeypatch):
+        import asyncio
+        from app.core import router_mode as rm
+        torn = []
+
+        async def spy_teardown():
+            torn.append(True)
+            return {"mode": "gateway"}
+
+        monkeypatch.setattr(rm, "teardown", spy_teardown)
+
+        async def settings(_s):
+            return {"operating_mode": "gateway"}
+
+        monkeypatch.setattr(rm, "_settings_map", settings)
+        assert asyncio.run(rm.reconcile_on_boot(object()))["mode"] == "gateway"
+        assert torn == [True]
+
+
+class TestRouterModeKeepsTrying:
+    """The boot reconcile is one attempt against hardware that may not have
+    arrived — a radio still loading firmware, a LAN port whose address
+    NetworkManager will not assign until a cable is plugged in. One shot means
+    plugging that cable in a minute later changes nothing."""
+
+    def _tick(self, monkeypatch, *, mode, up, apply_raises=False):
+        import asyncio
+        from app.core import router_watchdog as rw
+        from app.core import router_mode as rm, nftables as nft
+
+        rw._last_retry = 0.0
+        rw._retry_logged = False
+        applied = []
+
+        async def spy_apply(session):
+            applied.append(True)
+            if apply_raises:
+                raise rm.RouterModeError("port has no address")
+            return {"mode": "router"}
+
+        async def counters():
+            return {"wan_blocked": {"packets": 1}} if up else {}
+
+        monkeypatch.setattr(rm, "apply", spy_apply)
+        monkeypatch.setattr(nft, "router_counters", counters)
+
+        class _Row:
+            value = mode
+
+        class _Res:
+            def first(self_inner):
+                return _Row()
+
+        class _S:
+            async def exec(self_inner, *_a, **_k):
+                return _Res()
+
+        asyncio.run(rw._retry_router_mode(_S()))
+        return applied
+
+    def test_retries_when_configured_as_router_but_not_running(self, monkeypatch):
+        assert self._tick(monkeypatch, mode="router", up=False) == [True]
+
+    def test_leaves_a_running_router_alone(self, monkeypatch):
+        assert self._tick(monkeypatch, mode="router", up=True) == []
+
+    def test_does_nothing_in_gateway_mode(self, monkeypatch):
+        assert self._tick(monkeypatch, mode="gateway", up=False) == []
+
+    def test_a_failing_retry_does_not_raise(self, monkeypatch):
+        # The tick must keep running: this is the loop that also reverts an
+        # unconfirmed apply, and killing it would disable the rescue.
+        assert self._tick(monkeypatch, mode="router", up=False,
+                          apply_raises=True) == [True]
+
+    def test_retries_are_rate_limited(self, monkeypatch):
+        import asyncio
+        from app.core import router_watchdog as rw
+        self._tick(monkeypatch, mode="router", up=False)
+        # Second call immediately after must be skipped by the interval guard.
+        from app.core import router_mode as rm
+        again = []
+
+        async def spy(session):
+            again.append(True)
+            return {"mode": "router"}
+
+        monkeypatch.setattr(rm, "apply", spy)
+
+        class _S:
+            async def exec(self_inner, *_a, **_k):
+                raise AssertionError("should not even read settings")
+
+        asyncio.run(rw._retry_router_mode(_S()))
+        assert again == []

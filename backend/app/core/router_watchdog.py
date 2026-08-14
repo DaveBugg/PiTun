@@ -128,6 +128,7 @@ async def check_once() -> Optional[dict]:
     async with AsyncSession(get_async_engine()) as session:
         deadline = await pending(session)
         if deadline is None:
+            await _retry_router_mode(session)
             return None
         if datetime.now(timezone.utc) < deadline:
             return None
@@ -136,6 +137,59 @@ async def check_once() -> Optional[dict]:
             "Router mode was applied but nobody confirmed the network still "
             "worked before the confirmation window closed.",
         )
+
+
+# Keeps a failed boot from being permanent without hammering a box that
+# genuinely cannot come up: one attempt a minute, quiet after the first.
+_RETRY_EVERY = 60.0
+_last_retry: float = 0.0
+_retry_logged = False
+
+
+async def _retry_router_mode(session: AsyncSession) -> None:
+    """Keep trying to be a router when the settings say the box is one.
+
+    The boot reconcile is a single attempt against hardware that may not have
+    arrived: a radio still loading firmware, a LAN port whose address
+    NetworkManager will not assign until a cable is plugged in. One shot means
+    plugging that cable in a minute later changes nothing — the box stays a
+    gateway until somebody opens the panel and saves.
+
+    A configuration that says "router" is a standing instruction, so this
+    keeps trying. Only when the dataplane is actually absent: a router that is
+    already up is left alone, and the confirm window is not re-armed, because
+    nothing here is a change the operator made.
+    """
+    global _last_retry, _retry_logged
+    import time as _time
+    from app.core import nftables as _nft, router_mode as _rm
+
+    now = _time.monotonic()
+    if now - _last_retry < _RETRY_EVERY:
+        return
+    _last_retry = now
+
+    row = (await session.exec(
+        select(DBSettings).where(DBSettings.key == "operating_mode")
+    )).first()
+    if not row or row.value != "router":
+        _retry_logged = False
+        return
+    if await _nft.router_counters():        # already up — nothing to do
+        _retry_logged = False
+        return
+
+    try:
+        await _rm.apply(session)
+        logger.warning("Router mode restored on retry after an earlier failure")
+        _retry_logged = False
+    except Exception as exc:  # noqa: BLE001 — keep ticking whatever happens
+        if not _retry_logged:
+            logger.warning(
+                "Router mode is configured but not running; retrying every "
+                "%ss. Last error: %s", int(_RETRY_EVERY), exc,
+            )
+            _retry_logged = True
 
 
 async def recover_on_boot() -> Optional[dict]:

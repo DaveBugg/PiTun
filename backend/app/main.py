@@ -83,7 +83,9 @@ async def lifespan(app: FastAPI):
         # Revert it before reconciling, or every boot repeats the failure.
         await router_watchdog.recover_on_boot()
         async with _AsyncSession(_engine()) as _s:
-            await router_mode.apply(_s)
+            # Not `apply()` directly: boot has to wait for hardware that is
+            # still arriving, and has to clean up after itself if it can't.
+            await router_mode.reconcile_on_boot(_s)
     except Exception as exc:  # noqa: BLE001 — never block startup on this
         logger.warning("Router mode not applied on boot: %s", exc)
 

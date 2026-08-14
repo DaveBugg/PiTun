@@ -216,6 +216,69 @@ def _safe_lease_name(raw: str) -> str:
     return re.sub(r"[^A-Za-z0-9-]", "-", raw).strip("-")[:32]
 
 
+async def wait_for_ports(names: list[str], timeout: float = 45.0) -> list[str]:
+    """Block until every named interface exists, or the timeout runs out.
+
+    Returns the ones still missing. A port absent at boot is not a port that
+    doesn't exist: a wifi adapter appears only once its firmware has loaded,
+    and USB NICs enumerate later still. The backend container is up in
+    seconds, so the boot reconcile used to ask before the hardware had
+    finished arriving, refuse with "LAN port is not present on this box", and
+    leave a box whose settings say router and whose dataplane says gateway.
+    """
+    import asyncio as _asyncio
+    deadline = _asyncio.get_event_loop().time() + timeout
+    missing = list(names)
+    while missing:
+        present = {i["name"] for i in nc.list_interfaces()}
+        missing = [n for n in names if n not in present]
+        if not missing or _asyncio.get_event_loop().time() >= deadline:
+            break
+        logger.info("Waiting for network ports to appear: %s", ", ".join(missing))
+        await _asyncio.sleep(2.0)
+    return missing
+
+
+async def reconcile_on_boot(session: AsyncSession) -> dict:
+    """Bring the dataplane back after a reboot, or leave a clean gateway.
+
+    Two things make boot different from an operator pressing Save. The
+    hardware may not all be there yet, so this waits for it. And a failure
+    here is unattended: nobody is watching, and the half-state it used to
+    leave behind was the worst of both — settings claiming router, no NAT, no
+    bridge, and the DHCP and hostapd containers resurrected by Docker's own
+    restart policy, one serving addresses for a bridge that no longer existed
+    and the other crash-looping on a missing radio. So a failure tears the
+    whole thing down and says so.
+    """
+    m = await _settings_map(session)
+    if m.get("operating_mode", "gateway") != "router":
+        return await teardown()
+
+    wanted = [w for w in [(m.get("wan_interface") or "").strip()] if w]
+    wanted += _lan_members(m)
+    missing = await wait_for_ports(wanted)
+    if missing:
+        logger.error(
+            "Router mode not restored on boot: %s never appeared. Tearing the "
+            "dataplane down so the box is a clean gateway rather than half a "
+            "router.", ", ".join(missing),
+        )
+        await teardown()
+        raise RouterModeError(
+            f"These ports did not appear within the boot window: "
+            f"{', '.join(missing)}. The box is in gateway mode."
+        )
+
+    try:
+        return await apply(session)
+    except RouterModeError:
+        # apply() already rolled its own steps back, but the sidecars Docker
+        # restarted on its own are not its steps.
+        await teardown()
+        raise
+
+
 async def teardown() -> dict:
     """Return the box to gateway mode. Safe to call at any time.
 
