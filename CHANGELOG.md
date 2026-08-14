@@ -4,6 +4,65 @@ All notable user-facing changes to PiTun. Full per-release detail lives in the
 [GitHub Releases](https://github.com/DaveBugg/PiTun/releases); this file is the
 committed summary.
 
+## v1.6.0-beta.3 — 2026-08-14
+
+**Beta — what a reboot found.** beta.2 had run on hardware but had never been
+switched off and on again. It did not survive: the box came back claiming to
+be a router while behaving as a gateway. That, and publishing the panel on the
+uplink turning out to work for SSH and not for the panel, are what this fixes.
+
+### Fixed
+
+- **A reboot left the box claiming router and behaving as gateway.** Three
+  causes, all of them about boot differing from an operator pressing Save.
+  The reconcile ran before the hardware had finished arriving — a wifi adapter
+  appears only once its firmware has loaded, and the backend is up in seconds —
+  so it asked, got "port is not present", and gave up. It gave up *without
+  cleaning up*, leaving both sidecars resurrected by Docker's own restart
+  policy: dnsmasq serving DHCP for a bridge that no longer existed, hostapd
+  crash-looping on a missing radio. And it was a single attempt, so a LAN cable
+  plugged in a minute later changed nothing. Boot now waits for the configured
+  ports, tears the dataplane down if it cannot restore it, and the watchdog
+  retries once a minute while the settings say router and the dataplane is
+  absent.
+- **Publishing the panel on the uplink only opened half the path.** With both
+  toggles on, SSH answered from the WAN and the panel did not: SSH is a host
+  service and reaches INPUT, while the panel is a container with published
+  ports, so the request is DNAT'd and *forwarded* — a chain whose policy is
+  drop. Worse than a missing feature, because the operator turns that toggle on
+  precisely so they can confirm after the switch, and could not, so the
+  watchdog reverted a working router.
+- **The LAN address ended up on both the bridge and the member.** The port
+  needs a persistent address — without one there is nothing for the next apply
+  to read after a reboot — and NetworkManager puts that address straight back
+  the moment the bridge takes it. Members are now taken out of its hands while
+  enslaved and handed back on teardown.
+- **TCP MSS is clamped to the route MTU**, without which a PPPoE uplink hangs
+  on large transfers while small requests work.
+- The ICMP counter is read before conntrack, where it can actually see the
+  PMTU messages it exists to detect, and zero is no longer reported as a
+  warning on an uplink that has an address.
+- Diagnosis reports when traffic is leaving by a port that isn't the uplink —
+  NAT and a firewall on a link nothing uses, with every other check healthy.
+
+### Added
+
+- **A network card present but unusable is now named as such.** "No wireless
+  adapters found" is the wrong thing to say about a card sitting on the PCI
+  bus. The inventory reports controllers that produced no interface and
+  separates the two readings — nothing bound the device, or a driver is bound
+  and produced no interface anyway, which in practice means firmware it could
+  not load. Found the hard way: a purged firmware package cost an evening.
+
+### Notes
+
+- No new migrations; head remains 025.
+- Verified on hardware: reboot with a LAN cable restores router mode
+  unattended; a client on the LAN resolves DNS, pings out and pulls 1 MB
+  through NAT; the update path preserves the database and brings the router
+  back by itself.
+- 5 commits. Tests: 188 router-mode, 96 frontend.
+
 ## v1.6.0-beta.2 — 2026-08-14
 
 **Beta — router mode, first hardware run.** beta.1 had never been switched on
