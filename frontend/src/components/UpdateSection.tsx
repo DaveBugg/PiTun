@@ -145,8 +145,8 @@ ${base}` : base,
             <p className="text-[11px] text-gray-400 flex items-start gap-1.5">
               <Info className="mt-0.5 h-3 w-3 shrink-0" />
               {t(
-                'Waiting for the host update agent. If this does not move, the agent is not installed — run scripts/pitun-update.sh --install-timer on the box.',
-                'Ожидание агента обновления на хосте. Если ничего не меняется, агент не установлен — запустите scripts/pitun-update.sh --install-timer на коробке.',
+                'Waiting for the host update agent. If this does not move, the agent is not installed — run scripts/pitun-update.sh --install-agent on the box.',
+                'Ожидание агента обновления на хосте. Если ничего не меняется, агент не установлен — запустите scripts/pitun-update.sh --install-agent на коробке.',
               )}
             </p>
           )}

@@ -1265,6 +1265,18 @@ if [[ "$DRY_RUN" != "1" ]]; then
     if [ -f "$INSTALL_DIR/scripts/build-sidecars.sh" ]; then
         bash "$INSTALL_DIR/scripts/build-sidecars.sh" "$INSTALL_DIR" "docker" || true
     fi
+
+    # The panel's Update button writes a request file; a host-side systemd
+    # path unit is what carries it out. The installer never set that up, so
+    # the button sat at "waiting for the update agent" on every box ever
+    # installed — a UI offering an action nothing could perform. Installing
+    # it here does NOT enable unattended updates: the agent only acts on a
+    # request somebody made from the panel. (`--install-timer` is the
+    # separate, scheduled check, and stays opt-in.)
+    if [ -f "$INSTALL_DIR/scripts/pitun-update.sh" ]; then
+        bash "$INSTALL_DIR/scripts/pitun-update.sh" --install-agent \
+            || warn "Could not install the update agent — the panel's Update button will wait forever. Run: bash $INSTALL_DIR/scripts/pitun-update.sh --install-agent"
+    fi
 fi
 
 # ── Static IP / DHCP sanity check (both modes) ───────────────────────────────

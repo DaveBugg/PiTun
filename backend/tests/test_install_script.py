@@ -78,3 +78,26 @@ class TestDowngradeDetection:
     def test_the_same_version_is_neither(self):
         assert not is_downgrade("1.6.0", "1.6.0")
         assert not is_downgrade("1.6.0-beta.3", "1.6.0-beta.3")
+
+
+class TestUpdateAgentIsInstalled:
+    """The panel's Update button writes a request file; a host-side systemd
+    path unit is what carries it out. The installer never set that up, so the
+    button sat at "waiting for the update agent" on every box ever installed
+    — and the hint it showed named `--install-timer`, which is the separate
+    scheduled check and does not service the button at all."""
+
+    def test_the_installer_installs_the_agent(self):
+        text = INSTALL_SH.read_text(encoding="utf-8", errors="ignore")
+        assert "--install-agent" in text
+
+    def test_it_does_not_quietly_enable_scheduled_updates(self):
+        """Installing the agent must not also install the daily timer:
+        acting on a request somebody made is not the same as updating a box
+        on its own, and the second is the operator's decision."""
+        text = INSTALL_SH.read_text(encoding="utf-8", errors="ignore")
+        active = [
+            ln for ln in text.splitlines()
+            if "--install-timer" in ln and not ln.strip().startswith("#")
+        ]
+        assert active == []
