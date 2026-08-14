@@ -2253,3 +2253,55 @@ class TestANoOpSaveDoesNotRebuildTheNetwork:
                          json={"dhcp_lease_hours": int(cur["dhcp_lease_hours"]) + 1})
         assert r.status_code in (200, 204), r.text
         assert applied == [True]
+
+
+class TestMssClamping:
+    """A PPPoE uplink carries 1492 bytes and a tagged VLAN 1496, but LAN
+    clients announce MSS for their own 1500-byte link. Without clamping, the
+    router depends on ICMP 'fragmentation needed' reaching the sender — which
+    the public internet drops often enough that it is not a plan. The symptom
+    is the nastiest kind: DNS resolves, ping works, small pages load, large
+    transfers hang forever."""
+
+    def _forward_chain(self, wan="ppp0", lan="br-lan"):
+        import asyncio
+        from app.core import nftables as nft
+        cap = {}
+
+        async def fake(script):
+            cap["s"] = script
+            return True
+
+        original, nft._nft = nft._nft, fake
+        try:
+            asyncio.run(nft.apply_router_nat(wan, lan))
+        finally:
+            nft._nft = original
+        return cap["s"].split("chain forward")[1].split("chain ")[0]
+
+    def test_syn_packets_are_clamped_to_the_route_mtu(self):
+        body = self._forward_chain()
+        rule = [ln.strip() for ln in body.splitlines() if "maxseg" in ln]
+        assert len(rule) == 1, "exactly one clamp rule"
+        assert "tcp flags syn" in rule[0]
+        # `rt mtu`, not a hardcoded 1452: the figure differs between PPPoE,
+        # VLAN and a plain uplink, and reading the route keeps it correct
+        # when the uplink changes shape.
+        assert "size set rt mtu" in rule[0]
+
+    def test_the_clamp_is_not_tied_to_one_direction(self):
+        """The SYN and the SYN-ACK cross in opposite directions and both
+        carry an MSS that needs clamping."""
+        body = self._forward_chain()
+        rule = next(ln.strip() for ln in body.splitlines() if "maxseg" in ln)
+        assert "iifname" not in rule and "oifname" not in rule
+
+    def test_the_clamp_runs_before_any_accept(self):
+        """It sets an option and falls through; placed after an accept it
+        would never be reached for the flows that matter."""
+        body = self._forward_chain()
+        lines = [ln.strip() for ln in body.splitlines()
+                 if ln.strip() and not ln.strip().startswith("#")]
+        clamp = next(i for i, ln in enumerate(lines) if "maxseg" in ln)
+        first_accept = next(i for i, ln in enumerate(lines) if ln.endswith("accept"))
+        assert clamp < first_accept

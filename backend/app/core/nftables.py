@@ -593,6 +593,23 @@ table inet {_ROUTER_TABLE} {{
     chain forward {{
         type filter hook forward priority filter; policy drop;
         # Replies and related flows for connections the LAN opened.
+        # Clamp TCP MSS to whatever the outgoing route can carry, before any
+        # verdict — the rule sets an option and falls through.
+        #
+        # A PPPoE uplink has an MTU of 1492, and a tagged VLAN 1496. LAN
+        # clients know nothing about that: they announce MSS 1460 for their
+        # own 1500-byte link, the server sends full-size segments, and those
+        # do not fit. The router cannot fragment them (DF is set), so it
+        # depends on ICMP "fragmentation needed" getting back to the sender —
+        # which is dropped often enough on the public internet that relying on
+        # it is not a plan. The symptom is the nastiest kind: DNS resolves,
+        # ping works, small pages load, and large transfers hang forever.
+        #
+        # `rt mtu` reads the actual route, so this is a no-op on a plain
+        # 1500-byte uplink and adjusts itself if the uplink changes shape.
+        # Unqualified by interface on purpose: the SYN and the SYN-ACK cross
+        # in opposite directions and both carry an MSS that needs clamping.
+        tcp flags syn tcp option maxseg size set rt mtu
         ct state established,related accept
         ct state invalid drop
         # LAN out to the internet, and LAN talking to itself.
