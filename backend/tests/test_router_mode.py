@@ -1022,10 +1022,24 @@ class TestLanBridge:
         assert "link delete br-lan" in joined
 
     def test_existing_bridge_is_not_rebuilt(self, monkeypatch):
+        """Reconciled, not recreated: tearing a working bridge down and
+        building it again would drop every client on the LAN."""
         wifi, calls = self._capture(monkeypatch, exists=True)
         res = wifi.create_lan_bridge("eth1", "192.168.10.1/24")
         assert res["created"] is False
-        assert not any(c.startswith("addr flush") for c in calls)
+        assert not any(c.startswith("link add name") for c in calls)
+        assert not any(c.startswith("link delete") for c in calls)
+
+    def test_existing_bridge_still_reconciles_member_addresses(self, monkeypatch):
+        """It does flush the members, though. NetworkManager re-applies a
+        profile's address the moment the bridge takes it, so re-applying
+        settings is exactly when a member has had time to pick the gateway
+        address back up — leaving it on both."""
+        wifi, calls = self._capture(monkeypatch, exists=True)
+        wifi.create_lan_bridge("eth1", "192.168.10.1/24")
+        assert "addr flush dev eth1" in calls
+        assert any(c.startswith("addr replace 192.168.10.1/24 dev br-lan")
+                   for c in calls)
 
     def test_removal_returns_the_address_to_the_wired_port(self, monkeypatch):
         wifi, calls = self._capture(monkeypatch, exists=True)
