@@ -812,3 +812,22 @@ class TestEnsureApiToken:
         client, _ = self._client(monkeypatch, {})
         with pytest.raises(XuiAPIError, match="Could not obtain an API token"):
             asyncio.run(client.ensure_api_token())
+
+
+class TestClientWithoutAToken:
+    """The bootstrap client that logs in to FETCH the token has none yet."""
+
+    def test_no_authorization_header_when_there_is_no_token(self):
+        from app.core.xui_api import XuiClient
+        c = XuiClient(base_url="http://198.51.100.7:2053/abc", api_token="",
+                      panel_user="admin", panel_pass="pw")
+        http = c._ensure_client()
+        # httpx refuses to encode a bare `Bearer `: the request fails as an
+        # illegal header before it leaves the process, and the error says
+        # nothing about a missing token.
+        assert "Authorization" not in http.headers
+
+    def test_the_header_is_there_once_a_token_is(self):
+        from app.core.xui_api import XuiClient
+        c = XuiClient(base_url="http://198.51.100.7:2053/abc", api_token="tok")
+        assert c._ensure_client().headers["Authorization"] == "Bearer tok"

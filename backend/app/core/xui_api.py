@@ -182,14 +182,22 @@ class XuiClient:
             # api/inbounds/list` collapses to `https://h:port/panel/...`,
             # missing the basepath and getting a 307 redirect back from
             # the panel. Building full URLs in `_request` instead.
+            headers: Dict[str, str] = {
+                # The panel responds JSON either way, but being explicit
+                # avoids any future content-negotiation surprises if
+                # upstream adds an HTML fallback.
+                "Accept": "application/json",
+            }
+            # Only when there is one. A client that has yet to obtain a token
+            # — the bootstrap that logs in to fetch it — would otherwise send
+            # a bare `Bearer `, which httpx refuses to encode at all: the
+            # request fails as an illegal header before it reaches the panel,
+            # and the error says nothing about the missing token.
+            if self.api_token:
+                headers["Authorization"] = f"Bearer {self.api_token}"
+
             client_kwargs: Dict[str, Any] = dict(
-                headers={
-                    "Authorization": f"Bearer {self.api_token}",
-                    # The panel responds JSON either way, but being
-                    # explicit avoids any future content-negotiation
-                    # surprises if upstream adds an HTML fallback.
-                    "Accept": "application/json",
-                },
+                headers=headers,
                 verify=self.verify_tls,
                 timeout=self.timeout,
                 # Follow 307/308 redirects belt-and-suspenders — if a
@@ -318,8 +326,14 @@ class XuiClient:
         try:
             r = await client.get(url, headers={"X-Requested-With": "XMLHttpRequest"})
         except httpx.HTTPError as exc:
+            # httpx leaves `str(exc)` empty on a plain connect failure, and
+            # "transport error: " with nothing after it tells the operator
+            # nothing — this is the error they hit when the port or the base
+            # path is wrong, which is most of the time.
             raise XuiAPIError(
-                f"csrf-token transport error: {exc}", kind="transport",
+                f"csrf-token transport error: "
+                f"{str(exc) or type(exc).__name__} ({url})",
+                kind="transport",
             ) from exc
         if not r.is_success:
             raise XuiAPIError(
