@@ -4,11 +4,13 @@ import {
   Layers, Loader2, AlertTriangle, ExternalLink, Trash2, Plus, RefreshCw,
   ShieldCheck, ShieldAlert, Server as ServerIcon, KeyRound, Copy, Check,
   ChevronRight, ChevronDown, Upload, Shuffle, UploadCloud, QrCode, Radar,
+  Link2,
 } from 'lucide-react'
 
 import { xuiApi, diagnosticsApi, type SniScanResult } from '@/api/client'
 import { useT } from '@/hooks/useT'
 import { XrayPolicySection } from '@/components/XrayPolicySection'
+import { XuiImportModal } from '@/components/XuiImportModal'
 import { useConfirm } from '@/components/ConfirmModal'
 import { ModalShell } from '@/components/ModalShell'
 import { ClientQrModal } from '@/components/ClientQrModal'
@@ -30,6 +32,7 @@ import type { InboundPreset, XuiClient, XuiInbound, XuiServer } from '@/types'
  * page where multiple XuiServers are wired together end-to-end.
  */
 export default function XuiPage() {
+  const [importOpen, setImportOpen] = useState(false)
   const t = useT()
   const qc = useQueryClient()
 
@@ -65,7 +68,17 @@ export default function XuiPage() {
             'Управляйте VLESS / Trojan / SOCKS инбаундами на панелях x-ui-pro / 3x-ui, развёрнутых через PiTun',
           )}
         </p>
+        <span className="flex-1" />
+        <button
+          onClick={() => setImportOpen(true)}
+          className="flex items-center gap-1.5 rounded-lg border border-gray-800 px-3 py-1.5 text-sm text-gray-300 hover:bg-gray-800 transition-colors"
+        >
+          <Link2 className="h-4 w-4" />
+          {t('Connect existing', 'Подключить установленную')}
+        </button>
       </header>
+
+      {importOpen && <XuiImportModal onClose={() => setImportOpen(false)} />}
 
       <div className="space-y-4">
       {srvLoading && (
@@ -92,8 +105,8 @@ export default function XuiPage() {
               </div>
               <p className="text-xs text-gray-500 mt-1 leading-snug">
                 {t(
-                  'Go to Servers → Deploy on a registered VPS → pick "x-ui" protocol. Once the install finishes, the panel registers itself here automatically.',
-                  'Перейдите в Servers → Deploy на зарегистрированном VPS → выберите протокол "x-ui". После установки панель появится здесь автоматически.',
+                  'Deploy one from Servers → Deploy → "x-ui" and it registers itself here. A panel that already exists — installed by hand, or inherited with the server — is connected with the button above; nothing is reinstalled.',
+                  'Разверните через Servers → Deploy → «x-ui», и панель зарегистрируется здесь сама. Уже установленную — поднятую вручную или доставшуюся вместе с сервером — подключите кнопкой выше; ничего не переустанавливается.',
                 )}
               </p>
             </div>

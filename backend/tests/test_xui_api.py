@@ -729,3 +729,86 @@ class TestResolveClientEmailNaturalIds:
         finally:
             await c.aclose()
         assert exc.value.kind == "not_found"
+
+
+class TestEnsureApiToken:
+    """Every Bearer call needs the panel's API token, and until now the only
+    thing that produced one was our install script — so a panel installed by
+    hand, or one whose `xui://` line was lost, could not be registered at
+    all. The operator has the credentials they log in with; this turns those
+    into the token, exactly as the script does."""
+
+    def _client(self, monkeypatch, responses):
+        """XuiClient whose cookie requests are answered from `responses`,
+        keyed by (method, path)."""
+        from app.core.xui_api import XuiClient
+        calls = []
+
+        async def fake_cookie_request(self, method, path, *, form=None,
+                                      json_body=None, timeout=None):
+            calls.append((method, path, json_body))
+            key = (method, path)
+            if key not in responses:
+                from app.core.xui_api import XuiAPIError
+                raise XuiAPIError(f"HTTP 404 on {method} {path}", kind="http", status=404)
+            return responses[key]
+
+        monkeypatch.setattr(XuiClient, "_cookie_request", fake_cookie_request)
+        return XuiClient(
+            base_url="http://198.51.100.7:2053/abc",
+            api_token="", panel_user="admin", panel_pass="pw",
+        ), calls
+
+    def test_reuses_a_token_it_already_created(self, monkeypatch):
+        """Minting one per import would litter the panel, and any `xui://`
+        handed out earlier has to keep working."""
+        import asyncio
+        client, calls = self._client(monkeypatch, {
+            ("GET", "/panel/api/setting/apiTokens"): {
+                "success": True,
+                "obj": [{"name": "other", "token": "nope"},
+                        {"name": "pitun", "token": "reused-token"}],
+            },
+        })
+        assert asyncio.run(client.ensure_api_token()) == "reused-token"
+        assert not [c for c in calls if "create" in c[1]], "must not create a second"
+
+    def test_creates_one_when_absent(self, monkeypatch):
+        import asyncio
+        client, calls = self._client(monkeypatch, {
+            ("GET", "/panel/api/setting/apiTokens"): {"success": True, "obj": []},
+            ("POST", "/panel/api/setting/apiTokens/create"): {
+                "success": True, "obj": {"token": "fresh-token"},
+            },
+        })
+        assert asyncio.run(client.ensure_api_token()) == "fresh-token"
+        create = [c for c in calls if "create" in c[1]][0]
+        # JSON body, not a form: the create endpoint silently rejects a form.
+        assert create[2] == {"name": "pitun"}
+
+    def test_falls_back_to_the_older_controller_mount(self, monkeypatch):
+        """v3.6.0 moved the settings controllers under `/panel/api/`; older
+        panels only serve the old path."""
+        import asyncio
+        client, _ = self._client(monkeypatch, {
+            ("GET", "/panel/setting/apiTokens"): {
+                "success": True, "obj": [{"name": "pitun", "token": "old-mount"}],
+            },
+        })
+        assert asyncio.run(client.ensure_api_token()) == "old-mount"
+
+    def test_without_a_login_it_says_so(self, monkeypatch):
+        import asyncio
+        import pytest
+        from app.core.xui_api import XuiClient, XuiAPIError
+        client = XuiClient(base_url="http://198.51.100.7:2053/abc", api_token="")
+        with pytest.raises(XuiAPIError, match="login is required"):
+            asyncio.run(client.ensure_api_token())
+
+    def test_neither_mount_answering_is_an_error(self, monkeypatch):
+        import asyncio
+        import pytest
+        from app.core.xui_api import XuiAPIError
+        client, _ = self._client(monkeypatch, {})
+        with pytest.raises(XuiAPIError, match="Could not obtain an API token"):
+            asyncio.run(client.ensure_api_token())

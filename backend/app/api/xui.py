@@ -340,12 +340,19 @@ async def import_xui_server(
         domain = cfg.domain
         mode = cfg.mode
     else:
-        if not (body.api_token and body.panel_port and body.panel_basepath
+        # The API token is what every Bearer call needs, and until now the
+        # only thing that produced one was our install script — so a panel
+        # someone installed by hand, or one whose `xui://` line was lost,
+        # could not be registered at all. The operator has the credentials
+        # they log in with; those are enough, and the token is fetched from
+        # the panel below exactly as the script does.
+        if not (body.panel_port and body.panel_basepath
                 and body.panel_user and body.panel_pass):
             raise HTTPException(
                 400,
-                detail="Provide either `uri` or all of api_token + "
-                       "panel_port + panel_basepath + panel_user + panel_pass.",
+                detail="Provide either `uri` or panel_port + panel_basepath + "
+                       "panel_user + panel_pass (api_token is fetched from the "
+                       "panel when you don't have it).",
             )
         api_token = body.api_token
         panel_port = int(body.panel_port)
@@ -367,6 +374,27 @@ async def import_xui_server(
         base_url = f"https://{domain}:{panel_port}{panel_basepath}"
     else:
         base_url = f"http://{srv.host}:{panel_port}{panel_basepath}"
+
+    # No token given: log in as the operator would and ask the panel for
+    # one. Done before the probe below, so the row is still only written
+    # once something has actually authenticated against the panel.
+    if not api_token:
+        try:
+            async with XuiClient(
+                base_url=base_url, api_token="", verify_tls=False,
+                panel_user=panel_user, panel_pass=panel_pass,
+            ) as bootstrap:
+                api_token = await bootstrap.ensure_api_token()
+        except XuiAPIError as exc:
+            raise HTTPException(
+                400,
+                detail=(
+                    f"Could not get an API token from the panel at {base_url} "
+                    f"({exc.kind}): {exc}. Check the port, the base path and "
+                    f"the panel login."
+                ),
+            )
+
     async with XuiClient(
         base_url=base_url, api_token=api_token, verify_tls=False,
     ) as client:

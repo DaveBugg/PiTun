@@ -376,11 +376,14 @@ class XuiClient:
         path: str,
         *,
         form: Optional[Dict[str, Any]] = None,
+        json_body: Optional[Dict[str, Any]] = None,
         timeout: Optional[float] = None,
     ) -> Dict[str, Any]:
         """Issue a UI-internal request authenticated by session cookie
-        + CSRF header. Body is sent form-encoded (the only shape the
-        UI endpoints accept). One auto-retry on 401/403 after refresh.
+        + CSRF header. Body is form-encoded by default — the shape most
+        UI endpoints accept — but `json_body` switches it, because a few
+        (`apiTokens/create` among them) take JSON and silently reject a
+        form. One auto-retry on 401/403 after refresh.
         """
         client = self._ensure_client()
         url = f"{self.base_url}{path}"
@@ -389,12 +392,18 @@ class XuiClient:
             headers = {
                 "X-CSRF-Token": csrf,
                 "X-Requested-With": "XMLHttpRequest",
-                "Content-Type": "application/x-www-form-urlencoded",
+                "Content-Type": ("application/json" if json_body is not None
+                                 else "application/x-www-form-urlencoded"),
             }
             try:
+                kwargs: Dict[str, Any] = (
+                    {"json": json_body} if json_body is not None
+                    else {"data": form or {}}
+                )
                 resp = await client.request(
-                    method, url, data=form or {}, headers=headers,
+                    method, url, headers=headers,
                     timeout=timeout if timeout is not None else self.timeout,
+                    **kwargs,
                 )
             except httpx.TimeoutException as exc:
                 raise XuiAPIError(
@@ -710,6 +719,62 @@ class XuiClient:
         await self._request(
             "POST", "/panel/api/server/restartXrayService",
             timeout=_LARGE_PAYLOAD_TIMEOUT,
+        )
+
+    async def ensure_api_token(self, name: str = "pitun") -> str:
+        """Find or create the panel's own API token, using the login.
+
+        Every Bearer call needs this token, and until now the only thing
+        that produced one was our install script — so a panel installed by
+        hand, or one whose `xui://` line was lost, could not be registered
+        at all. The operator has the credentials they log in with; this
+        turns those into the token, exactly as the script does.
+
+        Reuses a token already named `name` rather than minting one per
+        attempt: a panel accumulating a token per import is a mess, and any
+        `xui://` handed out earlier keeps working.
+
+        Both controller mounts are tried — v3.6.0 moved the settings
+        controllers under `/panel/api/`, and older panels only serve the
+        old path.
+        """
+        if not (self.panel_user and self.panel_pass):
+            raise XuiAPIError(
+                "Panel login is required to obtain an API token",
+                kind="auth",
+            )
+
+        last: Optional[str] = None
+        for mount in ("/panel/api/setting", "/panel/setting"):
+            try:
+                listing = await self._cookie_request("GET", f"{mount}/apiTokens")
+            except XuiAPIError as exc:
+                # The wrong mount answers with the SPA shell or a 404; that
+                # is not a failure, it is the probe doing its job.
+                last = str(exc)
+                continue
+            if not isinstance(listing, dict) or listing.get("success") is not True:
+                last = f"{mount}/apiTokens did not answer as the tokens controller"
+                continue
+
+            for item in listing.get("obj") or []:
+                if (isinstance(item, dict) and item.get("name") == name
+                        and item.get("token")):
+                    logger.info("Reusing existing panel API token %r", name)
+                    return str(item["token"])
+
+            created = await self._cookie_request(
+                "POST", f"{mount}/apiTokens/create", json_body={"name": name},
+            )
+            token = ((created or {}).get("obj") or {}).get("token")
+            if token:
+                logger.info("Created panel API token %r", name)
+                return str(token)
+            last = f"{mount}/apiTokens/create returned no token"
+
+        raise XuiAPIError(
+            f"Could not obtain an API token from the panel ({last or 'no mount answered'})",
+            kind="api",
         )
 
     async def get_xray_setting(self) -> Dict[str, Any]:
