@@ -4,6 +4,18 @@ All notable user-facing changes to PiTun. Full per-release detail lives in the
 [GitHub Releases](https://github.com/DaveBugg/PiTun/releases); this file is the
 committed summary.
 
+## v1.6.4 — 2026-08-15
+
+### Fixed
+
+- **The installer warned that xray was blocking xray's own DNS port.** The
+  check exists to catch something squatting on UDP/5353, which PiTun's DNS
+  needs. On an upgrade the process holding it is xray — it *is* that DNS — so
+  every operator of a healthy box was told their DNS would not start, with
+  the pid of the process already serving it offered as evidence. It now
+  ignores xray and still reports anything else, including something listening
+  alongside it.
+
 ## v1.6.3 — 2026-08-14
 
 **Country flags on nodes actually appear now** — and look the same on every
