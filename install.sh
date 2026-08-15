@@ -845,9 +845,13 @@ if [[ "$SKIP_HOST_PREP" != "1" ]]; then
     fi
     # Whoever holds 5353, say so: xray's DNS inbound will fail to bind and
     # name resolution through PiTun silently stops working.
+    # xray excluded, because on an upgrade xray is exactly what holds this
+    # port: it IS PiTun's DNS. Warning about it told every operator of a
+    # healthy box that their DNS would not start, naming the process already
+    # serving it. The check is for something else squatting there.
     if [[ "$DRY_RUN" != "1" ]] && command -v ss >/dev/null 2>&1; then
-        HOLDER=$(ss -lnupH 2>/dev/null | grep -m1 ':5353 ' || true)
-        [[ -n "$HOLDER" ]] && warn "UDP/5353 is still in use — xray DNS will not start: $HOLDER"
+        HOLDER=$(ss -lnupH 2>/dev/null | grep ':5353 ' | grep -v '"xray"' | head -1 || true)
+        [[ -n "$HOLDER" ]] && warn "UDP/5353 is held by something other than xray — PiTun's DNS will not start: $HOLDER"
     fi
 
     info "Configuring sysctl (IP forwarding + TPROXY loopback)…"

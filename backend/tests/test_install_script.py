@@ -101,3 +101,52 @@ class TestUpdateAgentIsInstalled:
             if "--install-timer" in ln and not ln.strip().startswith("#")
         ]
         assert active == []
+
+
+class TestDnsPortWarning:
+    """On an upgrade, xray is exactly what holds UDP/5353 — it IS PiTun's
+    DNS. Warning about that told every operator of a healthy box that their
+    DNS would not start, naming the process already serving it."""
+
+    def _fires(self, ss_output: str) -> bool:
+        """Run the installer's own filter over a captured `ss` listing."""
+        text = INSTALL_SH.read_text(encoding="utf-8", errors="ignore")
+        line = next(
+            ln.strip() for ln in text.splitlines()
+            if "HOLDER=$(ss " in ln
+        )
+        # Swap the real `ss` for the captured output, keeping the filter.
+        pipeline = line.split("HOLDER=$(", 1)[1].rstrip(")")
+        # `%b`, not `%s`: the listing is handed over as a Python repr, whose
+        # `\n` are two characters. bash leaves those alone inside single
+        # quotes, which would collapse a multi-line listing into one line and
+        # quietly turn a line-oriented filter into something else.
+        pipeline = pipeline.replace("ss -lnupH 2>/dev/null", "printf '%b' \"$SS\"")
+        body = "\n".join([
+            f"SS={ss_output!r}",
+            f"HOLDER=$({pipeline})",
+            '[ -n "$HOLDER" ] && echo FIRED || echo QUIET',
+        ])
+        r = subprocess.run([BASH, "-c", body], capture_output=True, text=True, timeout=30)
+        assert r.returncode == 0, r.stderr
+        return r.stdout.strip() == "FIRED"
+
+    # `ss` emits one line per listener; the filter is line-oriented, so the
+    # newline matters — joined into one line, a listing with both processes
+    # would read as neither.
+    XRAY = 'UNCONN 0 0 *:5353 *:* users:(("xray",pid=225296,fd=11))' + chr(10)
+    AVAHI = ('UNCONN 0 0 0.0.0.0:5353 0.0.0.0:* '
+             'users:(("avahi-daemon",pid=987,fd=12))') + chr(10)
+
+    def test_quiet_when_xray_holds_the_port(self):
+        assert not self._fires(self.XRAY)
+
+    def test_fires_when_something_else_does(self):
+        assert self._fires(self.AVAHI)
+
+    def test_fires_when_both_are_there(self):
+        """avahi squatting alongside xray is the case worth reporting."""
+        assert self._fires(self.XRAY + self.AVAHI)
+
+    def test_quiet_when_nothing_listens(self):
+        assert not self._fires("")
