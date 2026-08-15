@@ -6,6 +6,8 @@ import type { Node } from '@/types'
 import { StatusBadge } from './StatusBadge'
 import { useServers } from '@/hooks/useServers'
 import { splitCountryPrefix } from '@/lib/countryPrefix'
+import { countryFlag, countryName } from '@/lib/countries'
+import { useAppStore } from '@/store'
 
 // Readings older than this render in a warning colour — the speed is
 // probably stale and worth re-testing.
@@ -85,9 +87,25 @@ export function NodeCard({
   // peers exported via PiTun). Imported nodes / hand-typed nodes don't
   // get this label.
   const isFromServerClient = !!(node.from_deployment_client_id && sourceServer)
-  // The country prefix is part of the stored name; shown as its own badge so
-  // it reads as a label rather than as the first word of the node's name.
-  const country = splitCountryPrefix(node.name)
+  const lang = useAppStore((s) => s.lang)
+  // Two sources for the flag, in order of authority. `node.country` is where
+  // the traffic was seen coming out, read back through the tunnel by the
+  // speed / internet check — true even for a chained node, whose address
+  // belongs to the entry hop and not to the exit. Failing that, the prefix
+  // baked into the stored name (GeoIP on the address, at import time).
+  // Either way it renders as its own badge rather than as the first word of
+  // the name, which is how it read before.
+  const prefix = splitCountryPrefix(node.name)
+  const code = (node.country || prefix.code || '').toUpperCase()
+  const country = {
+    code,
+    flag: countryFlag(code) || prefix.flag,
+    name: prefix.name,
+  }
+  const countryTitle = [
+    countryName(code, lang) || code,
+    node.exit_ip ? `exit ${node.exit_ip}` : null,
+  ].filter(Boolean).join(' · ')
   return (
     <div
       className={clsx(
@@ -118,7 +136,7 @@ export function NodeCard({
               {country.code && (
                 <span
                   className="shrink-0 rounded-sm border border-gray-700 bg-gray-800/60 px-1.5 py-0.5 text-[10px] font-medium tracking-wide text-gray-300"
-                  title={country.code}
+                  title={countryTitle}
                 >
                   {country.flag}<span className="ml-0.5">{country.code}</span>
                 </span>

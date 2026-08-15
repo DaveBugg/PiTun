@@ -74,6 +74,13 @@ export interface Node {
   speed_mbps?: number | null
   speed_max_mbps?: number | null
   speed_tested_at?: string | null
+  /** Exit identity read back through the tunnel by the speed / internet
+   *  check. `country` (ISO-3166 alpha-2) drives the flag badge: it is where
+   *  the traffic actually surfaces, so it beats anything inferred from the
+   *  address — which for a chained node is the entry hop's country. */
+  country?: string | null
+  exit_ip?: string | null
+  exit_checked_at?: string | null
   order: number
   chain_node_id?: number | null
   // Optional link to a Server (the VPS hosting this node's upstream).

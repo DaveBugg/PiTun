@@ -17,6 +17,7 @@ import os
 import random
 import socket
 import tempfile
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -72,6 +73,19 @@ _REACH_TARGETS = [
 ]
 _REACH_TIMEOUT_S = 6.0
 
+# Exit identity: which address does the internet see on the far side of the
+# tunnel, and in which country? Cloudflare's trace endpoint answers both in
+# one tiny `key=value` body — `ip=` and its own geolocation `loc=` — so the
+# flag needs no MaxMind database on the box, and it reports where traffic
+# actually surfaces rather than where the node's address happens to live
+# (for a chained node those are different countries). `cp.cloudflare.com` is
+# already contacted by the reachability gate, so this adds no new host.
+_EXIT_TARGETS = [
+    ("cloudflare", "https://cp.cloudflare.com/cdn-cgi/trace"),
+    ("cloudflare-www", "https://www.cloudflare.com/cdn-cgi/trace"),
+]
+_EXIT_TIMEOUT_S = 6.0
+
 
 async def _is_active_node(node_id: int) -> bool:
     """Is `node_id` the currently active node? Never raises — a lookup hiccup
@@ -97,13 +111,16 @@ async def _live_socks_ready(node_id: int) -> bool:
 
 
 async def _gate_and_measure(node: Node, socks_port: int) -> Dict:
-    """Reachability gate + download measurement over an already-open SOCKS
-    port — a throwaway xray OR the live speed-probe inbound. Shared so both
-    paths measure identically."""
+    """Reachability gate + exit identity + download measurement over an
+    already-open SOCKS port — a throwaway xray OR the live speed-probe
+    inbound. Shared so both paths measure identically."""
     reachable, latency_ms, detail = await _probe_reachable(socks_port)
     if not reachable:
         return _result(node, error=f"unreachable: {detail}",
                        reachable=False, latency_ms=latency_ms)
+    # The tunnel is up and we are about to hold it open for ~14s anyway —
+    # the cheapest moment there will ever be to ask who we are out there.
+    exit_info = await probe_exit(socks_port)
     last_error = "no targets reachable"
     for label, url in _STREAM_TARGETS:
         try:
@@ -114,8 +131,9 @@ async def _gate_and_measure(node: Node, socks_port: int) -> Dict:
         if measured is not None:
             avg, mx = measured
             return _result(node, download_mbps=avg, max_mbps=mx,
-                           reachable=True, latency_ms=latency_ms)
-    return _result(node, error=last_error, reachable=True, latency_ms=latency_ms)
+                           reachable=True, latency_ms=latency_ms, **exit_info)
+    return _result(node, error=last_error, reachable=True,
+                   latency_ms=latency_ms, **exit_info)
 
 
 async def speedtest_node(node: Node) -> Dict:
@@ -245,6 +263,13 @@ async def speedtest_stream(node: Node):
             yield {"phase": "error", "error": f"unreachable: {detail}"}
             return
 
+        # Who are we out there? Emitted as its own event so the card can show
+        # the exit while the download is still running, and repeated on
+        # `done` so a caller that only keeps the final event still has it.
+        exit_info = await probe_exit(socks_port)
+        if exit_info.get("exit_ip"):
+            yield {"phase": "exit", **exit_info}
+
         last_error = "no targets reachable"
         for label, url in _STREAM_TARGETS:
             yield {"phase": "connecting", "host": label}
@@ -253,6 +278,8 @@ async def speedtest_stream(node: Node):
                 async for ev in _stream_download(socks_port, label, url):
                     if ev["phase"] in ("progress", "done"):
                         got_data = True
+                    if ev["phase"] == "done":
+                        ev = {**ev, **exit_info}
                     yield ev
                 if got_data:
                     return  # first working target wins
@@ -274,7 +301,8 @@ async def reachability_check(node: Node) -> Dict:
     Spins the same throwaway xray, then fetches a tiny always-on endpoint
     (Google's generate_204) through it — a real proxied HTTP round trip,
     unlike the health check's bare TCP connect to the server. Returns
-    {ok, latency_ms, detail}.
+    {ok, latency_ms, detail, exit_ip, exit_country}: the tunnel is already
+    open, so it reads the exit identity back too.
     """
     proc: Optional[asyncio.subprocess.Process] = None
     tmp_path: Optional[str] = None
@@ -302,7 +330,10 @@ async def reachability_check(node: Node) -> Dict:
 
         # Same two-endpoint gate the speed test uses.
         ok, latency, detail = await _probe_reachable(socks_port)
-        return {"ok": ok, "latency_ms": latency, "detail": detail}
+        exit_info = {"exit_ip": None, "exit_country": None}
+        if ok:
+            exit_info = await probe_exit(socks_port)
+        return {"ok": ok, "latency_ms": latency, "detail": detail, **exit_info}
     finally:
         await _cleanup(proc, tmp_path)
 
@@ -447,6 +478,79 @@ async def _probe_reachable(socks_port: int, rounds: int = 2) -> Tuple[bool, Opti
         if r < max(1, rounds) - 1:
             await asyncio.sleep(0.4)
     return False, None, detail
+
+
+def _parse_trace(body: str) -> Tuple[Optional[str], Optional[str]]:
+    """Pull (ip, country) out of a `key=value`-per-line trace body."""
+    ip = cc = None
+    for line in (body or "").splitlines()[:40]:  # the body is short and fixed
+        key, _, value = line.partition("=")
+        value = value.strip()
+        if key == "ip" and value:
+            ip = value
+        elif key == "loc" and len(value) == 2 and value.isalpha():
+            cc = value.upper()
+    return ip, cc
+
+
+async def probe_exit(socks_port: int) -> Dict:
+    """Read back the address the internet sees on the far side of the tunnel.
+
+    Returns `{"exit_ip": str|None, "exit_country": "XX"|None}`. Never raises
+    and never blocks the measurement it rides along with: a node whose exit
+    cannot be identified simply keeps whatever it already had.
+    """
+    import httpx
+
+    proxy = f"socks5://127.0.0.1:{socks_port}"
+    for label, url in _EXIT_TARGETS:
+        try:
+            async with httpx.AsyncClient(
+                proxy=proxy,
+                timeout=httpx.Timeout(_EXIT_TIMEOUT_S, connect=_EXIT_TIMEOUT_S),
+                headers={"User-Agent": _STREAM_UA},
+            ) as client:
+                resp = await client.get(url)
+            if resp.status_code != 200:
+                continue
+            ip, cc = _parse_trace(resp.text)
+        except Exception as exc:  # noqa: BLE001 — advisory, try the next one
+            logger.debug("exit probe via %s failed: %s", label, exc)
+            continue
+        if not ip:
+            continue
+        if cc is None:
+            # Cloudflare withholds `loc=` on a few networks. Fall back to the
+            # local database if the operator installed one — by now we have a
+            # literal IP, which is all it ever needed.
+            try:
+                from app.core.geoip_lookup import country_code
+                cc = country_code(ip)
+            except Exception:  # noqa: BLE001
+                cc = None
+        return {"exit_ip": ip, "exit_country": cc}
+    return {"exit_ip": None, "exit_country": None}
+
+
+def apply_exit(node: Node, result: Dict) -> bool:
+    """Copy an observed exit identity from a measurement onto the Node row.
+
+    Shared by every persistence site — the manual test, "speed all", the
+    stream and the background sweep — because the flag going missing from
+    one of them is exactly how this feature looked broken before. Returns
+    whether anything changed. The name's flag prefix follows automatically:
+    the model listener re-derives it from `country` as the row is written.
+    """
+    ip = result.get("exit_ip")
+    cc = (result.get("exit_country") or "").upper()
+    if not ip and not cc:
+        return False
+    if ip:
+        node.exit_ip = ip
+    if len(cc) == 2 and cc.isalpha():
+        node.country = cc
+    node.exit_checked_at = datetime.now(timezone.utc)
+    return True
 
 
 async def _measure_download(socks_port: int, label: str, url: str) -> Optional[Tuple[float, float]]:
@@ -839,7 +943,8 @@ def _safe_unlink(path: Optional[str]) -> None:
 
 
 def _result(node: Node, download_mbps=None, error=None,
-            max_mbps=None, reachable=None, latency_ms=None) -> Dict:
+            max_mbps=None, reachable=None, latency_ms=None,
+            exit_ip=None, exit_country=None) -> Dict:
     return {
         "node_id": node.id,
         "node_name": node.name,
@@ -847,5 +952,7 @@ def _result(node: Node, download_mbps=None, error=None,
         "max_mbps": max_mbps,             # best steady window (peak)
         "reachable": reachable,           # generate_204 succeeded through the node
         "latency_ms": latency_ms,         # reachability round-trip
+        "exit_ip": exit_ip,               # address the internet saw
+        "exit_country": exit_country,     # ISO code for that address
         "error": error,
     }

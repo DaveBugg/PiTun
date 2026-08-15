@@ -161,3 +161,71 @@ class TestModelListener:
         node = self._target("vless", "5.5.5.5")
         cap["fn"](None, None, node)          # must not raise
         assert node.name == "vless"
+
+    def test_it_does_not_strip_a_flag_it_cannot_re_derive(self, fake_geoip, monkeypatch):
+        """The bug behind "flags never appear on hostname nodes".
+
+        `/apply-country-flags` resolves DNS, works out the country and writes
+        the flag — and the very commit that saves it fires this hook, which
+        re-derives with `resolve=False`, misses, and strips the flag straight
+        back off. The button then reports renaming nodes that show no flag."""
+        cap = self._hook(monkeypatch)
+        node = self._target("🇳🇱 vless", "vpn.example.com")
+        cap["fn"](None, None, node)
+        assert node.name == "🇳🇱 vless"
+
+    def test_an_observed_exit_country_flags_a_hostname_node(self, fake_geoip, monkeypatch):
+        """No DNS, no address lookup — the speed test already saw the exit."""
+        cap = self._hook(monkeypatch)
+        node = self._target("vless", "vpn.example.com")
+        node.country = "NL"
+        cap["fn"](None, None, node)
+        assert node.name == "🇳🇱 vless"
+
+    def test_a_moved_exit_replaces_the_old_flag(self, fake_geoip, monkeypatch):
+        cap = self._hook(monkeypatch)
+        node = self._target("🇺🇸 vless", "vpn.example.com")
+        node.country = "NL"
+        cap["fn"](None, None, node)
+        assert node.name == "🇳🇱 vless"
+
+    def test_the_exit_outranks_the_address(self, fake_geoip, monkeypatch):
+        """A chained node dials an entry hop in one country and surfaces in
+        another; the address is the wrong one of the two to show."""
+        cap = self._hook(monkeypatch)
+        node = self._target("vless", "1.1.1.1")   # address says US
+        node.country = "NL"                        # exit said NL
+        cap["fn"](None, None, node)
+        assert node.name == "🇳🇱 vless"
+
+
+class TestObservedCountry:
+    """`country=` is an observation, not an inference — it wins, and it works
+    with no MaxMind database installed at all."""
+
+    def test_it_flags_without_any_database(self):
+        g.reset()
+        assert g.enrich_name("node", "vpn.example.com", country="nl") == "🇳🇱 node"
+
+    def test_a_malformed_code_falls_back_to_the_address(self, fake_geoip):
+        assert g.enrich_name("node", "1.1.1.1", country="ZZZZ") == "🇺🇸 node"
+        assert g.enrich_name("node", "1.1.1.1", country="") == "🇺🇸 node"
+
+    def test_resolve_country_prefers_it(self, fake_geoip):
+        assert g.resolve_country("1.1.1.1", country="NL") == "NL"
+        assert g.resolve_country("1.1.1.1") == "US"
+        assert g.resolve_country("2.2.2.2") is None
+
+
+class TestKeepOnMiss:
+    def test_a_miss_leaves_the_name_exactly_as_it_was(self, fake_geoip):
+        assert g.enrich_name("🇳🇱 node", "vpn.example.com", resolve=False,
+                             keep_on_miss=True) == "🇳🇱 node"
+
+    def test_a_hit_still_replaces_a_stale_flag(self, fake_geoip):
+        assert g.enrich_name("🇺🇸 node", "5.5.5.5", keep_on_miss=True) == "🇳🇱 node"
+
+    def test_the_default_is_unchanged(self, fake_geoip):
+        """Import paths keep stripping on a miss — only the write hook and
+        the one-off button ask to preserve."""
+        assert g.enrich_name("🇺🇸 node", "2.2.2.2") == "node"

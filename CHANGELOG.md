@@ -4,6 +4,39 @@ All notable user-facing changes to PiTun. Full per-release detail lives in the
 [GitHub Releases](https://github.com/DaveBugg/PiTun/releases); this file is the
 committed summary.
 
+## v1.6.6 — 2026-08-15
+
+**Country flags now come from where the traffic actually comes out.** Nodes
+addressed by hostname never got one, and a chained node showed the wrong one.
+
+### Fixed
+
+- **The write hook stripped the flag the moment it was applied.** Enrichment
+  runs on every node write, where DNS is deliberately skipped (a stalled
+  resolver would hold up the database flush) — so for a hostname address it
+  found no country and removed the prefix. Including the one
+  `/apply-country-flags` had just resolved and set: the button reported
+  renaming nodes that then showed no flag. It now leaves a name alone when it
+  cannot determine the country, and only replaces a prefix when it can.
+
+### Added
+
+- **The speed test reads the exit address back through the tunnel.** One
+  small request to a host the reachability gate already contacts returns both
+  the address the internet saw and its country, so the flag reflects where
+  traffic surfaces — for a chained node that is the last hop, not the entry
+  whose address is stored. It needs no GeoLite2 database on the box, and it
+  answers for a hostname that never resolved locally.
+
+- Every check that opens a tunnel now records it: the manual speed test,
+  "speed all", the live streaming test, the internet check and the background
+  auto-check sweep. A node whose exit moves country is re-flagged by the next
+  sweep without anyone pressing anything.
+
+- `country`, `exit_ip` and `exit_checked_at` on the node (migration 026). The
+  country badge prefers the observed country over anything inferred from the
+  address, and its tooltip names the country and the exit address.
+
 ## v1.6.5 — 2026-08-15
 
 **The pre-upgrade database snapshot wasn't being taken — and the installer

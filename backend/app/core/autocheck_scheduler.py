@@ -147,7 +147,7 @@ class AutoCheckScheduler:
                 await session.commit()
                 node_ids = await resolve_scope_node_ids(session, eff_kind, eff_value)
 
-            from app.core.speedtest import speedtest_node as _speedtest
+            from app.core.speedtest import apply_exit, speedtest_node as _speedtest
             for nid in node_ids:
                 async with AsyncSession(get_async_engine()) as session:
                     node = await session.get(Node, nid)
@@ -165,6 +165,11 @@ class AutoCheckScheduler:
                         result = await _speedtest(node)
                         mbps = result.get("download_mbps")
                         mx = result.get("max_mbps")
+                        # The sweep is the only check most nodes ever get, so
+                        # it is what keeps their flag honest — an exit that
+                        # moved country is picked up here without anyone
+                        # pressing anything.
+                        apply_exit(node, result)
                     except Exception as exc:  # noqa: BLE001 — isolate per node
                         logger.info("AutoCheck: node %d speedtest error: %s", nid, exc)
                     # Stamp the check time either way. On failure we clear the

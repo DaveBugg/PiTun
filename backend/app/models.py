@@ -111,6 +111,16 @@ class Node(SQLModel, table=True):
     speed_max_mbps: Optional[float] = None
     speed_tested_at: Optional[datetime] = None
 
+    # Exit identity — the address the internet sees when traffic leaves this
+    # node, observed THROUGH the tunnel by the same probe that measures speed.
+    # `country` is authoritative over anything derived from `address`: it is
+    # where the traffic actually surfaces, which for a chained node is the
+    # last hop, not the entry, and it answers for a hostname address that
+    # never resolved locally. The name's flag prefix is rendered from it.
+    country: Optional[str] = Field(default=None, max_length=2)
+    exit_ip: Optional[str] = None
+    exit_checked_at: Optional[datetime] = None
+
     # Order in list
     order: int = 0
 

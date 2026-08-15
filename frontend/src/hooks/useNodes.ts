@@ -205,14 +205,21 @@ export function useSpeedtestStream() {
   const run = (id: number) => {
     setPending(id, true)
     setResult(id, 'testing…')
+    // Where the tunnel came out, reported mid-run and repeated on `done`.
+    // Kept here so the final line can name it — the country badge on the
+    // card picks the same thing up from the refetch below.
+    let exit = ''
     return speedtestStream(id, (e) => {
       if (e.phase === 'connecting') {
         setResult(id, e.host === 'starting xray' ? 'starting…' : `via ${e.host}…`)
+      } else if (e.phase === 'exit') {
+        exit = e.exit_country || e.exit_ip || ''
       } else if (e.phase === 'progress') {
         setResult(id, `${e.host} · ${e.mbps} Mbps`)
       } else if (e.phase === 'done') {
         const max = e.mbps_max != null && e.mbps_max !== e.mbps ? ` ↑${e.mbps_max}` : ''
-        setResult(id, `${e.mbps} Mbps${max} (${e.host})`)
+        const via = exit ? `${e.host} · ${exit}` : e.host
+        setResult(id, `${e.mbps} Mbps${max} (${via})`)
       } else if (e.phase === 'error') {
         setResult(id, `error: ${(e.error || 'failed').slice(0, 40)}`)
       }

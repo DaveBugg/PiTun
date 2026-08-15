@@ -166,6 +166,12 @@ class NodeRead(NodeBase):
     speed_mbps: Optional[float] = None
     speed_max_mbps: Optional[float] = None
     speed_tested_at: Optional[datetime] = None
+    # Exit identity observed through the tunnel by the speed / internet
+    # check. `country` drives the flag badge — it beats anything guessed
+    # from the address, and it is the only answer for a chained node.
+    country: Optional[str] = None
+    exit_ip: Optional[str] = None
+    exit_checked_at: Optional[datetime] = None
     # Multi-client deployment provenance (since v1.3.0-beta.4). When this
     # Node was exported from a DeploymentClient (e.g. WireGuard peer),
     # keep the link so the UI can render "from <server name>" alongside
@@ -1777,6 +1783,8 @@ class SpeedTestResult(BaseModel):
     max_mbps: Optional[float] = None        # peak steady window
     reachable: Optional[bool] = None        # generate_204 succeeded through the node
     latency_ms: Optional[int] = None        # reachability round-trip
+    exit_ip: Optional[str] = None           # address the internet saw
+    exit_country: Optional[str] = None      # ISO code for that address
     error: Optional[str] = None
 
 

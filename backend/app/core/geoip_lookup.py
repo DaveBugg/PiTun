@@ -122,20 +122,49 @@ def country_code(ip: str) -> Optional[str]:
     return (rec.get("country") or {}).get("iso_code")
 
 
-def enrich_name(name: str, address: str, *, resolve: bool = True) -> str:
-    """`name` prefixed with the flag for `address`'s country. Returns the
-    name unchanged (minus any stale flag) when disabled or on a miss.
+def resolve_country(
+    address: str, *, resolve: bool = True, country: Optional[str] = None,
+) -> Optional[str]:
+    """The ISO code to flag `address` with, or None when it can't be told.
+
+    A `country` handed in wins outright and needs no database: it is an
+    observation (where the node's traffic actually came out), while the
+    lookup below is an inference from the address it dials.
+    """
+    if country and len(country) == 2 and country.isalpha():
+        return country.upper()
+    if _get_reader() is None or not address:
+        return None
+    ip = _to_ip(address, resolve=resolve)
+    return country_code(ip) if ip else None
+
+
+def enrich_name(
+    name: str,
+    address: str,
+    *,
+    resolve: bool = True,
+    country: Optional[str] = None,
+    keep_on_miss: bool = False,
+) -> str:
+    """`name` prefixed with the flag for its country.
 
     `resolve=False` skips the DNS lookup for hostname addresses — see
-    `_to_ip`. Such a node simply gets no flag rather than a stalled write.
+    `_to_ip`. Such a node gets no flag from that path rather than a stalled
+    write. `country` supplies the answer directly (see `resolve_country`).
+
+    `keep_on_miss` returns the name **untouched** when no country could be
+    determined, instead of stripping a flag that is already there. The write
+    hook needs that: it runs on every update with `resolve=False`, so without
+    it a hostname node's flag was removed by the very commit that set it —
+    including the one `/apply-country-flags` makes, which is why that button
+    reported renaming nodes that then showed no flag.
     """
+    code = resolve_country(address, resolve=resolve, country=country)
+    if code is None and keep_on_miss:
+        return name
     stripped = strip_leading_flag(name)
-    if _get_reader() is None or not address:
-        return stripped
-    ip = _to_ip(address, resolve=resolve)
-    if not ip:
-        return stripped
-    flag = flag_emoji(country_code(ip) or "")
+    flag = flag_emoji(code or "")
     return f"{flag} {stripped}" if flag else stripped
 
 
@@ -160,18 +189,27 @@ def install_node_listener() -> None:
     from there. Hooking the model instead of the call sites means the next
     path added gets it for free, which is the failure this had already.
 
-    DNS is deliberately skipped here: this runs inside the flush, and a
-    stalled resolver would hold up the write. A hostname address gets no
-    flag from this path — the import paths, which run outside a flush, still
-    resolve and enrich normally.
+    `node.country` — the exit country a speed test observed through the
+    tunnel — is preferred over the address when it is set, and needs no
+    GeoLite2 database at all. Otherwise the address is looked up, but DNS is
+    deliberately skipped: this runs inside the flush, and a stalled resolver
+    would hold up the write. Nothing determinable means the name is left
+    exactly as it is (`keep_on_miss`) — this hook fires on every update, and
+    stripping there wiped flags other paths had just resolved and applied.
     """
     from sqlalchemy import event
     from app.models import Node
 
     def _apply(_mapper, _conn, target) -> None:
         try:
-            if getattr(target, "name", None) and getattr(target, "address", None):
-                target.name = enrich_name(target.name, target.address, resolve=False)
+            if getattr(target, "name", None):
+                target.name = enrich_name(
+                    target.name,
+                    getattr(target, "address", "") or "",
+                    resolve=False,
+                    country=getattr(target, "country", None),
+                    keep_on_miss=True,
+                )
         except Exception:  # noqa: BLE001 — a cosmetic prefix must never
             pass          # block writing the node itself
 

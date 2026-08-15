@@ -84,7 +84,7 @@ export const authApi = {
 // ── Nodes ─────────────────────────────────────────────────────────────────────
 
 export interface SpeedEvent {
-  phase: 'start' | 'connecting' | 'progress' | 'target_failed' | 'done' | 'error'
+  phase: 'start' | 'connecting' | 'progress' | 'target_failed' | 'exit' | 'done' | 'error'
   host?: string
   mbps?: number
   mbps_max?: number
@@ -92,6 +92,10 @@ export interface SpeedEvent {
   bytes?: number
   error?: string
   node_id?: number
+  /** `exit` (and again on `done`): the address the internet saw on the far
+   *  side of the tunnel, and its country. */
+  exit_ip?: string | null
+  exit_country?: string | null
 }
 
 /**

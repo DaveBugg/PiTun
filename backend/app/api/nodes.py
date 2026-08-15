@@ -988,20 +988,31 @@ async def check_all_nodes():
 # ── Speed test ────────────────────────────────────────────────────────────────
 
 async def _persist_node_speed(
-    node_id: int, mbps: Optional[float], max_mbps: Optional[float] = None
+    node_id: int,
+    mbps: Optional[float],
+    max_mbps: Optional[float] = None,
+    exit_info: Optional[dict] = None,
 ) -> None:
     """Cache a speed reading (avg + peak) on the Node row so it survives a
     restart and feeds NodeCircle best/min_speed + the UI's staleness colour.
-    Best-effort: a write failure must never break the speed test itself."""
-    if mbps is None:
+
+    `exit_info` is stored even when the download produced no number: the
+    tunnel came up far enough to be identified, and that is worth keeping —
+    a node with a flag but no speed reading is a fair description of it.
+    Best-effort throughout: a write failure must never break the test."""
+    if mbps is None and not exit_info:
         return
     try:
         async with AsyncSession(get_async_engine()) as session:
             node = await session.get(Node, node_id)
             if node:
-                node.speed_mbps = float(mbps)
-                node.speed_max_mbps = float(max_mbps) if max_mbps is not None else None
-                node.speed_tested_at = datetime.now(timezone.utc)
+                if mbps is not None:
+                    node.speed_mbps = float(mbps)
+                    node.speed_max_mbps = float(max_mbps) if max_mbps is not None else None
+                    node.speed_tested_at = datetime.now(timezone.utc)
+                if exit_info:
+                    from app.core.speedtest import apply_exit
+                    apply_exit(node, exit_info)
                 await session.commit()
     except Exception:  # noqa: BLE001 — advisory cache, never fatal
         pass
@@ -1009,7 +1020,7 @@ async def _persist_node_speed(
 
 @router.post("/{node_id:int}/speedtest", response_model=SpeedTestResult)
 async def speedtest_node(node_id: int, session: AsyncSession = Depends(get_session)):
-    from app.core.speedtest import speedtest_node as _speedtest
+    from app.core.speedtest import apply_exit, speedtest_node as _speedtest
 
     node = await session.get(Node, node_id)
     if not node:
@@ -1022,7 +1033,11 @@ async def speedtest_node(node_id: int, session: AsyncSession = Depends(get_sessi
         mx = result.get("max_mbps")
         node.speed_max_mbps = float(mx) if mx is not None else None
         node.speed_tested_at = datetime.now(timezone.utc)
+    changed_exit = apply_exit(node, result)
+    if mbps is not None or changed_exit:
         await session.commit()
+        await session.refresh(node)
+        result["node_name"] = node.name  # the flag prefix may have just changed
     return SpeedTestResult(**result)
 
 
@@ -1046,14 +1061,17 @@ async def speedtest_node_stream(node_id: int, session: AsyncSession = Depends(ge
         import json
         final_mbps = None
         final_max = None
+        exit_info: dict = {}
         async for event in speedtest_stream(node):
+            if event.get("phase") == "exit":
+                exit_info = {k: event.get(k) for k in ("exit_ip", "exit_country")}
             if event.get("phase") == "done":
                 final_mbps = event.get("mbps")
                 final_max = event.get("mbps_max")
             yield json.dumps(event) + "\n"
         # Persist the post-warmup average + peak after the stream closes. A
         # fresh session — the request-scoped one is gone once streaming starts.
-        await _persist_node_speed(node_id, final_mbps, final_max)
+        await _persist_node_speed(node_id, final_mbps, final_max, exit_info)
 
     return StreamingResponse(
         _gen(),
@@ -1067,13 +1085,17 @@ async def speedtest_node_stream(node_id: int, session: AsyncSession = Depends(ge
 async def node_reachability(node_id: int, session: AsyncSession = Depends(get_session)):
     """Does the internet actually work through this node? Fetches Google's
     generate_204 over the tunnel — a real proxied round trip, distinct from
-    the TCP-only health check. Returns {ok, latency_ms, detail}."""
-    from app.core.speedtest import reachability_check
+    the TCP-only health check. Returns {ok, latency_ms, detail} plus the exit
+    identity it read back while the tunnel was open, which is also stored."""
+    from app.core.speedtest import apply_exit, reachability_check
 
     node = await session.get(Node, node_id)
     if not node:
         raise HTTPException(404, "Node not found")
-    return await reachability_check(node)
+    result = await reachability_check(node)
+    if apply_exit(node, result):
+        await session.commit()
+    return result
 
 
 @router.get("/{node_id:int}/uri")
@@ -1094,7 +1116,7 @@ async def node_uri(node_id: int, session: AsyncSession = Depends(get_session)):
 @router.post("/speedtest-all", response_model=List[SpeedTestResult])
 async def speedtest_all_nodes(session: AsyncSession = Depends(get_session)):
     """Run speed test on all enabled nodes sequentially (each spawns its own xray)."""
-    from app.core.speedtest import speedtest_node as _speedtest
+    from app.core.speedtest import apply_exit, speedtest_node as _speedtest
 
     nodes = list((await session.exec(select(Node).where(Node.enabled == True))).all())
     results = []
@@ -1107,6 +1129,7 @@ async def speedtest_all_nodes(session: AsyncSession = Depends(get_session)):
             mx = result.get("max_mbps")
             node.speed_max_mbps = float(mx) if mx is not None else None
             node.speed_tested_at = now
+        apply_exit(node, result)
         results.append(SpeedTestResult(**result))
     await session.commit()
     return results
@@ -1121,32 +1144,39 @@ async def apply_country_flags(session: AsyncSession = Depends(get_session)):
     — keep the name they were created with. This is the one-off that brings
     them in line.
 
-    Unlike the write-time hook, this resolves hostnames: it runs in a worker
-    thread rather than inside a flush, so a slow DNS server costs time here
-    instead of stalling a database write. Idempotent — a stale flag is
-    stripped before the current one is applied, so running it twice is the
-    same as running it once, and a node whose country can't be determined
-    simply keeps its bare name.
+    A country a speed test observed at the exit is used first and needs no
+    database at all. Failing that the address is looked up — and unlike the
+    write-time hook this resolves hostnames: it runs in a worker thread
+    rather than inside a flush, so a slow DNS server costs time here instead
+    of stalling a database write.
+
+    Idempotent — a stale flag is replaced by the current one, so running it
+    twice is the same as running it once. A node whose country can't be
+    determined is left alone rather than having its name rewritten.
     """
     import anyio
     from app.core.geoip_lookup import _get_reader, enrich_name
 
-    if _get_reader() is None:
+    nodes = (await session.exec(select(Node))).all()
+    if _get_reader() is None and not any(n.country for n in nodes):
         raise HTTPException(
             400,
-            "No GeoLite2 country database is installed, so there is nothing "
-            "to look names up in. Add GeoLite2-Country.mmdb next to the geo "
-            "data and restart the backend.",
+            "No country is known for any node yet: no GeoLite2 database is "
+            "installed, and no node has been speed-tested (the speed test "
+            "reads the exit country back through the tunnel). Run a speed "
+            "test, or add GeoLite2-Country.mmdb next to the geo data and "
+            "restart the backend.",
         )
 
-    nodes = (await session.exec(select(Node))).all()
-
-    def _resolve_all(pairs: List[tuple]) -> List[tuple]:
+    def _resolve_all(rows: List[tuple]) -> List[tuple]:
         # One thread for the whole batch: each name may cost a DNS lookup.
-        return [(nid, enrich_name(name, addr)) for nid, name, addr in pairs]
+        return [
+            (nid, enrich_name(name, addr, country=cc, keep_on_miss=True))
+            for nid, name, addr, cc in rows
+        ]
 
     renamed = await anyio.to_thread.run_sync(
-        _resolve_all, [(n.id, n.name, n.address) for n in nodes],
+        _resolve_all, [(n.id, n.name, n.address, n.country) for n in nodes],
     )
 
     by_id = {nid: new_name for nid, new_name in renamed}
