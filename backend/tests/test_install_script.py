@@ -150,3 +150,48 @@ class TestDnsPortWarning:
 
     def test_quiet_when_nothing_listens(self):
         assert not self._fires("")
+
+
+class TestPreUpgradeSnapshot:
+    """The snapshot is the rollback the post-upgrade advice points at. It was
+    taken with `docker cp`, which on Docker 29 fails with "mkdirat var/run:
+    file exists" while the snapshot inside the container succeeds — so the
+    backup was skipped on every upgrade of an affected box, and the summary
+    named the file anyway."""
+
+    def _text(self) -> str:
+        return INSTALL_SH.read_text(encoding="utf-8", errors="ignore")
+
+    def test_no_docker_cp_in_the_backup_path(self):
+        """The data directory is a bind mount — the same disk from both
+        sides — so the copy that failed is not needed at all."""
+        text = self._text()
+        cp_lines = [
+            ln for ln in text.splitlines()
+            if "docker cp" in ln and "pre-upgrade" in ln
+        ]
+        assert cp_lines == []
+
+    def test_the_snapshot_is_written_into_the_shared_data_dir(self):
+        assert "/app/data/.pre-upgrade-snapshot.db" in self._text()
+
+    def test_the_path_starts_empty(self):
+        """Assigned before the attempt, the summary's `${BACKUP_PATH:-...}`
+        fallback can never fire."""
+        text = self._text()
+        assert 'BACKUP_PATH=""' in text
+        first = text.index('BACKUP_PATH=""')
+        assigned_later = text.index('BACKUP_PATH="$_bak_target"')
+        assert first < assigned_later
+
+    def test_it_is_only_set_once_the_file_is_there(self):
+        text = self._text()
+        i = text.index('BACKUP_PATH="$_bak_target"')
+        window = text[max(0, i - 400):i]
+        assert '-s "$_bak_staged"' in window, "non-empty file must be checked"
+        assert "mv -f" in window, "set only after the move succeeded"
+
+    def test_the_advice_does_not_name_a_snapshot_that_was_not_taken(self):
+        """Read at the exact moment it matters, so it must not be wishful."""
+        text = self._text()
+        assert "no pre-upgrade snapshot was taken" in text

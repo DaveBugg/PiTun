@@ -4,6 +4,27 @@ All notable user-facing changes to PiTun. Full per-release detail lives in the
 [GitHub Releases](https://github.com/DaveBugg/PiTun/releases); this file is the
 committed summary.
 
+## v1.6.5 — 2026-08-15
+
+**The pre-upgrade database snapshot wasn't being taken — and the installer
+said it was.** Found upgrading a second box.
+
+### Fixed
+
+- **No backup was made on affected hosts.** The snapshot was pulled out of
+  the container with `docker cp`, which on Docker 29 fails with
+  `mkdirat var/run: file exists` while the snapshot inside the container
+  succeeds. The data directory is a bind mount — the same disk from both
+  sides — so the copy that failed was never needed. The snapshot is now
+  written straight there.
+
+- **The summary named a rollback file that did not exist.** `BACKUP_PATH` was
+  assigned before the attempt, so the `${BACKUP_PATH:-no snapshot}` fallback
+  could never fire: every upgrade printed a path, and the post-upgrade advice
+  told you to restore from it. Text read at the exact moment it matters, when
+  an upgrade has just gone wrong. It is now set only once the file is on disk
+  and non-empty, and says plainly when no snapshot was taken.
+
 ## v1.6.4 — 2026-08-15
 
 ### Fixed
