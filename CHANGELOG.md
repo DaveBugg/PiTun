@@ -4,6 +4,29 @@ All notable user-facing changes to PiTun. Full per-release detail lives in the
 [GitHub Releases](https://github.com/DaveBugg/PiTun/releases); this file is the
 committed summary.
 
+## v1.6.7 — 2026-10-01
+
+**Pick a free port before you pick it for an inbound, and dialogs that no
+longer eat your input.**
+
+### Added
+
+- **Port check for x-ui servers.** Next to the port field of a new inbound
+  and on the server and chain forms, a "check ports" control reports which
+  of the usual candidates (443, 8443, 2443, or any you type) are free on the
+  VPS. One SSH round-trip reads the listening sockets and the firewall state;
+  the panel's own inbound list is cross-checked, so a port held by an inbound
+  this PiTun does not manage is called out by name. Picking a free port fills
+  the field. If SSH is not available the panel-side verdict still shows, with
+  a note that the socket layer did not run.
+
+### Changed
+
+- **Dialogs have a ✕ in the corner, and a click on the backdrop no longer
+  closes them.** Most of them are data-entry forms, and a stray click outside
+  threw the input away. Esc and the ✕ still close; stacked dialogs keep their
+  existing Esc handling.
+
 ## v1.6.6 — 2026-08-15
 
 **Country flags now come from where the traffic actually comes out.** Nodes

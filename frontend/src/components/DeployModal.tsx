@@ -227,13 +227,13 @@ export function DeployModal({
 
   return (
     <ModalShell onClose={onClose} labelledBy="deploy-modal-title">
-      <div className="w-full max-w-3xl rounded-2xl bg-gray-950/95 border border-gray-800 p-6 m-4 max-h-[90vh] overflow-y-auto">
+      <div className="w-full max-w-3xl rounded-2xl bg-gray-950/95 border border-gray-800 p-6 max-h-[90vh] overflow-y-auto">
         <div className="flex items-start gap-3 mb-4">
           <div className="rounded-lg bg-brand-50 dark:bg-brand-600/15 p-2 text-brand-400">
             <Rocket className="h-5 w-5" />
           </div>
           <div className="flex-1 min-w-0">
-            <h2 id="deploy-modal-title" className="text-lg font-semibold text-gray-100">
+            <h2 id="deploy-modal-title" className="text-lg font-semibold text-gray-100 pr-8">
               {t('Install on', 'Установить на')}{' '}
               <span className="text-brand-400">{server.name}</span>
             </h2>

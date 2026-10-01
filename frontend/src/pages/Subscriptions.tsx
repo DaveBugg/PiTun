@@ -661,7 +661,7 @@ export function Subscriptions() {
           closeOnEscape={!templatesOpen}
         >
           <div className="w-full max-w-lg rounded-2xl bg-gray-950 border border-gray-800 p-6">
-            <h2 id="subscription-modal-title" className="text-base font-semibold text-gray-100 mb-5">
+            <h2 id="subscription-modal-title" className="text-base font-semibold text-gray-100 mb-5 pr-8">
               {modal === 'add' ? 'Add Subscription' : 'Edit Subscription'}
             </h2>
             <SubForm

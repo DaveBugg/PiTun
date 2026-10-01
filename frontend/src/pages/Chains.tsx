@@ -11,6 +11,7 @@ import { useConfirm } from '@/components/ConfirmModal'
 import { ModalShell } from '@/components/ModalShell'
 import { ClientQrModal } from '@/components/ClientQrModal'
 import { DirectToggle } from '@/components/DirectToggle'
+import { PortCheck } from '@/components/PortCheck'
 import { copyToClipboard } from '@/lib/clipboard'
 import type {
   ChainClientRead,
@@ -839,9 +840,9 @@ function CreateChainModal({
     <ModalShell onClose={onClose} labelledBy="create-chain-title">
       <form
         onSubmit={onSubmit}
-        className="w-full max-w-3xl rounded-2xl bg-gray-950/95 border border-gray-800 p-6 m-4 max-h-[90vh] overflow-y-auto"
+        className="w-full max-w-3xl rounded-2xl bg-gray-950/95 border border-gray-800 p-6 max-h-[90vh] overflow-y-auto"
       >
-        <h2 id="create-chain-title" className="text-lg font-semibold text-gray-100 mb-1">
+        <h2 id="create-chain-title" className="text-lg font-semibold text-gray-100 mb-1 pr-8">
           {t('Create chain', 'Создать цепочку')}
         </h2>
         <p className="text-xs text-gray-500 mb-4">
@@ -969,6 +970,9 @@ function CreateChainModal({
                 index={idx}
                 exitMode={servers.find((s) => s.id === exitId)?.mode}
                 relayMode={servers.find((s) => s.id === relayId)?.mode}
+                exitServer={servers.find((s) => s.id === exitId)}
+                relayServer={servers.find((s) => s.id === relayId)}
+                direct={direct}
               />
             ))}
           </div>
@@ -1034,7 +1038,7 @@ function PanelPicker({
 }
 
 function ChannelDraftRowEdit({
-  value, onChange, onRemove, index, exitMode, relayMode,
+  value, onChange, onRemove, index, exitMode, relayMode, exitServer, relayServer, direct,
 }: {
   value: ChannelDraftRow
   onChange: (patch: Partial<ChannelDraftRow>) => void
@@ -1042,6 +1046,9 @@ function ChannelDraftRowEdit({
   index: number
   exitMode?: string
   relayMode?: string
+  exitServer?: XuiServer
+  relayServer?: XuiServer
+  direct: boolean
 }) {
   const t = useT()
   // xui-pro panels run on a domain with Caddy/ACME → ports 80 + 443
@@ -1145,6 +1152,24 @@ function ChannelDraftRowEdit({
           />
         </div>
       </div>
+      {(relayServer || exitServer) && (
+        <div className="space-y-1 pt-1">
+          <PortCheck
+            serverId={relayServer?.id}
+            selected={value.relay_port}
+            onPick={(p) => onChange({ relay_port: p })}
+            direct={direct}
+            label={`Relay (${relayServer?.server_name}):`}
+          />
+          <PortCheck
+            serverId={exitServer?.id}
+            selected={value.exit_port}
+            onPick={(p) => onChange({ exit_port: p })}
+            direct={direct}
+            label={`Exit (${exitServer?.server_name}):`}
+          />
+        </div>
+      )}
     </div>
   )
 }

@@ -581,7 +581,7 @@ function Modal({ title, children, onClose }: { title: string; children: React.Re
           screen. `w-[min(92vw,42rem)]` clamps to a sane max but
           guarantees at least 92% of the viewport on phones. */}
       <div className="w-[min(92vw,42rem)] max-h-[90vh] overflow-y-auto rounded-2xl bg-gray-950 border border-gray-800 p-6">
-        <h2 id="nodes-modal-title" className="text-base font-semibold text-gray-100 mb-5">{title}</h2>
+        <h2 id="nodes-modal-title" className="text-base font-semibold text-gray-100 mb-5 pr-8">{title}</h2>
         {children}
       </div>
     </ModalShell>

@@ -38,7 +38,7 @@ export function AutoCheckModal({ nodes, onClose }: { nodes: Node[]; onClose: () 
   if (isLoading || !cfg) {
     return (
       <ModalShell onClose={onClose} labelledBy="autocheck-title">
-        <div className="w-full max-w-lg rounded-2xl bg-gray-950/95 border border-gray-800 p-6 m-4 flex items-center gap-2 text-sm text-gray-400">
+        <div className="w-full max-w-lg rounded-2xl bg-gray-950/95 border border-gray-800 p-6 flex items-center gap-2 text-sm text-gray-400">
           <Loader2 className="h-4 w-4 animate-spin" />
           {t('Loading…', 'Загрузка…')}
         </div>
@@ -109,9 +109,9 @@ function AutoCheckForm({
 
   return (
     <ModalShell onClose={onClose} labelledBy="autocheck-title">
-      <div className="w-full max-w-lg rounded-2xl bg-gray-950/95 border border-gray-800 p-6 m-4 max-h-[90vh] overflow-y-auto space-y-4">
+      <div className="w-full max-w-lg rounded-2xl bg-gray-950/95 border border-gray-800 p-6 max-h-[90vh] overflow-y-auto space-y-4">
         <div>
-          <h2 id="autocheck-title" className="text-lg font-semibold text-gray-100">
+          <h2 id="autocheck-title" className="text-lg font-semibold text-gray-100 pr-8">
             {t('Auto speed-checks', 'Автопроверки скорости')}
           </h2>
           <p className="text-xs text-gray-500 mt-0.5">

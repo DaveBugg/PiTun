@@ -81,7 +81,7 @@ function LogsModal({ nodeId, nodeName, onClose }: { nodeId: number; nodeName: st
   })
 
   return (
-    <ModalShell onClose={onClose} labelledBy="naive-logs-title">
+    <ModalShell onClose={onClose} labelledBy="naive-logs-title" showClose={false}>
       <div className="w-full max-w-3xl max-h-[85vh] flex flex-col rounded-2xl bg-gray-950 border border-gray-800">
         <div className="flex items-center justify-between px-5 py-3 border-b border-gray-800">
           <h2 id="naive-logs-title" className="text-sm font-semibold text-gray-100">

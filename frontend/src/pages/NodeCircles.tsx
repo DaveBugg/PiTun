@@ -593,7 +593,7 @@ export function NodeCircles() {
       {(modal === 'add' || modal === 'edit') && (
         <ModalShell onClose={() => setModal('none')} labelledBy="circle-modal-title">
           <div className="w-full max-w-lg max-h-[90vh] overflow-y-auto rounded-2xl bg-gray-950 border border-gray-800 p-6">
-            <h2 id="circle-modal-title" className="text-base font-semibold text-gray-100 mb-5">
+            <h2 id="circle-modal-title" className="text-base font-semibold text-gray-100 mb-5 pr-8">
               {modal === 'add' ? 'Add Node Circle' : 'Edit Node Circle'}
             </h2>
             <CircleModal

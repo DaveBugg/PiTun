@@ -41,6 +41,7 @@ from sqlmodel import select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.database import get_session
+from app.core import port_check
 from app.core.xui_api import XuiAPIError, XuiClient, parse_inbound_field
 from app.core.xui_chain import (
     ChainCreateDraft,
@@ -1089,6 +1090,114 @@ async def healthcheck_xui_server(
     ok = all(c.status == "ok" for c in checks)
     return XuiServerHealthCheckResponse(
         xui_server_id=xui_server_id, ok=ok, checks=checks,
+    )
+
+
+# ── XuiServer port check ───────────────────────────────────────────────────
+
+
+class PortInboundRef(BaseModel):
+    id: int
+    remark: str
+    protocol: str
+    enabled: bool
+    known_here: bool  # False → added by hand or by another PiTun box
+
+
+class PortCheckRow(BaseModel):
+    port: int
+    status: str  # "free" | "taken" | "reserved"
+    reason: Optional[str] = None
+    inbounds: List[PortInboundRef]
+    listeners: Optional[List[str]] = None  # None = SSH layer didn't run
+    ufw: Optional[str] = None  # allow | closed | inactive | absent | unknown
+
+
+class PortCheckResponse(BaseModel):
+    xui_server_id: int
+    panel_error: Optional[str] = None
+    ssh_error: Optional[str] = None
+    ports: List[PortCheckRow]
+
+
+@router.get(
+    "/servers/{xui_server_id}/ports",
+    response_model=PortCheckResponse,
+)
+async def check_ports(
+    xui_server_id: int,
+    candidates: Optional[str] = None,
+    session: AsyncSession = Depends(get_session),
+):
+    """Which of `candidates` (comma-separated, default 443,8443,2443)
+    are free on the panel's VPS. Combines the panel's inbound list with
+    one SSH round-trip (`ss` listeners + `ufw status`). Read-only."""
+    try:
+        ports = port_check.parse_candidates(candidates)
+    except ValueError as exc:
+        raise HTTPException(400, detail=str(exc))
+    xs, srv = await _get_xs_or_404(xui_server_id, session)
+
+    panel_error: Optional[str] = None
+    inbounds: List[Dict[str, Any]] = []
+    try:
+        async with XuiClient(
+            base_url=_api_base_url(xs, srv), api_token=xs.api_token, verify_tls=False,
+        ) as client:
+            inbounds = await client.list_inbounds()
+    except XuiAPIError as exc:
+        panel_error = f"{exc.kind}: {exc}"
+
+    known: set[int] = {
+        row.inbound_remote_id for row in (await session.exec(
+            select(XuiClientModel).where(XuiClientModel.xui_server_id == xui_server_id),
+        )).all()
+    }
+    channels = (await session.exec(
+        select(ChainChannel, ProxyChain)
+        .where(ChainChannel.chain_id == ProxyChain.id)
+        .where(
+            (ProxyChain.exit_xui_server_id == xui_server_id)
+            | (ProxyChain.relay_xui_server_id == xui_server_id)
+        ),
+    )).all()
+    for ch, chain in channels:
+        if chain.exit_xui_server_id == xui_server_id and ch.exit_inbound_remote_id:
+            known.add(ch.exit_inbound_remote_id)
+        if chain.relay_xui_server_id == xui_server_id and ch.relay_inbound_remote_id:
+            known.add(ch.relay_inbound_remote_id)
+
+    ssh_error: Optional[str] = None
+    listeners = None
+    ufw = None
+    creds = _ssh_creds(srv)
+    if not creds:
+        ssh_error = "no SSH credentials on the Server row"
+    else:
+        from app.core.ssh import exec_remote_script
+        try:
+            result = await exec_remote_script(
+                host=srv.host, port=srv.port or 22, username=srv.user or "root",
+                script_content=port_check.PORT_CHECK_SCRIPT, timeout=20.0, **creds,
+            )
+        except Exception as exc:  # noqa: BLE001
+            result = None
+            ssh_error = f"connection failed: {exc}"
+        if result is not None:
+            sections = port_check.split_sections(result.stdout or "")
+            if "SS" in sections:
+                listeners = port_check.parse_ss_listeners(sections["SS"])
+                ufw = port_check.parse_ufw(sections.get("UFW", ""))
+            else:
+                ssh_error = (result.error or f"exit {result.exit_code}")[:200]
+
+    rows = port_check.classify_ports(
+        candidates=ports, inbounds=inbounds, known_inbound_ids=known,
+        mode=xs.mode, panel_port=xs.panel_port, listeners=listeners, ufw=ufw,
+    )
+    return PortCheckResponse(
+        xui_server_id=xui_server_id, panel_error=panel_error, ssh_error=ssh_error,
+        ports=[PortCheckRow(**r) for r in rows],
     )
 
 

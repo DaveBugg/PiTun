@@ -1065,9 +1065,9 @@ function ManualScriptModal({ mode, onClose }: { mode: ScriptModalMode; onClose: 
     <ModalShell onClose={onClose} labelledBy="manual-script-title">
       <form
         onSubmit={onFormSubmit}
-        className="w-full max-w-lg rounded-2xl bg-gray-950/95 border border-gray-800 p-6 m-4 max-h-[90vh] overflow-y-auto"
+        className="w-full max-w-lg rounded-2xl bg-gray-950/95 border border-gray-800 p-6 max-h-[90vh] overflow-y-auto"
       >
-        <h2 id="manual-script-title" className="text-lg font-semibold text-gray-100 mb-1">
+        <h2 id="manual-script-title" className="text-lg font-semibold text-gray-100 mb-1 pr-8">
           {protocol === 'naive'
             ? t('NaiveProxy install script', 'Скрипт установки NaiveProxy')
             : t('WireGuard install script', 'Скрипт установки WireGuard')}

@@ -1004,7 +1004,7 @@ export function Routing() {
               sane desktop max (768px) but always at least 92% of
               the viewport on phones. */}
           <div className="w-[min(92vw,48rem)] max-h-[90vh] overflow-y-auto rounded-2xl bg-gray-950 border border-gray-800 p-6">
-            <h2 id="rule-modal-title" className="text-base font-semibold text-gray-100 mb-5">
+            <h2 id="rule-modal-title" className="text-base font-semibold text-gray-100 mb-5 pr-8">
               {modal === 'add' ? 'Add Routing Rule' : 'Edit Routing Rule'}
             </h2>
             <RuleEditor
@@ -1022,7 +1022,7 @@ export function Routing() {
       {modal === 'bulk' && (
         <ModalShell onClose={() => setModal('none')} labelledBy="bulk-modal-title">
           <div className="w-full max-w-xl max-h-[90vh] overflow-y-auto rounded-2xl bg-gray-950 border border-gray-800 p-6">
-            <h2 id="bulk-modal-title" className="text-base font-semibold text-gray-100 mb-5">Bulk Import Rules</h2>
+            <h2 id="bulk-modal-title" className="text-base font-semibold text-gray-100 mb-5 pr-8">Bulk Import Rules</h2>
             <div className="space-y-4">
               {/* Rule type */}
               <div>
@@ -1127,7 +1127,7 @@ export function Routing() {
             <div className="w-full max-w-md rounded-2xl bg-gray-950 border border-gray-800 shadow-xl p-6 space-y-4">
               <div className="flex items-center gap-2">
                 <Trash2 className="h-5 w-5 text-red-600 dark:text-red-400" />
-                <h2 id="delset-title" className="text-lg font-semibold text-white">
+                <h2 id="delset-title" className="text-lg font-semibold text-white pr-8">
                   {t(`Delete set "${deletingSet.name}"?`, `Удалить набор «${deletingSet.name}»?`)}
                 </h2>
               </div>
@@ -1196,14 +1196,8 @@ export function Routing() {
       {modal === 'help' && (
         <ModalShell onClose={() => setModal('none')} labelledBy="help-modal-title">
           <div className="w-full max-w-3xl max-h-[90vh] overflow-y-auto rounded-2xl bg-gray-950 border border-gray-800 p-6">
-            <div className="flex items-center justify-between mb-5">
+            <div className="mb-5 pr-8">
               <h2 id="help-modal-title" className="text-base font-semibold text-gray-100">{t('Routing rules — syntax & examples', 'Правила маршрутизации — синтаксис и примеры')}</h2>
-              <button
-                onClick={() => setModal('none')}
-                className="rounded-lg px-3 py-1 text-xs text-gray-400 hover:text-gray-100 hover:bg-gray-800"
-              >
-                {t('Close', 'Закрыть')}
-              </button>
             </div>
 
             <div className="space-y-6 text-sm text-gray-300">

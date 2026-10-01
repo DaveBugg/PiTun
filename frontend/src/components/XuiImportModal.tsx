@@ -91,7 +91,7 @@ export function XuiImportModal({ onClose }: { onClose: () => void }) {
       <div className="w-[min(94vw,34rem)] max-h-[90vh] overflow-y-auto rounded-2xl bg-gray-950 border border-gray-800 shadow-2xl p-4 space-y-3">
         <h2
           id="xui-import-title"
-          className="text-sm font-semibold text-gray-100 flex items-center gap-2"
+          className="text-sm font-semibold text-gray-100 flex items-center gap-2 pr-8"
         >
           <Link2 className="h-4 w-4 text-brand-400" />
           {t('Connect an existing panel', 'Подключить установленную панель')}

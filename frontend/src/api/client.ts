@@ -32,6 +32,7 @@ import type {
   DeploymentClient, DeploymentClientList, DeploymentClientConf,
   DeploymentClientCreate, DeploymentClientSyncResult,
   ExportClientToNodeRequest,
+  XuiPortCheck,
 } from '@/types'
 
 const BASE = import.meta.env.VITE_API_BASE_URL || '/api'
@@ -1204,6 +1205,15 @@ export const xuiApi = {
     checks: Array<{ name: string; status: 'ok' | 'warn' | 'fail'; detail?: string | null }>
   }> => {
     const r = await http.post(`/xui/servers/${id}/healthcheck`, null, { params: { direct } })
+    return r.data
+  },
+
+  /** GET /api/xui/servers/{id}/ports — which of `ports` are free on the
+   *  panel's VPS (panel inbounds + one SSH `ss`/`ufw` probe). Read-only. */
+  checkPorts: async (id: number, ports: number[], direct = false): Promise<XuiPortCheck> => {
+    const r = await http.get(`/xui/servers/${id}/ports`, {
+      params: { candidates: ports.join(','), direct },
+    })
     return r.data
   },
 

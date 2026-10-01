@@ -117,7 +117,7 @@ export function RoutingExportModal({
         <div className="p-6 space-y-4">
           <div className="flex items-center gap-2">
             <FileDown className="h-5 w-5 text-purple-600 dark:text-purple-400" />
-            <h2 id={titleId} className="text-lg font-semibold text-white">
+            <h2 id={titleId} className="text-lg font-semibold text-white pr-8">
               {t('Export routing rules', 'Экспорт правил роутинга')}
             </h2>
           </div>

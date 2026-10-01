@@ -305,7 +305,7 @@ export function Balancers() {
       {(modal === 'add' || modal === 'edit') && (
         <ModalShell onClose={() => setModal('none')} labelledBy="balancer-modal-title">
           <div className="w-full max-w-lg max-h-[90vh] overflow-y-auto rounded-2xl bg-gray-950 border border-gray-800 p-6">
-            <h2 id="balancer-modal-title" className="text-base font-semibold text-gray-100 mb-5">
+            <h2 id="balancer-modal-title" className="text-base font-semibold text-gray-100 mb-5 pr-8">
               {modal === 'add' ? t('Add Balancer Group', 'Добавить группу балансировки') : t('Edit Balancer Group', 'Изменить группу балансировки')}
             </h2>
             <BalancerModal

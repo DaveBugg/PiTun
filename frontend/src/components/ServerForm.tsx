@@ -100,10 +100,10 @@ export function ServerForm({ initial, onClose, onSubmit }: Props) {
   }
 
   return (
-    <ModalShell onClose={onClose} labelledBy="server-form-title">
+    <ModalShell onClose={onClose} labelledBy="server-form-title" showClose={false}>
       <form
         onSubmit={handleSubmit}
-        className="w-full max-w-xl rounded-2xl bg-gray-950/95 border border-gray-800 p-6 m-4 max-h-[90vh] overflow-y-auto"
+        className="w-full max-w-xl rounded-2xl bg-gray-950/95 border border-gray-800 p-6 max-h-[90vh] overflow-y-auto"
       >
         <div className="flex items-center justify-between mb-4">
           <h2

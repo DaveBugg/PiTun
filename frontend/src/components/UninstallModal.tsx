@@ -73,13 +73,13 @@ export function UninstallModal({
 
   return (
     <ModalShell onClose={onClose} labelledBy="uninstall-modal-title">
-      <div className="w-full max-w-3xl rounded-2xl bg-gray-950/95 border border-gray-800 p-6 m-4 max-h-[90vh] overflow-y-auto">
+      <div className="w-full max-w-3xl rounded-2xl bg-gray-950/95 border border-gray-800 p-6 max-h-[90vh] overflow-y-auto">
         <div className="flex items-start gap-3 mb-4">
           <div className="rounded-lg bg-red-600/15 p-2 text-red-600 dark:text-red-400">
             <Trash2 className="h-5 w-5" />
           </div>
           <div className="flex-1 min-w-0">
-            <h2 id="uninstall-modal-title" className="text-lg font-semibold text-gray-100">
+            <h2 id="uninstall-modal-title" className="text-lg font-semibold text-gray-100 pr-8">
               {t('Uninstall', 'Удалить')}{' '}
               <span className="text-red-700 dark:text-red-300">{
                 protocol === 'naive' ? 'NaiveProxy'

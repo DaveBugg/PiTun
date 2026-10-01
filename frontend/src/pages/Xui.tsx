@@ -4,7 +4,7 @@ import {
   Layers, Loader2, AlertTriangle, ExternalLink, Trash2, Plus, RefreshCw,
   ShieldCheck, ShieldAlert, Server as ServerIcon, KeyRound, Copy, Check,
   ChevronRight, ChevronDown, Upload, Shuffle, UploadCloud, QrCode, Radar,
-  Link2,
+  Link2, Network,
 } from 'lucide-react'
 
 import { xuiApi, diagnosticsApi, type SniScanResult } from '@/api/client'
@@ -15,6 +15,7 @@ import { useConfirm } from '@/components/ConfirmModal'
 import { ModalShell } from '@/components/ModalShell'
 import { ClientQrModal } from '@/components/ClientQrModal'
 import { DirectToggle } from '@/components/DirectToggle'
+import { PortCheck } from '@/components/PortCheck'
 import { copyToClipboard } from '@/lib/clipboard'
 import type { InboundPreset, XuiClient, XuiInbound, XuiServer } from '@/types'
 
@@ -285,6 +286,9 @@ function ServerDetail({ server }: { server: XuiServer }) {
   })
 
   const [showAddInbound, setShowAddInbound] = useState(false)
+  // Port picked in the ports panel → pre-filled in the add-inbound form.
+  const [addInboundPort, setAddInboundPort] = useState<number | undefined>(undefined)
+  const [showPorts, setShowPorts] = useState(false)
   const [showAddClientFor, setShowAddClientFor] = useState<number | null>(null)
 
   const panelUrl =
@@ -440,6 +444,23 @@ function ServerDetail({ server }: { server: XuiServer }) {
               tunnel (SO_MARK bypass). Off = through the active node. Applies
               to every panel op on this server (probe, sync, add-client,
               create-inbound, fakesite) via the ?direct= flag. */}
+          <button
+            type="button"
+            onClick={() => setShowPorts((v) => !v)}
+            className={
+              'rounded-lg border px-2.5 py-1.5 text-xs inline-flex items-center gap-1.5 ' +
+              (showPorts
+                ? 'border-brand-500/60 text-brand-700 dark:text-brand-200 bg-brand-50 dark:bg-brand-600/10'
+                : 'border-gray-700 hover:bg-gray-800 text-gray-300')
+            }
+            title={t(
+              'Which ports are free on this VPS (panel inbounds + listeners + ufw)',
+              'Какие порты свободны на этом VPS (инбаунды панели + кто слушает + ufw)',
+            )}
+          >
+            <Network className="h-3.5 w-3.5" />
+            {t('Ports', 'Порты')}
+          </button>
           <DirectToggle checked={direct} onChange={setDirect} className="px-1" />
           {/* Fakesite controls — xui-pro only. Bare panels run no
               nginx fronting, so there's no /var/www/html to rotate. */}
@@ -491,7 +512,7 @@ function ServerDetail({ server }: { server: XuiServer }) {
           )}
           <button
             type="button"
-            onClick={() => setShowAddInbound(true)}
+            onClick={() => { setAddInboundPort(undefined); setShowAddInbound(true) }}
             className="rounded-lg bg-brand-600 hover:bg-brand-500 px-3 py-1.5 text-xs text-white font-medium inline-flex items-center gap-1.5"
           >
             <Plus className="h-3.5 w-3.5" />
@@ -499,6 +520,24 @@ function ServerDetail({ server }: { server: XuiServer }) {
           </button>
         </div>
       </header>
+
+      {showPorts && (
+        <div className="rounded-lg border border-gray-800 bg-gray-900/30 px-3 py-2 space-y-1">
+          <PortCheck
+            serverId={server.id}
+            direct={direct}
+            allowCustom
+            onPick={(p) => { setAddInboundPort(p); setShowAddInbound(true) }}
+            label={t('Ports:', 'Порты:')}
+          />
+          <p className="text-[10px] text-gray-500 leading-snug">
+            {t(
+              'Green = free (click to add an inbound on it) · red = taken · amber = reserved by the panel. Hover a port for details.',
+              'Зелёный — свободен (клик — добавить на нём инбаунд) · красный — занят · жёлтый — зарезервирован панелью. Наведите на порт для подробностей.',
+            )}
+          </p>
+        </div>
+      )}
 
       {isLoading && (
         <div className="text-sm text-gray-500 flex items-center gap-2 py-4">
@@ -546,6 +585,7 @@ function ServerDetail({ server }: { server: XuiServer }) {
         <AddInboundModal
           server={server}
           direct={direct}
+          initialPort={addInboundPort}
           onClose={() => setShowAddInbound(false)}
           onCreated={() => {
             setShowAddInbound(false)
@@ -609,8 +649,8 @@ function HealthCheckModal({
 
   return (
     <ModalShell onClose={onClose} labelledBy="xui-health-title">
-      <div className="w-full max-w-xl rounded-2xl bg-gray-950/95 border border-gray-800 p-6 m-4 max-h-[90vh] overflow-y-auto">
-        <h2 id="xui-health-title" className="text-lg font-semibold text-gray-100 mb-1">
+      <div className="w-full max-w-xl rounded-2xl bg-gray-950/95 border border-gray-800 p-6 max-h-[90vh] overflow-y-auto">
+        <h2 id="xui-health-title" className="text-lg font-semibold text-gray-100 mb-1 pr-8">
           {t('Server health-check', 'Проверка сервера')}
         </h2>
         <p className="text-xs text-gray-500 mb-4">{serverName}</p>
@@ -1066,10 +1106,11 @@ function InboundCard({
 // ── Add inbound modal ──────────────────────────────────────────────────────
 
 function AddInboundModal({
-  server, direct, onClose, onCreated,
+  server, direct, initialPort, onClose, onCreated,
 }: {
   server: XuiServer
   direct: boolean
+  initialPort?: number
   onClose: () => void
   onCreated: () => void
 }) {
@@ -1120,9 +1161,12 @@ function AddInboundModal({
         next[f.name] = f.default ?? ''
       }
     }
+    if (initialPort && preset.fields.some((f) => f.name === 'port')) {
+      next.port = String(initialPort)
+    }
     setValues(next)
     setError('')
-  }, [preset, server.domain])
+  }, [preset, server.domain, initialPort])
 
   const createMut = useMutation({
     mutationFn: () => {
@@ -1165,9 +1209,9 @@ function AddInboundModal({
     <ModalShell onClose={onClose} labelledBy="add-inbound-title">
       <form
         onSubmit={onSubmit}
-        className="w-full max-w-2xl rounded-2xl bg-gray-950/95 border border-gray-800 p-6 m-4 max-h-[90vh] overflow-y-auto"
+        className="w-full max-w-2xl rounded-2xl bg-gray-950/95 border border-gray-800 p-6 max-h-[90vh] overflow-y-auto"
       >
-        <h2 id="add-inbound-title" className="text-lg font-semibold text-gray-100 mb-1">
+        <h2 id="add-inbound-title" className="text-lg font-semibold text-gray-100 mb-1 pr-8">
           {t('Add inbound', 'Добавить инбаунд')}
         </h2>
         <p className="text-xs text-gray-500 mb-4">
@@ -1253,6 +1297,15 @@ function AddInboundModal({
                   placeholder={f.placeholder || (f.default ?? '')}
                   className="w-full rounded-lg bg-gray-900 border border-gray-800 px-3 py-2 text-sm text-gray-100 focus:border-brand-500 focus:outline-hidden"
                 />
+                {f.name === 'port' && (
+                  <PortCheck
+                    className="mt-1.5"
+                    serverId={server.id}
+                    selected={Number(values.port) || undefined}
+                    onPick={(p) => setValues((v) => ({ ...v, port: String(p) }))}
+                    direct={direct}
+                  />
+                )}
                 {f.type === 'sni' && (
                   <div className="mt-1.5 space-y-1">
                     <button
@@ -1379,8 +1432,8 @@ function AddClientModal({
 
   return (
     <ModalShell onClose={onClose} labelledBy="add-client-title">
-      <div className="w-full max-w-lg rounded-2xl bg-gray-950/95 border border-gray-800 p-6 m-4 max-h-[90vh] overflow-y-auto">
-        <h2 id="add-client-title" className="text-lg font-semibold text-gray-100 mb-1">
+      <div className="w-full max-w-lg rounded-2xl bg-gray-950/95 border border-gray-800 p-6 max-h-[90vh] overflow-y-auto">
+        <h2 id="add-client-title" className="text-lg font-semibold text-gray-100 mb-1 pr-8">
           {t('Add client', 'Добавить клиента')}
         </h2>
         <p className="text-xs text-gray-500 mb-4">

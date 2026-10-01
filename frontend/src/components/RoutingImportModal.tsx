@@ -198,7 +198,7 @@ export function RoutingImportModal({
         <div className="p-6 space-y-4">
           <div className="flex items-center gap-2">
             <FileUp className="h-5 w-5 text-purple-600 dark:text-purple-400" />
-            <h2 id={titleId} className="text-lg font-semibold text-white">
+            <h2 id={titleId} className="text-lg font-semibold text-white pr-8">
               {t('Import routing rules', 'Импорт правил роутинга')}
             </h2>
           </div>

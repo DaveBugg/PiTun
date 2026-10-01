@@ -623,7 +623,7 @@ export function UserAgentTemplatesModal({
   const titleId = 'ua-templates-modal-title'
 
   return (
-    <ModalShell onClose={onClose} labelledBy={titleId} z={z}>
+    <ModalShell onClose={onClose} labelledBy={titleId} z={z} showClose={false}>
       <div className="w-[min(56rem,calc(100vw-2rem))] max-h-[calc(100vh-3rem)] overflow-y-auto rounded-2xl bg-gray-950 border border-gray-800 p-6 shadow-xl">
         <div className="flex items-center justify-between gap-3 mb-5">
           <div className="flex items-center gap-2 min-w-0">
@@ -647,15 +647,26 @@ export function UserAgentTemplatesModal({
                   : t('New template', 'Новый шаблон')}
             </h2>
           </div>
-          {view === 'list' && (
+          <div className="flex items-center gap-2 shrink-0">
+            {view === 'list' && (
+              <button
+                onClick={() => { setEditing(undefined); setView('form') }}
+                className="flex items-center gap-1.5 rounded-lg bg-brand-600 px-3 py-2 text-sm font-medium text-white hover:bg-brand-500 transition-colors"
+              >
+                <Plus className="h-4 w-4" />
+                {t('Add', 'Добавить')}
+              </button>
+            )}
             <button
-              onClick={() => { setEditing(undefined); setView('form') }}
-              className="flex items-center gap-1.5 rounded-lg bg-brand-600 px-3 py-2 text-sm font-medium text-white hover:bg-brand-500 transition-colors shrink-0"
+              type="button"
+              onClick={onClose}
+              aria-label={t('Close', 'Закрыть')}
+              title={t('Close', 'Закрыть')}
+              className="rounded-md p-1 text-gray-500 hover:bg-gray-800 hover:text-gray-200 transition-colors"
             >
-              <Plus className="h-4 w-4" />
-              {t('Add', 'Добавить')}
+              <X className="h-4 w-4" />
             </button>
-          )}
+          </div>
         </div>
 
         {view === 'form' ? (
@@ -703,15 +714,6 @@ export function UserAgentTemplatesModal({
                 deletingId={del.isPending ? (del.variables?.id ?? null) : null}
               />
             )}
-
-            <div className="flex justify-end pt-2 border-t border-gray-800">
-              <button
-                onClick={onClose}
-                className="rounded-lg px-4 py-2 text-sm text-gray-400 hover:text-gray-100 hover:bg-gray-800 transition-colors"
-              >
-                {t('Close', 'Закрыть')}
-              </button>
-            </div>
           </div>
         )}
       </div>

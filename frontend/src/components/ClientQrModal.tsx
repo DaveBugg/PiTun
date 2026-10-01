@@ -121,7 +121,7 @@ export function ClientQrModal({ open, onClose, title, uri, fetchUri, subtitle }:
   if (!open) return null
 
   return (
-    <ModalShell onClose={onClose} labelledBy="qr-modal-title">
+    <ModalShell onClose={onClose} labelledBy="qr-modal-title" showClose={false}>
       <div className="w-[min(92vw,28rem)] rounded-2xl bg-gray-950 border border-gray-800 shadow-2xl">
         <div className="flex items-start justify-between gap-3 p-4 border-b border-gray-800">
           <div className="min-w-0">

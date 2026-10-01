@@ -1029,6 +1029,30 @@ export interface XuiServer {
   updated_at: string
 }
 
+/** One row of `GET /api/xui/servers/{id}/ports`. `listeners` / `ufw`
+ *  are null when the SSH layer couldn't run (panel-only verdict). */
+export interface XuiPortStatus {
+  port: number
+  status: 'free' | 'taken' | 'reserved'
+  reason?: string | null
+  inbounds: Array<{
+    id: number
+    remark: string
+    protocol: string
+    enabled: boolean
+    known_here: boolean
+  }>
+  listeners?: string[] | null
+  ufw?: 'allow' | 'closed' | 'inactive' | 'absent' | 'unknown' | null
+}
+
+export interface XuiPortCheck {
+  xui_server_id: number
+  panel_error?: string | null
+  ssh_error?: string | null
+  ports: XuiPortStatus[]
+}
+
 /** Live inbound shape as returned by `GET /api/xui/servers/{id}/
  *  inbounds`. The panel's own structure — fields we DON'T touch from
  *  PiTun are passed through as `any` so future protocol additions
