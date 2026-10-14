@@ -967,6 +967,9 @@ class AutoCheckRead(BaseModel):
     last_sweep: Optional[datetime] = None
     # Live status (filled by the endpoint, not stored).
     is_sweeping: bool = False
+    is_cancelling: bool = False
+    sweep_done: int = 0
+    sweep_total: int = 0
 
     class Config:
         from_attributes = True
@@ -1450,6 +1453,8 @@ class SettingsRead(BaseModel):
     # gated). One pair of credentials for both inbounds. Plaintext —
     # see _apply_xray_config in core/config_gen for the threat-model
     # rationale.
+    xui_panel_bypass: bool = False
+    chain_drift_check: bool = True
     lan_proxy_auth_enabled: bool = False
     lan_proxy_auth_user: str = ""
     lan_proxy_auth_pass: str = ""
@@ -1565,6 +1570,8 @@ class SettingsUpdate(BaseModel):
     # Timezone
     timezone: Optional[str] = None
     # LAN proxy auth (see SettingsRead docstring)
+    xui_panel_bypass: Optional[bool] = None
+    chain_drift_check: Optional[bool] = None
     lan_proxy_auth_enabled: Optional[bool] = None
     lan_proxy_auth_user: Optional[str] = None
     lan_proxy_auth_pass: Optional[str] = None

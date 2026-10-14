@@ -402,7 +402,7 @@ class TestHealStale:
     async def test_heal_flips_old_running_to_failed(
         self, client, admin_user, auth_headers, default_settings, session, manager
     ):
-        # Seed a stale 'running' job (started 2 hours ago)
+        # Seed an old 'running' job (started 2 hours ago)
         stale_id = "stale" + "0" * 27
         old_started = datetime.now(timezone.utc) - timedelta(hours=2)
         session.add(Job(
@@ -410,7 +410,7 @@ class TestHealStale:
             target_name="ghost", protocol="naive",
             status="running", started_at=old_started,
         ))
-        # Plus a fresh running job that should NOT be touched
+        # A job that started a moment before the restart is just as dead
         fresh_id = "fresh" + "0" * 27
         session.add(Job(
             id=fresh_id, kind="deploy", target_id=998,
@@ -427,7 +427,28 @@ class TestHealStale:
         fresh_row = session.exec(select(Job).where(Job.id == fresh_id)).first()
         assert stale_row.status == "failed"
         assert "restart" in (stale_row.error or "").lower()
-        assert fresh_row.status == "running"  # untouched
+        assert fresh_row.status == "failed"
+        assert "restart" in (fresh_row.error or "").lower()
+
+
+class TestHealSparesLiveJobs:
+    @pytest.mark.asyncio
+    async def test_job_tracked_by_the_manager_is_not_touched(
+        self, client, admin_user, auth_headers, default_settings, session, manager
+    ):
+        live_id = "live0" + "0" * 27
+        session.add(Job(
+            id=live_id, kind="deploy", target_id=997,
+            target_name="running-here", protocol="naive",
+            status="running", started_at=datetime.now(timezone.utc),
+        ))
+        session.commit()
+        manager._buffers[live_id] = []
+
+        await manager._heal_stale_jobs()
+
+        session.expire_all()
+        assert session.exec(select(Job).where(Job.id == live_id)).first().status == "running"
 
 
 # ── Trim ──────────────────────────────────────────────────────────────────────

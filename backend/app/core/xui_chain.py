@@ -1106,6 +1106,35 @@ async def orchestrate_create(
     return chain
 
 
+
+async def _del_inbound_if_ours(
+    client, remote_id: int, remark: str, port: int, label: str,
+) -> None:
+    """Delete an inbound only while it still looks like the one we created.
+
+    A panel reinstall re-issues low ids, so a stored id can end up pointing at
+    someone else's inbound. We delete when the remark OR the port still
+    matches ours; anything else is left alone and logged.
+    """
+    try:
+        current = await client.get_inbound(remote_id)
+    except XuiAPIError as e:
+        logger.warning("%s: inbound %s not found or unreadable (%s) — not deleting", label, remote_id, e)
+        return
+    same_remark = str(current.get("remark") or "") == remark
+    try:
+        same_port = int(current.get("port") or 0) == int(port)
+    except (TypeError, ValueError):
+        same_port = False
+    if not (same_remark or same_port):
+        logger.warning(
+            "%s: inbound %s is %r on port %s, not %r on port %s — left in place",
+            label, remote_id, current.get("remark"), current.get("port"), remark, port,
+        )
+        return
+    await client.del_inbound(remote_id)
+
+
 async def _rollback_inbounds(
     *,
     exit_url: str, exit_token: str,
@@ -1216,7 +1245,11 @@ async def orchestrate_delete_channel(
                 api_token=exit_xs.api_token, verify_tls=False,
             ) as c:
                 try:
-                    await c.del_inbound(channel.exit_inbound_remote_id)
+                    await _del_inbound_if_ours(
+                        c, channel.exit_inbound_remote_id,
+                        channel.exit_remark or f"{channel.name.upper()}-Exit",
+                        channel.exit_port, "delete_channel(exit)",
+                    )
                 except Exception as e:  # noqa: BLE001
                     logger.warning(
                         "delete_channel: exit inbound %s removal failed: %s",
@@ -1234,7 +1267,11 @@ async def orchestrate_delete_channel(
                 panel_user=relay_xs.panel_user, panel_pass=relay_xs.panel_pass,
             ) as c:
                 try:
-                    await c.del_inbound(channel.relay_inbound_remote_id)
+                    await _del_inbound_if_ours(
+                        c, channel.relay_inbound_remote_id,
+                        channel.relay_remark or f"VPN-{channel.name.upper()}",
+                        channel.relay_port, "delete_channel(relay)",
+                    )
                 except Exception as e:  # noqa: BLE001
                     logger.warning(
                         "delete_channel: relay inbound %s removal failed: %s",
@@ -1344,7 +1381,11 @@ async def orchestrate_delete(
                 for ch in channels:
                     if ch.exit_inbound_remote_id:
                         try:
-                            await c.del_inbound(ch.exit_inbound_remote_id)
+                            await _del_inbound_if_ours(
+                                c, ch.exit_inbound_remote_id,
+                                ch.exit_remark or f"{ch.name.upper()}-Exit",
+                                ch.exit_port, "delete(exit)",
+                            )
                         except Exception as e:  # noqa: BLE001
                             logger.warning(
                                 "delete: exit inbound %s removal failed: %s",
@@ -1363,7 +1404,11 @@ async def orchestrate_delete(
                 for ch in channels:
                     if ch.relay_inbound_remote_id:
                         try:
-                            await c.del_inbound(ch.relay_inbound_remote_id)
+                            await _del_inbound_if_ours(
+                                c, ch.relay_inbound_remote_id,
+                                ch.relay_remark or f"VPN-{ch.name.upper()}",
+                                ch.relay_port, "delete(relay)",
+                            )
                         except Exception as e:  # noqa: BLE001
                             logger.warning(
                                 "delete: relay inbound %s removal failed: %s",

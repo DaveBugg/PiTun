@@ -1,7 +1,7 @@
 import { useT } from '@/hooks/useT'
 import * as React from 'react'
 import { useEffect, useMemo, useState } from 'react'
-import { Plus, Activity, Search, GripVertical, Gauge, FileDown, FileUp, Pin, ArrowDownNarrowWide, ArrowUpNarrowWide, Timer } from 'lucide-react'
+import { Plus, Activity, Search, GripVertical, FileDown, FileUp, Pin, ArrowDownNarrowWide, ArrowUpNarrowWide, Timer } from 'lucide-react'
 import { clsx } from 'clsx'
 import { useQueryClient, useMutation } from '@tanstack/react-query'
 import {
@@ -17,6 +17,8 @@ import {
   useReachability,
   useSpeedtestAll,
   useAutocheckSweep,
+  useAutocheckProgress,
+  useCancelSweep,
   useSpeedResults,
   useSpeedPending,
 } from '@/hooks/useNodes'
@@ -32,6 +34,7 @@ import { useConfirm } from '@/components/ConfirmModal'
 import { copyToClipboard } from '@/lib/clipboard'
 import { ModalShell } from '@/components/ModalShell'
 import { AutoCheckModal } from '@/components/AutoCheckModal'
+import { SpeedAllButton } from '@/components/SpeedAllButton'
 import { apiErrorText } from '@/lib/apiError'
 import type { Node, NodeCreate, NodePageParams } from '@/types'
 
@@ -177,6 +180,8 @@ export function Nodes() {
   // True while a background sweep (auto-check or "Speed All") runs — drives
   // the button spinner + refreshes node rows live.
   const sweeping = useAutocheckSweep()
+  const sweepProgress = useAutocheckProgress()
+  const cancelSweep = useCancelSweep()
 
   // Reorder via useMutation so it follows the same pattern as other CRUD
   // operations (toast hooks, optimistic update later, error surface via
@@ -293,14 +298,16 @@ export function Nodes() {
             <Activity className={clsx('h-4 w-4', checkAll.isPending && 'animate-pulse')} />
             {t('Test All', 'Проверить все')}
           </button>
-          <button
-            onClick={runSpeedAll}
-            disabled={speedAll.isPending || sweeping}
-            className="flex items-center gap-1.5 rounded-lg bg-gray-800 px-3 py-2 text-sm text-gray-300 hover:bg-gray-700 transition-colors disabled:opacity-50"
-          >
-            <Gauge className={clsx('h-4 w-4', (speedAll.isPending || sweeping) && 'animate-spin')} />
-            {(speedAll.isPending || sweeping) ? t('Testing…', 'Проверка…') : t('Speed All', 'Скорость всех')}
-          </button>
+          <SpeedAllButton
+            sweeping={sweeping}
+            starting={speedAll.isPending}
+            done={sweepProgress.done}
+            total={sweepProgress.total}
+            cancelling={sweepProgress.cancelling}
+            stopping={cancelSweep.isPending}
+            onRun={runSpeedAll}
+            onStop={() => cancelSweep.mutate()}
+          />
           <button
             onClick={() => setShowAutocheck(true)}
             className="flex items-center gap-1.5 rounded-lg bg-gray-800 px-3 py-2 text-sm text-gray-300 hover:bg-gray-700 transition-colors"

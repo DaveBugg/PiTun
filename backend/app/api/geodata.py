@@ -179,11 +179,11 @@ async def _do_update(
             geo_progress.set_stage(name, "applying")
             geo_progress.mark_done(name)
         except Exception as exc:
-            # Compact, user-readable. Full traceback goes to logs.
-            short = type(exc).__name__
-            detail = str(exc)[:200] if str(exc) else "no detail"
-            geo_progress.set_error(name, f"{short}: {detail}")
-            logger.exception("GeoData update error for %s", name)
+            # The progress state is shown in the UI, so it gets the short
+            # message; the full detail is in the error log.
+            from app.core import error_log
+            geo_progress.set_error(name, error_log.record("geodata.update", exc, file=name))
+            logger.error("GeoData update error for %s", name)
             raise
 
     tasks = []

@@ -338,12 +338,13 @@ async def _fetch_subscription_unlocked(sub_id: int) -> None:
                 resp = await client.get(sub.url, headers=headers)
                 resp.raise_for_status()
                 content = resp.text
-        except httpx.HTTPStatusError as exc:
-            err_msg = f"HTTP {exc.response.status_code}"
-            logger.error("Subscription %d fetch failed: %s for url '%s'", sub_id, err_msg, sub.url)
         except Exception as exc:
-            err_msg = str(exc)
-            logger.error("Subscription %d fetch failed: %s", sub_id, exc)
+            from app.core import error_log
+            err_msg = error_log.record(
+                "subscription.fetch", exc,
+                subscription_id=sub_id, url=error_log.redact_url(sub.url),
+            )
+            logger.error("Subscription %d fetch failed: %s", sub_id, err_msg)
 
         if err_msg:
             # Capture name before commit — ORM expires attributes on commit

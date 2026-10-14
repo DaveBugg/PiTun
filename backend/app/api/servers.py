@@ -477,6 +477,8 @@ async def deploy_to_server(
                         await s.flush()
                         new_xui_server_id = xs.id
                     await s.commit()
+                    from app.api.system import refresh_panel_bypass
+                    await refresh_panel_bypass(s)
 
                 # A fresh panel runs on xray's defaults, where `connIdle`
                 # kills an idle pooled connection after 5 minutes and the

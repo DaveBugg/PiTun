@@ -449,6 +449,8 @@ async def import_xui_server(
     await session.commit()
     await session.refresh(xs)
     await session.refresh(srv)
+    from app.api.system import refresh_panel_bypass
+    await refresh_panel_bypass(session)
     if apply_policy:
         await _best_effort_policy(xs, srv)
     return _xui_to_read(xs, srv)
@@ -476,6 +478,8 @@ async def delete_xui_server(
         raise HTTPException(404, detail=f"XuiServer id={xui_server_id} not found")
     await session.delete(xs)
     await session.commit()
+    from app.api.system import refresh_panel_bypass
+    await refresh_panel_bypass(session)
 
 
 @router.post("/servers/{xui_server_id}/probe", response_model=XuiServerRead)

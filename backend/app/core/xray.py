@@ -39,6 +39,36 @@ def unsubscribe_logs(q: asyncio.Queue) -> None:
     _log_subscribers.discard(q)
 
 
+class _RestartBackoff:
+    """Delay before relaunching a crashed xray: quick at first, then slower
+    while it keeps dying, so a broken config doesn't restart every few seconds.
+    A run that stays up for `stable_after` seconds starts the schedule over."""
+
+    SCHEDULE = (3.0, 60.0, 300.0)
+
+    def __init__(self, stable_after: float = 600.0, clock=time.monotonic) -> None:
+        self._stable_after = stable_after
+        self._clock = clock
+        self._streak = 0
+        self._last: Optional[float] = None
+
+    def next_delay(self) -> float:
+        now = self._clock()
+        if self._last is not None and now - self._last > self._stable_after:
+            self._streak = 0
+        self._last = now
+        delay = self.SCHEDULE[min(self._streak, len(self.SCHEDULE) - 1)]
+        self._streak += 1
+        return delay
+
+    def reset(self) -> None:
+        self._streak = 0
+        self._last = None
+
+
+crash_backoff = _RestartBackoff()
+
+
 class XrayManager:
     # Default deadline for acquiring `_lock` before the API endpoint
     # returns 503. Picked to be longer than the longest legitimate
@@ -234,6 +264,22 @@ class XrayManager:
         if self._process and self._process.returncode not in (None, 0):
             logger.error("xray process died unexpectedly (rc=%s)", self._process.returncode)
             await _apply_kill_switch_if_enabled()
+            delay = crash_backoff.next_delay()
+            if delay > 3:
+                logger.warning("xray keeps crashing; next restart in %d s", delay)
+                from app.core.events import record_event
+                await record_event(
+                    category="xray.restart_backoff",
+                    severity="warning",
+                    title="xray keeps crashing",
+                    details=f"next restart attempt in {int(delay)} s",
+                    dedup_window_sec=60,
+                )
+            # Waited outside the lock so Start/Stop stay responsive; Stop
+            # cancels this task.
+            await asyncio.sleep(max(0.0, delay - 3))
+            if self.is_running:
+                return
             async with self._lock:
                 await _auto_restart_if_enabled()
 
@@ -322,11 +368,14 @@ async def _auto_restart_if_enabled(*, from_boot: bool = False) -> None:
             # restart silently broke naive (the sidecar started fine,
             # but every CONNECT got RST'd → speedtest "too small (0B)",
             # actual traffic also failed). Mirror the helper here.
-            from app.api.system import _collect_bypass_dsts, _collect_naive_bypass_dsts
+            from app.api.system import (
+                _collect_bypass_dsts, _collect_naive_bypass_dsts, _collect_panel_bypass_dsts,
+            )
             bypass_dsts = list(_collect_bypass_dsts(rules))
             naive_dsts = await _collect_naive_bypass_dsts(session)
             if naive_dsts:
                 bypass_dsts.extend(naive_dsts)
+            bypass_dsts.extend(await _collect_panel_bypass_dsts(session, settings_map))
 
             # v1.4 RoutingSet support — collect per-set specs so nft
             # restores the MAC sets + per-set TPROXY redirects after a

@@ -17,7 +17,7 @@ import asyncio
 import json
 import logging
 from datetime import datetime, timezone, timedelta
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 from sqlmodel import select
 from sqlmodel.ext.asyncio.session import AsyncSession
@@ -76,6 +76,9 @@ class AutoCheckScheduler:
         self._task: Optional[asyncio.Task] = None
         self._running = False
         self._sweeping = False  # guard against overlapping sweeps
+        self._cancel = False
+        self._done = 0
+        self._total = 0
 
     def start(self) -> None:
         if self._task and not self._task.done():
@@ -91,6 +94,22 @@ class AutoCheckScheduler:
     @property
     def is_sweeping(self) -> bool:
         return self._sweeping
+
+    @property
+    def progress(self) -> Tuple[int, int]:
+        return self._done, self._total
+
+    @property
+    def is_cancelling(self) -> bool:
+        return self._sweeping and self._cancel
+
+    def cancel(self) -> bool:
+        """Stop the running sweep after the node being tested finishes.
+        Results already written stay."""
+        if not self._sweeping:
+            return False
+        self._cancel = True
+        return True
 
     async def _loop(self) -> None:
         while self._running:
@@ -129,6 +148,8 @@ class AutoCheckScheduler:
         if self._sweeping:
             return {"status": "already_running"}
         self._sweeping = True
+        self._cancel = False
+        self._done = self._total = 0
         started = datetime.now(timezone.utc)
         tested = skipped = failed = 0
         try:
@@ -148,7 +169,11 @@ class AutoCheckScheduler:
                 node_ids = await resolve_scope_node_ids(session, eff_kind, eff_value)
 
             from app.core.speedtest import apply_exit, speedtest_node as _speedtest
+            self._total = len(node_ids)
             for nid in node_ids:
+                if self._cancel:
+                    break
+                self._done += 1
                 async with AsyncSession(get_async_engine()) as session:
                     node = await session.get(Node, nid)
                     if not node or not node.enabled:
@@ -190,12 +215,14 @@ class AutoCheckScheduler:
                     session.add(node)
                     await session.commit()
 
+            cancelled = self._cancel
             logger.info(
-                "AutoCheck sweep done: tested=%d skipped=%d failed=%d (scope=%d)",
+                "AutoCheck sweep %s: tested=%d skipped=%d failed=%d (scope=%d)",
+                "cancelled" if cancelled else "done",
                 tested, skipped, failed, len(node_ids),
             )
             return {
-                "status": "done",
+                "status": "cancelled" if cancelled else "done",
                 "tested": tested,
                 "skipped": skipped,
                 "failed": failed,
@@ -203,6 +230,8 @@ class AutoCheckScheduler:
             }
         finally:
             self._sweeping = False
+            self._cancel = False
+            self._done = self._total = 0
 
 
 autocheck_scheduler = AutoCheckScheduler()

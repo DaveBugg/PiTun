@@ -62,6 +62,7 @@ async def lifespan(app: FastAPI):
     from app.core.geo_scheduler import geo_scheduler
 
     from app.core.autocheck_scheduler import autocheck_scheduler
+    from app.core.chain_drift import chain_drift_scheduler
 
     health_checker.start()
     subscription_scheduler.start()
@@ -70,6 +71,7 @@ async def lifespan(app: FastAPI):
     metrics_collector.start()
     geo_scheduler.start()
     autocheck_scheduler.start()
+    chain_drift_scheduler.start()
 
     # Country-flag prefixes, applied at the model rather than at each of the
     # nine places a node gets created — which is how nodes from a server
@@ -287,6 +289,7 @@ async def lifespan(app: FastAPI):
     metrics_collector.stop()
     geo_scheduler.stop()
     autocheck_scheduler.stop()
+    chain_drift_scheduler.stop()
     try:
         from app.core.naive_supervisor import naive_supervisor
         naive_supervisor.stop()

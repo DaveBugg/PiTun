@@ -416,6 +416,11 @@ async def _apply_nftables(session: AsyncSession, settings_map: dict) -> str:
     if naive_dsts:
         bypass_dsts = list(bypass_dsts) + naive_dsts
 
+    # Optional: x-ui panel hosts (Settings → `xui_panel_bypass`, off by default).
+    panel_dsts = await _collect_panel_bypass_dsts(session, settings_map)
+    if panel_dsts:
+        bypass_dsts = list(bypass_dsts) + panel_dsts
+
     device_info = await get_device_macs_for_mode(session)
     device_mode = device_info["mode"]
 
@@ -809,6 +814,8 @@ async def get_settings(session: AsyncSession = Depends(get_session)):
         # LAN proxy auth (since v1.3.0-beta.6) — single (user, pass)
         # pair shared by the SOCKS5 and HTTP inbounds. Plaintext on
         # the wire by design (LAN-intruder threat model).
+        xui_panel_bypass=m.get("xui_panel_bypass", "false").lower() == "true",
+        chain_drift_check=m.get("chain_drift_check", "true").lower() == "true",
         lan_proxy_auth_enabled=m.get("lan_proxy_auth_enabled", "false").lower() == "true",
         lan_proxy_auth_user=m.get("lan_proxy_auth_user", ""),
         lan_proxy_auth_pass=m.get("lan_proxy_auth_pass", ""),
@@ -1384,6 +1391,9 @@ async def update_settings(body: SettingsUpdate, session: AsyncSession = Depends(
     # the fly so the user sees the change without going to /restart —
     # they toggle this from the Dashboard inline UI and expect
     # immediate effect. Skipped silently if xray isn't running.
+    if "xui_panel_bypass" in patches:
+        await refresh_panel_bypass(session)
+
     lan_auth_keys = {
         "lan_proxy_auth_enabled",
         "lan_proxy_auth_user",
@@ -1607,6 +1617,79 @@ def _collect_bypass_dsts(rules: List[RoutingRule]) -> List[str]:
     return cidrs
 
 
+async def _resolve_hosts_to_cidrs(hosts: List[str], what: str) -> List[str]:
+    """A-record IPs of `hosts` as /32 CIDRs, deduped in order. Resolution runs
+    off the event loop with a 2 s budget per host; failures are skipped."""
+    import asyncio
+    import socket as _sock
+
+    out: List[str] = []
+
+    def _resolve_one(host: str) -> List[str]:
+        try:
+            infos = _sock.getaddrinfo(host, None, _sock.AF_INET, _sock.SOCK_STREAM)
+        except Exception:
+            return []
+        results: List[str] = []
+        for fam, _, _, _, sa in infos:
+            if fam == _sock.AF_INET and sa and sa[0]:
+                results.append(f"{sa[0]}/32")
+        return results
+
+    for raw in hosts:
+        host = (raw or "").strip()
+        if not host:
+            continue
+        try:
+            cidrs = await asyncio.wait_for(
+                asyncio.to_thread(_resolve_one, host),
+                timeout=2.0,
+            )
+        except asyncio.TimeoutError:
+            # Logged per call; a broken resolver shouldn't block reload pipelines.
+            logger.warning(
+                "%s: DNS resolution of %r timed out — skipping. "
+                "Check /etc/resolv.conf if this persists.",
+                what, host,
+            )
+            continue
+        out.extend(cidrs)
+
+    seen = set()
+    uniq = []
+    for c in out:
+        if c not in seen:
+            seen.add(c)
+            uniq.append(c)
+    return uniq
+
+
+async def _collect_panel_bypass_dsts(session: AsyncSession, settings_map: dict) -> List[str]:
+    """IPs of every registered x-ui panel host, but only when the
+    `xui_panel_bypass` setting is on (default off). Keeps the backend's own
+    panel API calls off the tunnel, so they work while the active node is down."""
+    if settings_map.get("xui_panel_bypass", "false").lower() != "true":
+        return []
+    from app.models import XuiServer, Server
+    hosts = list((await session.exec(
+        select(Server.host).join(XuiServer, XuiServer.server_id == Server.id)
+    )).all())
+    return await _resolve_hosts_to_cidrs(hosts, "panel bypass")
+
+
+async def refresh_panel_bypass(session: AsyncSession) -> None:
+    """Re-apply nftables after a panel was added/removed, when the bypass is on."""
+    try:
+        settings_map = await _load_settings_map(session)
+        if settings_map.get("xui_panel_bypass", "false").lower() != "true":
+            return
+        from app.core.xray import xray_manager
+        if xray_manager.is_running:
+            await _apply_nftables(session, settings_map)
+    except Exception as exc:
+        logger.warning("Failed to refresh panel bypass: %s", exc)
+
+
 async def _collect_naive_bypass_dsts(session: AsyncSession) -> List[str]:
     """
     Resolve IPs of all enabled naive upstream servers → /32 CIDRs.
@@ -1629,47 +1712,7 @@ async def _collect_naive_bypass_dsts(session: AsyncSession) -> List[str]:
     nodes = list((await session.exec(
         select(Node).where(Node.protocol == "naive", Node.enabled == True)  # noqa: E712
     )).all())
-    out: List[str] = []
-
-    def _resolve_one(host: str) -> List[str]:
-        try:
-            infos = _sock.getaddrinfo(host, None, _sock.AF_INET, _sock.SOCK_STREAM)
-        except Exception:
-            return []
-        results: List[str] = []
-        for fam, _, _, _, sa in infos:
-            if fam == _sock.AF_INET and sa and sa[0]:
-                results.append(f"{sa[0]}/32")
-        return results
-
-    for n in nodes:
-        host = (n.address or "").strip()
-        if not host:
-            continue
-        try:
-            cidrs = await asyncio.wait_for(
-                asyncio.to_thread(_resolve_one, host),
-                timeout=2.0,
-            )
-        except asyncio.TimeoutError:
-            # Don't block reload pipelines on a slow / broken DNS path.
-            # Log once per host, not per-call to avoid spam.
-            logger.warning(
-                "naive bypass: DNS resolution of %r timed out — skipping. "
-                "Check /etc/resolv.conf if this persists.",
-                host,
-            )
-            continue
-        out.extend(cidrs)
-
-    # Dedup while preserving order
-    seen = set()
-    uniq = []
-    for c in out:
-        if c not in seen:
-            seen.add(c)
-            uniq.append(c)
-    return uniq
+    return await _resolve_hosts_to_cidrs([n.address for n in nodes], "naive bypass")
 
 
 # ── Updates ───────────────────────────────────────────────────────────────────

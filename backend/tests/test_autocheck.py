@@ -98,6 +98,42 @@ class TestRunSweep:
         assert summary["tested"] == 1
 
     @pytest.mark.asyncio
+    async def test_cancel_stops_after_current_node_and_keeps_results(self, client, admin_user, session):
+        n1 = _mk_node(session, name="n1", address="10.0.0.1", order=1)
+        n2 = _mk_node(session, name="n2", address="10.0.0.2", order=2)
+        n3 = _mk_node(session, name="n3", address="10.0.0.3", order=3)
+        _cfg(session, scope_kind="all")
+        seen = []
+
+        async def fake_speed(node):
+            seen.append(node.id)
+            assert acs.autocheck_scheduler.cancel() is True   # operator hits Cancel mid-test
+            return {"download_mbps": 10.0}
+
+        with patch("app.core.speedtest.speedtest_node", side_effect=fake_speed):
+            summary = await acs.autocheck_scheduler.run_sweep()
+
+        assert summary["status"] == "cancelled"
+        assert len(seen) == 1
+        assert summary["tested"] == 1
+        session.expire_all()
+        measured = [n for n in (n1, n2, n3) if session.get(Node, n.id).speed_mbps is not None]
+        assert len(measured) == 1
+        assert acs.autocheck_scheduler.is_sweeping is False
+        assert acs.autocheck_scheduler.is_cancelling is False
+
+    @pytest.mark.asyncio
+    async def test_cancel_flag_does_not_leak_into_next_sweep(self, client, admin_user, session):
+        _mk_node(session, name="n1", address="10.0.0.1")
+        _cfg(session, scope_kind="all")
+        assert acs.autocheck_scheduler.cancel() is False   # nothing running
+        with patch("app.core.speedtest.speedtest_node",
+                   side_effect=AsyncMock(return_value={"download_mbps": 5.0})):
+            summary = await acs.autocheck_scheduler.run_sweep()
+        assert summary["status"] == "done"
+        assert summary["tested"] == 1
+
+    @pytest.mark.asyncio
     async def test_isolates_node_errors(self, client, admin_user, session):
         bad = _mk_node(session, name="bad", address="10.0.0.1")
         good = _mk_node(session, name="good", address="10.0.0.2")
@@ -159,3 +195,13 @@ class TestAutoCheckAPI:
             r = client.post("/api/autocheck/run", headers=auth_headers)
         assert r.status_code == 200
         assert r.json()["status"] == "started"
+
+    def test_cancel_when_idle(self, client, admin_user, auth_headers):
+        r = client.post("/api/autocheck/cancel", headers=auth_headers)
+        assert r.status_code == 200
+        assert r.json()["status"] == "not_running"
+
+    def test_status_carries_progress_fields(self, client, admin_user, auth_headers):
+        d = client.get("/api/autocheck", headers=auth_headers).json()
+        assert d["is_cancelling"] is False
+        assert d["sweep_done"] == 0 and d["sweep_total"] == 0

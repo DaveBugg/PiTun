@@ -523,6 +523,8 @@ export const autocheckApi = {
         ...(force ? { force: true } : {}),
       },
     }).then(r => r.data),
+  /** Stop the running sweep after the node under test finishes. */
+  cancel: () => http.post<{ status: string }>('/autocheck/cancel').then(r => r.data),
 }
 
 // ── NodeCircle ───────────────────────────────────────────────────────────────

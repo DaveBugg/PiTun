@@ -82,10 +82,6 @@ def _put_sentinel(q: "asyncio.Queue") -> None:
             except asyncio.QueueEmpty:
                 return
 
-# Stale-job healer: any `running` job whose `started_at` is older than
-# this on backend startup is flagged as a restart casualty.
-_STALE_RUNNING_THRESHOLD = timedelta(hours=1)
-
 # Trim policy: delete the oldest jobs once we exceed this count, AND
 # delete any jobs older than `_TRIM_MAX_AGE` regardless of count. Both
 # applied each pass.
@@ -182,22 +178,24 @@ class JobManager:
                 pass
 
     async def _heal_stale_jobs(self) -> None:
-        """On startup, flip any `running` rows that are too old to
-        `failed` — these are leftover from a backend that died mid-deploy.
+        """On startup, flip every `running` row to `failed`: the worker that
+        owned it died with the previous process, however recently it started.
+        Jobs this manager is tracking right now are left alone.
         """
-        cutoff = datetime.now(timezone.utc) - _STALE_RUNNING_THRESHOLD
+        live = set(self._buffers)
         async with AsyncSession(get_async_engine()) as session:
-            stale = (await session.exec(
-                select(Job)
-                .where(Job.status == "running")
-                .where(Job.started_at < cutoff)
-            )).all()
+            stale = [
+                j for j in (await session.exec(
+                    select(Job).where(Job.status == "running")
+                )).all()
+                if j.id not in live
+            ]
             if not stale:
                 return
             for j in stale:
                 j.status = "failed"
                 j.finished_at = datetime.now(timezone.utc)
-                j.error = "backend restarted during deploy (stale running job)"
+                j.error = "backend restarted while the job was running"
                 session.add(j)
             await session.commit()
             logger.warning(

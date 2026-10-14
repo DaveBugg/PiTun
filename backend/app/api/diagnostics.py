@@ -517,6 +517,13 @@ async def system_resources():
     return await _get_resources()
 
 
+@router.get("/errors")
+async def error_log_tail(lines: int = Query(200, ge=10, le=2000)):
+    """Tail of the operator error log (full detail of sanitised failures)."""
+    from app.core import error_log
+    return {"lines": error_log.tail(lines)}
+
+
 @router.get("/logs")
 async def docker_logs(
     lines: int = Query(100, ge=10, le=1000),

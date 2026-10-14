@@ -15,6 +15,8 @@ router = APIRouter(prefix="/autocheck", tags=["autocheck"])
 def _with_status(cfg) -> AutoCheckRead:
     data = AutoCheckRead.model_validate(cfg)
     data.is_sweeping = autocheck_scheduler.is_sweeping
+    data.is_cancelling = autocheck_scheduler.is_cancelling
+    data.sweep_done, data.sweep_total = autocheck_scheduler.progress
     return data
 
 
@@ -51,3 +53,10 @@ async def run_autocheck_now(
         autocheck_scheduler.run_sweep(scope_kind, scope_value or None, force)
     )
     return {"status": "started"}
+
+
+@router.post("/cancel")
+async def cancel_autocheck():
+    """Stop the running sweep once the node under test finishes. Nodes
+    already measured keep their results."""
+    return {"status": "cancelling" if autocheck_scheduler.cancel() else "not_running"}

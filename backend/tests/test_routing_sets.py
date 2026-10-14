@@ -1,7 +1,16 @@
 """API tests for RoutingSet CRUD + bulk device assignment (v1.4 Phase 2)."""
+import pytest
 from unittest.mock import patch, AsyncMock, PropertyMock
 
 from app.models import Device, RoutingRule, RoutingSet
+
+
+@pytest.fixture(autouse=True)
+def _ports_are_free():
+    """The API bind-probes 65500+; some hosts (Windows reserves part of that
+    range) refuse it, which would make the port assertions depend on the machine."""
+    with patch("app.api.routing_sets._host_port_free", return_value=True):
+        yield
 
 
 # ── CRUD basics ───────────────────────────────────────────────────────────────

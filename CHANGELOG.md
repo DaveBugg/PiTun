@@ -4,6 +4,46 @@ All notable user-facing changes to PiTun. Full per-release detail lives in the
 [GitHub Releases](https://github.com/DaveBugg/PiTun/releases); this file is the
 committed summary.
 
+## v1.6.8 — 2026-10-14
+
+**A Stop button for the speed sweep, an xray that stops hammering itself after
+a crash, and a round of small robustness fixes.**
+
+### Added
+
+- **"Speed All" turns into "Stop" while a sweep runs**, with progress
+  (`12/340`). Stopping takes effect once the node being tested finishes;
+  nodes already measured keep their results.
+- **xray crash-restart backoff.** A crashing xray used to be relaunched every
+  few seconds forever. It now waits 3 s, then 60 s, then 5 min, and starts over
+  after ten minutes of stable running. Start and Stop stay responsive while it
+  waits, and the Events feed says when it is backing off.
+- **Hourly chain check** (Settings → "Hourly chain check", on by default).
+  Re-runs the chain healthcheck and marks a chain `degraded` — with an event —
+  when a panel inbound or the relay route has disappeared, for example after an
+  x-ui reinstall.
+- **Bypass x-ui panels** (Settings, off by default). One switch, for every
+  registered panel: PiTun's own calls to the panels go straight to the VPS
+  instead of through the active node, so panels stay manageable while the node
+  is down.
+- **An operator error log** (`errors.log` next to the database, rotated; tail
+  at `GET /api/diagnostics/errors`). Failures of subscription refreshes,
+  geodata updates and the chain check are written there in full.
+
+### Fixed
+
+- Subscription and geodata errors no longer put raw exception text — which can
+  carry a URL with a token or a file path — into the database, the events feed
+  or the UI. They show a short message ("HTTP 403", "timed out", …) and the
+  detail goes to the error log. A subscription URL is no longer logged in full.
+- Deleting a chain no longer removes an inbound just because its stored id
+  matches: after a panel reinstall ids are reused, and the id could belong to
+  someone else's inbound. The inbound is deleted only while its remark or port
+  still matches the chain's.
+- Jobs left `running` by a restart are failed on the next boot immediately,
+  not only when they are over an hour old.
+- Removed the device vendor lookup fallback that was never populated.
+
 ## v1.6.7 — 2026-10-01
 
 **Pick a free port before you pick it for an inbound, and dialogs that no

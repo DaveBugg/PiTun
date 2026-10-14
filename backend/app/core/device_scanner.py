@@ -27,16 +27,6 @@ async def _get_db_setting(key: str) -> Optional[str]:
 _MAC_RE = re.compile(r"([0-9a-fA-F]{2}(?::[0-9a-fA-F]{2}){5})")
 _IP_RE = re.compile(r"(\d{1,3}(?:\.\d{1,3}){3})")
 
-_OUI_CACHE: Dict[str, str] = {}
-
-
-def _oui_lookup(mac: str) -> Optional[str]:
-    prefix = mac[:8].upper()
-    if prefix in _OUI_CACHE:
-        return _OUI_CACHE[prefix]
-    return None
-
-
 async def _arp_scan() -> List[Dict[str, str]]:
     """Run arp-scan or fall back to ip neigh / /proc/net/arp."""
     devices: List[Dict[str, str]] = []
@@ -122,7 +112,7 @@ async def scan_and_update_devices() -> Dict[str, int]:
                 continue
 
             seen_macs.add(mac)
-            vendor = entry.get("vendor") or _oui_lookup(mac)
+            vendor = entry.get("vendor")
 
             if mac in existing:
                 dev = existing[mac]

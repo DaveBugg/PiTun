@@ -505,6 +505,8 @@ export interface SystemSettings {
   tun_strict_route?: boolean
   // QUIC blocking
   block_quic?: boolean
+  xui_panel_bypass?: boolean
+  chain_drift_check?: boolean
   // Kill switch + auto restart
   kill_switch?: boolean
   auto_restart_xray?: boolean
@@ -759,6 +761,9 @@ export interface AutoCheck {
   last_sweep?: string | null
   // Live status from the backend (not stored).
   is_sweeping: boolean
+  is_cancelling?: boolean
+  sweep_done?: number
+  sweep_total?: number
 }
 
 export type AutoCheckUpdate = Partial<Pick<AutoCheck, 'enabled' | 'interval_minutes' | 'scope_kind' | 'scope_value'>>

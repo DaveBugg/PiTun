@@ -296,7 +296,7 @@ export function useAutocheckSweep(): boolean {
   const status = useQuery({
     queryKey: ['autocheck'],
     queryFn: () => autocheckApi.get(),
-    refetchInterval: (q) => (q.state.data?.is_sweeping ? 3000 : false),
+    refetchInterval: (q) => (q.state.data?.is_sweeping ? 2000 : false),
   })
   const sweeping = !!status.data?.is_sweeping
   const wasSweeping = useRef(false)
@@ -307,4 +307,26 @@ export function useAutocheckSweep(): boolean {
     wasSweeping.current = sweeping
   }, [sweeping, status.dataUpdatedAt, qc])
   return sweeping
+}
+
+/** Progress of the running sweep; shares the ['autocheck'] query with
+ *  `useAutocheckSweep`, so it adds no extra requests. */
+export function useAutocheckProgress() {
+  const { data } = useQuery({
+    queryKey: ['autocheck'],
+    queryFn: () => autocheckApi.get(),
+  })
+  return {
+    done: data?.sweep_done ?? 0,
+    total: data?.sweep_total ?? 0,
+    cancelling: !!data?.is_cancelling,
+  }
+}
+
+export function useCancelSweep() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: () => autocheckApi.cancel(),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['autocheck'] }),
+  })
 }
