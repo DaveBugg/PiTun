@@ -88,6 +88,8 @@ optional limits, xray 26.10, and x-ui 3.11.**
 
 ### Fixed
 
+- **The NaiveProxy sidecar image builds again.** The release it was pinned to
+  lost its downloads upstream; it now builds on v154.0.8037.49-5.
 - **A circle synced with a subscription no longer takes back what you removed.**
   Every refresh re-added all of the subscription's nodes, so nodes unticked in
   the circle's editor came back. Unticking is now remembered, and a new
