@@ -4,6 +4,31 @@ All notable user-facing changes to PiTun. Full per-release detail lives in the
 [GitHub Releases](https://github.com/DaveBugg/PiTun/releases); this file is the
 committed summary.
 
+## v1.7.1 — 2026-11-03
+
+**Fixes the in-app update to 1.7.0, which stopped on a checksum.**
+
+### Fixed
+
+- **Updating to 1.7.0 failed on every device.** The installer checks the xray
+  binary inside the new backend image against a pinned sha256, and `install.sh`
+  still held the values of the previous xray, so the check failed three times and
+  the update ended with "Installer exited with code 1". Nothing was applied (the
+  database snapshot is the only leftover). The values now match the image, and a
+  test keeps `install.sh` and the Dockerfile in step.
+- The installer's failure message crashed with "attempt: unbound variable"
+  instead of explaining; it now prints the advice on checking the storage.
+- **The update progress was invisible.** After "Update now" the status file still
+  held the previous run, so the page saw nothing in flight, stopped polling and
+  offered the button again. A request waiting for the host agent now shows as
+  queued with its progress bar, and the buttons stay locked.
+- The ArgoSBX cleanup also stops and removes the `sb.service` unit the stack
+  runs under (only when it launches something from the agsbx directory).
+
+### Upgrading
+
+- Devices that tried 1.7.0 and failed are untouched: update again, to 1.7.1.
+
 ## v1.7.0 — 2026-11-02
 
 **Hysteria2 servers, a Domains page, a view of what PiTun costs the box with

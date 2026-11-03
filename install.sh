@@ -1094,9 +1094,9 @@ if [[ "$USE_BUILD" != "1" ]]; then
         # while the release tarball itself was bit-perfect — see the
         # post-mortem in notes.md). The Dockerfile also pins these at
         # build-time; this is the runtime check on the target device.
-        XRAY_SHA_AMD64="${PITUN_XRAY_SHA_AMD64:-64d46afb80adea1bf97a0d467e83f4a9ac1ebd0995891e84bca3f1a1d1affb1d}"
-        XRAY_SHA_ARM64="${PITUN_XRAY_SHA_ARM64:-4b8af237444801bf17b3dc10a1c5c24581fbe3d433eba3d78c6c3a0da1df56fc}"
-        XRAY_SHA_ARM="${PITUN_XRAY_SHA_ARM:-63a2fb09b928d1bde3a0df9b663d1936f13b53cd0db40c8ce85e4accdc779860}"
+        XRAY_SHA_AMD64="${PITUN_XRAY_SHA_AMD64:-cc4b84d3069569f297a61f04b914f2bb37e9d202fd7b84cb50def1fc30fd40e1}"
+        XRAY_SHA_ARM64="${PITUN_XRAY_SHA_ARM64:-5939649960deaf535bcd5f7ce0467a2b1d63b72a2758a6f42eade714ae8d5328}"
+        XRAY_SHA_ARM="${PITUN_XRAY_SHA_ARM:-2a893d5b5f7cf5a33168c102f01771ed69a674abeab0b8fb085b1ddf098cf52c}"
 
         # Wrap docker load + xray-sha verification in a retry loop. Each
         # attempt: nuke any stale tag, load fresh, run sha256sum on the
@@ -1148,7 +1148,7 @@ if [[ "$USE_BUILD" != "1" ]]; then
         }
 
         if ! load_backend_with_verify; then
-            error "Backend image's xray binary is corrupted after $((attempt:-3)) load attempts.
+            error "Backend image's xray binary is corrupted after 3 load attempts.
 
 This usually means the host's filesystem or storage hardware is
 flipping bytes during write — the release tarball itself is fine

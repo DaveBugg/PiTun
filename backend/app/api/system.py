@@ -1743,9 +1743,22 @@ async def update_status():
     """
     from app.core.updater import read_status, request_pending
 
+    return UpdateStatus(**_status_with_queue())
+
+
+def _status_with_queue() -> dict:
+    """The agent's status, except that a request nobody has picked up yet
+    reads as `queued`. Without this the file still holds the PREVIOUS run's
+    terminal state (done/failed) until the agent starts, so the UI saw "idle",
+    stopped polling and offered the button again."""
+    from app.core.updater import read_status, request_pending
+
     data = dict(read_status())
     data["request_pending"] = request_pending()
-    return UpdateStatus(**data)
+    if data["request_pending"] and data.get("state") not in ("queued", "running"):
+        data.update(state="queued", pct=0, step="queued", ok=None,
+                    message="Waiting for the host update agent")
+    return data
 
 
 @router.post("/update/start", status_code=202, response_model=UpdateStatus)
@@ -1779,6 +1792,4 @@ async def start_update(body: UpdateStartRequest):
             detail=f"Could not queue the update request: {exc}",
         )
 
-    data = dict(read_status())
-    data["request_pending"] = request_pending()
-    return UpdateStatus(**data)
+    return UpdateStatus(**_status_with_queue())

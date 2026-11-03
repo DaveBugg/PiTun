@@ -183,6 +183,30 @@ class TestStatusEndpoint:
         assert body["request_pending"] is True
 
 
+    def test_a_queued_request_reads_as_in_flight_even_over_an_old_terminal_state(
+        self, client, admin_user, auth_headers, data_dir,
+    ):
+        """The status file keeps the PREVIOUS run (failed/done) until the agent
+        starts. A request that nobody picked up yet must read as queued, or the
+        UI sees idle, stops polling and offers the button again."""
+        import json
+        (data_dir / "update-status.json").write_text(json.dumps(
+            {"state": "failed", "pct": 90, "step": "install", "message": "old", "ok": False}))
+        (data_dir / "update-request.json").write_text("{}")
+        body = client.get("/api/system/update/status", headers=auth_headers).json()
+        assert body["state"] == "queued" and body["pct"] == 0 and body["request_pending"] is True
+
+    def test_a_running_update_is_reported_as_it_is(
+        self, client, admin_user, auth_headers, data_dir,
+    ):
+        import json
+        (data_dir / "update-status.json").write_text(json.dumps(
+            {"state": "running", "pct": 45, "step": "host", "message": "x", "ok": None}))
+        (data_dir / "update-request.json").write_text("{}")
+        body = client.get("/api/system/update/status", headers=auth_headers).json()
+        assert body["state"] == "running" and body["pct"] == 45
+
+
 class TestDowngradeWarning:
     """Installing a build older than 1.4.8 REMOVES the in-UI updater. The
     box stays updatable from a shell, but the operator has to learn that

@@ -273,6 +273,15 @@ remove_argosbx() {
     fi
     info "Found an ArgoSBX/sing-box stack in $ARGOSBX_DIR - removing it (KEEP_ARGOSBX=yes keeps it)..."
 
+    # The stack runs as the systemd unit sb.service: stop and remove it, but
+    # only if that unit really launches something from the agsbx directory.
+    local unit=/etc/systemd/system/sb.service
+    if [[ -f "$unit" ]] && grep -q "^ExecStart=$ARGOSBX_DIR/" "$unit"; then
+        systemctl disable --now sb.service >/dev/null 2>&1 || true
+        rm -f "$unit"
+        systemctl daemon-reload >/dev/null 2>&1 || true
+    fi
+
     # Stop only processes whose executable lives inside the agsbx directory.
     local exe_link target pid
     for exe_link in /proc/[0-9]*/exe; do

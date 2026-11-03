@@ -40,13 +40,18 @@ export function UpdateSection() {
     // Poll only while something is in flight. A finished update leaves a
     // terminal state on disk, so there is nothing to watch afterwards.
     refetchInterval: (q) =>
-      ACTIVE_STATES.includes(q.state.data?.state ?? '') ? 2000 : false,
+      ACTIVE_STATES.includes(q.state.data?.state ?? '') || q.state.data?.request_pending === true
+        ? 2000
+        : false,
     // Mid-update the backend is down; keep the last known state rather
     // than blanking the panel, and don't count that as an error.
     retry: false,
   })
 
-  const busy = ACTIVE_STATES.includes(status.data?.state ?? '')
+  // A request the host agent has not picked up yet counts as in flight too:
+  // the status file still holds the previous run until it starts.
+  const busy =
+    ACTIVE_STATES.includes(status.data?.state ?? '') || status.data?.request_pending === true
   // The backend goes away during its own restart. While busy, a failed
   // poll means "restarting", not "broken".
   const restarting = busy && status.isError
