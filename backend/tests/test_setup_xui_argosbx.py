@@ -141,9 +141,11 @@ def test_running_it_twice_is_harmless(sandbox):
     assert _run(sandbox).returncode == 0
 
 
-def test_the_pro_branch_calls_it_after_the_wrapper():
+def test_the_cleanup_runs_after_both_installers():
     text = SCRIPT.read_text(encoding="utf-8", errors="ignore")
-    assert text.index('|| err "x-ui-pro installer exited non-zero"') < text.rindex("    remove_argosbx\n")
+    call = text.rindex("\nremove_argosbx\n")
+    assert text.index('|| err "x-ui-pro installer exited non-zero"') < call
+    assert text.index('|| err "3x-ui installer exited non-zero"') < call
     assert text.index("remove_argosbx()") < text.index('log "Running x-ui-pro installer')
 
 
