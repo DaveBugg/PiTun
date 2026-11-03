@@ -36,6 +36,7 @@ async def _get_active_node(session) -> Optional[Node]:
 
 class CircleScheduler:
     def __init__(self) -> None:
+        self._speed_tokens: dict[int, float] = {}
         self._task: Optional[asyncio.Task] = None
         self._running = False
         self._next_rotate: dict[int, datetime] = {}
@@ -153,6 +154,32 @@ class CircleScheduler:
     # stays short, and skipped for WireGuard, which tolerates only one session.
     _HTTP_PROBE_BUDGET_S = 8.0
     _HTTP_PROBE_MAX_CANDIDATES = 3
+    # "best" mode with a speed target. Whatever intervals and target a user sets,
+    # the cost stays bounded and the behaviour stays sensible:
+    #  * a rotation speed-tests at most _SPEED_CHECKS_MAX nodes and stops testing
+    #    after _SPEED_BUDGET_S seconds (the rest is decided on what is known);
+    #  * a GOOD measurement is trusted for about one interval (clamped), so each
+    #    rotation re-checks the nodes it is about to use;
+    #  * a SLOW verdict is trusted far longer (a slow node seldom becomes fast), so
+    #    the slow nodes with a good ping are walked past for free and the search
+    #    reaches the first good one within a few rotations;
+    #  * when the budget runs out before a good node is found, an untested node is
+    #    preferred over a known-slow one (it may be fine, and it gets measured
+    #    next time); a target nobody reaches ends on the fastest measured node.
+    #  * on top of all that, a per-circle budget: every rotation earns
+    #    _SPEED_REFILL tests (up to _SPEED_BURST banked), so over any stretch of time
+    #    the average cost is at most that many tests per rotation, whatever the
+    #    intervals, the pool or the target (a target nobody reaches cannot turn
+    #    into a test storm). The first rotation after a start may spend the burst.
+    _SPEED_CHECKS_MAX = 6
+    _SPEED_REFILL = 2
+    _SPEED_BURST = 8
+    _SPEED_BUDGET_S = 120
+    _SPEED_FRESH_MIN_S = 180
+    _SPEED_FRESH_MAX_S = 1800
+    _SPEED_SLOW_FACTOR = 8
+    _SPEED_SLOW_MIN_S = 1800
+    _SPEED_SLOW_MAX_S = 14400
     _HTTP_PROBE_EXTRA_DEADLINE_S = 30.0
 
     @staticmethod
@@ -162,6 +189,51 @@ class CircleScheduler:
                 select(DBSettings).where(DBSettings.key == "circle_http_probe")
             )).first()
         return row is None or row.value.lower() != "false"
+
+    async def _speed_verdict(
+        self, cand: dict, target_mbps: float, fresh_s: int, slow_s: int, *, allow_test: bool,
+    ) -> tuple[str, Optional[float], bool]:
+        """("ok" | "slow" | "unknown", mbps, ran_a_test) for one candidate.
+
+        A good measurement younger than `fresh_s`, or a slow one younger than
+        `slow_s`, is used as it is; an older one is replaced by a live test while
+        the rotation still has tests to spend. With none left the stored
+        (possibly stale) value decides, and a node never measured is "unknown"."""
+        from app.core.speedtest import apply_exit, speedtest_node as _speedtest
+
+        stored = cand.get("speed_mbps")
+        at = cand.get("speed_tested_at")
+        if at is not None and at.tzinfo is None:
+            at = at.replace(tzinfo=timezone.utc)
+        age_s = (datetime.now(tz=timezone.utc) - at).total_seconds() if at else None
+        if stored is not None and age_s is not None:
+            good = stored >= target_mbps
+            if age_s < (fresh_s if good else slow_s):
+                return ("ok" if good else "slow", float(stored), False)
+        if allow_test:
+            try:
+                async with AsyncSession(get_async_engine()) as s:
+                    node = await s.get(Node, cand["id"])
+                    if node is None:
+                        return ("unknown", None, False)
+                    result = await _speedtest(node)
+                    mbps = result.get("download_mbps")
+                    if mbps is not None:
+                        node.speed_mbps = float(mbps)
+                        mx = result.get("max_mbps")
+                        node.speed_max_mbps = float(mx) if mx is not None else None
+                        node.speed_tested_at = datetime.now(tz=timezone.utc)
+                    apply_exit(node, result)
+                    await s.commit()
+            except Exception as exc:  # noqa: BLE001 - a failed test must not stop a rotation
+                logger.warning("NodeCircle speed check of node %s failed: %s", cand.get("id"), exc)
+                return ("unknown", None, True)
+            if mbps is None:
+                return ("unknown", None, True)
+            return ("ok" if float(mbps) >= target_mbps else "slow", float(mbps), True)
+        if stored is not None:
+            return ("ok" if stored >= target_mbps else "slow", float(stored), False)
+        return ("unknown", None, False)
 
     async def _http_probe(self, node_id: int) -> tuple[bool, str]:
         """(ok, detail). A fault in the probe itself counts as OK: it must not
@@ -302,6 +374,7 @@ class CircleScheduler:
 
             max_latency_ms = circle.max_latency_ms or 0
             min_speed_mbps = circle.min_speed_mbps or 0.0
+            interval_min_s = int(circle.interval_min or 5) * 60
 
             # Smart-skip: on a SCHEDULED tick with a latency budget set, don't
             # churn off an active node that's still online and within budget.
@@ -338,7 +411,9 @@ class CircleScheduler:
                 if (max_latency_ms > 0 and cand.latency_ms is not None
                         and cand.latency_ms > max_latency_ms):
                     continue
-                if (min_speed_mbps > 0 and cand.speed_mbps is not None
+                # In "best" the live check below decides: a stale slow reading
+                # must not keep a node out of ever being measured again.
+                if (circle.mode != "best" and min_speed_mbps > 0 and cand.speed_mbps is not None
                         and cand.speed_mbps < min_speed_mbps):
                     continue
                 addr, port, udp = await health_checker._resolve_probe_target(session, cand)
@@ -353,6 +428,7 @@ class CircleScheduler:
                     "internal_port": cand.internal_port,
                     "latency_ms": cand.latency_ms,
                     "speed_mbps": cand.speed_mbps,
+                    "speed_tested_at": cand.speed_tested_at,
                 })
 
             # "best" mode: probe in quality order — lowest latency first, then
@@ -395,6 +471,22 @@ class CircleScheduler:
         http_probes_left = self._HTTP_PROBE_MAX_CANDIDATES
         tcp_only: Optional[dict] = None  # first candidate that passed TCP but not HTTP
 
+        # Speed target ("best" with a floor set): the first candidate by ping
+        # that really delivers it wins. A slow one is remembered as a fallback,
+        # one that could not be measured likewise.
+        speed_gate = circle_mode == "best" and min_speed_mbps > 0
+        speed_tokens = min(
+            float(self._SPEED_BURST),
+            self._speed_tokens.get(circle_id, float(self._SPEED_BURST)) + self._SPEED_REFILL,
+        )
+        speed_checks_left = min(self._SPEED_CHECKS_MAX, int(speed_tokens)) if speed_gate else 0
+        speed_checks_start = speed_checks_left
+        fresh_s = max(self._SPEED_FRESH_MIN_S, min(self._SPEED_FRESH_MAX_S, interval_min_s))
+        slow_s = max(self._SPEED_SLOW_MIN_S, min(self._SPEED_SLOW_MAX_S, fresh_s * self._SPEED_SLOW_FACTOR))
+        speed_deadline = asyncio.get_event_loop().time() + self._SPEED_BUDGET_S
+        slow: list[tuple[float, dict]] = []
+        unmeasured: Optional[dict] = None
+
         for cand in candidates:
             # Probe with single retry — `_probe_with_retry` catches
             # transient SYN drops / brief packet loss that would
@@ -416,6 +508,33 @@ class CircleScheduler:
                         "error": f"port answers but no internet through the node ({http_detail or 'no response'})",
                     }
 
+            if result.get("is_online") and speed_gate:
+                verdict, mbps, ran = await self._speed_verdict(
+                    cand, min_speed_mbps, fresh_s, slow_s,
+                    allow_test=speed_checks_left > 0 and asyncio.get_event_loop().time() < speed_deadline,
+                )
+                if ran:
+                    speed_checks_left -= 1
+                if verdict == "slow":
+                    slow.append((mbps or 0.0, cand))
+                    logger.info(
+                        "NodeCircle '%s': candidate '%s' (id=%d) is %.1f Mbit/s, below the %.0f target; trying next",
+                        circle_name, cand["name"], cand["id"], mbps or 0.0, min_speed_mbps,
+                    )
+                    await _safe_event(
+                        category="circle.candidate_slow",
+                        severity="info",
+                        title=f"Circle '{circle_name}': '{cand['name']}' below the speed target",
+                        details=f"{(mbps or 0.0):.1f} Mbit/s against a target of {min_speed_mbps:.0f}. Trying the next node by ping.",
+                        entity_id=cand["id"],
+                        dedup_window_sec=300,
+                    )
+                    continue
+                if verdict == "unknown":
+                    if unmeasured is None:
+                        unmeasured = cand
+                    continue
+
             if result.get("is_online"):
                 selected = cand
                 break
@@ -433,6 +552,34 @@ class CircleScheduler:
                 details=f"Probe error: {err_msg}. Trying next candidate.",
                 entity_id=cand["id"],
                 dedup_window_sec=120,
+            )
+
+        if speed_gate:
+            self._speed_tokens[circle_id] = speed_tokens - (speed_checks_start - speed_checks_left)
+
+        if not selected and speed_gate and (slow or unmeasured is not None):
+            # Nobody reached the target. Better the fastest node that was measured
+            # than a circle that does not move.
+            if unmeasured is not None:
+                selected = unmeasured
+                reason = (
+                    f"'{selected['name']}' has no speed measurement yet (the test budget ran out "
+                    "or the test failed), taken on its ping"
+                )
+            else:
+                best_mbps, selected = max(slow, key=lambda x: x[0])
+                reason = f"the fastest measured was '{selected['name']}' at {best_mbps:.1f} Mbit/s"
+            logger.warning(
+                "NodeCircle '%s' (id=%d): no candidate reached %.0f Mbit/s; %s",
+                circle_name, circle_id, min_speed_mbps, reason,
+            )
+            await _safe_event(
+                category="circle.speed_target_missed",
+                severity="warning",
+                title=f"Circle '{circle_name}': no node reached {min_speed_mbps:.0f} Mbit/s",
+                details=f"Rotated anyway: {reason}.",
+                entity_id=circle_id,
+                dedup_window_sec=600,
             )
 
         if not selected and tcp_only is not None:

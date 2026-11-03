@@ -53,6 +53,16 @@ class TestNodeCircleCreate:
         )
         assert resp.status_code == 422
 
+    def test_interval_min_must_be_five_minutes_or_more(self, client, admin_user, auth_headers, sample_node):
+        """A best-mode rotation may speed-test nodes, so rotating every minute is refused."""
+        def post(minutes):
+            return client.post("/api/nodecircle", json={
+                "name": f"I{minutes}", "node_ids": [sample_node.id],
+                "interval_min": minutes, "interval_max": 30,
+            }, headers=auth_headers)
+        assert post(4).status_code == 422
+        assert post(5).status_code == 201
+
     def test_create_interval_min_too_low(self, client, admin_user, auth_headers, sample_node):
         resp = client.post(
             "/api/nodecircle",

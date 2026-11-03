@@ -430,6 +430,8 @@ async def import_xui_server(
         existing.last_check_error = None
         existing.updated_at = now
         session.add(existing)
+        from app.core.xui_deployment import ensure_xui_deployment
+        await ensure_xui_deployment(session, existing)
         await session.commit()
         await session.refresh(existing)
         await session.refresh(srv)
@@ -449,6 +451,9 @@ async def import_xui_server(
         last_check=now,
     )
     session.add(xs)
+    await session.flush()
+    from app.core.xui_deployment import ensure_xui_deployment
+    await ensure_xui_deployment(session, xs)
     await session.commit()
     await session.refresh(xs)
     await session.refresh(srv)
@@ -503,7 +508,10 @@ async def delete_xui_server(
     )).first()
     if xs is None:
         raise HTTPException(404, detail=f"XuiServer id={xui_server_id} not found")
+    server_id = xs.server_id
     await session.delete(xs)
+    from app.core.xui_deployment import drop_xui_deployment
+    await drop_xui_deployment(session, server_id)
     await session.commit()
     from app.api.system import refresh_panel_bypass
     await refresh_panel_bypass(session)

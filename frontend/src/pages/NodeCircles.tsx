@@ -10,7 +10,8 @@ import { useSystemSettings, useUpdateSettings } from '@/hooks/useSystem'
 import { useT } from '@/hooks/useT'
 import { useConfirm } from '@/components/ConfirmModal'
 import { ModalShell } from '@/components/ModalShell'
-import { COUNTRY_CODES, countryFlag } from '@/lib/countries'
+import { CountrySelect } from '@/components/CountrySelect'
+import { countryFlag } from '@/lib/countries'
 import type { NodeCircle, NodeCircleCreate } from '@/types'
 
 const MODE_LABELS: Record<string, string> = {
@@ -60,7 +61,7 @@ function CircleModal({ initial, nodeOptions, onSave, onCancel, loading }: ModalP
   // Candidate filters — string-backed like the intervals so the field can
   // be transiently empty. "0" / empty = disabled.
   const [maxLatency, setMaxLatency] = useState(String(initial?.max_latency_ms ?? 0))
-  const [minSpeed, setMinSpeed] = useState(String(initial?.min_speed_mbps ?? 0))
+  const [minSpeed, setMinSpeed] = useState(String(initial?.min_speed_mbps ?? 50))
   // Interval inputs are kept as strings so the user can transiently clear
   // the field while typing (`Number('')` = 0, which would lock them into
   // a leading-zero state like "035"). We parse on submit; empty/invalid
@@ -77,11 +78,8 @@ function CircleModal({ initial, nodeOptions, onSave, onCancel, loading }: ModalP
   // What a linked circle refuses even though the subscription serves it.
   const [excludedCountries, setExcludedCountries] = useState<string[]>(initial?.excluded_countries ?? [])
   const [excludedIds, setExcludedIds] = useState<number[]>(initial?.excluded_node_ids ?? [])
-  const [countryDraft, setCountryDraft] = useState('')
-  const addCountry = () => {
-    const code = countryDraft.trim().toUpperCase()
-    setCountryDraft('')
-    if (/^[A-Z]{2}$/.test(code) && !excludedCountries.includes(code)) {
+  const addCountry = (code: string) => {
+    if (code && !excludedCountries.includes(code)) {
       setExcludedCountries([...excludedCountries, code])
     }
   }
@@ -113,8 +111,8 @@ function CircleModal({ initial, nodeOptions, onSave, onCancel, loading }: ModalP
     e.preventDefault()
     // Parse the string inputs late \u2014 empty/invalid coerces to 1, the
     // backend's rotation scheduler treats anything <1 as 1 anyway.
-    const minN = Math.max(1, parseInt(intervalMin, 10) || 1)
-    const maxN = Math.max(1, parseInt(intervalMax, 10) || 1)
+    const minN = Math.max(5, parseInt(intervalMin, 10) || 5)
+    const maxN = Math.max(5, parseInt(intervalMax, 10) || 5)
     if (minN > maxN) {
       alert('Min interval must be \u2264 Max interval')
       return
@@ -180,10 +178,10 @@ function CircleModal({ initial, nodeOptions, onSave, onCancel, loading }: ModalP
             // String-backed value lets the user transiently empty the
             // field without `Number('')` collapsing the state to 0
             // (which would force an annoying "035" leading-zero shape).
-            // Submission parses to int with a min-1 floor.
+            // Submission parses to int with a 5-minute floor.
             type="number"
             inputMode="numeric"
-            min={1}
+            min={5}
             value={intervalMin}
             onChange={(e) => setIntervalMin(e.target.value)}
             className="w-full rounded-sm bg-gray-800 border border-gray-700 px-3 py-1.5 text-sm text-gray-100 focus:border-brand-500 focus:outline-hidden"
@@ -196,7 +194,7 @@ function CircleModal({ initial, nodeOptions, onSave, onCancel, loading }: ModalP
           <input
             type="number"
             inputMode="numeric"
-            min={1}
+            min={5}
             value={intervalMax}
             onChange={(e) => setIntervalMax(e.target.value)}
             className="w-full rounded-sm bg-gray-800 border border-gray-700 px-3 py-1.5 text-sm text-gray-100 focus:border-brand-500 focus:outline-hidden"
@@ -223,7 +221,7 @@ function CircleModal({ initial, nodeOptions, onSave, onCancel, loading }: ModalP
               min={0}
               value={maxLatency}
               onChange={(e) => setMaxLatency(e.target.value)}
-              placeholder="0"
+              placeholder="50"
               className="w-full rounded-sm bg-gray-800 border border-gray-700 px-3 py-1.5 text-sm text-gray-100 focus:border-brand-500 focus:outline-hidden"
             />
           </div>
@@ -231,8 +229,8 @@ function CircleModal({ initial, nodeOptions, onSave, onCancel, loading }: ModalP
             <label className="flex items-center gap-1 text-xs font-medium text-gray-400 mb-1">
               {t('Min speed (Mbps)', 'Мин. скорость (Мбит/с)')}
               <InfoTip position="bottom" className="ml-0.5" text={t(
-                'Skip candidates whose last speed test is below this. Untested nodes always pass. 0 = no limit.',
-                'Пропускать кандидатов, чей последний замер ниже этого. Непроверенные ноды всегда проходят. 0 = без ограничения.',
+                'Speed target. Before switching, the circle speed-tests the nodes with the best ping (at most a few per rotation, reusing recent results) and takes the first that reaches this; if none does, it takes the fastest measured. 0 = do not check speed.',
+                'Целевая скорость. Перед переключением круг проверяет скорость нод с лучшим пингом (несколько за ротацию, свежие замеры берёт готовыми) и берёт первую, что дотягивает до неё; если не дотянул никто, берёт самую быструю из измеренных. 0 = скорость не проверять.',
               )} />
             </label>
             <input
@@ -297,20 +295,9 @@ function CircleModal({ initial, nodeOptions, onSave, onCancel, loading }: ModalP
                 {countryFlag(code)} {code} ✕
               </button>
             ))}
-            <input
-              list="circle-country-codes"
-              value={countryDraft}
-              maxLength={2}
-              onChange={(e) => setCountryDraft(e.target.value)}
-              onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addCountry() } }}
-              onBlur={addCountry}
-              placeholder={t('RU', 'RU')}
-              aria-label={t('Country code to exclude', 'Код страны для исключения')}
-              className="w-16 rounded-sm bg-gray-800 border border-gray-700 px-2 py-1 text-xs uppercase text-gray-100 focus:border-brand-500 focus:outline-hidden"
-            />
-            <datalist id="circle-country-codes">
-              {COUNTRY_CODES.map((c) => <option key={c} value={c} />)}
-            </datalist>
+            <div className="w-44">
+              <CountrySelect value="" onChange={addCountry} />
+            </div>
           </div>
           {excludedIds.length > 0 && (
             <p className="mt-1.5 text-[11px] text-gray-500">
@@ -546,6 +533,31 @@ export function NodeCircles() {
                   >
                     <RefreshCw className="h-3 w-3" />
                     {subNameById.get(circle.subscription_id) ?? t('synced', 'синхронизирован')}
+                  </span>
+                )}
+
+                {(circle.excluded_countries?.length ?? 0) > 0 && (
+                  <span
+                    className="inline-flex items-center gap-1 rounded-sm border border-red-200 bg-red-50 text-red-700 dark:border-red-900/50 dark:bg-red-950/30 dark:text-red-300 px-1.5 py-0.5 text-[11px]"
+                    title={t(
+                      'Nodes from these countries never join this circle, whatever the subscription serves.',
+                      'Ноды этих стран никогда не попадают в этот круг, что бы ни отдавала подписка.',
+                    )}
+                  >
+                    {t('without', 'без')}{' '}
+                    {circle.excluded_countries!.map((c) => `${countryFlag(c)} ${c}`).join(', ')}
+                  </span>
+                )}
+
+                {(circle.excluded_node_ids?.length ?? 0) > 0 && (
+                  <span
+                    className="inline-flex items-center gap-1 rounded-sm border border-gray-700 bg-gray-800/60 text-gray-300 px-1.5 py-0.5 text-[11px]"
+                    title={t(
+                      'Nodes you unticked in this circle; a subscription refresh does not put them back.',
+                      'Ноды, которые вы сняли в этом круге: обновление подписки их не возвращает.',
+                    )}
+                  >
+                    {t(`${circle.excluded_node_ids!.length} left out by hand`, `убрано вручную: ${circle.excluded_node_ids!.length}`)}
                   </span>
                 )}
 

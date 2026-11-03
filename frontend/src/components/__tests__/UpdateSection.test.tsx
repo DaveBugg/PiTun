@@ -195,3 +195,41 @@ describe('UpdateSection', () => {
     expect(screen.queryByText(/has no in-UI updater/i)).not.toBeInTheDocument()
   })
 })
+
+// The last run's result is kept on disk for good; the banner must not be.
+describe('UpdateSection result banner', () => {
+  const ago = (ms: number) => new Date(Date.now() - ms).toISOString()
+  const base = { pct: 100, step: 'done', message: '', ok: true, request_pending: false, from: '1.6.6', to: '1.7.1' }
+
+  beforeEach(() => {
+    localStorage.clear()
+  })
+
+  it('shows a fresh success', async () => {
+    vi.mocked(updateApi.status).mockResolvedValue({ ...base, state: 'done', updated_at: ago(60_000) })
+    render(wrap(<UpdateSection />))
+    expect(await screen.findByText('1.7.1')).toBeInTheDocument()
+  })
+
+  it('hides an old success', async () => {
+    vi.mocked(updateApi.status).mockResolvedValue({ ...base, state: 'done', updated_at: ago(3 * 3600_000) })
+    render(wrap(<UpdateSection />))
+    await waitFor(() => expect(updateApi.status).toHaveBeenCalled())
+    expect(screen.queryByText('1.7.1')).not.toBeInTheDocument()
+  })
+
+  it('keeps a failure however old until it is closed, and keeps it closed', async () => {
+    vi.mocked(updateApi.status).mockResolvedValue({
+      ...base, state: 'failed', ok: false, message: 'Installer exited with code 1', updated_at: ago(3 * 3600_000),
+    })
+    const user = userEvent.setup()
+    const first = render(wrap(<UpdateSection />))
+    expect(await screen.findByText(/Installer exited with code 1/)).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: /Dismiss|Закрыть/ }))
+    expect(screen.queryByText(/Installer exited with code 1/)).not.toBeInTheDocument()
+    first.unmount()
+    render(wrap(<UpdateSection />))
+    await waitFor(() => expect(vi.mocked(updateApi.status).mock.calls.length).toBeGreaterThan(1))
+    expect(screen.queryByText(/Installer exited with code 1/)).not.toBeInTheDocument()
+  })
+})

@@ -127,7 +127,10 @@ export default function XuiPage() {
             servers={servers}
             selectedId={selectedId}
             onSelect={setSelectedId}
-            onChanged={() => qc.invalidateQueries({ queryKey: ['xui', 'servers'] })}
+            onChanged={() => {
+              qc.invalidateQueries({ queryKey: ['xui', 'servers'] })
+              qc.invalidateQueries({ queryKey: ['servers'] })
+            }}
           />
           {selectedServer && (
             <ServerDetail

@@ -85,6 +85,12 @@ async def lifespan(app: FastAPI):
     domain_stats_scheduler.start()
     asyncio.create_task(_reapply_limits())
 
+    try:
+        from app.core.xui_deployment import backfill as _backfill_xui_deployments
+        await _backfill_xui_deployments()
+    except Exception as exc:  # noqa: BLE001 — cosmetic, never blocks startup
+        logger.warning("xui deployment backfill skipped: %s", exc)
+
     # Country-flag prefixes, applied at the model rather than at each of the
     # nine places a node gets created — which is how nodes from a server
     # deploy ended up without one while imported nodes had them.

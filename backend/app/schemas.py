@@ -928,8 +928,8 @@ class NodeCircleBase(BaseModel):
     @field_validator("interval_min")
     @classmethod
     def validate_interval_min(cls, v: int) -> int:
-        if v < 1:
-            raise ValueError("interval_min must be at least 1 minute")
+        if v < 5:
+            raise ValueError("interval_min must be at least 5 minutes")
         return v
 
     @model_validator(mode="after")

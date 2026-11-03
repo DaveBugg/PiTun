@@ -1773,24 +1773,33 @@ async def _restore_panel(session: AsyncSession, server_id: int, panel_in: object
         select(_XuiServer).where(_XuiServer.server_id == server_id)
     )).first()
     if already is not None:
+        # Registered earlier without its "x-ui configured" mark? Repair that.
+        from app.core.xui_deployment import ensure_xui_deployment
+        await ensure_xui_deployment(session, already)
         return None
     token = panel_in.get("api_token") or ""
     p_user = panel_in.get("panel_user") or ""
     p_pass = panel_in.get("panel_pass") or ""
     # Either is enough to reach the panel later: the token directly, or the
     # login the backend can fetch one with.
-    if not (token or (p_user and p_pass)):
+    port = int(panel_in.get("panel_port") or 0)
+    # Without a port the panel cannot be reached, whatever else the bundle has.
+    if not port or not (token or (p_user and p_pass)):
         return False
-    session.add(_XuiServer(
+    xs = _XuiServer(
         server_id=server_id,
         api_token=token,
-        panel_user=p_user or None,
-        panel_pass=p_pass or None,
-        panel_port=int(panel_in.get("panel_port") or 0) or None,
+        panel_user=p_user,
+        panel_pass=p_pass,
+        panel_port=port,
         panel_basepath=panel_in.get("panel_basepath") or "/",
         domain=panel_in.get("domain") or None,
         mode=panel_in.get("mode") or "bare",
-    ))
+    )
+    session.add(xs)
+    await session.flush()
+    from app.core.xui_deployment import ensure_xui_deployment
+    await ensure_xui_deployment(session, xs)
     return True
 
 

@@ -49,12 +49,12 @@ function getUsername(): string {
   }
 }
 
-const NAV = [
+const NAV: { to: string; icon: typeof Scale; label: string; experimental?: boolean }[] = [
   { to: '/',             icon: LayoutDashboard, label: 'Dashboard'     },
   { to: '/routing',      icon: GitBranch,       label: 'Routing'       },
   { to: '/nodes',        icon: Server,          label: 'Nodes'         },
   { to: '/circles',      icon: Circle,          label: 'NodeCircle'    },
-  { to: '/balancers',    icon: Scale,           label: 'Balancers'     },
+  { to: '/balancers',    icon: Scale,           label: 'Balancers', experimental: true },
   { to: '/subscriptions',icon: Rss,             label: 'Subscriptions' },
   { to: '/servers',      icon: Cloud,           label: 'Servers'       },
   { to: '/xui',          icon: Layers,          label: 'X-ui'          },
@@ -254,7 +254,7 @@ export function Layout() {
 
         {/* Nav */}
         <nav className="flex-1 min-h-0 overflow-y-auto px-2 py-3 space-y-0.5">
-          {NAV.map(({ to, icon: Icon, label }) => (
+          {NAV.map(({ to, icon: Icon, label, experimental }) => (
             <Fragment key={to}>
             <NavLink
               to={to}
@@ -285,6 +285,17 @@ export function Layout() {
                   desktop sidebar is collapsed; mobile drawer always
                   shows labels. */}
               <span className={clsx(sidebarCollapsed && 'md:hidden')}>{label}</span>
+              {experimental && (
+                <span
+                  className={clsx(
+                    'rounded-sm border border-amber-700/50 bg-amber-950/30 px-1 text-[9px] uppercase tracking-wide text-amber-400',
+                    sidebarCollapsed && 'md:hidden',
+                  )}
+                  title="Experimental"
+                >
+                  exp
+                </span>
+              )}
             </NavLink>
             {DIVIDE_AFTER.has(to) && (
               <div className="my-1.5 mx-2 border-t border-gray-800/60" aria-hidden="true" />

@@ -58,6 +58,7 @@ export function XuiImportModal({ onClose }: { onClose: () => void }) {
       ),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['xui', 'servers'] })
+      qc.invalidateQueries({ queryKey: ['servers'] })
       onClose()
     },
     onError: (err) => setError(apiErrorText(err, 'Import failed')),

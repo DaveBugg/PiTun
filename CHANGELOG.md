@@ -4,6 +4,40 @@ All notable user-facing changes to PiTun. Full per-release detail lives in the
 [GitHub Releases](https://github.com/DaveBugg/PiTun/releases); this file is the
 committed summary.
 
+## v1.7.2 — 2026-11-03
+
+**Circles check the speed before switching; smaller fixes around them.**
+
+### Changed
+
+- **"Best" circles check the speed before switching.** Nodes are taken in ping
+  order and the first one that really reaches the speed target wins; a slow one
+  is passed over for the next by ping. The target is the circle's "Min speed"
+  (50 Mbit/s by default; 0 turns the check off). Cost stays bounded whatever the
+  intervals: a recent measurement is reused (about one interval), a slow verdict
+  is remembered much longer, a rotation tests a few nodes at most, and on average
+  no more than two per rotation. If nobody reaches the target the circle still
+  moves, to an untested node first, otherwise the fastest measured one.
+- **A circle's minimum interval is 5 minutes** (was 1); existing circles below it
+  are raised to 5. Migration 031 also gives "best" circles without a target 50.
+- **Choosing a country** for a circle opens a searchable list (the one Wi-Fi
+  settings use) instead of a bare code box; circles show what they exclude as
+  badges in the list.
+- **Balancers are marked experimental**, in the menu and on the page, with a note on
+  how they differ from NodeCircle and what they lack today (no subscription sync,
+  no filters, no ping source for "Least ping").
+- The update result banner is news for 30 minutes and can be closed; a failure
+  stays until closed.
+- The dashboard's process table has a Description column; the host-memory line is
+  gone (the gauges above show it).
+
+### Fixed
+
+- A server whose panel arrived by `xui://` or a servers import now reads as
+  "x-ui configured" and offers the panel's uninstall, like one PiTun installed.
+  Panels registered earlier are marked on start-up.
+- Importing a panel without a port no longer fails the whole server row.
+
 ## v1.7.1 — 2026-11-03
 
 **Fixes the in-app update to 1.7.0, which stopped on a checksum.**

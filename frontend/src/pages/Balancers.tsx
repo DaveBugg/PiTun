@@ -196,6 +196,9 @@ export function Balancers() {
         <div className="flex items-center gap-2">
           <Layers className="h-5 w-5 text-brand-400" />
           <h1 className="text-xl font-bold text-gray-100">{t('Balancer Groups', 'Группы балансировки')}</h1>
+          <span className="rounded-sm border border-amber-700/50 bg-amber-950/30 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-amber-400">
+            {t('experimental', 'экспериментально')}
+          </span>
         </div>
         <button
           onClick={() => { setEditGroup(null); setModal('add') }}
@@ -210,6 +213,24 @@ export function Balancers() {
         {t('Balancer groups let you route traffic through multiple nodes with automatic selection.', 'Группы балансировки маршрутизируют трафик через несколько нод с автоматическим выбором.')}{' '}
         {t('Use', 'Используйте')} <span className="font-mono text-gray-400">balancer:&lt;id&gt;</span> {t('as the action in routing rules.', 'как действие в правилах маршрутизации.')}
       </p>
+
+      <div className="rounded-lg border border-amber-800/40 bg-amber-950/20 px-3 py-2.5 text-xs text-amber-200/90 space-y-1.5">
+        <p className="font-medium">{t('How this differs from NodeCircle', 'Чем это отличается от NodeCircle')}</p>
+        <ul className="list-disc list-inside space-y-1 text-amber-200/80">
+          <li>{t(
+            'NodeCircle keeps ONE active node and switches it on a timer, choosing by measured ping and speed (with a speed target, health checks, subscription sync and country exclusions). It serves the general "proxy" action. For "give me the best node", use it.',
+            'NodeCircle держит ОДНУ активную ноду и меняет её по таймеру, выбирая по измеренному пингу и скорости (с целевой скоростью, проверкой живости, синхронизацией с подпиской и исключением стран). Он обслуживает общее действие «proxy». Если нужна «лучшая нода», берите его.',
+          )}</li>
+          <li>{t(
+            'A balancer group spreads connections across all its nodes at once, and a routing rule can send specific traffic to a specific group (balancer:<id>). Pick it only when you need exactly that.',
+            'Группа балансировки раздаёт соединения по всем своим нодам одновременно, и правило маршрутизации может направить конкретный трафик в конкретную группу (balancer:<id>). Берите её, только если нужно именно это.',
+          )}</li>
+          <li>{t(
+            'Limits today: membership is by hand (no subscription sync), no speed or ping filters, and a dead node is not taken out of the group. "Least ping" has no ping source yet, so it behaves close to random.',
+            'Ограничения сейчас: состав ведётся вручную (нет синхронизации с подпиской), нет фильтров по скорости и пингу, мёртвая нода из группы не исключается. У «Least ping» пока нет источника пинга, поэтому он ведёт себя почти как случайный выбор.',
+          )}</li>
+        </ul>
+      </div>
 
       {groups.length === 0 ? (
         <div className="text-center py-12 text-gray-500">

@@ -17,7 +17,7 @@
 import { useEffect, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
-  ArrowUpCircle, CheckCircle2, Loader2, RefreshCw, AlertTriangle, Info,
+  ArrowUpCircle, CheckCircle2, Loader2, RefreshCw, AlertTriangle, Info, X,
 } from 'lucide-react'
 import { clsx } from 'clsx'
 
@@ -28,11 +28,22 @@ import { useConfirm } from '@/components/ConfirmModal'
 
 const ACTIVE_STATES = ['queued', 'running']
 
+// The status file keeps the last run's result for good. A success is news for
+// half an hour; a failure stays until it is dismissed. Either can be closed,
+// and a closed one stays closed (keyed by the run it describes).
+const DONE_BANNER_MS = 30 * 60 * 1000
+const DISMISS_KEY = 'pitun.update.dismissed'
+
+function readDismissed(): string {
+  try { return localStorage.getItem(DISMISS_KEY) ?? '' } catch { return '' }
+}
+
 export function UpdateSection() {
   const t = useT()
   const qc = useQueryClient()
   const confirm = useConfirm()
   const [checkError, setCheckError] = useState<string | null>(null)
+  const [dismissed, setDismissed] = useState(readDismissed)
 
   const status = useQuery({
     queryKey: ['system', 'update', 'status'],
@@ -76,6 +87,17 @@ export function UpdateSection() {
       qc.invalidateQueries({ queryKey: ['system'] })
     }
   }, [status.data?.state, qc])
+
+  // Which finished run the banner would describe, and whether it is still news.
+  const runKey = `${status.data?.state}:${status.data?.to ?? ''}:${status.data?.updated_at ?? ''}`
+  const finishedAt = status.data?.updated_at ? Date.parse(status.data.updated_at) : NaN
+  const fresh = Number.isFinite(finishedAt) && Date.now() - finishedAt < DONE_BANNER_MS
+  const showDone = !busy && status.data?.state === 'done' && fresh && dismissed !== runKey
+  const showFailed = !busy && status.data?.state === 'failed' && dismissed !== runKey
+  const dismiss = () => {
+    setDismissed(runKey)
+    try { localStorage.setItem(DISMISS_KEY, runKey) } catch { /* private mode */ }
+  }
 
   const result = check.data
   const available = result?.update_available === true
@@ -159,28 +181,34 @@ ${base}` : base,
       )}
 
       {/* ── Terminal state from the last run ─────────────────────── */}
-      {!busy && status.data?.state === 'done' && (
+      {showDone && (
         <div className="rounded-lg border border-green-200 dark:border-green-800/50 bg-green-50 dark:bg-green-950/30 px-3 py-2 text-sm text-green-800 dark:text-green-200 flex items-start gap-2">
           <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0" />
           <span>
             {t('Updated to ', 'Обновлено до ')}
-            <span className="font-mono">{status.data.to}</span>
-            {status.data.from ? ` (${t('was', 'было')} ${status.data.from})` : ''}
+            <span className="font-mono">{status.data?.to}</span>
+            {status.data?.from ? ` (${t('was', 'было')} ${status.data?.from})` : ''}
           </span>
+          <button type="button" onClick={dismiss} aria-label={t('Dismiss', 'Закрыть')} className="ml-auto text-green-700/70 hover:text-green-600 dark:text-green-300/70 dark:hover:text-green-200">
+            <X className="h-4 w-4" />
+          </button>
         </div>
       )}
-      {!busy && status.data?.state === 'failed' && (
+      {showFailed && (
         <div className="rounded-lg border border-red-200 dark:border-red-900/50 bg-red-50 dark:bg-red-950/30 px-3 py-2 text-sm text-red-800 dark:text-red-200 flex items-start gap-2">
           <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
           <span>
             {t('Update failed: ', 'Обновление не удалось: ')}
-            {status.data.message || t('see the agent log on the box', 'смотрите лог агента на коробке')}
+            {status.data?.message || t('see the agent log on the box', 'смотрите лог агента на коробке')}
             {' — '}
             {t(
               'the pre-update database snapshot is kept under /opt/pitun/data-backup-pre-*.db.',
               'снапшот базы, снятый перед обновлением, лежит в /opt/pitun/data-backup-pre-*.db.',
             )}
           </span>
+          <button type="button" onClick={dismiss} aria-label={t('Dismiss', 'Закрыть')} className="ml-auto shrink-0 text-red-700/70 hover:text-red-600 dark:text-red-300/70 dark:hover:text-red-200">
+            <X className="h-4 w-4" />
+          </button>
         </div>
       )}
 
