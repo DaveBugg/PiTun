@@ -97,12 +97,13 @@ def _tls_settings(node: Node) -> Optional[Dict[str, Any]]:
             reality["spiderX"] = node.reality_spx
         return reality
 
-    # Standard TLS
+    # Standard TLS. `allowInsecure` is gone from xray (a hard error when
+    # true); a self-signed server is trusted by pinning its certificate.
     tls: Dict[str, Any] = {
         "enabled": True,
         "serverName": node.sni or node.address,
-        "allowInsecure": node.allow_insecure,
     }
+    _apply_pin(tls, node)
     if node.fingerprint:
         tls["fingerprint"] = node.fingerprint
     if node.alpn:
@@ -367,35 +368,62 @@ def _outbound_naive(node: Node) -> Dict[str, Any]:
     }
 
 
-def _outbound_hy2(node: Node) -> Dict[str, Any]:
-    settings: Dict[str, Any] = {
-        "address": node.address,
-        "port": node.port,
-        "version": 2,
-        "password": node.password or "",
-    }
-    if node.hy2_obfs and node.hy2_obfs_password:
-        settings["obfs"] = node.hy2_obfs
-        settings["obfs-password"] = node.hy2_obfs_password
+def _apply_pin(tls: Dict[str, Any], node: Node) -> None:
+    """Trust a specific certificate by hash — what replaced `allowInsecure`.
 
+    xray removed `allowInsecure` and rejects the whole config if it is
+    emitted, so it never is. A node flagged "skip verification" with no pin
+    keeps full verification and fails its own handshake rather than taking
+    the proxy down; pin it to make a self-signed server work."""
+    pin = getattr(node, "pinned_cert_sha256", None)
+    if pin:
+        tls["pinnedPeerCertSha256"] = pin
+    elif getattr(node, "allow_insecure", False):
+        logger.warning(
+            "Node %s is flagged allow_insecure, which xray no longer supports — "
+            "pin its certificate to trust a self-signed server", getattr(node, "id", "?"),
+        )
+
+
+def _outbound_hy2(node: Node) -> Dict[str, Any]:
+    """Hysteria2 over xray's `hysteria` transport.
+
+    xray rejects the older shape (password under `settings`, no `network`)
+    with "not hysteria transport", so the auth lives in `hysteriaSettings`.
+    Salamander obfuscation is a UDP finalmask; the previous `settings.obfs`
+    keys were silently ignored, which left obfuscated servers unreachable.
+    """
     tls_cfg: Dict[str, Any] = {
         "serverName": node.sni or node.address,
-        "allowInsecure": node.allow_insecure,
+        "alpn": [a.strip() for a in node.alpn.split(",")] if node.alpn else ["h3"],
     }
     if node.fingerprint:
         tls_cfg["fingerprint"] = node.fingerprint
-    if node.alpn:
-        tls_cfg["alpn"] = [a.strip() for a in node.alpn.split(",")]
+    _apply_pin(tls_cfg, node)
+
+    stream: Dict[str, Any] = {
+        "network": "hysteria",
+        "security": "tls",
+        "tlsSettings": tls_cfg,
+        "hysteriaSettings": {"version": 2, "auth": node.password or ""},
+        "sockopt": {"mark": 255},
+    }
+    if node.hy2_obfs and node.hy2_obfs_password:
+        if node.hy2_obfs == "salamander":
+            stream["finalmask"] = {
+                "udp": [{"type": "salamander", "settings": {"password": node.hy2_obfs_password}}],
+            }
+        else:
+            logger.warning(
+                "Node %s: hysteria2 obfs %r is not supported by xray — emitted without it",
+                node.id, node.hy2_obfs,
+            )
 
     return {
         "tag": f"node-{node.id}",
         "protocol": "hysteria",
-        "settings": settings,
-        "streamSettings": {
-            "security": "tls",
-            "tlsSettings": tls_cfg,
-            "sockopt": {"mark": 255},
-        },
+        "settings": {"version": 2, "address": node.address, "port": node.port},
+        "streamSettings": stream,
     }
 
 
@@ -416,17 +444,17 @@ def _apply_chain(
     """Wire `node`'s chain into the config — RECURSIVELY, for multi-hop.
 
     `node.chain_node_id` is the relay this node dials through. We point
-    `node`'s proxySettings at that relay's outbound tag, build the relay's
+    `node`'s `sockopt.dialerProxy` at that relay's outbound tag, build the relay's
     outbound if it isn't in the config yet, then RECURSE so the relay's own
     chain is wired too. That gives a full path, e.g. exit → mid → entry
     (`WG2 → WG1 → VLESS`). Previously only the first hop was wired and any
     deeper relay silently dialed direct, collapsing a 3-node chain to 2.
 
-    `proxySettings.transportLayer = true` is xray's documented chaining
-    knob — it's converted to `sockopt.dialerProxy`, so the relay carries
+    `sockopt.dialerProxy` is xray's chaining knob, so the relay carries
     this outbound's traffic over its own transport (works for vless /
     trojan / ss / wireguard / …; the WireGuard-over-WireGuard hop is valid
-    config but worth runtime-testing). Self-chains, cycles, and an
+    config but worth runtime-testing). The older `proxySettings` form is a
+    hard error since xray 26.9. Self-chains, cycles, and an
     over-deep chain are truncated with a warning instead of emitting a
     broken (or infinite) config.
     """
@@ -478,7 +506,7 @@ def _apply_chain(
         outbounds.insert(0, chain_ob)
         used_ids.add(chain.id)
 
-    outbound["proxySettings"] = {"tag": chain_tag, "transportLayer": True}
+    outbound.setdefault("streamSettings", {}).setdefault("sockopt", {})["dialerProxy"] = chain_tag
 
     # Recurse so the relay's OWN chain is wired (multi-hop). `_seen` grows
     # per branch → cycles truncate; `_depth` caps runaway nesting.
@@ -496,8 +524,8 @@ def _apply_fragment(outbounds: List[Dict[str, Any]], settings_map: Dict[str, str
 
     Wiring: a real proxy dials through the fragment outbound via
     `sockopt.dialerProxy`. We only touch ENTRY hops — outbounds that dial the
-    internet directly (no `proxySettings`). A chained node's own outbound has
-    `proxySettings` (it dials through its relay), so it is skipped; the relay
+    internet directly (no `dialerProxy`). A chained node's own outbound has
+    `dialerProxy` (it dials through its relay), so it is skipped; the relay
     outbound at the bottom of the chain IS the entry hop and gets fragmented.
     freedom/blackhole/dns and the reserved direct/block/dns-out tags are never
     touched.
@@ -511,17 +539,18 @@ def _apply_fragment(outbounds: List[Dict[str, Any]], settings_map: Dict[str, str
     length = settings_map.get("xray_fragment_length", "100-200") or "100-200"
     interval = settings_map.get("xray_fragment_interval", "10-20") or "10-20"
 
-    _NON_PROXY = {"freedom", "blackhole", "dns"}
+    # hysteria is QUIC/UDP: a TCP fragmenter has nothing to fragment there.
+    _NON_PROXY = {"freedom", "blackhole", "dns", "hysteria"}
     _RESERVED_TAGS = {"direct", "block", "blocked", "dns-out", "fragment", "api"}
 
     touched = False
     for ob in outbounds:
         if ob.get("protocol") in _NON_PROXY or ob.get("tag") in _RESERVED_TAGS:
             continue
-        # Only the hop that actually dials out — a hop with proxySettings
+        # Only the hop that actually dials out — a hop with a dialerProxy
         # tunnels through another outbound, so fragmenting it is a no-op at
         # best and a double-dialer conflict at worst.
-        if ob.get("proxySettings"):
+        if (ob.get("streamSettings") or {}).get("sockopt", {}).get("dialerProxy"):
             continue
         stream = ob.setdefault("streamSettings", {})
         sockopt = stream.setdefault("sockopt", {})
@@ -1216,24 +1245,20 @@ def generate_config(
     _apply_fragment(outbounds, settings_map)
 
     outbounds += [
-        {"tag": "direct", "protocol": "freedom", "settings": {"domainStrategy": "UseIP"}, "streamSettings": {"sockopt": {"mark": 255}}},
+        {"tag": "direct", "protocol": "freedom", "streamSettings": {"sockopt": {"mark": 255, "domainStrategy": "UseIP"}}},
         {"tag": "block", "protocol": "blackhole"},
-        # `proxySettings.tag: direct` forces every DNS-upstream dial
-        # (the connection to 8.8.8.8:53 / 1.1.1.1:53 / etc) through
-        # the `direct` outbound, bypassing the user's routing rules
-        # entirely. Without this, a "catch-all → proxy" rule (e.g.
-        # `port: 0-65535 → proxy`, `geoip:!ru → proxy`) intercepts
-        # the DNS dial too and tunnels it through the active VPN
-        # node — if that node has any handshake issue, DNS dies and
-        # nothing else can resolve. Pair with the
-        # `outboundTag: direct` per-DNS-server pin in `_build_dns_section`
-        # — that one wins for any internal xray query that goes
-        # through the routing engine BEFORE hitting the outbound.
+        # The DNS-upstream dial (8.8.8.8:53 / 1.1.1.1:53 / etc) must not be
+        # caught by a user "catch-all → proxy" rule and tunnelled through the
+        # active node — if that node has any handshake issue, DNS dies and
+        # nothing else can resolve. Two things keep it direct: the system
+        # `port 53 → direct` rule placed ahead of user rules below, and the
+        # per-DNS-server `outboundTag: direct` pin in `_build_dns_section`.
+        # (The outbound-level `proxySettings` that used to back this up is a
+        # hard error since xray 26.9.)
         {
             "tag": "dns-out",
             "protocol": "dns",
             "streamSettings": {"sockopt": {"mark": 255}},
-            "proxySettings": {"tag": "direct"},
         },
     ]
 

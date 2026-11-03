@@ -147,6 +147,42 @@ class CircleScheduler:
     # normally (no permanent broken state).
     _ROTATE_DEADLINE_S = 20.0
 
+    # Optional second stage of the pre-ping: a real HTTP 204 round trip through
+    # a throwaway xray, because a node whose TCP port answers can still have a
+    # dead upstream. Bounded so a rotation (and the failover that waits on it)
+    # stays short, and skipped for WireGuard, which tolerates only one session.
+    _HTTP_PROBE_BUDGET_S = 8.0
+    _HTTP_PROBE_MAX_CANDIDATES = 3
+    _HTTP_PROBE_EXTRA_DEADLINE_S = 30.0
+
+    @staticmethod
+    async def _http_probe_enabled() -> bool:
+        async with AsyncSession(get_async_engine()) as session:
+            row = (await session.exec(
+                select(DBSettings).where(DBSettings.key == "circle_http_probe")
+            )).first()
+        return row is None or row.value.lower() != "false"
+
+    async def _http_probe(self, node_id: int) -> tuple[bool, str]:
+        """(ok, detail). A fault in the probe itself counts as OK: it must not
+        keep a node out of the rotation."""
+        from app.core.speedtest import reachability_check
+        try:
+            async with AsyncSession(get_async_engine()) as session:
+                node = await session.get(Node, node_id)
+                if node is None:
+                    return True, ""
+                res = await asyncio.wait_for(
+                    reachability_check(node), timeout=self._HTTP_PROBE_BUDGET_S,
+                )
+        except asyncio.TimeoutError:
+            return False, "timed out"
+        except Exception as exc:  # noqa: BLE001
+            from app.core import error_log
+            error_log.record("circle.http_probe", exc, node_id=node_id)
+            return True, ""
+        return bool(res.get("ok")), str(res.get("detail") or "")
+
     async def rotate_circle(self, circle_id: int, from_scheduler: bool = False) -> bool:
         """Public entry point — wraps the actual rotation in a per-circle
         lock and a hard timeout.
@@ -165,14 +201,20 @@ class CircleScheduler:
         """
         lock = self._get_rotate_lock(circle_id)
         async with lock:
+            deadline = self._ROTATE_DEADLINE_S
             try:
-                async with asyncio.timeout(self._ROTATE_DEADLINE_S):
+                if await self._http_probe_enabled():
+                    deadline += self._HTTP_PROBE_EXTRA_DEADLINE_S
+            except Exception:  # noqa: BLE001 — never block a rotation on a settings read
+                pass
+            try:
+                async with asyncio.timeout(deadline):
                     return await self._do_rotate(circle_id, from_scheduler)
             except asyncio.TimeoutError:
                 logger.warning(
                     "NodeCircle %d: rotation exceeded %.0fs deadline — aborted, "
                     "will retry on next tick",
-                    circle_id, self._ROTATE_DEADLINE_S,
+                    circle_id, deadline,
                 )
                 return False
 
@@ -346,12 +388,33 @@ class CircleScheduler:
         selected: Optional[dict] = None
         failed: list[tuple[str, str]] = []  # (node_name, error_string)
 
+        try:
+            http_probe = await self._http_probe_enabled()
+        except Exception:  # noqa: BLE001
+            http_probe = False
+        http_probes_left = self._HTTP_PROBE_MAX_CANDIDATES
+        tcp_only: Optional[dict] = None  # first candidate that passed TCP but not HTTP
+
         for cand in candidates:
             # Probe with single retry — `_probe_with_retry` catches
             # transient SYN drops / brief packet loss that would
             # otherwise mark a healthy node as dead and cost us a
             # missed rotation tick.
             result = await _probe_with_retry(cand)
+
+            if (
+                result.get("is_online") and http_probe and http_probes_left > 0
+                and cand.get("protocol") != "wireguard"
+            ):
+                http_probes_left -= 1
+                http_ok, http_detail = await self._http_probe(cand["id"])
+                if not http_ok:
+                    if tcp_only is None:
+                        tcp_only = cand
+                    result = {
+                        "is_online": False,
+                        "error": f"port answers but no internet through the node ({http_detail or 'no response'})",
+                    }
 
             if result.get("is_online"):
                 selected = cand
@@ -370,6 +433,28 @@ class CircleScheduler:
                 details=f"Probe error: {err_msg}. Trying next candidate.",
                 entity_id=cand["id"],
                 dedup_window_sec=120,
+            )
+
+        if not selected and tcp_only is not None:
+            # Every TCP-alive candidate failed the HTTP check. That is more
+            # likely a blocked test endpoint than a fleet of dead nodes, so
+            # keep rotating rather than freeze the circle.
+            selected = tcp_only
+            logger.warning(
+                "NodeCircle '%s' (id=%d): no candidate passed the HTTP check; "
+                "falling back to '%s' on its TCP result",
+                circle_name, circle_id, tcp_only["name"],
+            )
+            await _safe_event(
+                category="circle.http_probe_fallback",
+                severity="warning",
+                title=f"Circle '{circle_name}': HTTP check failed everywhere",
+                details=(
+                    f"Rotated to '{tcp_only['name']}' on its TCP check alone. If this "
+                    "repeats, the test endpoint may be blocked — see Settings → circle HTTP check."
+                ),
+                entity_id=circle_id,
+                dedup_window_sec=1800,
             )
 
         if not selected:

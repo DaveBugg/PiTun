@@ -14,6 +14,7 @@ import { useNodes } from '@/hooks/useNodes'
 import { StatusBadge, ModeBadge } from '@/components/StatusBadge'
 import { InfoTip } from '@/components/InfoTip'
 import { MetricsCharts } from '@/components/MetricsCharts'
+import { ProcessesCard } from '@/components/ProcessesCard'
 import { RecentEvents } from '@/components/RecentEvents'
 import { systemApi, circleApi } from '@/api/client'
 import { useT } from '@/hooks/useT'
@@ -835,6 +836,7 @@ export function Dashboard() {
 
       {/* System metrics charts */}
       <MetricsCharts />
+      <ProcessesCard />
 
       {/* Recent Events feed — failover, sidecar, geo, circle rotations */}
       <RecentEvents limit={8} />

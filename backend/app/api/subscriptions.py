@@ -333,7 +333,9 @@ async def _fetch_subscription_unlocked(sub_id: int) -> None:
             async with httpx.AsyncClient(
                 follow_redirects=True,
                 timeout=30,
-                verify=False,  # many self-hosted panels use self-signed certs
+                # Self-hosted panels often use self-signed certificates; that is
+                # a per-subscription opt-in rather than the default.
+                verify=not sub.allow_insecure_tls,
             ) as client:
                 resp = await client.get(sub.url, headers=headers)
                 resp.raise_for_status()
@@ -613,7 +615,7 @@ async def _fetch_subscription_unlocked(sub_id: int) -> None:
         _MUTABLE_FIELDS = (
             "name", "protocol", "address", "port", "uuid", "password",
             "transport", "tls", "sni", "fingerprint", "alpn",
-            "allow_insecure", "flow",
+            "allow_insecure", "pinned_cert_sha256", "flow",
             "ws_path", "ws_host", "grpc_service", "grpc_mode",
             "grpc_authority", "http_path", "http_host",
             "kcp_seed", "kcp_header",
@@ -750,15 +752,13 @@ async def _fetch_subscription_unlocked(sub_id: int) -> None:
             import json as _json
             # Post-upsert membership of this subscription, fastest first so
             # sequential rotation naturally starts on the better nodes.
-            fresh_ids = [
-                nid for nid in (await session.exec(
-                    select(Node.id)
-                    .where(Node.subscription_id == sub_id)
-                    .where(Node.enabled == True)  # noqa: E712
-                    .order_by(Node.latency_ms.asc().nulls_last(), Node.id)  # type: ignore[union-attr]
-                )).all()
-                if nid is not None
-            ]
+            from app.core import circle_filters as _cf
+            sub_rows = (await session.exec(
+                select(Node.id, Node.name, Node.country, Node.enabled)
+                .where(Node.subscription_id == sub_id)
+                .order_by(Node.latency_ms.asc().nulls_last(), Node.id)  # type: ignore[union-attr]
+            )).all()
+            fresh_ids = [r[0] for r in sub_rows if r[0] is not None and r[3]]
             fresh_set = set(fresh_ids)
             for circle in linked_circles:
                 try:
@@ -769,15 +769,25 @@ async def _fetch_subscription_unlocked(sub_id: int) -> None:
                     )
                 except Exception:
                     continue
-                # Keep foreign/manual members (minus anything just deleted),
-                # then append this subscription's current set.
+                # What this circle refuses: nodes unticked by hand and whole
+                # countries. Applies to the subscription's own nodes only.
+                ex_ids = _cf.parse_ids(circle.excluded_node_ids)
+                ex_countries = set(_cf.parse_list(circle.excluded_countries))
+                refused = {
+                    r[0] for r in sub_rows
+                    if _cf.excluded_here(r[0], r[2], r[1], ex_ids, ex_countries)
+                }
+                circle_fresh = [i for i in fresh_ids if i not in refused]
+                # Keep foreign/manual members (minus anything just deleted or
+                # refused), then append this subscription's current set.
                 manual_ids = [
-                    i for i in ids if i not in fresh_set and i not in removed_ids
+                    i for i in ids
+                    if i not in fresh_set and i not in removed_ids and i not in refused
                 ]
-                merged = manual_ids + fresh_ids
+                merged = manual_ids + circle_fresh
                 if merged == ids:
                     continue  # already in sync
-                added = len(fresh_set - set(ids))
+                added = len(set(circle_fresh) - set(ids))
                 dropped = len([i for i in ids if i in removed_ids])
                 if circle.current_index >= len(merged):
                     circle.current_index = 0

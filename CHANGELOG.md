@@ -4,6 +4,109 @@ All notable user-facing changes to PiTun. Full per-release detail lives in the
 [GitHub Releases](https://github.com/DaveBugg/PiTun/releases); this file is the
 committed summary.
 
+## v1.7.0 — 2026-11-02
+
+**Hysteria2 servers, a Domains page, a view of what PiTun costs the box with
+optional limits, xray 26.10, and x-ui 3.11.**
+
+### Added
+
+- **Hysteria2 inbound preset** (X-ui → Add inbound). QUIC over a UDP port,
+  created on the panel like the other presets: the bootstrap client carries an
+  `auth` token, the UDP port is opened in `ufw`, and the client exports to a
+  PiTun node (`hysteria2://` link and QR included). An x-ui-pro panel reuses its
+  Let's Encrypt certificate; a bare panel gets a self-signed one on the VPS and
+  the exported node pins it.
+- **Pin a server's certificate** (node form → "Pinned certificate"). xray
+  removed `allowInsecure`, so a self-signed server is now trusted by the SHA-256
+  of its certificate. "Take from server" reads it from a TCP/TLS server; links
+  with `pcs=` / `pinSHA256=` carry it in and out. Migration 028.
+- **Update xray inside a panel** from PiTun (X-ui → a panel's xray card): shows
+  the core and panel versions, lists what the panel can install, installs after
+  a confirmation and checks that the new core is running; a failed install
+  offers a roll-back. Panels older than 3.8.0 are not offered xray 26.9 or newer
+  (they would not migrate their stored templates).
+- **Update the panel itself** from PiTun (X-ui → a panel, next to the xray card;
+  shown only when the panel is older than the release PiTun has tested, 3.11.0).
+  Done over SSH with upstream's `update.sh` taken at the release's commit and
+  checked against a sha256, so the panel never fetches an unpinned updater or
+  jumps to a newer release whose API PiTun has not been tested against. PiTun
+  copies `/etc/x-ui/x-ui.db` on the VPS first and does not start the update if
+  the copy cannot be made; the copy's path is shown afterwards. The update also
+  replaces the panel's xray with the one bundled in that release.
+- **Domains page** (opt-in). Which domains xray resolved, how often, when, and
+  the addresses they resolved to — searchable and sortable, with a one-click way
+  to turn a selection into a routing rule (a new one, or added to an existing
+  domain / IP rule). Capped by rows and age, with a manual clean-up (by age, top
+  N, size, or everything). Off by default; needs xray's log level at `info`.
+  Migration 029.
+- **What PiTun is using.** A table of xray, the backend and each PiTun
+  container with CPU, memory and any limit, on the Dashboard and the
+  Diagnostics page.
+- **Resource limits** (Settings, off by default). Optional memory and CPU
+  ceilings for the backend, web UI, nginx and NaiveProxy sidecars, plus a soft
+  memory cap for xray. Applied to the running containers and put back after a
+  restart.
+- **Copy a panel's `xui://` address** from its card, to import it on another
+  PiTun box.
+- **Circles check the internet through a node before switching to it.** The old
+  pre-ping only opened the node's port, so a server whose port answered but whose
+  upstream was dead kept being picked. The check fetches a small page through the
+  candidate (at most three candidates, 8 s each per rotation); if every node
+  fails it, the port check is used instead and the Events feed says so.
+- **Subscriptions verify the server's certificate**; a per-subscription
+  "Allow self-signed certificate" box keeps the old behaviour where it is needed.
+  Subscriptions that already exist keep it ticked. Migration 027.
+
+### Changed
+
+- **xray 26.10.31** is bundled (backend image and install scripts). xray 26.9
+  made an outbound's `proxySettings` a hard error, so chained nodes, the DNS
+  outbound and the speed-test instance now use `sockopt.dialerProxy`; the
+  `direct` outbound's IP strategy moved into `sockopt` as well.
+- **x-ui 3.11.0** is what new panels install (pinned installer). An upgrade runs
+  the panel's database migrations once and cannot be undone — back up
+  `/etc/x-ui/x-ui.db` before upgrading an existing panel.
+- **x-ui-pro installs no longer keep the ArgoSBX / sing-box stack** that the
+  wrapper adds (hysteria2, tuic, anytls and shadowsocks listeners, a subscription
+  file in the web root, a cron entry). It runs unpinned code as root and PiTun
+  uses none of it, so the installer removes it afterwards — in bare mode too, if
+  it finds a leftover one; `KEEP_ARGOSBX=yes`
+  keeps it.
+- Importing servers onto a box that already lists one of them now adds that
+  server's panel registration instead of skipping it.
+- **Server import never deletes anything.** "Replace" used to wipe every server
+  on the box first (and, through foreign keys, their panels, clients and node
+  links). It now overwrites only the servers the file duplicates
+  (name+host+port), in place, and leaves the rest alone; a file without secrets
+  keeps the passwords already stored.
+- Speed-test failures show a short reason ("timed out", "name resolution
+  failed") instead of raw exception text; the detail goes to `errors.log`.
+- Dependencies: `asyncssh` 2.24.0, `pydantic-settings` 2.14.2, `axios` 1.20,
+  `react-router-dom` 7.18.4 and the development tooling; the unused `aiohttp`
+  requirement is gone.
+
+### Fixed
+
+- **A circle synced with a subscription no longer takes back what you removed.**
+  Every refresh re-added all of the subscription's nodes, so nodes unticked in
+  the circle's editor came back. Unticking is now remembered, and a new
+  "Never include countries" setting keeps whole countries (say RU) out of the
+  circle whatever the subscription serves. Nodes added by hand are never
+  touched. Migration 030.
+- **Hysteria2 nodes never worked.** The outbound used a shape xray rejects
+  ("not hysteria transport"), and salamander obfuscation was silently ignored.
+- **A node marked "allow insecure" stopped xray from loading its config at all**
+  (xray treats the removed field as an error). The field is no longer emitted and
+  the node can be pinned instead.
+
+### Upgrading
+
+- Migrations 027, 028, 029 and 030 run on first start; there are no breaking changes.
+- xray 26.10 needs the `dialerProxy` form that this release writes — configs
+  generated by older versions are regenerated on the first start.
+- Panels older than 3.8.0 keep their current xray; update the panel first.
+
 ## v1.6.8 — 2026-10-14
 
 **A Stop button for the speed sweep, an xray that stops hammering itself after

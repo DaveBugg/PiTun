@@ -5,8 +5,10 @@ import { systemApi } from '@/api/client'
 import HostNetworkSection from '@/components/HostNetworkSection'
 import BackupSection from '@/components/BackupSection'
 import { UpdateSection } from '@/components/UpdateSection'
+import { ResourceLimitsForm } from '@/components/ResourceLimitsForm'
 import {
   Settings as SettingsIcon,
+  Cpu,
   Network,
   Cable,
   Shield,
@@ -417,6 +419,9 @@ export function Settings() {
         </div>
       ))}
 
+      {/* Resource limits */}
+      {section(Cpu, 'Resource limits', t('What PiTun may use of this box — off by default', 'Сколько этой системы может использовать PiTun — по умолчанию выключено'), <ResourceLimitsForm />)}
+
       {/* Safety */}
       {section(Shield, 'Safety', t('Traffic protection and auto-recovery', 'Защита трафика и автовосстановление'), (
         <div className="space-y-2">
@@ -425,6 +430,7 @@ export function Settings() {
           {toggle('block_quic', 'Block QUIC', t('Block UDP/443 for better TPROXY compatibility', 'Блокировать UDP/443 для совместимости с TPROXY'))}
           {toggle('bypass_private', 'Bypass Private IPs', t('Skip proxying for 10.x, 192.168.x, etc.', 'Не проксировать трафик 10.x, 192.168.x и т.д.'), t('LAN traffic (including access to this device) will go through VPN.\nYou may lose access to the web panel!\n\nDisable?', 'LAN-трафик (включая доступ к панели) пойдёт через VPN.\nВы можете потерять доступ к веб-панели!\n\nОтключить?'))}
           {toggle('disable_ipv6', 'Disable IPv6 (host only)', t('Disables IPv6 on THIS box only (sysctl). Does NOT stop LAN clients from using IPv6 — they get their IPv6 route from the router directly. To prevent the IPv6 bypass leak for clients, the DNS engine already returns IPv4-only answers (queryStrategy=UseIPv4).', 'Отключает IPv6 только на ЭТОЙ машине (sysctl). НЕ мешает LAN-клиентам использовать IPv6 — они получают IPv6-маршрут от роутера напрямую. Чтобы закрыть IPv6-утечку у клиентов, DNS-движок уже отдаёт только IPv4-ответы (queryStrategy=UseIPv4).'))}
+          {toggle('circle_http_probe', 'Circle: check internet through the node', t('Before a circle switches to a node, fetch a small page through it, not just open its port, so a node whose port answers but whose upstream is dead is skipped. Falls back to the port check if every node fails it. Adds a few seconds to a rotation; on by default.', 'Перед переключением круга на ноду загружать через неё небольшую страницу, а не только открывать порт, чтобы пропускать ноды, у которых порт отвечает, а апстрим мёртв. Если её не проходит ни одна нода, используется проверка порта. Добавляет несколько секунд к ротации; по умолчанию включено.'))}
           {toggle('chain_drift_check', 'Hourly chain check', t('Re-run the chain healthcheck every hour and flag a chain as degraded when a panel inbound or the relay route disappears (e.g. after an x-ui reinstall). Read-only; on by default.', 'Раз в час повторять проверку цепочек и помечать цепочку как degraded, если inbound на панели или маршрут релея пропали (например, после переустановки x-ui). Только чтение; по умолчанию включено.'))}
           {toggle('xui_panel_bypass', 'Bypass x-ui panels', t('Send PiTun\'s own calls to your x-ui panels straight to the VPS, not through the active node, so panels stay manageable while the node is down. Applies to every registered panel; off by default.', 'Направлять собственные запросы бэкенда к вашим x-ui панелям напрямую на VPS, а не через активную ноду, чтобы панели оставались управляемыми, пока нода лежит. Действует на все добавленные панели; по умолчанию выключено.'))}
           {toggle('dns_over_tcp', 'DNS over TCP', t('Use TCP for DNS queries (fixes networks where UDP:53 is blocked)', 'Использовать TCP для DNS (исправляет сети где UDP:53 заблокирован)'))}

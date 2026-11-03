@@ -63,6 +63,8 @@ def _vless_query(node: Node) -> str:
         params.append(("alpn", node.alpn))
     if node.allow_insecure:
         params.append(("allowInsecure", "1"))
+    if getattr(node, "pinned_cert_sha256", None):
+        params.append(("pcs", node.pinned_cert_sha256))
 
     # Reality params (only when tls == 'reality')
     if node.tls == "reality":
@@ -171,8 +173,12 @@ def _format_hy2(node: Node) -> Optional[str]:
     params: list[tuple[str, str]] = []
     if node.sni:
         params.append(("sni", node.sni))
+    if node.alpn:
+        params.append(("alpn", node.alpn))
     if node.allow_insecure:
         params.append(("insecure", "1"))
+    if getattr(node, "pinned_cert_sha256", None):
+        params.append(("pinSHA256", node.pinned_cert_sha256))
     if node.hy2_obfs:
         params.append(("obfs", node.hy2_obfs))
     if node.hy2_obfs_password:
@@ -220,6 +226,7 @@ def inbound_client_to_uri(
     inbound: dict,
     client: dict,
     server_host: str,
+    pin: Optional[str] = None,
 ) -> Optional[str]:
     """Build a pasteable share URI from an x-ui panel inbound + client.
 
@@ -246,6 +253,17 @@ def inbound_client_to_uri(
     address = server_host
     port = int(inbound.get("port") or 0)
     protocol = (inbound.get("protocol") or "").lower()
+
+    if protocol == "hysteria":
+        # Hysteria2 has its own shape (auth token, QUIC, pinned cert); the
+        # export-to-node endpoint builds the same fields.
+        from app.core.xui_hysteria import node_fields
+        label = client.get("email") or "client"
+        hy = _Node(
+            name=f"{inbound.get('remark') or 'inbound'}-{label}",
+            **node_fields(inbound, client, server_host, pin),
+        )
+        return node_to_uri(hy) if hy.password else None
 
     network = stream.get("network") or "tcp"
     security = stream.get("security") or "none"

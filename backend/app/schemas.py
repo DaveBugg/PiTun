@@ -50,6 +50,7 @@ class NodeBase(BaseModel):
     fingerprint: str = "chrome"
     alpn: Optional[str] = None
     allow_insecure: bool = False
+    pinned_cert_sha256: Optional[str] = None
     ws_path: str = "/"
     ws_host: Optional[str] = None
     ws_headers: Optional[str] = None
@@ -111,6 +112,14 @@ class NodeBase(BaseModel):
         if v not in valid:
             raise ValueError(f"tls must be one of {valid}")
         return v
+
+    @field_validator("pinned_cert_sha256", mode="before")
+    @classmethod
+    def validate_pin(cls, v):
+        from app.core.cert_pin import normalize_pin
+        if v is None or str(v).strip() == "":
+            return None
+        return normalize_pin(v)
 
 
 class NodeCreate(NodeBase):
@@ -892,6 +901,22 @@ class NodeCircleBase(BaseModel):
     # Link to a Subscription (None = manually managed). When set, the
     # subscription's refresh keeps this circle's membership in sync.
     subscription_id: Optional[int] = None
+    # Nodes a subscription refresh must not put back into this circle, and
+    # countries (ISO codes) whose nodes never join it.
+    excluded_node_ids: List[int] = []
+    excluded_countries: List[str] = []
+
+    @field_validator("excluded_countries", mode="before")
+    @classmethod
+    def norm_countries(cls, v):
+        from app.core.circle_filters import normalize_countries, parse_list
+        return normalize_countries(parse_list(v))
+
+    @field_validator("excluded_node_ids", mode="before")
+    @classmethod
+    def parse_excluded_ids(cls, v):
+        from app.core.circle_filters import parse_list
+        return parse_list(v)
 
     @field_validator("mode")
     @classmethod
@@ -927,6 +952,16 @@ class NodeCircleUpdate(BaseModel):
     min_speed_mbps: Optional[float] = None
     # Send an explicit `null` to unlink (falls back to manual management).
     subscription_id: Optional[int] = None
+    excluded_node_ids: Optional[List[int]] = None
+    excluded_countries: Optional[List[str]] = None
+
+    @field_validator("excluded_countries", mode="before")
+    @classmethod
+    def norm_countries(cls, v):
+        if v is None:
+            return v
+        from app.core.circle_filters import normalize_countries
+        return normalize_countries(v)
 
     @field_validator("mode", mode="before")
     @classmethod
@@ -1155,6 +1190,7 @@ class SubscriptionBase(BaseModel):
     auto_update: bool = False
     update_interval: int = 86400
     rotate_hwid: bool = False
+    allow_insecure_tls: bool = False
 
     @field_validator("url")
     @classmethod
@@ -1455,6 +1491,7 @@ class SettingsRead(BaseModel):
     # rationale.
     xui_panel_bypass: bool = False
     chain_drift_check: bool = True
+    circle_http_probe: bool = True
     lan_proxy_auth_enabled: bool = False
     lan_proxy_auth_user: str = ""
     lan_proxy_auth_pass: str = ""
@@ -1572,6 +1609,7 @@ class SettingsUpdate(BaseModel):
     # LAN proxy auth (see SettingsRead docstring)
     xui_panel_bypass: Optional[bool] = None
     chain_drift_check: Optional[bool] = None
+    circle_http_probe: Optional[bool] = None
     lan_proxy_auth_enabled: Optional[bool] = None
     lan_proxy_auth_user: Optional[str] = None
     lan_proxy_auth_pass: Optional[str] = None

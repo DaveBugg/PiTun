@@ -3,6 +3,7 @@ import type { Node, NodeCreate, Protocol, Transport, TlsMode } from '@/types'
 import { InfoTip } from '@/components/InfoTip'
 import { useT } from '@/hooks/useT'
 import { useServers } from '@/hooks/useServers'
+import { CertPinField } from '@/components/CertPinField'
 
 type FormData = Omit<NodeCreate, 'order'>
 
@@ -25,6 +26,7 @@ const DEFAULTS: FormData = {
   fingerprint: 'chrome',
   alpn: '',
   allow_insecure: false,
+  pinned_cert_sha256: '',
   ws_path: '/',
   ws_host: '',
   ws_headers: '',
@@ -243,20 +245,17 @@ export function NodeForm({ initial, onSave, onCancel, loading, nodes = [] }: Pro
               {fld('SNI', inp('sni', 'text', 'example.com'))}
               {fld('Fingerprint', sel('fingerprint', FINGERPRINTS))}
               {fld('ALPN', inp('alpn', 'text', 'h2,http/1.1'), 'comma-separated')}
-              <div className="flex items-center gap-2 mt-5">
-                <input
-                  type="checkbox"
-                  id="insecure"
-                  checked={form.allow_insecure}
-                  onChange={(e) => set('allow_insecure', e.target.checked)}
-                  className="rounded-sm border-gray-600 bg-gray-800 text-brand-500"
+              {form.tls === 'tls' && (
+                <CertPinField
+                  value={form.pinned_cert_sha256 ?? ''}
+                  onChange={(v) => set('pinned_cert_sha256', v)}
+                  address={form.address}
+                  port={form.port}
+                  sni={form.sni}
+                  canFetch
+                  legacyInsecure={form.allow_insecure}
+                  onClearLegacy={() => set('allow_insecure', false)}
                 />
-                <label htmlFor="insecure" className="text-sm text-gray-300">Allow insecure</label>
-              </div>
-              {form.allow_insecure && (
-                <div className="rounded-lg bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-700/40 px-3 py-2 text-xs text-yellow-700 dark:text-yellow-300">
-                  ⚠ allowInsecure will be disabled by xray-core after 2026-06-01. Use pinnedPeerCertSha256 instead.
-                </div>
               )}
             </div>
           )}
@@ -318,21 +317,16 @@ export function NodeForm({ initial, onSave, onCancel, loading, nodes = [] }: Pro
             {fld('SNI', inp('sni'))}
             {fld('Obfs type', inp('hy2_obfs'), 'e.g. salamander')}
             {fld('Obfs password', inp('hy2_obfs_password'))}
-            <div className="flex items-center gap-2 mt-5">
-              <input
-                type="checkbox"
-                id="insecure2"
-                checked={form.allow_insecure}
-                onChange={(e) => set('allow_insecure', e.target.checked)}
-                className="rounded-sm border-gray-600 bg-gray-800 text-brand-500"
-              />
-              <label htmlFor="insecure2" className="text-sm text-gray-300">Allow insecure</label>
-            </div>
-            {form.allow_insecure && (
-              <div className="rounded-lg bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-700/40 px-3 py-2 text-xs text-yellow-700 dark:text-yellow-300">
-                ⚠ allowInsecure will be disabled by xray-core after 2026-06-01. Use pinnedPeerCertSha256 instead.
-              </div>
-            )}
+            <CertPinField
+              value={form.pinned_cert_sha256 ?? ''}
+              onChange={(v) => set('pinned_cert_sha256', v)}
+              address={form.address}
+              port={form.port}
+              sni={form.sni}
+              canFetch={false}
+              legacyInsecure={form.allow_insecure}
+              onClearLegacy={() => set('allow_insecure', false)}
+            />
           </div>
         </section>
       )}

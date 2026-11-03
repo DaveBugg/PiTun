@@ -10,6 +10,8 @@ import re
 from typing import Any, Dict, List, Optional
 from urllib.parse import parse_qs, unquote, urlparse
 
+from app.core.cert_pin import try_normalize_pin
+
 import yaml
 
 logger = logging.getLogger(__name__)
@@ -53,6 +55,7 @@ def _parse_vless(uri: str) -> Optional[Dict[str, Any]]:
         "sni": _qs(params, "sni") or _qs(params, "host") or parsed.hostname or "",
         "fingerprint": _qs(params, "fp", "chrome"),
         "alpn": _qs(params, "alpn"),
+        "pinned_cert_sha256": try_normalize_pin(_qs(params, "pcs")) or None,
         "flow": _qs(params, "flow"),
         # WS
         "ws_path": _qs(params, "path", "/"),
@@ -121,6 +124,7 @@ def _parse_trojan(uri: str) -> Optional[Dict[str, Any]]:
         "sni": _qs(params, "sni") or parsed.hostname or "",
         "fingerprint": _qs(params, "fp", "chrome"),
         "alpn": _qs(params, "alpn"),
+        "pinned_cert_sha256": try_normalize_pin(_qs(params, "pcs")) or None,
         "ws_path": _qs(params, "path", "/"),
         "ws_host": _qs(params, "host"),
         "grpc_service": _qs(params, "serviceName"),
@@ -337,6 +341,7 @@ def _parse_hy2(uri: str) -> Optional[Dict[str, Any]]:
         "fingerprint": _qs(params, "fp", "chrome"),
         "alpn": _qs(params, "alpn"),
         "allow_insecure": _qs(params, "insecure", "0") == "1",
+        "pinned_cert_sha256": try_normalize_pin(_qs(params, "pinSHA256") or _qs(params, "pcs")) or None,
         "hy2_obfs": _qs(params, "obfs"),
         "hy2_obfs_password": _qs(params, "obfs-password"),
     }

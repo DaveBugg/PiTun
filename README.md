@@ -511,7 +511,7 @@ Frontend is a single-page React app served by nginx.
   the LAN uses); a Direct toggle flips one operation back to a straight
   dial for reaching a box while the active node is down
 - Dedicated **X-ui Panels** page — full inbound + client management
-  (6 wired presets covering Reality / TLS / domain modes), live
+  (7 wired presets covering Reality / TLS / domain modes and Hysteria2), live
   healthcheck (panel API, xray, nginx, UFW, TLS cert, disk, mem),
   cache↔panel sync for hand-added clients, random / custom
   fakesite rotation
@@ -560,6 +560,13 @@ Frontend is a single-page React app served by nginx.
 - Built-in diagnostics page (DNS reachability, gateway, xray status,
   resource usage)
 - Streaming xray log viewer
+- **Domains page** (opt-in) — which names xray resolved, how often and when,
+  searchable, with a one-click way to turn a selection into a routing rule
+  (new, or added to an existing one); capped, aged out and clearable by hand
+- **What PiTun is using** — CPU and memory of xray, the backend and each PiTun
+  container, plus optional memory / CPU limits for them (off by default)
+- **xray inside a panel** — see and change the core version of a registered
+  x-ui panel from PiTun, with a roll-back
 - Multi-language UI (English / Russian)
 
 ## Supported protocols
@@ -571,7 +578,7 @@ Frontend is a single-page React app served by nginx.
 | **Trojan** | TLS / WebSocket / gRPC / xhttp |
 | **Shadowsocks** | All modern stream / AEAD ciphers |
 | **WireGuard** | Native xray outbound; works inside chains |
-| **Hysteria2** | UDP, with optional obfuscation password |
+| **Hysteria2** | QUIC/UDP, optional salamander obfuscation, pinned or CA-signed certificate; also created on a panel as a preset |
 | **SOCKS5** | As outbound (e.g. for chaining) |
 | **NaiveProxy** | Per-node sidecar container (Caddy + forwardproxy on the server side); xray connects via local SOCKS5 |
 
@@ -878,7 +885,7 @@ on :443) and optional LE registration email (defaults to
 `admin@<apex-domain>`). Behind the scenes
 (`scripts/setup-xui-server.sh`):
 
-1. Installs upstream **3x-ui v3.1.0** in `--non-interactive` mode.
+1. Installs upstream **3x-ui v3.11.0** (pinned by commit and sha256) in `--non-interactive` mode.
 2. For xui-pro: also installs nginx + certbot + the
    [`GFW4Fun/randomfakehtml`](https://github.com/GFW4Fun/randomfakehtml)
    archive of fakesite templates, picks one at random, and wires the
@@ -893,8 +900,8 @@ on :443) and optional LE registration email (defaults to
 
 Once registered, every inbound + client on the panel becomes
 manageable from the dedicated **Панели X-ui** page in the UI:
-6 wired-in inbound presets (VLESS+Reality / VLESS+xhttp+Reality /
-VLESS+WS+TLS / VLESS+xhttp+TLS / Trojan+gRPC / SOCKS5), per-client
+7 wired-in inbound presets (VLESS+Reality / VLESS+xhttp+Reality /
+VLESS+WS+TLS / VLESS+xhttp+TLS / Trojan+gRPC / SOCKS5 / Hysteria2), per-client
 export to `Node` rows (cache-backed, idempotent on re-export),
 multi-layer healthcheck, cache↔panel sync that picks up clients
 added directly via the panel UI, and (xui-pro only) fakesite

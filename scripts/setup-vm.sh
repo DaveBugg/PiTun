@@ -112,7 +112,7 @@ modprobe xt_TPROXY 2>/dev/null || true
 
 # ── 2. Install xray-core ──
 log "Installing xray-core..."
-XRAY_VERSION="26.3.27"
+XRAY_VERSION="26.10.31"
 ARCH=$(uname -m)
 case "$ARCH" in
     x86_64)  XRAY_ARCH="64" ;;

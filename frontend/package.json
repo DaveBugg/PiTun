@@ -1,7 +1,7 @@
 {
   "name": "pitun-frontend",
   "private": true,
-  "version": "1.6.8",
+  "version": "1.7.0",
   "license": "BSD-3-Clause",
   "type": "module",
   "scripts": {
@@ -15,14 +15,14 @@
   },
   "dependencies": {
     "@tanstack/react-query": "^5.100.9",
-    "axios": "^1.16.0",
+    "axios": "^1.20.0",
     "clsx": "^2.1.1",
     "lucide-react": "^1.14.0",
     "qrcode.react": "^4.2.0",
     "react": "^19.2.6",
     "react-dom": "^19.2.6",
     "react-is": "^19.2.6",
-    "react-router-dom": "^7.15.0",
+    "react-router-dom": "^7.18.4",
     "recharts": "^3.8.1",
     "tailwind-merge": "^3.5.0",
     "zustand": "^5.0.13"

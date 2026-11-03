@@ -25,6 +25,7 @@ import {
 } from 'lucide-react'
 import { clsx } from 'clsx'
 import { useT } from '@/hooks/useT'
+import { ProcessesCard } from '@/components/ProcessesCard'
 
 // ── Health Checks Section ───────────────────────────────────────────────────
 
@@ -747,6 +748,7 @@ export function Diagnostics() {
       <HealthChecks />
       <RouteExplainer />
       <Resources />
+      <ProcessesCard />
       <NetworkInfo />
       <WanHealth />
       <DockerLogs />

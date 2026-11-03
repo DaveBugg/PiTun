@@ -57,6 +57,7 @@ function SubForm({
     update_interval: initial?.update_interval ?? 86400,
     enabled: initial?.enabled ?? true,
     rotate_hwid: initial?.rotate_hwid ?? false,
+    allow_insecure_tls: initial?.allow_insecure_tls ?? false,
   })
   const set = <K extends keyof typeof form>(k: K, v: typeof form[K]) =>
     setForm((f) => ({ ...f, [k]: v }))
@@ -219,6 +220,16 @@ function SubForm({
           />
           Rotate HWID
           <InfoTip className="ml-0.5" text="When enabled, each refresh generates a fresh random X-Hwid header instead of the stable machine-id-derived one. Most panels device-bind on first HWID, so leave OFF by default. Turn ON only if a panel starts returning degraded payloads (e.g. placeholder 'proxy' dummies) to the stable HWID — a fresh UUID often gets past the throttle." />
+        </label>
+        <label className="flex items-center gap-2 text-sm text-gray-300 cursor-pointer">
+          <input
+            type="checkbox"
+            checked={form.allow_insecure_tls}
+            onChange={(e) => set('allow_insecure_tls', e.target.checked)}
+            className="rounded-sm border-gray-600 bg-gray-800 text-brand-500"
+          />
+          Allow self-signed certificate
+          <InfoTip className="ml-0.5" text="The subscription URL's HTTPS certificate is verified by default. Tick this only for a panel that uses a self-signed or otherwise untrusted certificate — without verification anyone on the path can read the token in the URL and swap the node list." />
         </label>
       </div>
       <div className="flex justify-end gap-3 pt-2 border-t border-gray-800">

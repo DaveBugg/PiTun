@@ -16,6 +16,18 @@ class DNSQueryLog(SQLModel, table=True):
     cache_hit: bool = False
 
 
+class DomainStat(SQLModel, table=True):
+    """One row per looked-up domain: how often, when, and the last real IPs it
+    resolved to. Opt-in (`collect_domain_stats`), capped and aged out — see
+    `core/domain_stats.py`."""
+    id: Optional[int] = Field(default=None, primary_key=True)
+    domain: str = Field(index=True, unique=True)
+    hits: int = 0
+    first_seen: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    last_seen: datetime = Field(default_factory=lambda: datetime.now(timezone.utc), index=True)
+    ips: str = "[]"                    # JSON: up to 4 recent public IPs
+
+
 class Node(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     name: str
@@ -39,6 +51,9 @@ class Node(SQLModel, table=True):
     fingerprint: str = "chrome"
     alpn: Optional[str] = None
     allow_insecure: bool = False
+    # SHA-256 of the server certificate to trust (hex; several joined by commas).
+    # xray dropped `allowInsecure`; pinning is how a self-signed server is accepted.
+    pinned_cert_sha256: Optional[str] = None
 
     # WebSocket
     ws_path: str = "/"
@@ -419,6 +434,9 @@ class Subscription(SQLModel, table=True):
     # placeholder entries instead of real nodes) rotating gets a clean
     # response.
     rotate_hwid: bool = False
+    # Skip certificate validation when fetching this subscription. Off for new
+    # subscriptions; the migration turned it on for the ones that predate it.
+    allow_insecure_tls: bool = False
 
 
 class DNSRule(SQLModel, table=True):
@@ -468,6 +486,10 @@ class NodeCircle(SQLModel, table=True):
     # from another subscription) are preserved. NULL = manually managed, which
     # is the existing behaviour for every pre-existing circle.
     subscription_id: Optional[int] = Field(default=None, foreign_key="subscription.id")
+    # What a subscription refresh must not put back (JSON lists): nodes unticked
+    # by hand, and countries (ISO codes) whose nodes never join. core/circle_filters.
+    excluded_node_ids: str = "[]"
+    excluded_countries: str = "[]"
 
 
 class AutoCheckConfig(SQLModel, table=True):

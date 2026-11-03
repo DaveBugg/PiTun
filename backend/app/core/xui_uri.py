@@ -41,7 +41,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Literal, Optional
-from urllib.parse import unquote, urlparse
+from urllib.parse import quote, unquote, urlparse
 
 
 @dataclass(frozen=True)
@@ -133,3 +133,21 @@ def parse_xui_uri(uri: str) -> Optional[XuiServerConfig]:
         domain=domain,
         mode=mode_raw,  # type: ignore[arg-type]
     )
+
+
+def build_xui_uri(
+    *, api_token: str, host: str, port: int, basepath: str,
+    panel_user: str, panel_pass: str, domain: Optional[str], mode: str,
+) -> str:
+    """The `xui://` URI for a panel — what `setup-xui-server.sh` prints, and
+    what `parse_xui_uri` reads back. For x-ui-pro `host` should be the domain
+    (the script uses it as the URI host); for bare mode, the VPS address."""
+    path = "/" + (basepath or "").strip("/")
+    if path == "/":
+        path = ""
+    host_part = f"[{host}]" if ":" in host and not host.startswith("[") else host
+    query = (
+        f"user={quote(panel_user, safe='')}&pass={quote(panel_pass, safe='')}"
+        f"&domain={quote(domain or '', safe='')}&mode={mode}"
+    )
+    return f"xui://{quote(api_token, safe='')}@{host_part}:{port}{path}?{query}"

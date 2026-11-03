@@ -1441,20 +1441,16 @@ function ServersJsonIO() {
             {t('How should this bundle be applied?', 'Как применить этот файл?')}
           </p>
           <ul className="text-xs text-gray-400 space-y-1 list-disc list-inside">
-            <li><b className="text-gray-200">Cancel:</b> {t('abort.', 'отменить.')}</li>
-            <li><b className="text-gray-200">OK (Replace):</b> {t('wipe + restore.', 'удалить всё, восстановить.')}</li>
+            <li><b className="text-gray-200">Cancel:</b> {t('add new servers only, skip ones already here.', 'добавить только новые, существующие пропустить.')}</li>
+            <li><b className="text-gray-200">{t('Overwrite duplicates', 'Перезаписать дубли')}:</b> {t('servers that match by name+host+port are replaced by the file; all other servers stay untouched.', 'серверы с совпадением name+host+port заменяются данными из файла; остальные серверы не затрагиваются.')}</li>
           </ul>
-          <p className="mt-3 text-xs text-yellow-500/90">
-            {t(
-              'Tip: re-run with default replace=off to merge (duplicates by name+host+port skip).',
-              'Подсказка: запустить ещё раз без replace для merge (дубли по name+host+port пропустятся).',
-            )}
+          <p className="mt-3 text-xs text-gray-500">
+            {t('Nothing is ever deleted. A file without secrets keeps the passwords you already have.', 'Ничего не удаляется. Файл без секретов не затирает уже сохранённые пароли.')}
           </p>
         </>
       ),
-      confirmLabel: t('Replace all', 'Заменить всё'),
-      cancelLabel: 'Cancel',
-      danger: true,
+      confirmLabel: t('Overwrite duplicates', 'Перезаписать дубли'),
+      cancelLabel: t('Add new only', 'Только новые'),
     })
 
     try {
@@ -1467,7 +1463,7 @@ function ServersJsonIO() {
         ? `\n${t('Note: bundle had no secrets — credentials are blank, edit each server to set them.', 'Внимание: в файле нет секретов — заполни их вручную.')}`
         : ''
       alert(
-        `Imported: ${result.imported}, skipped: ${result.skipped}${errSuffix}${secretsNote}`,
+        `Imported: ${result.imported}, overwritten: ${result.overwritten ?? 0}, skipped: ${result.skipped}${errSuffix}${secretsNote}`,
       )
     } catch (err: unknown) {
       alert('Import failed: ' + (err instanceof Error ? err.message : String(err)))

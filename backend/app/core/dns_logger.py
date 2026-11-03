@@ -84,11 +84,20 @@ def parse_dns_line(line: str) -> "Optional[object]":
     return None
 
 
-async def process_log_line(line: str) -> None:
+async def process_log_line(line: str, store_log: bool = True, store_stats: bool = False) -> None:
     if "app/dns:" not in line:
         return
     entry = parse_dns_line(line)
     if entry is None:
+        return
+    if store_stats:
+        from app.core import domain_stats
+        try:
+            ips = json.loads(entry.resolved_ips or "[]")
+        except ValueError:
+            ips = []
+        domain_stats.record(entry.domain, ips)
+    if not store_log:
         return
     try:
         async with AsyncSession(get_async_engine()) as session:

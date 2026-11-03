@@ -151,7 +151,7 @@ if [ -x /usr/local/bin/xray ]; then
     log "xray already installed: $(/usr/local/bin/xray version | head -1)"
 else
     log "Installing xray-core..."
-    XRAY_VERSION="26.3.27"
+    XRAY_VERSION="26.10.31"
     ARCH=$(uname -m)
     case "$ARCH" in
         x86_64)  XRAY_ARCH="64" ;;

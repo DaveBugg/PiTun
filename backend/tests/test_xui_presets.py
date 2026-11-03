@@ -17,7 +17,7 @@ from app.core.xui_presets import (
 
 
 class TestPresetRegistry:
-    def test_six_presets_present(self):
+    def test_seven_presets_present(self):
         # Locks the spec list. Adding/removing a preset is a deliberate
         # bump-test event, not a silent migration.
         ids = [p.id for p in list_presets()]
@@ -28,12 +28,13 @@ class TestPresetRegistry:
             "vless-xhttp",
             "trojan-grpc",
             "socks5",
+            "hysteria2",
         ]
 
     def test_each_preset_has_required_metadata(self):
         for p in PRESETS.values():
             assert p.id and p.label and p.description
-            assert p.protocol in ("vless", "trojan", "socks")
+            assert p.protocol in ("vless", "trojan", "socks", "hysteria")
             assert isinstance(p.fields, list) and len(p.fields) > 0
 
     def test_get_preset_unknown_returns_none(self):

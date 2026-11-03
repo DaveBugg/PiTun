@@ -1756,10 +1756,89 @@ async def export_servers_json(
     )
 
 
+async def _restore_panel(session: AsyncSession, server_id: int, panel_in: object) -> Optional[bool]:
+    """Register the x-ui panel carried by an import bundle on `server_id`.
+
+    Returns True when a panel was added, False when the bundle said there was
+    one but carried nothing to authenticate with (a secret-stripped export),
+    None when there is nothing to do (no panel in the bundle, or the server
+    already has one — an existing registration is never overwritten).
+    Not probed: a bundle is a copy of state that already worked, and the box
+    restoring it may not have a route to the panel yet.
+    """
+    if not isinstance(panel_in, dict):
+        return None
+    from app.models import XuiServer as _XuiServer
+    already = (await session.exec(
+        select(_XuiServer).where(_XuiServer.server_id == server_id)
+    )).first()
+    if already is not None:
+        return None
+    token = panel_in.get("api_token") or ""
+    p_user = panel_in.get("panel_user") or ""
+    p_pass = panel_in.get("panel_pass") or ""
+    # Either is enough to reach the panel later: the token directly, or the
+    # login the backend can fetch one with.
+    if not (token or (p_user and p_pass)):
+        return False
+    session.add(_XuiServer(
+        server_id=server_id,
+        api_token=token,
+        panel_user=p_user or None,
+        panel_pass=p_pass or None,
+        panel_port=int(panel_in.get("panel_port") or 0) or None,
+        panel_basepath=panel_in.get("panel_basepath") or "/",
+        domain=panel_in.get("domain") or None,
+        mode=panel_in.get("mode") or "bare",
+    ))
+    return True
+
+
+async def _overwrite_server(session: AsyncSession, srv: Server, validated: ServerCreate, sd: dict) -> None:
+    """Bring an existing server (same name+host+port) to the bundle's state, in place.
+
+    The row keeps its id, so panels, clients and node links hanging off it
+    survive. Credentials the bundle does not carry (a secret-stripped export)
+    are left as they are rather than blanked.
+    """
+    srv.description = validated.description
+    srv.user = validated.user
+    srv.auth_type = validated.auth_type
+    for field in ("password", "private_key", "passphrase"):
+        value = getattr(validated, field, None)
+        if value:
+            setattr(srv, field, value)
+    session.add(srv)
+
+    deps_in = sd.get("deployments") or []
+    if not isinstance(deps_in, list):
+        return
+    have = {d.protocol: d for d in (await session.exec(
+        select(ServerDeployment).where(ServerDeployment.server_id == srv.id)
+    )).all()}
+    for dep in deps_in:
+        if not isinstance(dep, dict) or "protocol" not in dep:
+            continue
+        cfg = dep.get("config") or {}
+        if not isinstance(cfg, dict):
+            cfg = {}
+        proto = str(dep["protocol"])
+        row = have.get(proto)
+        if row is None:
+            session.add(ServerDeployment(
+                server_id=srv.id, protocol=proto, config_json=json.dumps(cfg),
+                status=str(dep.get("status") or "configured"),
+            ))
+        else:
+            row.config_json = json.dumps(cfg)
+            row.status = str(dep.get("status") or row.status)
+            session.add(row)
+
+
 @router.post("/import-json")
 async def import_servers_json(
     payload: dict,
-    replace: bool = Query(False, description="If true, delete existing servers before import"),
+    replace: bool = Query(False, description="Overwrite servers that already exist (same name+host+port); others are never touched"),
     session: AsyncSession = Depends(get_session),
 ):
     """Restore servers from a previously-exported JSON bundle.
@@ -1787,27 +1866,9 @@ async def import_servers_json(
         raise HTTPException(400, "Bundle missing 'servers' array")
     has_secrets = bool(payload.get("include_secrets", False))
 
-    if replace:
-        # Cascade: deleting Server rows takes their ServerDeployment rows
-        # with them via FK. last_node_id on deployments is set to NULL
-        # by the Node FK's ON DELETE SET NULL — but Node rows aren't
-        # touched here, so node linkage of NEW deployments stays clean
-        # if we re-create the same servers.
-        existing = (await session.exec(select(Server))).all()
-        for srv in existing:
-            # Manually clear deployments first to avoid relying on cascade
-            # at the SQLite level (we don't set up cascade in the schema
-            # — the ServerDeployment FK is a plain FK without ON DELETE).
-            existing_deps = (await session.exec(
-                select(ServerDeployment).where(ServerDeployment.server_id == srv.id)
-            )).all()
-            for d in existing_deps:
-                await session.delete(d)
-            await session.delete(srv)
-        await session.flush()
-
     imported = 0
     skipped = 0
+    overwritten = 0
     deployments_restored = 0
     panels_restored = 0
     panels_without_credentials = 0
@@ -1821,19 +1882,32 @@ async def import_servers_json(
             # auth_type / port ranges.
             validated = ServerCreate(**clean)
 
-            if not replace:
-                # Dedup by (name, host, port). Two servers at the same
-                # endpoint with the same display name collapse — a
-                # "name collision but different host" still inserts.
-                stmt = (
-                    select(Server)
-                    .where(Server.name == validated.name)
-                    .where(Server.host == validated.host)
-                    .where(Server.port == validated.port)
-                )
-                if (await session.exec(stmt)).first():
+            # Dedup by (name, host, port). Two servers at the same endpoint
+            # with the same display name collapse — a "name collision but
+            # different host" still inserts. Nothing outside the bundle is
+            # ever deleted: `replace` only decides what happens to a match.
+            stmt = (
+                select(Server)
+                .where(Server.name == validated.name)
+                .where(Server.host == validated.host)
+                .where(Server.port == validated.port)
+            )
+            existing_srv = (await session.exec(stmt)).first()
+            if existing_srv is not None:
+                if replace:
+                    await _overwrite_server(session, existing_srv, validated, sd)
+                    overwritten += 1
+                else:
                     skipped += 1
-                    continue
+                # A panel the server does not have yet still comes along —
+                # otherwise importing onto a box that already lists the
+                # server loses the registration.
+                restored = await _restore_panel(session, existing_srv.id, sd.get("panel"))
+                if restored is True:
+                    panels_restored += 1
+                elif restored is False:
+                    panels_without_credentials += 1
+                continue
 
             server = Server(**validated.model_dump())
             session.add(server)
@@ -1873,31 +1947,11 @@ async def import_servers_json(
             # row for that would lose the credentials the operator has, and
             # the existing probe on the X-ui page surfaces a dead panel
             # anyway.
-            panel_in = sd.get("panel")
-            if isinstance(panel_in, dict):
-                from app.models import XuiServer as _XuiServer
-                token = panel_in.get("api_token") or ""
-                p_user = panel_in.get("panel_user") or ""
-                p_pass = panel_in.get("panel_pass") or ""
-                # Either is enough to reach the panel later: the token
-                # directly, or the login the backend can fetch one with.
-                if token or (p_user and p_pass):
-                    session.add(_XuiServer(
-                        server_id=server.id,
-                        api_token=token,
-                        panel_user=p_user or None,
-                        panel_pass=p_pass or None,
-                        panel_port=int(panel_in.get("panel_port") or 0) or None,
-                        panel_basepath=panel_in.get("panel_basepath") or "/",
-                        domain=panel_in.get("domain") or None,
-                        mode=panel_in.get("mode") or "bare",
-                    ))
-                    panels_restored += 1
-                else:
-                    # A secret-stripped bundle says a panel was here but
-                    # carries nothing to authenticate with. Counted rather
-                    # than silently dropped, so the UI can say so.
-                    panels_without_credentials += 1
+            restored = await _restore_panel(session, server.id, sd.get("panel"))
+            if restored is True:
+                panels_restored += 1
+            elif restored is False:
+                panels_without_credentials += 1
         except Exception as exc:  # noqa: BLE001 — per-row error reporting
             # Three colliding concerns (CWE-209/532/117) — see
             # api/nodes.py for the full layered defence rationale.
@@ -1921,6 +1975,7 @@ async def import_servers_json(
     return {
         "imported": imported,
         "skipped": skipped,
+        "overwritten": overwritten,
         "deployments_restored": deployments_restored,
         "panels_restored": panels_restored,
         "panels_without_credentials": panels_without_credentials,

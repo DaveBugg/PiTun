@@ -202,6 +202,8 @@ class XrayManager:
 
         env = os.environ.copy()
         env["XRAY_LOCATION_ASSET"] = str(Path(settings.xray_geoip_path).parent)
+        from app.core.resource_limits import xray_env
+        env.update(await xray_env())          # GOMEMLIMIT, only if the operator set one
 
         self._process = await asyncio.create_subprocess_exec(
             xray_bin, "run", "-config", str(config_path),
@@ -509,9 +511,11 @@ async def _maybe_process_dns(line: str) -> None:
                 _dns_log_enabled = bool(row and row.value.lower() == "true")
             _dns_log_checked = now
 
-        if _dns_log_enabled:
+        from app.core import domain_stats
+        stats_on = await domain_stats.collecting()
+        if _dns_log_enabled or stats_on:
             from app.core.dns_logger import process_log_line
-            await process_log_line(line)
+            await process_log_line(line, store_log=_dns_log_enabled, store_stats=stats_on)
     except Exception:
         pass
 

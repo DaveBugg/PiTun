@@ -1,4 +1,5 @@
 """FastAPI application entry point."""
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 
@@ -40,6 +41,14 @@ from app.core.log_buffer import install as _install_log_buffer
 _install_log_buffer()
 
 
+async def _reapply_limits() -> None:
+    """Put the saved container limits back a little after boot, once Docker
+    answers. Nothing is limited unless the operator set a limit."""
+    await asyncio.sleep(20)
+    from app.core.resource_limits import reapply_on_boot
+    await reapply_on_boot()
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # ── Startup ──────────────────────────────────────────────────────────────
@@ -63,6 +72,7 @@ async def lifespan(app: FastAPI):
 
     from app.core.autocheck_scheduler import autocheck_scheduler
     from app.core.chain_drift import chain_drift_scheduler
+    from app.core.domain_stats import domain_stats_scheduler
 
     health_checker.start()
     subscription_scheduler.start()
@@ -72,6 +82,8 @@ async def lifespan(app: FastAPI):
     geo_scheduler.start()
     autocheck_scheduler.start()
     chain_drift_scheduler.start()
+    domain_stats_scheduler.start()
+    asyncio.create_task(_reapply_limits())
 
     # Country-flag prefixes, applied at the model rather than at each of the
     # nine places a node gets created — which is how nodes from a server
@@ -290,6 +302,7 @@ async def lifespan(app: FastAPI):
     geo_scheduler.stop()
     autocheck_scheduler.stop()
     chain_drift_scheduler.stop()
+    domain_stats_scheduler.stop()
     try:
         from app.core.naive_supervisor import naive_supervisor
         naive_supervisor.stop()
@@ -361,7 +374,7 @@ app.add_middleware(
 )
 
 # ── Routers ───────────────────────────────────────────────────────────────────
-from app.api import nodes, routing, routing_sets, subscriptions, system, geodata, logs, dns, balancers, auth, nodecircle, devices, diagnostics, events, servers, scripts, server_tasks, server_clients, templates, user_agents, xui, network, autocheck, backup
+from app.api import domain_stats as domain_stats_api, resources as resources_api, nodes, routing, routing_sets, subscriptions, system, geodata, logs, dns, balancers, auth, nodecircle, devices, diagnostics, events, servers, scripts, server_tasks, server_clients, templates, user_agents, xui, network, autocheck, backup
 from app.core.auth import get_current_user
 
 app.include_router(auth.router, prefix="/api")
@@ -381,6 +394,8 @@ app.include_router(dns.router, dependencies=_auth)
 app.include_router(balancers.router, prefix="/api", dependencies=_auth)
 app.include_router(nodecircle.router, prefix="/api", dependencies=_auth)
 app.include_router(autocheck.router, prefix="/api", dependencies=_auth)
+app.include_router(domain_stats_api.router, prefix="/api", dependencies=_auth)
+app.include_router(resources_api.router, prefix="/api", dependencies=_auth)
 app.include_router(backup.router, prefix="/api", dependencies=_auth)
 app.include_router(devices.router, prefix="/api", dependencies=_auth)
 app.include_router(diagnostics.router, prefix="/api", dependencies=_auth)

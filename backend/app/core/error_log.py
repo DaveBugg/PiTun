@@ -68,7 +68,9 @@ def public_message(exc: BaseException) -> str:
         return "timed out"
     if isinstance(exc, ssl.SSLError):
         return "TLS error"
-    if isinstance(exc, (socket.gaierror, httpx.ConnectError)):
+    if isinstance(exc, socket.gaierror):
+        return "name resolution failed"
+    if isinstance(exc, httpx.ConnectError):
         return "could not connect"
     if isinstance(exc, httpx.HTTPError):
         return "network error"

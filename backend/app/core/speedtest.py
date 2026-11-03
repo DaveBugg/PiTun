@@ -32,6 +32,12 @@ from app.models import Node, Settings as DBSettings
 
 logger = logging.getLogger(__name__)
 
+
+def _why(exc: BaseException, scope: str) -> str:
+    """Short reason for the UI; the full exception goes to the error log."""
+    from app.core import error_log
+    return error_log.record(scope, exc)
+
 # HTTP endpoints only — we do not require TLS for speed measurement and it
 # avoids SNI/cert issues when forcing --resolve. Ordered by reliability.
 _TEST_URLS = [
@@ -126,7 +132,7 @@ async def _gate_and_measure(node: Node, socks_port: int) -> Dict:
         try:
             measured = await _measure_download(socks_port, label, url)
         except Exception as exc:  # noqa: BLE001 — try the next target
-            last_error = f"{label}: {str(exc)[:120]}"
+            last_error = f"{label}: {_why(exc, 'speedtest.download')}"
             continue
         if measured is not None:
             avg, mx = measured
@@ -169,7 +175,7 @@ async def speedtest_node(node: Node) -> Dict:
         try:
             chain = await _resolve_chain(node)
         except Exception as exc:
-            return _result(node, error=f"chain resolve: {exc}")
+            return _result(node, error=f"chain resolve: {_why(exc, 'speedtest.chain')}")
 
         entry = chain[0]
         # Naive outbounds point at the LOCAL sidecar, not the remote server —
@@ -179,7 +185,7 @@ async def speedtest_node(node: Node) -> Dict:
             try:
                 entry_ip = await HealthChecker._resolve_direct(entry.address)
             except Exception as exc:
-                return _result(node, error=f"dns entry: {exc}")
+                return _result(node, error=f"dns entry: {_why(exc, 'speedtest.dns')}")
 
         # Fail fast if the naive sidecar isn't up (otherwise every connection
         # through the temp xray hangs to timeout).
@@ -197,7 +203,7 @@ async def speedtest_node(node: Node) -> Dict:
 
     except Exception as exc:
         logger.warning("Speedtest node %d error: %s", node.id, exc)
-        return _result(node, error=str(exc))
+        return _result(node, error=_why(exc, "speedtest.node"))
     finally:
         await _cleanup(proc, tmp_path)
 
@@ -230,7 +236,7 @@ async def speedtest_stream(node: Node):
             try:
                 chain = await _resolve_chain(node)
             except Exception as exc:  # noqa: BLE001
-                yield {"phase": "error", "error": f"chain resolve: {exc}"}
+                yield {"phase": "error", "error": f"chain resolve: {_why(exc, 'speedtest.chain')}"}
                 return
 
             entry = chain[0]
@@ -239,7 +245,7 @@ async def speedtest_stream(node: Node):
                 try:
                     entry_ip = await HealthChecker._resolve_direct(entry.address)
                 except Exception as exc:  # noqa: BLE001
-                    yield {"phase": "error", "error": f"dns entry: {exc}"}
+                    yield {"phase": "error", "error": f"dns entry: {_why(exc, 'speedtest.dns')}"}
                     return
             if node.protocol == "naive":
                 if not node.internal_port:
@@ -284,13 +290,13 @@ async def speedtest_stream(node: Node):
                 if got_data:
                     return  # first working target wins
             except Exception as exc:  # noqa: BLE001
-                last_error = f"{label}: {str(exc)[:120]}"
+                last_error = f"{label}: {_why(exc, 'speedtest.download')}"
                 yield {"phase": "target_failed", "host": label, "error": last_error}
                 continue
         yield {"phase": "error", "error": last_error}
     except Exception as exc:  # noqa: BLE001
         logger.warning("Speedtest stream node %d error: %s", node.id, exc)
-        yield {"phase": "error", "error": str(exc)}
+        yield {"phase": "error", "error": _why(exc, "speedtest.stream")}
     finally:
         await _cleanup(proc, tmp_path)
 
@@ -310,14 +316,14 @@ async def reachability_check(node: Node) -> Dict:
         try:
             chain = await _resolve_chain(node)
         except Exception as exc:  # noqa: BLE001
-            return {"ok": False, "latency_ms": None, "detail": f"chain: {exc}"}
+            return {"ok": False, "latency_ms": None, "detail": f"chain: {_why(exc, 'speedtest.chain')}"}
         entry = chain[0]
         entry_ip: Optional[str] = None
         if entry.protocol != "naive":
             try:
                 entry_ip = await HealthChecker._resolve_direct(entry.address)
             except Exception as exc:  # noqa: BLE001
-                return {"ok": False, "latency_ms": None, "detail": f"dns: {exc}"}
+                return {"ok": False, "latency_ms": None, "detail": f"dns: {_why(exc, 'speedtest.dns')}"}
         if node.protocol == "naive" and (
             not node.internal_port
             or not await _port_open("127.0.0.1", int(node.internal_port))
@@ -374,14 +380,14 @@ async def sni_scan(domain: str, node: Optional[Node] = None) -> Dict:
             try:
                 chain = await _resolve_chain(node)
             except Exception as exc:  # noqa: BLE001
-                return {"ok": False, "detail": f"chain: {exc}", "via": via}
+                return {"ok": False, "detail": f"chain: {_why(exc, 'speedtest.chain')}", "via": via}
             entry = chain[0]
             entry_ip: Optional[str] = None
             if entry.protocol != "naive":
                 try:
                     entry_ip = await HealthChecker._resolve_direct(entry.address)
                 except Exception as exc:  # noqa: BLE001
-                    return {"ok": False, "detail": f"dns: {exc}", "via": via}
+                    return {"ok": False, "detail": f"dns: {_why(exc, 'speedtest.dns')}", "via": via}
             socks_port, proc, tmp_path, start_err = await _start_temp_xray(
                 node, chain, entry_ip,
             )
@@ -442,7 +448,7 @@ async def sni_scan(domain: str, node: Optional[Node] = None) -> Dict:
     except asyncio.TimeoutError:
         return {"ok": False, "detail": "timed out", "via": via}
     except Exception as exc:  # noqa: BLE001
-        return {"ok": False, "detail": str(exc)[:120], "via": via}
+        return {"ok": False, "detail": _why(exc, "speedtest.probe"), "via": via}
     finally:
         await _cleanup(proc, tmp_path)
 
@@ -693,7 +699,7 @@ async def _start_temp_xray(
 
     `chain` is the full tunnel path [entry, ..., node]. For a 1-element chain
     we just build that single outbound. For N elements we build each as a
-    separate outbound and link them via `proxySettings.tag` so that the
+    separate outbound and link them via `sockopt.dialerProxy` so that the
     entry hop dials its IP directly and each subsequent hop tunnels through
     the previous one — exactly how the main xray config handles chaining.
 
@@ -718,10 +724,9 @@ async def _start_temp_xray(
                     _override_outbound_address(ob, entry_ip)
             else:
                 # Non-entry hop: tunnel through previous hop.
-                ob["proxySettings"] = {
-                    "tag": f"speed-hop-{i - 1}",
-                    "transportLayer": True,
-                }
+                ob.setdefault("streamSettings", {}).setdefault("sockopt", {})[
+                    "dialerProxy"
+                ] = f"speed-hop-{i - 1}"
             outbounds_chain.append(ob)
     except Exception as exc:
         logger.warning("Cannot build chain outbounds for node %d: %s", node.id, exc)

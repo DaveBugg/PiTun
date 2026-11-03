@@ -149,6 +149,15 @@ import asyncio
 from unittest.mock import AsyncMock, patch
 
 
+@pytest.fixture(autouse=True)
+def _http_probe_off_by_default():
+    """The HTTP stage of the pre-ping spawns xray; the older tests here are about
+    TCP selection, so it is off unless a test turns it on."""
+    with patch("app.core.circle_scheduler.CircleScheduler._http_probe_enabled",
+               new=AsyncMock(return_value=False)):
+        yield
+
+
 def _mk_node(session, **overrides):
     """Make a Node row directly in the DB for circle rotation tests."""
     from app.models import Node
@@ -316,6 +325,118 @@ class TestRotatePrePing:
             from app.core.circle_scheduler import circle_scheduler
             result = await circle_scheduler.rotate_circle(circle.id)
         assert result is True
+
+
+class TestRotateHttpProbe:
+    """TCP says alive, HTTP says whether the node really reaches the internet."""
+
+    @staticmethod
+    def _setup(session, protocols=("vless", "vless", "vless")):
+        nodes = [
+            _mk_node(session, name=f"N{i}", address=f"10.0.1.{i}", protocol=proto)
+            for i, proto in enumerate(protocols)
+        ]
+        circle = _mk_circle(session, [n.id for n in nodes], mode="sequential", current_index=0)
+        return nodes, circle
+
+    @staticmethod
+    async def _rotate(circle_id, http_results, events=None, enabled=True):
+        async def tcp_alive(addr, port, udp, **kw):
+            return {"is_online": True, "latency_ms": 10}
+
+        async def fake_http(self, node_id):
+            return http_results[node_id]
+
+        from app.core.circle_scheduler import circle_scheduler
+        ev = AsyncMock()
+        with (
+            patch("app.core.healthcheck.health_checker._probe_node", side_effect=tcp_alive),
+            patch("app.core.circle_scheduler.CircleScheduler._seamless_rotate", new_callable=AsyncMock),
+            patch("app.core.circle_scheduler.CircleScheduler._http_probe_enabled",
+                  new=AsyncMock(return_value=enabled)),
+            patch("app.core.circle_scheduler.CircleScheduler._http_probe", new=fake_http),
+            patch("app.core.events.record_event", ev),
+        ):
+            await circle_scheduler.rotate_circle(circle_id)
+        return ev
+
+    @staticmethod
+    def _index(session, circle_id):
+        from app.models import NodeCircle
+        session.expire_all()
+        return session.get(NodeCircle, circle_id).current_index
+
+    @pytest.mark.asyncio
+    async def test_skips_a_node_whose_port_answers_but_has_no_internet(
+        self, client, admin_user, auth_headers, session
+    ):
+        nodes, circle = self._setup(session)
+        results = {nodes[1].id: (False, "timed out"), nodes[2].id: (True, "")}
+        ev = await self._rotate(circle.id, results)
+        assert self._index(session, circle.id) == 2
+        cats = [c.kwargs.get("category") for c in ev.await_args_list]
+        assert "circle.candidate_failed" in cats
+        assert "circle.http_probe_fallback" not in cats
+
+    @pytest.mark.asyncio
+    async def test_falls_back_to_the_tcp_result_when_every_node_fails_http(
+        self, client, admin_user, auth_headers, session
+    ):
+        nodes, circle = self._setup(session)
+        results = {nodes[1].id: (False, "x"), nodes[2].id: (False, "y")}
+        ev = await self._rotate(circle.id, results)
+        assert self._index(session, circle.id) == 1, "first TCP-alive candidate is kept"
+        cats = [c.kwargs.get("category") for c in ev.await_args_list]
+        assert "circle.http_probe_fallback" in cats
+
+    @pytest.mark.asyncio
+    async def test_wireguard_is_not_http_probed(
+        self, client, admin_user, auth_headers, session
+    ):
+        nodes, circle = self._setup(session, protocols=("vless", "wireguard", "vless"))
+        # No entry for the WG node: reaching it would raise KeyError.
+        ev = await self._rotate(circle.id, {})
+        assert self._index(session, circle.id) == 1
+        assert not any(c.kwargs.get("category") == "circle.http_probe_fallback"
+                       for c in ev.await_args_list)
+
+    @pytest.mark.asyncio
+    async def test_disabled_setting_skips_the_http_stage(
+        self, client, admin_user, auth_headers, session
+    ):
+        nodes, circle = self._setup(session)
+        # Would fail HTTP if it were consulted.
+        results = {nodes[1].id: (False, "x"), nodes[2].id: (False, "y")}
+        await self._rotate(circle.id, results, enabled=False)
+        assert self._index(session, circle.id) == 1
+
+    @pytest.mark.asyncio
+    async def test_a_probe_fault_does_not_exclude_the_node(
+        self, client, admin_user, auth_headers, session
+    ):
+        from app.core.circle_scheduler import CircleScheduler
+        nodes, _ = self._setup(session)
+        with patch("app.core.speedtest.reachability_check",
+                   new=AsyncMock(side_effect=RuntimeError("boom"))), \
+             patch("app.core.error_log.record"):
+            ok, _ = await CircleScheduler()._http_probe(nodes[1].id)
+        assert ok is True
+
+    @pytest.mark.asyncio
+    async def test_probe_that_hangs_is_cut_off_and_fails(
+        self, client, admin_user, auth_headers, session
+    ):
+        from app.core.circle_scheduler import CircleScheduler
+
+        async def hang(node):
+            await asyncio.sleep(30)
+
+        nodes, _ = self._setup(session)
+        sched = CircleScheduler()
+        sched._HTTP_PROBE_BUDGET_S = 0.05
+        with patch("app.core.speedtest.reachability_check", new=hang):
+            ok, detail = await sched._http_probe(nodes[1].id)
+        assert ok is False and detail == "timed out"
 
 
 def _set_active(session, node_id: int):

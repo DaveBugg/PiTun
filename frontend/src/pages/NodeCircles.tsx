@@ -10,6 +10,7 @@ import { useSystemSettings, useUpdateSettings } from '@/hooks/useSystem'
 import { useT } from '@/hooks/useT'
 import { useConfirm } from '@/components/ConfirmModal'
 import { ModalShell } from '@/components/ModalShell'
+import { COUNTRY_CODES, countryFlag } from '@/lib/countries'
 import type { NodeCircle, NodeCircleCreate } from '@/types'
 
 const MODE_LABELS: Record<string, string> = {
@@ -73,6 +74,17 @@ function CircleModal({ initial, nodeOptions, onSave, onCancel, loading }: ModalP
   const [subscriptionId, setSubscriptionId] = useState<number | ''>(
     initial?.subscription_id ?? ''
   )
+  // What a linked circle refuses even though the subscription serves it.
+  const [excludedCountries, setExcludedCountries] = useState<string[]>(initial?.excluded_countries ?? [])
+  const [excludedIds, setExcludedIds] = useState<number[]>(initial?.excluded_node_ids ?? [])
+  const [countryDraft, setCountryDraft] = useState('')
+  const addCountry = () => {
+    const code = countryDraft.trim().toUpperCase()
+    setCountryDraft('')
+    if (/^[A-Z]{2}$/.test(code) && !excludedCountries.includes(code)) {
+      setExcludedCountries([...excludedCountries, code])
+    }
+  }
   const { data: subs = [] } = useQuery({
     queryKey: ['subscriptions'],
     queryFn: () => subsApi.list(),
@@ -121,6 +133,8 @@ function CircleModal({ initial, nodeOptions, onSave, onCancel, loading }: ModalP
       // null (not undefined) so clearing the link actually reaches the PATCH
       // body — the backend patches with exclude_unset.
       subscription_id: subscriptionId === '' ? null : Number(subscriptionId),
+      excluded_countries: excludedCountries,
+      excluded_node_ids: excludedIds.filter((id) => !selectedIds.has(id)),
     })
   }
 
@@ -261,6 +275,56 @@ function CircleModal({ initial, nodeOptions, onSave, onCancel, loading }: ModalP
           </p>
         )}
       </div>
+
+      {subscriptionId !== '' && (
+        <div>
+          <label className="flex items-center gap-1 text-xs font-medium text-gray-400 mb-1">
+            {t('Never include countries', 'Никогда не включать страны')}
+            <InfoTip position="bottom" className="ml-0.5" text={t(
+              'Nodes from these countries never join this circle, even though the subscription serves them. The country is where the node exits (set by a speed test), or the flag in its name. Nodes you add by hand are not affected.',
+              'Ноды этих стран никогда не попадают в этот круг, даже если подписка их отдаёт. Страна — это выход ноды (определяется проверкой скорости) или флаг в её названии. Ноды, добавленные вручную, не затрагиваются.',
+            )} />
+          </label>
+          <div className="flex flex-wrap items-center gap-1.5">
+            {excludedCountries.map((code) => (
+              <button
+                key={code}
+                type="button"
+                onClick={() => setExcludedCountries(excludedCountries.filter((c) => c !== code))}
+                className="rounded-full bg-gray-800 border border-gray-700 px-2 py-0.5 text-xs text-gray-200 hover:border-red-500/60"
+                title={t('Remove', 'Убрать')}
+              >
+                {countryFlag(code)} {code} ✕
+              </button>
+            ))}
+            <input
+              list="circle-country-codes"
+              value={countryDraft}
+              maxLength={2}
+              onChange={(e) => setCountryDraft(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addCountry() } }}
+              onBlur={addCountry}
+              placeholder={t('RU', 'RU')}
+              aria-label={t('Country code to exclude', 'Код страны для исключения')}
+              className="w-16 rounded-sm bg-gray-800 border border-gray-700 px-2 py-1 text-xs uppercase text-gray-100 focus:border-brand-500 focus:outline-hidden"
+            />
+            <datalist id="circle-country-codes">
+              {COUNTRY_CODES.map((c) => <option key={c} value={c} />)}
+            </datalist>
+          </div>
+          {excludedIds.length > 0 && (
+            <p className="mt-1.5 text-[11px] text-gray-500">
+              {t(
+                `${excludedIds.length} node(s) you unticked are remembered and stay out after refreshes.`,
+                `Запомнено нод, которые вы сняли: ${excludedIds.length} — они не вернутся после обновлений.`,
+              )}{' '}
+              <button type="button" className="underline" onClick={() => setExcludedIds([])}>
+                {t('Forget', 'Забыть')}
+              </button>
+            </p>
+          )}
+        </div>
+      )}
 
       <div>
         <div className="flex items-center justify-between mb-1">

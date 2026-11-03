@@ -8,6 +8,7 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.database import get_session
 from app.models import Node, NodeCircle
+from app.core import circle_filters as cf
 from app.schemas import NodeCircleCreate, NodeCircleRead, NodeCircleUpdate
 
 router = APIRouter(prefix="/nodecircle", tags=["nodecircle"])
@@ -52,8 +53,10 @@ async def list_circles(session: AsyncSession = Depends(get_session)):
 
 @router.post("", response_model=NodeCircleRead, status_code=201)
 async def create_circle(data: NodeCircleCreate, session: AsyncSession = Depends(get_session)):
-    circle = NodeCircle(**data.model_dump(exclude={"node_ids"}))
+    circle = NodeCircle(**data.model_dump(exclude={"node_ids", "excluded_node_ids", "excluded_countries"}))
     circle.node_ids = json.dumps(data.node_ids)
+    circle.excluded_node_ids = json.dumps(data.excluded_node_ids)
+    circle.excluded_countries = json.dumps(data.excluded_countries)
     session.add(circle)
     await session.commit()
     await session.refresh(circle)
@@ -74,10 +77,44 @@ async def update_circle(circle_id: int, data: NodeCircleUpdate, session: AsyncSe
     if not circle:
         raise HTTPException(404, "NodeCircle not found")
     patch = data.model_dump(exclude_unset=True)
-    if "node_ids" in patch and patch["node_ids"] is not None:
-        patch["node_ids"] = json.dumps(patch["node_ids"])
+    old_ids = cf.parse_list(circle.node_ids)
+    old_countries = set(cf.parse_list(circle.excluded_countries))
+    sub_id = patch["subscription_id"] if "subscription_id" in patch else circle.subscription_id
+
+    # Remember what the operator took out of a linked circle, or the next
+    # refresh of the subscription puts it straight back.
+    if sub_id is not None and patch.get("node_ids") is not None and "excluded_node_ids" not in patch:
+        sub_owned = set((await session.exec(
+            select(Node.id).where(Node.subscription_id == sub_id)
+        )).all())
+        new_ids = set(patch["node_ids"])
+        excluded = cf.parse_ids(circle.excluded_node_ids)
+        excluded |= {i for i in old_ids if i in sub_owned and i not in new_ids}
+        excluded -= new_ids
+        patch["excluded_node_ids"] = sorted(excluded)
+
+    # Newly excluded countries leave the circle now (the subscription's own
+    # nodes only; ones added by hand stay).
+    if patch.get("excluded_countries") is not None:
+        added = set(patch["excluded_countries"]) - old_countries
+        if added and sub_id is not None:
+            ids_now = patch["node_ids"] if patch.get("node_ids") is not None else old_ids
+            rows = (await session.exec(
+                select(Node.id, Node.country, Node.name).where(Node.subscription_id == sub_id)
+            )).all()
+            drop = {r[0] for r in rows if cf.node_country(r[1], r[2]) in added}
+            if drop & set(ids_now):
+                patch["node_ids"] = [i for i in ids_now if i not in drop]
+
+    for key in ("node_ids", "excluded_node_ids", "excluded_countries"):
+        if patch.get(key) is not None:
+            patch[key] = json.dumps(patch[key])
+        else:
+            patch.pop(key, None)
     for k, v in patch.items():
         setattr(circle, k, v)
+    if circle.current_index >= max(len(cf.parse_list(circle.node_ids)), 1):
+        circle.current_index = 0
     session.add(circle)
     await session.commit()
     await session.refresh(circle)

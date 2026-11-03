@@ -17,6 +17,8 @@ import { ClientQrModal } from '@/components/ClientQrModal'
 import { DirectToggle } from '@/components/DirectToggle'
 import { PortCheck } from '@/components/PortCheck'
 import { copyToClipboard } from '@/lib/clipboard'
+import { PanelXrayCard } from '@/components/PanelXrayCard'
+import { PanelUpdateCard } from '@/components/PanelUpdateCard'
 import type { InboundPreset, XuiClient, XuiInbound, XuiServer } from '@/types'
 
 /**
@@ -212,6 +214,39 @@ function ServerList({
 
 // ── Server detail (right pane) ──────────────────────────────────────────────
 
+// Copies the panel's `xui://` URI (it carries the API token and the panel
+// login, so it only goes to the clipboard, never onto the page).
+function CopyUriButton({ serverId }: { serverId: number }) {
+  const t = useT()
+  const [state, setState] = useState<'idle' | 'busy' | 'done' | 'error'>('idle')
+  const run = async () => {
+    setState('busy')
+    try {
+      const uri = await xuiApi.panelUri(serverId)
+      setState((await copyToClipboard(uri)) ? 'done' : 'error')
+    } catch {
+      setState('error')
+    }
+    setTimeout(() => setState('idle'), 2500)
+  }
+  return (
+    <button
+      type="button"
+      onClick={run}
+      disabled={state === 'busy'}
+      title={t('Copy the xui:// address to import this panel on another PiTun box. It contains the API token and the panel login.', 'Скопировать адрес xui:// для импорта этой панели на другой коробке PiTun. В нём токен API и логин панели.')}
+      className="inline-flex items-center gap-1 text-brand-400 hover:text-brand-700 dark:hover:text-brand-300 disabled:opacity-50"
+    >
+      {state === 'done' ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
+      {state === 'done'
+        ? t('Copied', 'Скопировано')
+        : state === 'error'
+          ? t('Could not copy', 'Не удалось')
+          : 'xui://'}
+    </button>
+  )
+}
+
 function ServerDetail({ server }: { server: XuiServer }) {
   const t = useT()
   const qc = useQueryClient()
@@ -313,6 +348,8 @@ function ServerDetail({ server }: { server: XuiServer }) {
               {t('Open panel', 'Открыть панель')}
               <ExternalLink className="h-3 w-3" />
             </a>
+            <span className="text-gray-700">·</span>
+            <CopyUriButton serverId={server.id} />
             <span className="text-gray-700">·</span>
             <span className="font-mono">{server.panel_user}</span>
           </div>
@@ -520,6 +557,9 @@ function ServerDetail({ server }: { server: XuiServer }) {
           </button>
         </div>
       </header>
+
+      <PanelXrayCard serverId={server.id} />
+      <PanelUpdateCard serverId={server.id} />
 
       {showPorts && (
         <div className="rounded-lg border border-gray-800 bg-gray-900/30 px-3 py-2 space-y-1">

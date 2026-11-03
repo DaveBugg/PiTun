@@ -57,7 +57,7 @@ from app.core.xui_chain import (
 )
 from app.core.uri_formatter import inbound_client_to_uri
 from app.core.xui_presets import PRESETS, InboundPreset, get_preset, list_presets
-from app.core.xui_uri import parse_xui_uri
+from app.core.xui_uri import build_xui_uri, parse_xui_uri
 from app.models import (
     ChainChannel,
     ChainClient,
@@ -249,6 +249,9 @@ def _build_client(*, label: str, uuid: str, extras: Dict[str, Any]) -> Dict[str,
     }
     if proto == "trojan":
         base["password"] = extras.pop("password", None) or secrets.token_urlsafe(20)
+    elif proto == "hysteria":
+        base["auth"] = extras.pop("auth", None) or secrets.token_urlsafe(16)
+        base.update({"comment": "", "reset": 0})
     else:
         base["id"] = uuid
         base["flow"] = extras.pop("flow", "")
@@ -462,6 +465,30 @@ async def get_xui_server(
 ):
     xs, srv = await _get_xs_or_404(xui_server_id, session)
     return _xui_to_read(xs, srv)
+
+
+@router.get("/servers/{xui_server_id}/uri")
+async def get_xui_server_uri(
+    xui_server_id: int, session: AsyncSession = Depends(get_session),
+):
+    """The panel's `xui://` URI — the same string the installer prints, so a
+    registered panel can be re-imported on another PiTun box. It carries the
+    API token and the panel login, so treat it like a password."""
+    xs, srv = await _get_xs_or_404(xui_server_id, session)
+    if not xs.api_token:
+        raise HTTPException(409, detail="No API token is stored for this panel")
+    if not xs.panel_user or not xs.panel_pass or not xs.panel_port:
+        raise HTTPException(
+            409, detail="The panel's login or port is not stored, so a URI cannot be built",
+        )
+    host = xs.domain if xs.mode == "xui-pro" and xs.domain else srv.host
+    return {
+        "uri": build_xui_uri(
+            api_token=xs.api_token, host=host, port=xs.panel_port,
+            basepath=xs.panel_basepath or "/", panel_user=xs.panel_user,
+            panel_pass=xs.panel_pass, domain=xs.domain, mode=xs.mode,
+        ),
+    }
 
 
 @router.delete("/servers/{xui_server_id}", status_code=204)
@@ -1277,6 +1304,205 @@ async def apply_xray_policy(
     )
 
 
+class XrayUpdateBody(BaseModel):
+    version: str
+
+
+@router.get("/servers/{xui_server_id}/xray")
+async def get_panel_xray(
+    xui_server_id: int, direct: bool = False,
+    session: AsyncSession = Depends(get_session),
+):
+    """The xray core running inside this panel and the versions the panel can
+    install. Read-only. Each version carries `blocked` (why it must not be
+    installed on this panel) or null."""
+    from app.core import xui_xray
+
+    xs, srv = await _get_xs_or_404(xui_server_id, session)
+    try:
+        async with XuiClient(
+            base_url=_api_base_url(xs, srv), api_token=xs.api_token,
+            verify_tls=False, direct=direct,
+        ) as client:
+            status = await client.get_server_status()
+            versions = await client.list_xray_versions()
+    except XuiAPIError as exc:
+        raise HTTPException(502, detail=f"Panel call failed ({exc.kind}): {exc}")
+    return xui_xray.describe(status, versions)
+
+
+@router.post("/servers/{xui_server_id}/xray/update")
+async def update_panel_xray(
+    xui_server_id: int, body: XrayUpdateBody, direct: bool = False,
+    session: AsyncSession = Depends(get_session),
+):
+    """Install an xray release inside the panel (the same call as the panel's
+    own "switch xray version"), then check it came up on that version. Rolling
+    back is this call with the previous version."""
+    import asyncio
+
+    from app.core import xui_xray
+
+    tag = xui_xray.normalize_tag(body.version)
+    if tag is None:
+        raise HTTPException(422, detail="Not a version number (expected like 26.10.31)")
+    xs, srv = await _get_xs_or_404(xui_server_id, session)
+
+    try:
+        async with XuiClient(
+            base_url=_api_base_url(xs, srv), api_token=xs.api_token,
+            verify_tls=False, direct=direct,
+        ) as client:
+            status = await client.get_server_status()
+            offered = await client.list_xray_versions()
+            previous = xui_xray.plain(str((status.get("xray") or {}).get("version") or ""))
+            reason = xui_xray.check_target(status.get("panelVersion"), tag)
+            if reason:
+                raise HTTPException(409, detail=reason)
+            if tag not in offered:
+                raise HTTPException(409, detail=f"The panel does not offer xray {tag}.")
+            if xui_xray.plain(tag) == previous and (status.get("xray") or {}).get("state") == "running":
+                return {"ok": True, "changed": False, "xray_version": previous,
+                        "message": "That version is already running."}
+
+            try:
+                await client.install_xray(tag)
+            except XuiAPIError as exc:
+                raise HTTPException(502, detail=f"The panel could not install xray ({exc.kind}): {exc}")
+
+            # The panel restarts xray itself; wait for it to report back.
+            now: Dict[str, Any] = {}
+            for _ in range(20):
+                await asyncio.sleep(2)
+                try:
+                    now = (await client.get_server_status()).get("xray") or {}
+                except XuiAPIError:
+                    continue
+                if now.get("state") == "running" and xui_xray.plain(str(now.get("version") or "")) == xui_xray.plain(tag):
+                    break
+    except HTTPException:
+        raise
+    except XuiAPIError as exc:
+        raise HTTPException(502, detail=f"Panel call failed ({exc.kind}): {exc}")
+
+    running = xui_xray.plain(str(now.get("version") or ""))
+    ok = now.get("state") == "running" and running == xui_xray.plain(tag)
+    return {
+        "ok": ok,
+        "changed": running != previous,
+        "xray_version": running or None,
+        "previous_version": previous or None,
+        "state": now.get("state"),
+        "message": (
+            f"xray {running} is running." if ok else
+            f"xray did not come up on {xui_xray.plain(tag)} (state: {now.get('state') or 'unknown'}). "
+            f"Roll back by installing {previous or 'the previous version'}."
+        ),
+    }
+
+
+@router.get("/servers/{xui_server_id}/panel-update")
+async def get_panel_update(
+    xui_server_id: int, direct: bool = False,
+    session: AsyncSession = Depends(get_session),
+):
+    """The panel's version against the release PiTun has tested (the one it
+    would update to). Read-only."""
+    from app.core import xui_panel
+
+    xs, srv = await _get_xs_or_404(xui_server_id, session)
+    try:
+        async with XuiClient(
+            base_url=_api_base_url(xs, srv), api_token=xs.api_token,
+            verify_tls=False, direct=direct,
+        ) as client:
+            status = await client.get_server_status()
+    except XuiAPIError as exc:
+        raise HTTPException(502, detail=f"Panel call failed ({exc.kind}): {exc}")
+    return xui_panel.describe(str(status.get("panelVersion") or ""))
+
+
+@router.post("/servers/{xui_server_id}/panel-update")
+async def update_panel(
+    xui_server_id: int, direct: bool = False,
+    session: AsyncSession = Depends(get_session),
+):
+    """Update the panel to the release PiTun has tested, over SSH with a pinned
+    updater. The panel database is copied first; without that copy nothing runs."""
+    import asyncio
+
+    from app.core import xui_panel
+    from app.core.ssh import exec_remote_script
+
+    xs, srv = await _get_xs_or_404(xui_server_id, session)
+    creds = _ssh_creds(srv)
+    if not creds:
+        raise HTTPException(400, detail="Server row has no SSH credentials (needed to update the panel).")
+    ssh = dict(host=srv.host, port=srv.port or 22, username=srv.user or "root", **creds)
+
+    try:
+        async with XuiClient(
+            base_url=_api_base_url(xs, srv), api_token=xs.api_token,
+            verify_tls=False, direct=direct,
+        ) as client:
+            before = await client.get_server_status()
+            previous = str(before.get("panelVersion") or "") or None
+            if not xui_panel.describe(previous)["update_available"]:
+                return {"ok": True, "changed": False, "previous_version": previous,
+                        "panel_version": previous, "backup": None,
+                        "message": f"The panel is already on {previous or 'a version at or above'} "
+                                   f"(PiTun's tested release is {xui_panel.TARGET_VERSION})."}
+
+            # Back up first. Without a copy the update does not start.
+            result = await exec_remote_script(script_content=xui_panel.BACKUP_SCRIPT, timeout=120.0, **ssh)
+            backup = xui_panel.parse_backup_path(result.stdout or "") if result.ok else None
+            if not backup:
+                why = result.error or (result.stdout or "").strip()[-200:] or f"exit {result.exit_code}"
+                raise HTTPException(502, detail=f"Could not back up the panel database, so nothing was changed: {why}")
+
+            run = await exec_remote_script(script_content=xui_panel.UPDATE_SCRIPT, timeout=420.0, **ssh)
+            script_ok = bool(run.ok)
+            script_err = ""
+            for line in (run.stdout or "").splitlines():
+                if line.startswith("PITUN_UPDATE_ERR="):
+                    script_err = line.split("=", 1)[1].strip()
+            if not script_ok and not script_err:
+                script_err = run.error or (run.stderr or "").strip()[-200:] or f"exit {run.exit_code}"
+
+            # The panel restarts at the end of the update; wait for it to answer.
+            now: Dict[str, Any] = {}
+            for _ in range(30):
+                try:
+                    now = await client.get_server_status()
+                except XuiAPIError:
+                    await asyncio.sleep(3)
+                    continue
+                if now.get("panelVersion"):
+                    break
+                await asyncio.sleep(3)
+    except HTTPException:
+        raise
+    except XuiAPIError as exc:
+        raise HTTPException(502, detail=f"Panel call failed ({exc.kind}): {exc}")
+
+    running = str(now.get("panelVersion") or "") or None
+    ok = script_ok and running == xui_panel.TARGET_VERSION
+    if ok:
+        message = f"Panel updated to {running}. Database copy before the update: {backup}"
+    else:
+        reason = script_err or f"the panel reports {running or 'nothing'}, expected {xui_panel.TARGET_VERSION}"
+        message = f"The update did not finish cleanly: {reason}. The database copy is at {backup}."
+    return {
+        "ok": ok,
+        "changed": bool(running and running != previous),
+        "previous_version": previous,
+        "panel_version": running,
+        "backup": backup,
+        "state": "success" if ok else "failed",
+        "message": message,
+    }
+
+
 @router.post(
     "/servers/{xui_server_id}/sync",
     response_model=XuiServerSyncResponse,
@@ -1352,6 +1578,7 @@ async def sync_xui_server(
             uuid_val = (
                 c.get("id")
                 or c.get("password")
+                or c.get("auth")
                 or c.get("user")
                 or ""
             )
@@ -1588,6 +1815,23 @@ async def create_inbound(
                 detail=f"Panel util call failed ({exc.kind}): {exc}",
             )
 
+        if preset.id == "hysteria2":
+            # QUIC has no Reality, so the inbound needs a certificate on the
+            # VPS: the panel domain's Let's Encrypt one, or a self-signed one.
+            from app.core.xui_hysteria import prepare_certificate
+            sni = (values.get("sni") or xs.domain or "").strip() or "www.example.com"
+            try:
+                cert = await prepare_certificate(
+                    srv, domain=xs.domain, sni=sni, port=int(values["port"]),
+                )
+            except (RuntimeError, ValueError) as exc:
+                raise HTTPException(502, detail=f"Hysteria2 certificate: {exc}")
+            if not cert["self_signed"] and xs.domain:
+                sni = xs.domain          # a CA-signed cert only matches its own name
+            resolved.update(
+                cert_file=cert["cert_file"], key_file=cert["key_file"], sni=sni,
+            )
+
         try:
             payload = preset.build_payload(values, **resolved)
         except KeyError as exc:
@@ -1638,7 +1882,10 @@ async def create_inbound(
     inbound_port = int(payload.get("port") or 0)
     if inbound_port and not preset.needs_domain:
         try:
-            await _ufw_chain_ports(srv, [inbound_port], action="allow")
+            await _ufw_chain_ports(
+                srv, [inbound_port], action="allow",
+                proto="udp" if preset.protocol == "hysteria" else "tcp",
+            )
         except Exception as exc:  # noqa: BLE001
             logger.warning(
                 "create_inbound: ufw allow %s failed on srv=%s: %s",
@@ -1715,6 +1962,7 @@ async def delete_inbound(
         try:
             await _ufw_chain_ports(
                 srv, [inbound_port_to_close], action="delete-allow",
+                proto="udp" if (ib_meta.get("protocol") or "").lower() == "hysteria" else "tcp",
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning(
@@ -1815,6 +2063,7 @@ async def add_client(
         client_uuid=str(
             client_obj.get("id")
             or client_obj.get("password")
+            or client_obj.get("auth")
             or client_obj.get("user")
             or ""
         ),
@@ -1943,7 +2192,7 @@ async def get_inbound_client_share_uri(
     clients = settings.get("clients") or []
     target = None
     for c in clients:
-        if c.get("id") == client_id or c.get("email") == client_id:
+        if client_id in (c.get("id"), c.get("email"), c.get("auth")):
             target = c
             break
     # SOCKS5 inbound has no per-client list — accounts live in
@@ -1958,7 +2207,14 @@ async def get_inbound_client_share_uri(
             detail=f"Client {client_id!r} not found on inbound {inbound_id}",
         )
 
-    uri = inbound_client_to_uri(inbound, target, srv.host)
+    pin = None
+    if (inbound.get("protocol") or "").lower() == "hysteria":
+        from app.core.xui_hysteria import remote_cert_pin
+        stream_cfg = parse_inbound_field(inbound.get("streamSettings"))
+        certs = ((stream_cfg.get("tlsSettings") or {}).get("certificates") or [{}])
+        pin = await remote_cert_pin(srv, (certs[0] or {}).get("certificateFile") or "")
+
+    uri = inbound_client_to_uri(inbound, target, srv.host, pin)
     if uri is None:
         proto = (inbound.get("protocol") or "?").lower()
         return {
@@ -1970,6 +2226,81 @@ async def get_inbound_client_share_uri(
             ),
         }
     return {"uri": uri, "reason": None}
+
+
+async def _export_hysteria_client(
+    session: AsyncSession, xs: XuiServer, srv: Server, xui_server_id: int,
+    inbound_id: int, inbound: Dict[str, Any], target: Dict[str, Any],
+    client_id: str, body: "XuiClientExportNodeBody",
+) -> Dict[str, Any]:
+    """Export one hysteria2 client as a PiTun node (protocol `hy2`).
+
+    Same bookkeeping as the generic export — update in place on re-export,
+    reuse an identical node, else create — but the node's password is the
+    client's `auth` token and a self-signed certificate is pinned.
+    """
+    from app.core.xui_hysteria import node_fields, remote_cert_pin
+
+    stream_cfg = parse_inbound_field(inbound.get("streamSettings"))
+    certs = ((stream_cfg.get("tlsSettings") or {}).get("certificates") or [{}])
+    pin = await remote_cert_pin(srv, (certs[0] or {}).get("certificateFile") or "")
+    fields = node_fields(inbound, target, srv.host, pin)
+    auth = fields["password"] or ""
+    if not auth:
+        raise HTTPException(409, detail="This hysteria client has no auth token")
+    label = target.get("email") or auth[:8]
+    name = body.name or f"{inbound.get('remark') or 'inbound-' + str(inbound_id)}-{label}"
+
+    cached = (await session.exec(
+        select(XuiClientModel)
+        .where(XuiClientModel.xui_server_id == xui_server_id)
+        .where(XuiClientModel.inbound_remote_id == inbound_id)
+        .where((XuiClientModel.client_uuid == auth) | (XuiClientModel.label == label)),
+    )).first()
+
+    existing: Optional[Node] = None
+    if cached is not None and cached.exported_node_id:
+        existing = await session.get(Node, cached.exported_node_id)
+    if existing is None:
+        existing = (await session.exec(
+            select(Node)
+            .where(Node.protocol == "hy2")
+            .where(Node.address == fields["address"])
+            .where(Node.port == fields["port"])
+            .where(Node.password == auth),
+        )).first()
+
+    if existing is not None:
+        for k, v in fields.items():
+            setattr(existing, k, v)
+        existing.server_id = srv.id
+        session.add(existing)
+        node, reused = existing, True
+    else:
+        node = Node(name=name, server_id=srv.id, **fields)
+        session.add(node)
+        await session.flush()
+        reused = False
+
+    if cached is None:
+        cached = XuiClientModel(
+            xui_server_id=xui_server_id,
+            inbound_remote_id=inbound_id,
+            client_uuid=auth,
+            label=label,
+            inbound_protocol="hysteria",
+            inbound_port=fields["port"],
+            inbound_remark=inbound.get("remark") or "",
+            config_json=json.dumps(target),
+            last_synced_at=datetime.now(timezone.utc),
+            exported_node_id=node.id,
+        )
+        session.add(cached)
+    elif cached.exported_node_id != node.id:
+        cached.exported_node_id = node.id
+        session.add(cached)
+    await session.commit()
+    return {"node_id": node.id, "reused": reused}
 
 
 @router.post(
@@ -2016,12 +2347,18 @@ async def export_inbound_client_to_node(
     clients = settings.get("clients") or []
     target = None
     for c in clients:
-        if c.get("id") == client_id or c.get("email") == client_id:
+        if client_id in (c.get("id"), c.get("email"), c.get("auth")):
             target = c
             break
     if target is None:
         raise HTTPException(
             404, detail=f"Client {client_id!r} not found on inbound {inbound_id}",
+        )
+
+    if (inbound.get("protocol") or "").lower() == "hysteria":
+        return await _export_hysteria_client(
+            session, xs, srv, xui_server_id, inbound_id, inbound, target,
+            client_id, body,
         )
 
     stream = parse_inbound_field(inbound.get("streamSettings"))

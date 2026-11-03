@@ -33,6 +33,19 @@ import type {
   DeploymentClientCreate, DeploymentClientSyncResult,
   ExportClientToNodeRequest,
   XuiPortCheck,
+  XuiXrayInfo,
+  XuiPanelUpdateInfo,
+  XuiPanelUpdateResult,
+  DomainStatsPage,
+  ProcessesResponse,
+  ResourceLimitsResponse,
+  ResourceLimitsSaved,
+  DomainStatsQuery,
+  DomainStatsConfig,
+  DomainStatsSummary,
+  DomainRuleBody,
+  DomainRuleResult,
+  XuiXrayUpdateResult,
 } from '@/types'
 
 const BASE = import.meta.env.VITE_API_BASE_URL || '/api'
@@ -178,6 +191,13 @@ export const nodesApi = {
     http.post<SpeedTestResult[]>('/nodes/speedtest-all').then(r => r.data),
 
   /** Real internet check through the node (fetches Google's 204). */
+  /** POST /api/nodes/cert-pin — SHA-256 of the certificate a TCP/TLS server
+   *  presents (read unverified, to be pinned by the operator). */
+  certPin: (address: string, port: number, sni?: string) =>
+    http.post<{ pin: string; subject: string; issuer: string; not_after: string; self_signed: boolean }>(
+      '/nodes/cert-pin', { address, port, sni: sni || null },
+    ).then(r => r.data),
+
   reachability: (id: number) =>
     http.post<{ ok: boolean; latency_ms: number | null; detail: string }>(
       `/nodes/${id}/reachability`,
@@ -509,6 +529,36 @@ export const balancersApi = {
 }
 
 // ── Auto-checks (background speed sweep) ─────────────────────────────────────
+
+export const resourcesApi = {
+  processes: (refresh = false) =>
+    http.get<ProcessesResponse>('/resources/processes', { params: { refresh } }).then(r => r.data),
+  limits: () =>
+    http.get<ResourceLimitsResponse>('/resources/limits').then(r => r.data),
+  saveLimits: (data: {
+    backend: { mem_mb: number | null; cpus: number | null }
+    frontend: { mem_mb: number | null; cpus: number | null }
+    nginx: { mem_mb: number | null; cpus: number | null }
+    naive: { mem_mb: number | null; cpus: number | null }
+    xray_mem_mb: number | null
+  }) => http.put<ResourceLimitsSaved>('/resources/limits', data, { timeout: 60_000 }).then(r => r.data),
+}
+
+export const domainStatsApi = {
+  list: (params: DomainStatsQuery) =>
+    http.get<DomainStatsPage>('/domain-stats', { params }).then(r => r.data),
+  updateConfig: (data: Partial<DomainStatsConfig>) =>
+    http.put<DomainStatsConfig>('/domain-stats/config', data).then(r => r.data),
+  prune: (data: {
+    everything?: boolean
+    domains?: string[]
+    older_than_days?: number
+    keep_top?: number
+    max_bytes?: number
+  }) => http.post<{ removed: number; summary: DomainStatsSummary }>('/domain-stats/prune', data).then(r => r.data),
+  createRules: (data: DomainRuleBody) =>
+    http.post<DomainRuleResult>('/domain-stats/rules', data).then(r => r.data),
+}
 
 export const autocheckApi = {
   get: () => http.get<AutoCheck>('/autocheck').then(r => r.data),
@@ -1006,7 +1056,7 @@ export const serversApi = {
   },
 
   importJSON: (bundle: unknown, replace = false) =>
-    http.post<{ imported: number; skipped: number; errors: string[]; has_secrets: boolean }>(
+    http.post<{ imported: number; skipped: number; overwritten?: number; errors: string[]; has_secrets: boolean }>(
       '/servers/import-json',
       bundle,
       { params: { replace } },
@@ -1208,6 +1258,38 @@ export const xuiApi = {
   }> => {
     const r = await http.post(`/xui/servers/${id}/healthcheck`, null, { params: { direct } })
     return r.data
+  },
+
+  /** GET /api/xui/servers/{id}/xray — the core running inside the panel and
+   *  the versions it can install. */
+  panelXray: async (id: number, direct = false): Promise<XuiXrayInfo> => {
+    const r = await http.get(`/xui/servers/${id}/xray`, { params: { direct } })
+    return r.data
+  },
+
+  /** POST /api/xui/servers/{id}/xray/update — install a core (or roll back). */
+  updatePanelXray: async (id: number, version: string, direct = false): Promise<XuiXrayUpdateResult> => {
+    const r = await http.post(`/xui/servers/${id}/xray/update`, { version }, { params: { direct }, timeout: 240_000 })
+    return r.data
+  },
+
+  /** GET /api/xui/servers/{id}/panel-update — panel version vs. the latest release. */
+  panelUpdateInfo: async (id: number, direct = false): Promise<XuiPanelUpdateInfo> => {
+    const r = await http.get(`/xui/servers/${id}/panel-update`, { params: { direct } })
+    return r.data
+  },
+
+  /** POST /api/xui/servers/{id}/panel-update — back up the panel DB, then update. */
+  updatePanel: async (id: number, direct = false): Promise<XuiPanelUpdateResult> => {
+    const r = await http.post(`/xui/servers/${id}/panel-update`, null, { params: { direct }, timeout: 330_000 })
+    return r.data
+  },
+
+  /** GET /api/xui/servers/{id}/uri — the panel's `xui://` URI (token + login
+   *  included), for re-importing it on another PiTun box. */
+  panelUri: async (id: number): Promise<string> => {
+    const r = await http.get<{ uri: string }>(`/xui/servers/${id}/uri`)
+    return r.data.uri
   },
 
   /** GET /api/xui/servers/{id}/ports — which of `ports` are free on the

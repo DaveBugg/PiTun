@@ -7,6 +7,7 @@ import { Routing } from '@/pages/Routing'
 import { Subscriptions } from '@/pages/Subscriptions'
 import { GeoData } from '@/pages/GeoData'
 import { DNS } from '@/pages/DNS'
+import { DomainStats } from '@/pages/DomainStats'
 import { Logs } from '@/pages/Logs'
 import { KnowledgeBase } from '@/pages/KnowledgeBase'
 import { Balancers } from '@/pages/Balancers'
@@ -64,6 +65,7 @@ export default function App() {
         <Route path="/subscriptions" element={<Subscriptions />} />
         <Route path="/devices"       element={<Devices />} />
         <Route path="/dns"           element={<DNS />} />
+        <Route path="/domains"       element={<DomainStats />} />
         <Route path="/geodata"       element={<GeoData />} />
         <Route path="/logs"          element={<Logs />} />
         <Route path="/diagnostics"   element={<Diagnostics />} />

@@ -2,13 +2,12 @@ fastapi==0.111.1
 uvicorn[standard]==0.48.0
 sqlmodel==0.0.19
 pydantic==2.13.4
-pydantic-settings==2.14.1
+pydantic-settings==2.14.2
 httpx[socks]==0.28.1
 aiofiles==25.1.0
 python-multipart==0.0.32
 websockets==16.0
 PyYAML==6.0.3
-aiohttp==3.14.1
 bcrypt==5.0.0
 python-jose[cryptography]==3.5.0
 alembic==1.18.4
@@ -19,7 +18,7 @@ docker==7.1.0
 # user-registered VPS hosts. Pure Python, depends on `cryptography` which
 # is already pulled in transitively by python-jose. Pinned to 2.x — the
 # 1.x line had several auth bugs we don't want to accidentally regress to.
-asyncssh==2.23.0
+asyncssh==2.24.0
 
 # maxminddb: reads MaxMind GeoLite2 .mmdb for optional node-name flag
 # enrichment (core/geoip_lookup.py). Lightweight, pure-Python fallback.

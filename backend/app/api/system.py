@@ -816,6 +816,7 @@ async def get_settings(session: AsyncSession = Depends(get_session)):
         # the wire by design (LAN-intruder threat model).
         xui_panel_bypass=m.get("xui_panel_bypass", "false").lower() == "true",
         chain_drift_check=m.get("chain_drift_check", "true").lower() == "true",
+        circle_http_probe=m.get("circle_http_probe", "true").lower() == "true",
         lan_proxy_auth_enabled=m.get("lan_proxy_auth_enabled", "false").lower() == "true",
         lan_proxy_auth_user=m.get("lan_proxy_auth_user", ""),
         lan_proxy_auth_pass=m.get("lan_proxy_auth_pass", ""),

@@ -89,7 +89,7 @@ def _no_expire_on_commit(session: AsyncSession) -> None:
 
 
 async def _ufw_chain_ports(
-    server: Server, ports: List[int], *, action: str,
+    server: Server, ports: List[int], *, action: str, proto: str = "tcp",
 ) -> None:
     """Open / close TCP ports on the VPS via SSH + UFW.
 
@@ -105,12 +105,14 @@ async def _ufw_chain_ports(
     """
     if not ports:
         return
+    if proto not in ("tcp", "udp"):
+        raise ValueError(f"unsupported protocol {proto!r}")
     cmd = "set -e\n"
     for p in ports:
         if action == "allow":
-            cmd += f"ufw allow {int(p)}/tcp || true\n"
+            cmd += f"ufw allow {int(p)}/{proto} || true\n"
         elif action == "delete-allow":
-            cmd += f"ufw delete allow {int(p)}/tcp || true\n"
+            cmd += f"ufw delete allow {int(p)}/{proto} || true\n"
     cmd += "ufw reload || true\n"
     try:
         res = await exec_remote_script(

@@ -81,6 +81,7 @@ logger = logging.getLogger(__name__)
 # templates) get a longer ceiling.
 _DEFAULT_TIMEOUT = 10.0
 _LARGE_PAYLOAD_TIMEOUT = 30.0
+_XRAY_INSTALL_TIMEOUT = 180.0
 
 
 class XuiAPIError(Exception):
@@ -675,7 +676,7 @@ class XuiClient:
         for client in (settings.get("clients") or []):
             candidates = (
                 client.get("id"), client.get("email"),
-                client.get("password"), client.get("user"),
+                client.get("password"), client.get("auth"), client.get("user"),
             )
             if any(str(c or "").lower() == needle for c in candidates):
                 email = client.get("email")
@@ -725,6 +726,29 @@ class XuiClient:
                 f"x25519 payload missing keys: {obj!r}", kind="format",
             )
         return priv, pub
+
+    async def get_server_status(self) -> Dict[str, Any]:
+        """GET /panel/api/server/status — carries `xray.{state,version,errorMsg}`
+        and `panelVersion`. Same shape on v3.6.0 and v3.11.0."""
+        body = await self._request("GET", "/panel/api/server/status")
+        obj = body.get("obj")
+        return obj if isinstance(obj, dict) else {}
+
+    async def list_xray_versions(self) -> List[str]:
+        """GET /panel/api/server/getXrayVersion — the xray releases the panel
+        will install (newest first, as tags like `v26.10.31`)."""
+        body = await self._request("GET", "/panel/api/server/getXrayVersion")
+        obj = body.get("obj")
+        return [str(v) for v in obj] if isinstance(obj, list) else []
+
+    async def install_xray(self, version: str) -> None:
+        """POST /panel/api/server/installXray/<version>: the panel stops xray,
+        downloads that release, swaps the binary and restarts. Slow (a ~16 MB
+        download), hence the long timeout."""
+        await self._request(
+            "POST", f"/panel/api/server/installXray/{version}",
+            timeout=_XRAY_INSTALL_TIMEOUT,
+        )
 
     async def restart_xray(self) -> None:
         """POST /panel/api/server/restartXrayService. Bearer-authed —

@@ -92,7 +92,7 @@ class InboundPreset:
     description: str
     needs_domain: bool
     supports_reality: bool
-    protocol: str           # vless | trojan | shadowsocks | socks
+    protocol: str           # vless | trojan | shadowsocks | socks | hysteria
     fields: List[PresetField]
     build_payload: Callable[..., Dict[str, Any]] = field(repr=False)
 
@@ -486,6 +486,60 @@ def _build_socks5(values: Dict[str, Any], **_: Any) -> Dict[str, Any]:
     }
 
 
+# ── Preset 7: Hysteria2 (QUIC / UDP) ─────────────────────────────────────────
+
+
+def _build_hysteria2(
+    values: Dict[str, Any],
+    *,
+    cert_file: str,
+    key_file: str,
+    sni: str,
+    **_: Any,
+) -> Dict[str, Any]:
+    """Hysteria2 inbound on xray's `hysteria` transport.
+
+    Needs a certificate (QUIC has no Reality): `create_inbound` resolves one on
+    the VPS first — the Let's Encrypt cert of the panel's domain, or a
+    self-signed one for a bare panel. The bootstrap client carries an `auth`
+    token instead of a UUID.
+    """
+    port = int(values["port"])
+    remark = values.get("remark") or "hysteria2"
+    settings = {
+        "version": 2,
+        "clients": [
+            {
+                "auth": secrets.token_urlsafe(16),
+                "email": _client_email_label(),
+                "limitIp": 0, "totalGB": 0, "expiryTime": 0,
+                "enable": True, "tgId": "", "subId": "", "comment": "", "reset": 0,
+            },
+        ],
+    }
+    stream = {
+        "network": "hysteria",
+        "security": "tls",
+        "tlsSettings": {
+            "serverName": sni,
+            "alpn": ["h3"],
+            "certificates": [
+                {"certificateFile": cert_file, "keyFile": key_file},
+            ],
+        },
+        "hysteriaSettings": {"version": 2, "auth": "", "udpIdleTimeout": 60},
+    }
+    return {
+        "up": 0, "down": 0, "total": 0,
+        "remark": remark, "enable": True, "expiryTime": 0,
+        "listen": "", "port": port,
+        "protocol": "hysteria",
+        "settings": settings,
+        "streamSettings": stream,
+        "sniffing": _sniff(),
+    }
+
+
 # ── Registry ─────────────────────────────────────────────────────────────────
 
 
@@ -686,6 +740,39 @@ PRESETS: Dict[str, InboundPreset] = {
             ),
         ],
         build_payload=_build_socks5,
+    ),
+
+    "hysteria2": InboundPreset(
+        id="hysteria2",
+        label="Hysteria2 (QUIC, UDP)",
+        description=(
+            "Hysteria2 over QUIC on a UDP port — fast on lossy links and a "
+            "different shape on the wire than the TCP presets. Needs the UDP "
+            "port reachable and a TLS certificate: an x-ui-pro panel reuses "
+            "its Let's Encrypt certificate, a bare panel gets a self-signed "
+            "one that the exported node pins."
+        ),
+        needs_domain=False,
+        supports_reality=False,
+        protocol="hysteria",
+        fields=[
+            PresetField(
+                name="port", label="UDP port", type="int", default="443",
+                help="Must be free for UDP. 443/udp is usual and does not "
+                     "clash with nginx on 443/tcp.",
+            ),
+            PresetField(
+                name="sni", label="SNI", type="sni", required=False,
+                placeholder="the panel domain, or leave empty",
+                help="Name the certificate is issued for. Empty = the panel "
+                     "domain (x-ui-pro) or a generic name (bare, pinned).",
+            ),
+            PresetField(
+                name="remark", label="Remark (optional)", type="string",
+                required=False,
+            ),
+        ],
+        build_payload=_build_hysteria2,
     ),
 }
 

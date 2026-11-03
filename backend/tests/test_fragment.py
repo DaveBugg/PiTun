@@ -1,7 +1,7 @@
 """TLS-ClientHello fragmentation wiring (config_gen._apply_fragment).
 
 Client-side anti-DPI: proxy ENTRY hops dial through a `fragment` freedom
-outbound. Off by default; only entry hops (no proxySettings) are touched;
+outbound. Off by default; only entry hops (no dialerProxy) are touched;
 freedom/blackhole/dns and reserved tags are never touched.
 """
 from app.core.config_gen import _apply_fragment
@@ -16,16 +16,14 @@ def _outbounds():
          "streamSettings": {"sockopt": {"mark": 255}}},
         # chained node: its own outbound tunnels through the relay
         {"tag": "node-2", "protocol": "vless",
-         "streamSettings": {"sockopt": {"mark": 255}},
-         "proxySettings": {"tag": "node-3", "transportLayer": True}},
+         "streamSettings": {"sockopt": {"mark": 255, "dialerProxy": "node-3"}}},
         # the relay = the actual entry hop for node-2's chain
         {"tag": "node-3", "protocol": "trojan",
          "streamSettings": {"sockopt": {"mark": 255}}},
         {"tag": "direct", "protocol": "freedom",
          "streamSettings": {"sockopt": {"mark": 255}}},
         {"tag": "block", "protocol": "blackhole"},
-        {"tag": "dns-out", "protocol": "dns",
-         "proxySettings": {"tag": "direct"}},
+        {"tag": "dns-out", "protocol": "dns"},
     ]
 
 
@@ -38,7 +36,8 @@ class TestFragmentDisabled:
         obs = _outbounds()
         _apply_fragment(obs, {})
         assert all(o.get("tag") != "fragment" for o in obs)
-        assert all(_dialer(o) is None for o in obs)
+        # the chained node keeps its relay dialer; nothing gets the fragment one
+        assert all(_dialer(o) != "fragment" for o in obs)
 
     def test_explicit_false_is_a_noop(self):
         obs = _outbounds()
@@ -70,9 +69,9 @@ class TestFragmentEnabled:
 
     def test_mid_chain_hop_is_not_fragmented(self):
         obs = self._apply()
-        # node-2 tunnels through node-3 (has proxySettings) → left alone,
+        # node-2 tunnels through node-3 (has a dialerProxy) → left alone,
         # otherwise it would be a double dialer.
-        assert _dialer(next(o for o in obs if o["tag"] == "node-2")) is None
+        assert _dialer(next(o for o in obs if o["tag"] == "node-2")) == "node-3"
 
     def test_reserved_outbounds_untouched(self):
         obs = self._apply()

@@ -37,6 +37,7 @@ export interface Node {
   fingerprint: string
   alpn?: string
   allow_insecure: boolean
+  pinned_cert_sha256?: string | null
   ws_path: string
   ws_host?: string
   ws_headers?: string
@@ -372,6 +373,7 @@ export interface Subscription {
   // a panel starts HWID-throttling and returns degraded payloads to
   // the stable HWID.
   rotate_hwid?: boolean
+  allow_insecure_tls?: boolean
   last_updated?: string
   node_count: number
   last_error?: string
@@ -507,6 +509,7 @@ export interface SystemSettings {
   block_quic?: boolean
   xui_panel_bypass?: boolean
   chain_drift_check?: boolean
+  circle_http_probe?: boolean
   // Kill switch + auto restart
   kill_switch?: boolean
   auto_restart_xray?: boolean
@@ -746,6 +749,10 @@ export interface NodeCircle {
   /** Linked Subscription: its refresh keeps this circle's membership in
    *  sync (manual members are preserved). null = managed by hand. */
   subscription_id?: number | null
+  /** ISO codes whose nodes a linked circle never takes, whatever the subscription serves. */
+  excluded_countries?: string[]
+  /** Nodes unticked by hand: remembered so a refresh does not put them back. */
+  excluded_node_ids?: number[]
   current_index: number
   last_rotated?: string
   current_node_name?: string
@@ -1049,6 +1056,154 @@ export interface XuiPortStatus {
   }>
   listeners?: string[] | null
   ufw?: 'allow' | 'closed' | 'inactive' | 'absent' | 'unknown' | null
+}
+
+export interface ProcessRow {
+  name: string
+  kind: 'process' | 'container'
+  cpu_percent: number
+  mem_mb: number
+  mem_limit_mb: number | null
+  note: string
+}
+
+export interface ProcessesResponse {
+  processes: ProcessRow[]
+  host: { mem_total_mb: number; cpu_count: number }
+  docker_error: string | null
+}
+
+export interface LimitPair { mem_mb: number | null; cpus: number | null }
+
+export interface ResourceLimits {
+  backend: LimitPair
+  frontend: LimitPair
+  nginx: LimitPair
+  naive: LimitPair
+  xray_mem_mb: number | null
+}
+
+export interface ResourceLimitsResponse {
+  limits: ResourceLimits
+  effective: Record<string, Array<{ container: string; mem_mb: number | null; cpus: number | null }>>
+  docker_error: string | null
+  host: { mem_mb: number; cpus: number }
+  targets: Record<string, { label: string; min_mb: number }>
+  xray_min_mb: number
+}
+
+export interface ResourceLimitsSaved {
+  limits: ResourceLimits
+  results: Array<{ target: string; container: string; ok: boolean; error: string | null }>
+  docker_error: string | null
+  xray_restart_needed: boolean
+}
+
+export interface DomainStatRow {
+  domain: string
+  hits: number
+  first_seen: string
+  last_seen: string
+  ips: string[]
+}
+
+export interface DomainStatsConfig {
+  enabled: boolean
+  retention_days: number
+  max_rows: number
+}
+
+export interface DomainStatsSummary {
+  rows: number
+  total_hits: number
+  approx_bytes: number
+  oldest: string | null
+  newest: string | null
+  pending: number
+  dropped: number
+}
+
+export interface DomainStatsPage {
+  items: DomainStatRow[]
+  total: number
+  summary: DomainStatsSummary
+  config: DomainStatsConfig
+  log_level_ok: boolean
+}
+
+export interface DomainStatsQuery {
+  q?: string
+  sort?: 'hits' | 'last_seen' | 'first_seen' | 'domain'
+  order?: 'asc' | 'desc'
+  min_hits?: number
+  since_days?: number
+  limit?: number
+  offset?: number
+}
+
+export interface DomainRuleBody {
+  domains?: string[]
+  query?: string
+  min_hits?: number
+  since_days?: number
+  use: 'domains' | 'ips'
+  use_parent?: boolean
+  mode: 'new' | 'append'
+  rule_id?: number
+  name?: string
+  action?: string
+  routing_set_id?: number | null
+}
+
+export interface DomainRuleResult {
+  mode: 'new' | 'append'
+  rule_id: number
+  added: number
+  already_present: number
+}
+
+export interface XuiXrayVersion {
+  version: string
+  tag: string
+  newer: boolean
+  current: boolean
+  blocked: string | null
+}
+
+export interface XuiXrayInfo {
+  panel_version: string | null
+  xray_version: string | null
+  xray_state: string | null
+  xray_error: string | null
+  versions: XuiXrayVersion[]
+}
+
+export interface XuiXrayUpdateResult {
+  ok: boolean
+  changed: boolean
+  xray_version: string | null
+  previous_version?: string | null
+  state?: string | null
+  message: string
+}
+
+export interface XuiPanelUpdateInfo {
+  supported: boolean
+  channel: string | null
+  current: string | null
+  latest: string | null
+  update_available: boolean
+  reason?: string
+}
+
+export interface XuiPanelUpdateResult {
+  ok: boolean
+  changed: boolean
+  previous_version: string | null
+  panel_version: string | null
+  backup: string | null
+  state?: string
+  message: string
 }
 
 export interface XuiPortCheck {

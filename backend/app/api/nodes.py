@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
+from pydantic import BaseModel
 from sqlalchemy import func
 from sqlmodel import select
 from sqlmodel.ext.asyncio.session import AsyncSession
@@ -1111,6 +1112,29 @@ async def node_uri(node_id: int, session: AsyncSession = Depends(get_session)):
     if not uri:
         raise HTTPException(422, f"Cannot build a share URL for protocol {node.protocol!r}")
     return {"uri": uri}
+
+
+class CertPinRequest(BaseModel):
+    address: str
+    port: int = 443
+    sni: Optional[str] = None
+
+
+@router.post("/cert-pin")
+async def fetch_cert_pin(body: CertPinRequest):
+    """Read the SHA-256 of the certificate a TCP/TLS server presents, so the
+    operator can pin a server they already trust (what replaced
+    `allowInsecure`). Not verified on purpose: the point is to learn the
+    certificate. QUIC (hysteria) servers cannot be read this way."""
+    from app.core import error_log
+    from app.core.cert_pin import fetch_leaf_pin
+
+    if not 1 <= body.port <= 65535:
+        raise HTTPException(422, "port out of range")
+    try:
+        return await fetch_leaf_pin(body.address.strip(), body.port, (body.sni or "").strip() or None)
+    except Exception as exc:  # noqa: BLE001 - reported as a short reason
+        raise HTTPException(502, f"Could not read a certificate: {error_log.record('nodes.cert_pin', exc, host=body.address)}")
 
 
 @router.post("/speedtest-all", response_model=List[SpeedTestResult])

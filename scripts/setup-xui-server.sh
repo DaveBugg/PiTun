@@ -34,9 +34,9 @@
 #   DOMAIN=<sub.domain.tld>   See above. Empty triggers bare-3x-ui mode.
 #   EMAIL=<addr>              Let's Encrypt registration email (DOMAIN mode
 #                             only). Defaults to admin@<DOMAIN> if missing.
-#   XUI_VERSION=v3.6.0        Pinned 3x-ui release tag. Both modes use this.
+#   XUI_VERSION=v3.11.0       Pinned 3x-ui release tag. Both modes use this.
 #                             The API surface PiTun uses is identical across
-#                             v3.1.0–v3.6.0 (verified additive-only), so PiTun
+#                             v3.1.0–v3.11.0 (additive-only per source review), so PiTun
 #                             manages panels on any tag in that range. Panels
 #                             older than v3.1.0 are NOT manageable (per-client
 #                             endpoints live in /panel/api/clients/* since
@@ -67,6 +67,9 @@
 #      → must match.
 #   5. Recompute XUI_INSTALL_SHA256 / XUI_PRO_SHA256 from the fetched
 #      scripts (`sha256sum`) — fetch_pinned refuses to run on mismatch.
+#   KEEP_ARGOSBX=yes          Keep an ArgoSBX/sing-box stack found on the box after the
+#                             install, in either mode (default: it is removed, PiTun
+#                             uses none of it and it runs unpinned code as root).
 #   PANEL_PORT=<num>          Force the panel port instead of generating one.
 #                             Empty (default) → random 30000-60000.
 #   PANEL_BASEPATH=<str>      Force the panel base path. Empty → random
@@ -112,17 +115,17 @@ info() { echo -e "${BLUE}[i]${NC} $*"; }
 # ── Defaults ────────────────────────────────────────────────────────────────
 DOMAIN="${DOMAIN:-}"
 EMAIL="${EMAIL:-}"
-XUI_VERSION="${XUI_VERSION:-v3.6.0}"
+XUI_VERSION="${XUI_VERSION:-v3.11.0}"
 # Commit SHAs of the upstream installer scripts at our pinned version.
 # These freeze the downloaded scripts byte-for-byte regardless of any
 # future tag rewrite or master-branch drift. See the bump procedure in
 # the header comment above.
-XUI_INSTALL_SHA="${XUI_INSTALL_SHA:-c377dca27c23549cdf84e0ffd2d287a16bee577c}"  # MHSanaei/3x-ui@v3.6.0 install.sh
+XUI_INSTALL_SHA="${XUI_INSTALL_SHA:-c621ba9014a6aa21fd7c9ecf45655e44e24ebf13}"  # MHSanaei/3x-ui@v3.11.0 install.sh (lightweight tag -> commit)
 XUI_PRO_SHA="${XUI_PRO_SHA:-2d8f916526a092358b504903e01c1b3c5329293a}"        # GFW4Fun/x-ui-pro master @ 2026-05-26, re-verified 2026-07-30
 # Content hashes of those two scripts. The commit-SHA URL already freezes
 # the ref; the sha256 additionally catches tampering between the raw host
 # and us. fetch_pinned() enforces these.
-XUI_INSTALL_SHA256="${XUI_INSTALL_SHA256:-7bb41e811f2107a3182da9090f24893d3612b5b6310194a7dd1f9965ff29e0c8}"
+XUI_INSTALL_SHA256="${XUI_INSTALL_SHA256:-9684bae4f769b2127fcceceb4f200045657381311867529e6ba76c6b58e2825d}"
 XUI_PRO_SHA256="${XUI_PRO_SHA256:-a88f6e4f3ceb29307ca3196fe13aaf09a2b5c4dac78fa84976179945992ec710}"
 PANEL_PORT="${PANEL_PORT:-}"
 PANEL_BASEPATH="${PANEL_BASEPATH:-}"
@@ -248,6 +251,61 @@ fi
 ufw allow "${CURR_SSH_PORT}/tcp" >/dev/null 2>&1 || true
 info "Pre-opened SSH port $CURR_SSH_PORT in UFW (lock-out guard)."
 
+# ── ArgoSBX removal (x-ui-pro mode only) ────────────────────────────────────
+# The x-ui-pro wrapper also runs yonggekkk/argosbx (branch `main`, NOT covered
+# by our commit pin) as root. That installs a sing-box with hysteria2 / tuic /
+# anytls / shadowsocks-2022 under /root/agsbx, adds `agsbx res` to the nightly
+# cron and copies a subscription file (protocol keys inside) into the web root.
+# PiTun uses none of it, so it is removed again. KEEP_ARGOSBX=yes keeps it.
+ARGOSBX_DIR="${ARGOSBX_DIR:-/root/agsbx}"
+ARGOSBX_BIN="${ARGOSBX_BIN:-/root/bin/agsbx}"
+WEBROOT_DIR="${WEBROOT_DIR:-/var/www/html}"
+KEEP_ARGOSBX="${KEEP_ARGOSBX:-no}"
+
+remove_argosbx() {
+    if [[ "$KEEP_ARGOSBX" == "yes" ]]; then
+        info "KEEP_ARGOSBX=yes - leaving the ArgoSBX/sing-box stack in place."
+        return 0
+    fi
+    # Refuse anything that does not look like the agsbx directory before rm -rf.
+    if [[ -z "$ARGOSBX_DIR" || "$ARGOSBX_DIR" != */agsbx || ! -d "$ARGOSBX_DIR" ]]; then
+        return 0
+    fi
+    info "Found an ArgoSBX/sing-box stack in $ARGOSBX_DIR - removing it (KEEP_ARGOSBX=yes keeps it)..."
+
+    # Stop only processes whose executable lives inside the agsbx directory.
+    local exe_link target pid
+    for exe_link in /proc/[0-9]*/exe; do
+        target="$(readlink "$exe_link" 2>/dev/null || true)"
+        if [[ "$target" == "$ARGOSBX_DIR"/* ]]; then
+            pid="${exe_link#/proc/}"
+            pid="${pid%/exe}"
+            kill "$pid" 2>/dev/null || true
+        fi
+    done
+    sleep 1
+
+    # The subscription copy in the web root (identical to jhsub.txt).
+    local f
+    if [[ -f "$ARGOSBX_DIR/jhsub.txt" && -d "$WEBROOT_DIR" ]]; then
+        for f in "$WEBROOT_DIR"/*; do
+            if [[ -f "$f" ]] && cmp -s "$f" "$ARGOSBX_DIR/jhsub.txt"; then
+                rm -f "$f"
+            fi
+        done
+    fi
+
+    # Keep the nightly x-ui restart; drop only the agsbx part of that line.
+    if crontab -l 2>/dev/null | grep -q 'agsbx'; then
+        crontab -l 2>/dev/null | sed 's# && agsbx res > /dev/null 2>&1##' | crontab - || true
+    fi
+
+    rm -rf "$ARGOSBX_DIR"
+    rm -f "$ARGOSBX_BIN"
+    rmdir "$(dirname "$ARGOSBX_BIN")" 2>/dev/null || true
+    return 0
+}
+
 # ── 3. Branch: x-ui-pro vs bare 3x-ui ───────────────────────────────────────
 XUIDB="/etc/x-ui/x-ui.db"
 
@@ -305,6 +363,11 @@ else
         || err "3x-ui installer exited non-zero"
     rm -f "$INSTALL_SH"
 fi
+
+# Whatever the mode: if an ArgoSBX stack is on the box after the install (the
+# x-ui-pro wrapper adds one; a bare install can inherit one from an earlier
+# x-ui-pro install), remove it. Detection, not mode, decides.
+remove_argosbx
 
 # Sanity-check the install landed.
 [[ -x /usr/local/x-ui/x-ui ]] \

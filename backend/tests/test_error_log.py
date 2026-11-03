@@ -34,6 +34,8 @@ def test_http_status_and_timeout_are_readable():
     assert error_log.public_message(httpx.HTTPStatusError("x", request=req, response=resp)) == "HTTP 403"
     assert error_log.public_message(httpx.ReadTimeout("x")) == "timed out"
     assert error_log.public_message(httpx.ConnectError("x")) == "could not connect"
+    import socket
+    assert error_log.public_message(socket.gaierror()) == "name resolution failed"
 
 
 def test_redact_url_drops_credentials_path_and_query():
