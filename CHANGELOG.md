@@ -4,14 +4,21 @@ All notable user-facing changes to PiTun. Full per-release detail lives in the
 [GitHub Releases](https://github.com/DaveBugg/PiTun/releases); this file is the
 committed summary.
 
+## v1.7.6 — 2026-11-04
+
+**Hysteria2 nodes are health-checked over UDP.**
+
+### Fixed
+
+- A Hysteria2 node showed "Offline" on the health check although it carried traffic: the check opened a TCP connection to a UDP port and was refused. Hysteria2 nodes (stored as `hy2`) are now probed over UDP, as WireGuard ones already were (a best-effort probe: it reports offline on a hard network error, and cannot see a server that silently drops packets). v1.7.5 carried this change under the wrong protocol name, so it had no effect.
+
 ## v1.7.5 — 2026-11-04
 
-**The update progress now stays visible to the end, and Hysteria2 nodes are health-checked correctly.**
+**The update progress now stays visible to the end.**
 
 ### Fixed
 
 - The progress bar vanished partway through every update. The installer's coloured step lines were copied into the update status file as they were, and the colour escape bytes made that JSON unreadable, so the page saw "nothing running" from the host-preparation step on. The installer no longer colours piped output, the update agent strips such bytes, the backend tolerates them, and the page keeps showing the last known step while the status is unreadable.
-- A Hysteria2 node showed "Offline" on the health check although it carried traffic: the check opened a TCP connection to a UDP port. Hysteria2 nodes are now probed over UDP, as WireGuard ones already were (a best-effort probe: it reports offline on a hard network error, and cannot see a server that silently drops packets).
 - The page itself is no longer cached by the browser: after an update it could keep running the old interface (and its old fixes) until a hard reload. The installer now restarts the frontend container so a changed web-server config is picked up.
 
 ## v1.7.4 — 2026-11-04

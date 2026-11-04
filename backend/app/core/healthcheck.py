@@ -16,7 +16,7 @@ from app.models import Node, Settings as DBSettings
 logger = logging.getLogger(__name__)
 
 # Protocols that live on UDP: a TCP connect to their port always fails.
-UDP_PROTOCOLS = ("wireguard", "hysteria2")
+UDP_PROTOCOLS = ("wireguard", "hy2")
 
 
 class HealthChecker:
