@@ -189,7 +189,9 @@ def read_status() -> Dict[str, Any]:
         logger.warning("update status unreadable: %s", exc)
         return {"state": "unknown", "pct": 0, "step": "", "message": str(exc), "ok": None}
     try:
-        return json.loads(raw)
+        # strict=False: a stray control byte inside a string (colour codes from an
+        # older agent) must not turn a good status into "unknown".
+        return json.loads(raw, strict=False)
     except json.JSONDecodeError:
         # The agent writes atomically, so this means someone else
         # clobbered it — report rather than crash the endpoint.

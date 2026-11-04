@@ -39,6 +39,7 @@ const DISMISS_KEY = 'pitun.update.dismissed'
 // for that moment the status file still shows the PREVIOUS run. Keep watching,
 // and keep showing "starting", until the file changes or this long has passed.
 const LAUNCH_GRACE_MS = 120_000
+const LAUNCH_MAX_MS = 10 * 60_000
 // The click is remembered for the tab's lifetime, so a reload or a remount in
 // the middle of the update (the page is often refreshed while the backend
 // restarts) still shows the update as running.
@@ -76,12 +77,17 @@ export function UpdateSection() {
   // Set when an update is requested: when, and the status stamp it was requested over.
   const launch = useRef<Launch | null>(readLaunch())
   const [, tick] = useState(0)
-  // `stamp` is undefined while no status has been received at all (the backend
-  // is down mid-restart): that still counts as launching.
-  const stillLaunching = (stamp: string | undefined) =>
-    launch.current !== null
-    && Date.now() - launch.current.since < LAUNCH_GRACE_MS
-    && (stamp === undefined || stamp === launch.current.stamp)
+  // No status at all (the backend is down mid-restart) and an unreadable one
+  // ("unknown") both mean "cannot tell", not "nothing is running": keep the
+  // update on screen for as long as an update can plausibly take. Otherwise the
+  // launch holds until the status file shows something other than the old run.
+  const stillLaunching = (d: { state: string; updated_at?: string | null } | undefined) => {
+    const l = launch.current
+    if (l === null) return false
+    const age = Date.now() - l.since
+    if (d === undefined || d.state === 'unknown') return age < LAUNCH_MAX_MS
+    return age < LAUNCH_GRACE_MS && (d.updated_at ?? '') === l.stamp
+  }
 
   const status = useQuery({
     queryKey: ['system', 'update', 'status'],
@@ -91,7 +97,7 @@ export function UpdateSection() {
     refetchInterval: (q) =>
       ACTIVE_STATES.includes(q.state.data?.state ?? '')
         || q.state.data?.request_pending === true
-        || stillLaunching(q.state.data ? (q.state.data.updated_at ?? '') : undefined)
+        || stillLaunching(q.state.data)
         ? 2000
         : false,
     // Mid-update the backend is down; keep the last known state rather
@@ -101,7 +107,11 @@ export function UpdateSection() {
 
   // A request the host agent has not picked up yet counts as in flight too:
   // the status file still holds the previous run until it starts.
-  const launching = stillLaunching(status.data ? (status.data.updated_at ?? '') : undefined)
+  const launching = stillLaunching(status.data)
+  // An unreadable status mid-update keeps showing the last step we did see.
+  const lastActive = useRef<NonNullable<typeof status.data> | undefined>(undefined)
+  if (status.data && ACTIVE_STATES.includes(status.data.state)) lastActive.current = status.data
+  const view = status.data?.state === 'unknown' && lastActive.current ? lastActive.current : status.data
   const busy =
     ACTIVE_STATES.includes(status.data?.state ?? '')
     || status.data?.request_pending === true
@@ -119,7 +129,7 @@ export function UpdateSection() {
     const d = status.data
     if (!l || !d) return
     const answered = (d.updated_at ?? '') !== l.stamp
-    const terminal = !ACTIVE_STATES.includes(d.state) && d.request_pending !== true
+    const terminal = !ACTIVE_STATES.includes(d.state) && d.state !== 'unknown' && d.request_pending !== true
     if (answered && terminal) {
       launch.current = null
       writeLaunch(null)
@@ -222,21 +232,21 @@ ${base}` : base,
             <span>
               {restarting
                 ? t('Restarting services…', 'Перезапуск сервисов…')
-                : launching && !ACTIVE_STATES.includes(status.data?.state ?? '')
+                : launching && !ACTIVE_STATES.includes(view?.state ?? '')
                   ? t('Starting the update…', 'Запуск обновления…')
-                  : (status.data?.message || t('Updating…', 'Обновление…'))}
+                  : (view?.message || t('Updating…', 'Обновление…'))}
             </span>
             <span className="ml-auto font-mono text-xs text-brand-300">
-              {launching && !ACTIVE_STATES.includes(status.data?.state ?? '') ? 0 : (status.data?.pct ?? 0)}%
+              {launching && !ACTIVE_STATES.includes(view?.state ?? '') ? 0 : (view?.pct ?? 0)}%
             </span>
           </div>
           <div className="h-1.5 w-full overflow-hidden rounded-full bg-gray-800">
             <div
               className="h-full rounded-full bg-brand-500 transition-all duration-500"
-              style={{ width: `${launching && !ACTIVE_STATES.includes(status.data?.state ?? '') ? 0 : Math.min(100, Math.max(0, status.data?.pct ?? 0))}%` }}
+              style={{ width: `${launching && !ACTIVE_STATES.includes(view?.state ?? '') ? 0 : Math.min(100, Math.max(0, view?.pct ?? 0))}%` }}
             />
           </div>
-          {status.data?.request_pending && status.data?.state === 'queued' && (
+          {view?.request_pending && view?.state === 'queued' && (
             <p className="text-[11px] text-gray-400 flex items-start gap-1.5">
               <Info className="mt-0.5 h-3 w-3 shrink-0" />
               {t(

@@ -15,6 +15,9 @@ from app.models import Node, Settings as DBSettings
 
 logger = logging.getLogger(__name__)
 
+# Protocols that live on UDP: a TCP connect to their port always fails.
+UDP_PROTOCOLS = ("wireguard", "hysteria2")
+
 
 class HealthChecker:
     def __init__(self) -> None:
@@ -364,8 +367,9 @@ class HealthChecker:
         - Chained node: probe the chain parent's real endpoint. The child's
           own endpoint (e.g. a WG server blocked by the ISP) is unreachable
           directly by design — the chain exists precisely to tunnel to it.
-        - WireGuard (no chain): WG is UDP-only and silently drops random
-          packets, so TCP SYN is meaningless. We mark it with udp=True
+        - WireGuard and Hysteria2 (no chain): UDP-only (Hysteria2 is QUIC), and they
+          silently drop random packets, so TCP SYN is meaningless — a TCP probe
+          of the port reports a healthy node as offline. We mark it with udp=True
           and use a lightweight UDP probe (sends 0 bytes, expects no
           reply — any ICMP unreachable / network error fails it).
         - Naive node: returns the UPSTREAM Caddy server endpoint so we
@@ -385,7 +389,7 @@ class HealthChecker:
             cur = parent
             seen.add(cur.id)
 
-        udp = (cur.protocol == "wireguard")
+        udp = cur.protocol in UDP_PROTOCOLS
         return cur.address, cur.port, udp
 
     async def _probe_node(

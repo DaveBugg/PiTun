@@ -276,3 +276,20 @@ class TestStartSeed:
         resp = client.post("/api/system/update/start", json={}, headers=auth_headers)
         assert resp.status_code == 202
         assert (data_dir / "update-request.json").exists()
+
+
+class TestStatusWithControlBytes:
+    def test_a_colour_code_inside_the_message_does_not_make_the_status_unknown(
+        self, client, admin_user, auth_headers, data_dir,
+    ):
+        """An older agent wrote the installer's colour codes into `message`; the
+        raw ESC byte is invalid JSON, and the UI read that as "nothing running"."""
+        (data_dir / "update-status.json").write_text(
+            '{"state": "running", "pct": 45, "step": "host", '
+            '"message": "\x1b[0;34m[STEP]\x1b[0m  Preparing host", "ok": null, '
+            '"updated_at": "2026-11-04T12:58:38Z"}',
+            encoding="utf-8",
+        )
+        body = client.get("/api/system/update/status", headers=auth_headers).json()
+        assert body["state"] == "running"
+        assert body["pct"] == 45

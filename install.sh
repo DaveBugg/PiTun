@@ -138,6 +138,10 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m'
+# Colour only for a person at a terminal. Piped (the update agent reads this
+# output and puts the step text into a JSON status file), the escape codes are
+# noise that also made that JSON invalid.
+if [[ ! -t 1 ]]; then RED=''; GREEN=''; YELLOW=''; BLUE=''; NC=''; fi
 
 info()  { echo -e "${GREEN}[INFO]${NC}  $*"; }
 step()  { echo -e "${BLUE}[STEP]${NC}  $*"; }
@@ -1284,6 +1288,10 @@ if [[ "$DRY_RUN" != "1" ]]; then
     else
         docker compose up -d
     fi
+    # The frontend container bind-mounts nginx-spa.conf and dist/. `up -d` does not
+    # recreate it when only those files changed, so it could keep serving the old
+    # config (or an unlinked dist). A restart is a blink for the page, nothing more.
+    docker restart pitun-frontend >/dev/null 2>&1 || true
     # Router-mode sidecars are not compose services (the backend starts them
     # on demand), so `compose up` never builds them. Boxes installed through
     # this path had no dnsmasq/hostapd image at all and router mode failed on

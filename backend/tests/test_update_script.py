@@ -457,3 +457,27 @@ def test_the_daily_check_does_not_overwrite_a_requested_update():
         )
         subprocess.run([bash, "-c", code], check=True, capture_output=True)
         assert status.read_text() == "QUEUED"
+
+
+def _bash_out(code: str) -> str:
+    bash = shutil.which("bash")
+    if not bash:
+        pytest.skip("bash not available")
+    script = Path(__file__).resolve().parents[2] / "scripts" / "pitun-update.sh"
+    r = subprocess.run(
+        [bash, "-c", f'source "{script.as_posix()}"; {code}'],
+        check=True, capture_output=True,
+    )
+    return r.stdout.decode("utf-8")
+
+
+def test_json_str_drops_colour_codes_and_control_bytes():
+    import json
+    out = _bash_out(r'json_str "$(printf "\033[0;34m[STEP]\033[0m  Preparing host\001")"')
+    assert json.loads(out) == "[STEP]  Preparing host"
+
+
+def test_the_installer_is_not_coloured_when_piped():
+    root = Path(__file__).resolve().parents[2]
+    src = (root / "install.sh").read_text(encoding="utf-8")
+    assert "if [[ ! -t 1 ]]; then RED=''; GREEN=''; YELLOW=''; BLUE=''; NC=''; fi" in src

@@ -312,3 +312,43 @@ describe('UpdateSection launch edge cases', () => {
     expect(await screen.findByText(/boom|Could not start the update|Не удалось/)).toBeInTheDocument()
   })
 })
+
+describe('UpdateSection with an unreadable status mid-update', () => {
+  const OLD = {
+    state: 'done' as const, pct: 100, step: 'done', message: 'Updated', ok: true,
+    from: '1.6.6', to: '1.7.1', updated_at: new Date(Date.now() - 3600_000).toISOString(),
+    request_pending: false,
+  }
+
+  it('keeps the last known step on screen instead of dropping the progress', async () => {
+    vi.mocked(updateApi.check).mockResolvedValue({
+      current: '1.7.1', latest: 'v1.7.2', update_available: true,
+      network_path: 'direct', notes: null, error: null,
+    })
+    vi.mocked(updateApi.start).mockResolvedValue({
+      ...OLD, state: 'queued', pct: 0, updated_at: new Date().toISOString(), request_pending: true,
+    })
+    vi.mocked(updateApi.status).mockResolvedValue({ ...OLD })
+    render(wrap(<UpdateSection />))
+    await userEvent.click(screen.getByRole('button', { name: /check for updates/i }))
+    await userEvent.click(await screen.findByRole('button', { name: /update now/i }))
+    vi.mocked(updateApi.status).mockResolvedValue({
+      ...OLD, state: 'running', pct: 45, message: 'Preparing host', updated_at: new Date().toISOString(),
+    })
+    expect(await screen.findByText('Preparing host', {}, { timeout: 5000 })).toBeInTheDocument()
+
+    // The status file turns unreadable for a few seconds (this is what the colour codes did).
+    vi.mocked(updateApi.status).mockResolvedValue({
+      state: 'unknown', pct: 0, step: '', message: 'status file is not valid JSON',
+      ok: null, request_pending: false,
+    })
+    await new Promise((r) => setTimeout(r, 2600))
+    expect(screen.getByText('Preparing host')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /update now/i })).toBeDisabled()
+
+    vi.mocked(updateApi.status).mockResolvedValue({
+      ...OLD, state: 'done', to: '1.7.2', updated_at: new Date().toISOString(),
+    })
+    expect(await screen.findByText(/Updated to|Обновлено до/, {}, { timeout: 5000 })).toBeInTheDocument()
+  }, 20000)
+})

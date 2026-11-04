@@ -238,6 +238,9 @@ json_str() {
     v="${v//$'\n'/ }"
     v="${v//$'\r'/}"
     v="${v//$'\t'/ }"
+    # Colour codes and any other control byte are not valid inside a JSON string:
+    # one of them makes the whole status file unreadable to the UI.
+    v="$(printf '%s' "$v" | sed -E $'s/\x1b\\[[0-9;]*[A-Za-z]//g' | tr -d '\000-\010\013-\037')"
     printf '"%s"' "$v"
 }
 
@@ -389,7 +392,8 @@ apply_update() {
             mapped="$(step_to_pct "$line")"
             if [[ -n "$mapped" ]]; then
                 pct="${mapped%%|*}"; step_id="${mapped##*|}"
-                status_write running "$pct" "$step_id" "${line#*] }"
+                local clean; clean="$(printf '%s' "$line" | sed -E $'s/\x1b\\[[0-9;]*[A-Za-z]//g')"
+                status_write running "$pct" "$step_id" "${clean#*] }"
             fi
         done
     local rc=${PIPESTATUS[0]}
