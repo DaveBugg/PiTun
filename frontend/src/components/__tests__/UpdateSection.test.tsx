@@ -40,6 +40,7 @@ function wrap(ui: ReactNode) {
 }
 
 beforeEach(() => {
+  sessionStorage.clear()
   vi.mocked(updateApi.status).mockResolvedValue({ ...IDLE })
 })
 
@@ -258,3 +259,56 @@ describe('UpdateSection right after "Update now"', () => {
   })
 })
 
+describe('UpdateSection launch edge cases', () => {
+  const OLD = {
+    state: 'done' as const, pct: 100, step: 'done', message: 'Updated', ok: true,
+    from: '1.6.6', to: '1.7.1', updated_at: new Date(Date.now() - 3600_000).toISOString(),
+    request_pending: false,
+  }
+  const CHECK = {
+    current: '1.7.1', latest: 'v1.7.2', update_available: true,
+    network_path: 'direct', notes: null, error: null,
+  }
+
+  it('pins the version the user was shown', async () => {
+    vi.mocked(updateApi.status).mockResolvedValue({ ...OLD })
+    vi.mocked(updateApi.check).mockResolvedValue({ ...CHECK })
+    vi.mocked(updateApi.start).mockResolvedValue({ ...OLD })
+    render(wrap(<UpdateSection />))
+    await userEvent.click(screen.getByRole('button', { name: /check for updates/i }))
+    await userEvent.click(await screen.findByRole('button', { name: /update now/i }))
+    await waitFor(() => expect(updateApi.start).toHaveBeenCalledWith({ force: false, version: 'v1.7.2' }))
+  })
+
+  it('does not drop the progress box when the agent answers "nothing to do"', async () => {
+    vi.mocked(updateApi.status).mockResolvedValue({ ...OLD })
+    vi.mocked(updateApi.check).mockResolvedValue({ ...CHECK })
+    vi.mocked(updateApi.start).mockResolvedValue({ ...OLD })
+    render(wrap(<UpdateSection />))
+    await userEvent.click(screen.getByRole('button', { name: /check for updates/i }))
+    await userEvent.click(await screen.findByRole('button', { name: /update now/i }))
+    expect(await screen.findByText(/Starting the update|Запуск обновления/)).toBeInTheDocument()
+    vi.mocked(updateApi.status).mockResolvedValue({
+      ...IDLE, state: 'idle', pct: 100, step: 'up-to-date', message: 'Already on 1.7.1',
+      updated_at: new Date().toISOString(),
+    })
+    // The answer is shown, not swallowed.
+    expect(await screen.findByText('Already on 1.7.1', {}, { timeout: 5000 })).toBeInTheDocument()
+  }, 10000)
+
+  it('still shows the update as running after a reload while the backend is down', async () => {
+    sessionStorage.setItem('pitun.update.launch', JSON.stringify({ since: Date.now(), stamp: OLD.updated_at }))
+    vi.mocked(updateApi.status).mockRejectedValue(new Error('Network Error'))
+    render(wrap(<UpdateSection />))
+    expect(await screen.findByText(/Restarting services|Перезапуск сервисов/)).toBeInTheDocument()
+  })
+
+  it('shows why the update could not be started', async () => {
+    vi.mocked(updateApi.check).mockResolvedValue({ ...CHECK })
+    vi.mocked(updateApi.start).mockRejectedValue(new Error('boom'))
+    render(wrap(<UpdateSection />))
+    await userEvent.click(screen.getByRole('button', { name: /check for updates/i }))
+    await userEvent.click(await screen.findByRole('button', { name: /update now/i }))
+    expect(await screen.findByText(/boom|Could not start the update|Не удалось/)).toBeInTheDocument()
+  })
+})

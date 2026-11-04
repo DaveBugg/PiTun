@@ -39,6 +39,28 @@ const DISMISS_KEY = 'pitun.update.dismissed'
 // for that moment the status file still shows the PREVIOUS run. Keep watching,
 // and keep showing "starting", until the file changes or this long has passed.
 const LAUNCH_GRACE_MS = 120_000
+// The click is remembered for the tab's lifetime, so a reload or a remount in
+// the middle of the update (the page is often refreshed while the backend
+// restarts) still shows the update as running.
+const LAUNCH_KEY = 'pitun.update.launch'
+
+type Launch = { since: number; stamp: string }
+
+function readLaunch(): Launch | null {
+  try {
+    const raw = sessionStorage.getItem(LAUNCH_KEY)
+    if (!raw) return null
+    const v = JSON.parse(raw)
+    return typeof v?.since === 'number' && typeof v?.stamp === 'string' ? v : null
+  } catch { return null }
+}
+
+function writeLaunch(v: Launch | null) {
+  try {
+    if (v) sessionStorage.setItem(LAUNCH_KEY, JSON.stringify(v))
+    else sessionStorage.removeItem(LAUNCH_KEY)
+  } catch { /* private mode */ }
+}
 
 function readDismissed(): string {
   try { return localStorage.getItem(DISMISS_KEY) ?? '' } catch { return '' }
@@ -52,12 +74,14 @@ export function UpdateSection() {
   const [dismissed, setDismissed] = useState(readDismissed)
 
   // Set when an update is requested: when, and the status stamp it was requested over.
-  const launch = useRef<{ since: number; stamp: string } | null>(null)
+  const launch = useRef<Launch | null>(readLaunch())
   const [, tick] = useState(0)
+  // `stamp` is undefined while no status has been received at all (the backend
+  // is down mid-restart): that still counts as launching.
   const stillLaunching = (stamp: string | undefined) =>
     launch.current !== null
     && Date.now() - launch.current.since < LAUNCH_GRACE_MS
-    && (stamp ?? '') === launch.current.stamp
+    && (stamp === undefined || stamp === launch.current.stamp)
 
   const status = useQuery({
     queryKey: ['system', 'update', 'status'],
@@ -67,7 +91,7 @@ export function UpdateSection() {
     refetchInterval: (q) =>
       ACTIVE_STATES.includes(q.state.data?.state ?? '')
         || q.state.data?.request_pending === true
-        || stillLaunching(q.state.data?.updated_at ?? '')
+        || stillLaunching(q.state.data ? (q.state.data.updated_at ?? '') : undefined)
         ? 2000
         : false,
     // Mid-update the backend is down; keep the last known state rather
@@ -77,7 +101,7 @@ export function UpdateSection() {
 
   // A request the host agent has not picked up yet counts as in flight too:
   // the status file still holds the previous run until it starts.
-  const launching = stillLaunching(status.data?.updated_at ?? '')
+  const launching = stillLaunching(status.data ? (status.data.updated_at ?? '') : undefined)
   const busy =
     ACTIVE_STATES.includes(status.data?.state ?? '')
     || status.data?.request_pending === true
@@ -86,6 +110,23 @@ export function UpdateSection() {
   // poll means "restarting", not "broken".
   const restarting = busy && status.isError
 
+  // The run answered with something that is not "in progress" (the agent found
+  // nothing to do, or it already finished): the launch is over. Say so instead
+  // of letting the progress box vanish without a word.
+  const [launchNote, setLaunchNote] = useState<string | null>(null)
+  useEffect(() => {
+    const l = launch.current
+    const d = status.data
+    if (!l || !d) return
+    const answered = (d.updated_at ?? '') !== l.stamp
+    const terminal = !ACTIVE_STATES.includes(d.state) && d.request_pending !== true
+    if (answered && terminal) {
+      launch.current = null
+      writeLaunch(null)
+      if (d.state === 'idle' || d.state === 'available') setLaunchNote(d.message || null)
+    }
+  }, [status.data])
+
   const check = useMutation({
     mutationFn: () => updateApi.check(),
     onSuccess: () => setCheckError(null),
@@ -93,9 +134,13 @@ export function UpdateSection() {
   })
 
   const start = useMutation({
-    mutationFn: (force: boolean) => updateApi.start({ force }),
+    // Pin the version the user was shown: the agent would otherwise look the
+    // latest release up again and could disagree with the check just made.
+    mutationFn: (force: boolean) => updateApi.start({ force, version: force ? undefined : check.data?.latest ?? undefined }),
     onSuccess: (data) => {
+      setLaunchNote(null)
       launch.current = { since: Date.now(), stamp: data.updated_at ?? '' }
+      writeLaunch(launch.current)
       qc.setQueryData(['system', 'update', 'status'], data)
       tick((n) => n + 1)
     },
@@ -200,6 +245,20 @@ ${base}` : base,
               )}
             </p>
           )}
+        </div>
+      )}
+
+      {!busy && launchNote && (
+        <div className="rounded-lg border border-gray-700 bg-gray-800/40 px-3 py-2 text-sm text-gray-300 flex items-start gap-2">
+          <Info className="mt-0.5 h-4 w-4 shrink-0" />
+          <span>{launchNote}</span>
+        </div>
+      )}
+
+      {start.isError && (
+        <div className="rounded-lg border border-red-800/50 bg-red-950/30 px-3 py-2 text-sm text-red-200 flex items-start gap-2">
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+          <span>{apiErrorText(start.error, t('Could not start the update', 'Не удалось запустить обновление'))}</span>
         </div>
       )}
 

@@ -208,6 +208,11 @@ status_write() {
     local state="$1" pct="$2" step_id="$3" message="$4"
     local ok="${5:-null}"
     [[ -d "$(dirname "$STATUS_FILE")" ]] || return 0
+    # The daily check must not write over the status of an update the user has
+    # just asked for: that would show an idle/available result instead of progress.
+    if [[ "${MODE:-}" == "check" && ( "$state" == "idle" || "$state" == "available" ) && -f "$REQUEST_FILE" ]]; then
+        return 0
+    fi
     local tmp="${STATUS_FILE}.tmp"
     cat >"$tmp" <<EOF
 {

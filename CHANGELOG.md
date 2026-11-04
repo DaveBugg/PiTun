@@ -4,6 +4,18 @@ All notable user-facing changes to PiTun. Full per-release detail lives in the
 [GitHub Releases](https://github.com/DaveBugg/PiTun/releases); this file is the
 committed summary.
 
+## v1.7.4 — 2026-11-04
+
+**The update window stays on screen while an update runs.**
+
+### Fixed
+
+- The update progress no longer disappears after "Update now": a page reload or a restarting backend in the middle of an update still shows "Restarting services…", and the 401 redirect to the login page is skipped for the status poll.
+- When the agent finds nothing to do, the page says so ("Already on …") instead of dropping the progress box without a word.
+- "Update now" installs the version the check showed, instead of letting the agent look the latest release up again and possibly disagree.
+- A failed start is shown in the update block.
+- The queued status is written atomically and before the request, so a fast agent's "running" is not overwritten; the daily check no longer writes over a requested update.
+
 ## v1.7.3 — 2026-11-04
 
 **Hysteria2 that hides its port and hops across ports, and an update page that shows its progress.**

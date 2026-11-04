@@ -77,7 +77,7 @@ http.interceptors.response.use(
     // A status means the box replied; only a transport failure counts as
     // "this address is dark".
     noteRequestOutcome(Boolean(error.response))
-    if (error.response?.status === 401 && !error.config?.url?.includes('/auth/') && window.location.pathname !== '/login') {
+    if (error.response?.status === 401 && !error.config?.url?.includes('/auth/') && !error.config?.url?.includes('/system/update/status') && window.location.pathname !== '/login') {
       localStorage.removeItem('pitun_token')
       window.location.href = '/login'
     }

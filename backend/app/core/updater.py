@@ -218,27 +218,31 @@ def write_request(
         "prerelease": bool(prerelease),
         "requested_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
     }
-    fd, tmp = tempfile.mkstemp(dir=str(DATA_DIR), prefix=".update-request.")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            json.dump(body, fh)
-        os.replace(tmp, REQUEST_FILE)
-    except Exception:
+    def _atomic(path, text: str) -> None:
+        fd, tmp = tempfile.mkstemp(dir=str(DATA_DIR), prefix=".update-tmp.")
         try:
-            os.unlink(tmp)
-        except OSError:
-            pass
-        raise
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                fh.write(text)
+            os.replace(tmp, path)
+        except Exception:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
 
-    # Seed a status so the UI has something to render immediately —
-    # the agent may take a second or two to be scheduled.
+    # Seed the status FIRST, atomically: the agent fires the moment the request
+    # appears and may write `running` straight away, which a seed written after
+    # it would overwrite; a plain write_text also truncates the file for a
+    # moment, and a poll in that gap reads garbage.
     try:
-        STATUS_FILE.write_text(json.dumps({
+        _atomic(STATUS_FILE, json.dumps({
             "state": "queued", "pct": 0, "step": "queued",
             "message": "Waiting for the update agent to pick this up",
             "from": APP_VERSION, "to": version or "latest", "ok": None,
             "updated_at": body["requested_at"],
-        }), encoding="utf-8")
-    except OSError:
-        pass
+        }))
+    except OSError as exc:
+        logger.warning("Could not seed the update status: %s", exc)
+    _atomic(REQUEST_FILE, json.dumps(body))
     return body

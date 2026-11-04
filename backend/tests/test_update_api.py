@@ -137,7 +137,7 @@ class TestStartEndpoint:
             "/api/system/update/start", json={"version": "v9.9.9"},
             headers=auth_headers,
         )
-        leftovers = list(data_dir.glob(".update-request.*"))
+        leftovers = list(data_dir.glob(".update-*"))
         assert leftovers == [], "temp file left behind"
 
 
@@ -251,3 +251,28 @@ class TestDowngradeWarning:
         with self._patch_fetch(None):
             body = client.get("/api/system/update/check", headers=auth_headers).json()
         assert body["target_lacks_update_ui"] is False
+
+
+class TestStartSeed:
+    def test_the_seed_is_complete_json_and_nothing_is_left_behind(
+        self, client, admin_user, auth_headers, data_dir,
+    ):
+        client.post("/api/system/update/start", json={}, headers=auth_headers)
+        seed = json.loads((data_dir / "update-status.json").read_text())
+        assert seed["state"] == "queued"
+        assert list(data_dir.glob(".update-*")) == []
+
+    def test_a_failing_seed_write_does_not_block_the_request(
+        self, client, admin_user, auth_headers, data_dir, monkeypatch,
+    ):
+        from app.core import updater
+
+        real = updater.os.replace
+        def flaky(src, dst, *a, **k):
+            if str(dst).endswith("update-status.json"):
+                raise OSError("read-only")
+            return real(src, dst, *a, **k)
+        monkeypatch.setattr(updater.os, "replace", flaky)
+        resp = client.post("/api/system/update/start", json={}, headers=auth_headers)
+        assert resp.status_code == 202
+        assert (data_dir / "update-request.json").exists()

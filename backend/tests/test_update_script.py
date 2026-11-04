@@ -436,3 +436,24 @@ class TestSnapshotRetention:
         assert prune_call > health_gate, (
             "prune_old_snapshots must run after the health check, not before"
         )
+
+
+def test_the_daily_check_does_not_overwrite_a_requested_update():
+    """With a request waiting, a --check run must not write idle/available over it."""
+    import subprocess, tempfile, pathlib, shutil
+    bash = shutil.which("bash")
+    if not bash:
+        pytest.skip("bash not available")
+    script = pathlib.Path(__file__).resolve().parents[2] / "scripts" / "pitun-update.sh"
+    with tempfile.TemporaryDirectory() as d:
+        d = pathlib.Path(d)
+        (d / "req.json").write_text("{}")
+        status = d / "status.json"
+        status.write_text("QUEUED")
+        code = (
+            f'source "{script.as_posix()}"; MODE=check; '
+            f'STATUS_FILE="{status.as_posix()}"; REQUEST_FILE="{(d / "req.json").as_posix()}"; '
+            'status_write available 0 available "x"; status_write idle 100 up-to-date "y" true'
+        )
+        subprocess.run([bash, "-c", code], check=True, capture_output=True)
+        assert status.read_text() == "QUEUED"
