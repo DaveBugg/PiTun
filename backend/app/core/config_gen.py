@@ -3,6 +3,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
@@ -385,6 +386,24 @@ def _apply_pin(tls: Dict[str, Any], node: Node) -> None:
         )
 
 
+_HOP_PORTS_RE = re.compile(r"^\d{1,5}(-\d{1,5})?(,\d{1,5}(-\d{1,5})?)*$")
+_HOP_INTERVAL_RE = re.compile(r"^\d{1,4}(-\d{1,4})?$")
+
+
+def hop_params(node: Node) -> Optional[Dict[str, str]]:
+    """The port range and interval (seconds) of a node that hops ports, or None.
+
+    Values that do not look like a port list / a seconds range are dropped
+    rather than written into a config xray would refuse to load."""
+    ports = (getattr(node, "hy2_hop_ports", None) or "").strip().replace(" ", "")
+    if not ports or not _HOP_PORTS_RE.match(ports):
+        return None
+    interval = (getattr(node, "hy2_hop_interval", None) or "").strip() or "10-30"
+    if not _HOP_INTERVAL_RE.match(interval):
+        interval = "10-30"
+    return {"ports": ports, "interval": interval}
+
+
 def _outbound_hy2(node: Node) -> Dict[str, Any]:
     """Hysteria2 over xray's `hysteria` transport.
 
@@ -418,6 +437,22 @@ def _outbound_hy2(node: Node) -> Dict[str, Any]:
                 "Node %s: hysteria2 obfs %r is not supported by xray — emitted without it",
                 node.id, node.hy2_obfs,
             )
+    hop = hop_params(node)
+    if hop:
+        # The `udphop` mask in remote mode moves the DESTINATION port across the
+        # range (the server redirects the range to its port). Measured on xray
+        # 26.10.31: `quicParams.udpHop` is accepted but never hops, and the local
+        # mode only changes the source port, so neither is used. Order matters:
+        # obfuscation first, hopping after it.
+        fm = stream.setdefault("finalmask", {})
+        fm.setdefault("udp", []).append({
+            "type": "udphop",
+            "settings": {
+                "mode": "intervalremote",
+                "interval": hop["interval"],
+                "remotePorts": hop["ports"],
+            },
+        })
 
     return {
         "tag": f"node-{node.id}",

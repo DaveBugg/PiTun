@@ -324,6 +324,23 @@ class TestAgentRequest:
         req, _marker, _ = self._agent(tmp_path, '{"version":"v1.5.0"}')
         assert not req.exists()
 
+    def test_status_says_running_before_the_request_disappears(self, tmp_path):
+        """Until the first real status is written the file holds the PREVIOUS run;
+        the UI would see nothing in flight. So the agent writes "running" first,
+        and by the time run_update starts the status is already ours."""
+        import json
+        req = tmp_path / "update-request.json"
+        req.write_text('{"version":"v1.5.0"}', newline="\n")
+        status = tmp_path / "update-status.json"
+        status.write_text(json.dumps({"state": "done", "pct": 100, "step": "done"}), newline="\n")
+        seen = tmp_path / "seen.txt"
+        run_bash(
+            f'REQUEST_FILE="{req.as_posix()}"; STATUS_FILE="{status.as_posix()}"; LOG_FILE=""; '
+            f'run_update() {{ cp "{status.as_posix()}" "{seen.as_posix()}"; }}; agent_once',
+        )
+        doc = json.loads(seen.read_text())
+        assert doc["state"] == "running" and doc["step"] == "start"
+
     def test_no_request_is_a_clean_no_op(self, tmp_path):
         res = run_bash(
             f'REQUEST_FILE="{(tmp_path / "absent.json").as_posix()}"; LOG_FILE=""; '

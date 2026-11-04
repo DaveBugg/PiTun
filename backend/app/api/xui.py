@@ -1823,6 +1823,7 @@ async def create_inbound(
                 detail=f"Panel util call failed ({exc.kind}): {exc}",
             )
 
+        hop_applied = None
         if preset.id == "hysteria2":
             # QUIC has no Reality, so the inbound needs a certificate on the
             # VPS: the panel domain's Let's Encrypt one, or a self-signed one.
@@ -1839,6 +1840,42 @@ async def create_inbound(
             resolved.update(
                 cert_file=cert["cert_file"], key_file=cert["key_file"], sni=sni,
             )
+
+            # How the port looks to a probe. "auto": a panel with a real domain and a
+            # CA-signed certificate answers like an HTTP/3 website (its own fake
+            # site); one without can only hide, as random noise.
+            mask = (values.get("mask") or "auto").strip().lower()
+            if mask not in ("auto", "site", "noise", "none"):
+                raise HTTPException(400, detail="mask must be auto, site, noise or none")
+            if mask == "auto":
+                mask = "site" if (xs.mode == "xui-pro" and not cert["self_signed"]) else "noise"
+            if mask == "site":
+                # On x-ui-pro the QUIC port relays to the panel's own web site, so
+                # a probe gets exactly what the same name returns over TCP — and
+                # stays in step when the fake site is rotated. (A `file` masquerade
+                # would serve a directory listing, which no real site returns.)
+                resolved["masquerade"] = (
+                    {"type": "proxy", "url": f"https://{xs.domain}", "rewriteHost": True}
+                    if (xs.mode == "xui-pro" and xs.domain) else
+                    {"type": "string", "statusCode": 200,
+                     "content": "<!doctype html><html><head><title>Welcome</title></head>"
+                                "<body><h1>Welcome</h1></body></html>",
+                     "headers": {"Content-Type": "text/html"}}
+                )
+            elif mask == "noise":
+                resolved["obfs_password"] = secrets.token_urlsafe(16)
+
+            # Port hopping needs a redirect rule on the VPS; set it up before the
+            # inbound so a refusal (range in use, no nftables) changes nothing.
+            if (values.get("hop") or "off").strip().lower() == "on":
+                from app.core.xui_hysteria import apply_hop
+                try:
+                    hop_applied = await apply_hop(
+                        srv, int(values["port"]), values.get("hop_ports") or "",
+                        values.get("hop_interval") or "",
+                    )
+                except RuntimeError as exc:
+                    raise HTTPException(502, detail=f"Port hopping: {exc}")
 
         try:
             payload = preset.build_payload(values, **resolved)
@@ -1859,6 +1896,9 @@ async def create_inbound(
         try:
             created = await client.add_inbound(wire)
         except XuiAPIError as exc:
+            if hop_applied:
+                from app.core.xui_hysteria import remove_hop
+                await remove_hop(srv, int(values["port"]))
             raise HTTPException(
                 502,
                 detail=f"Panel rejected add-inbound ({exc.kind}): {exc}",
@@ -1977,6 +2017,10 @@ async def delete_inbound(
                 "delete_inbound: ufw close %s failed on srv=%s: %s",
                 inbound_port_to_close, srv.id, exc,
             )
+
+    if inbound_port_to_close and (ib_meta.get("protocol") or "").lower() == "hysteria":
+        from app.core.xui_hysteria import remove_hop
+        await remove_hop(srv, inbound_port_to_close)
 
     cached = list((await session.exec(
         select(XuiClientModel)
@@ -2216,13 +2260,16 @@ async def get_inbound_client_share_uri(
         )
 
     pin = None
+    hop = None
     if (inbound.get("protocol") or "").lower() == "hysteria":
         from app.core.xui_hysteria import remote_cert_pin
         stream_cfg = parse_inbound_field(inbound.get("streamSettings"))
         certs = ((stream_cfg.get("tlsSettings") or {}).get("certificates") or [{}])
         pin = await remote_cert_pin(srv, (certs[0] or {}).get("certificateFile") or "")
+        from app.core.xui_hysteria import remote_hop
+        hop = await remote_hop(srv, int(inbound.get("port") or 0))
 
-    uri = inbound_client_to_uri(inbound, target, srv.host, pin)
+    uri = inbound_client_to_uri(inbound, target, srv.host, pin, hop)
     if uri is None:
         proto = (inbound.get("protocol") or "?").lower()
         return {
@@ -2252,7 +2299,9 @@ async def _export_hysteria_client(
     stream_cfg = parse_inbound_field(inbound.get("streamSettings"))
     certs = ((stream_cfg.get("tlsSettings") or {}).get("certificates") or [{}])
     pin = await remote_cert_pin(srv, (certs[0] or {}).get("certificateFile") or "")
-    fields = node_fields(inbound, target, srv.host, pin)
+    from app.core.xui_hysteria import remote_hop
+    hop = await remote_hop(srv, int(inbound.get("port") or 0))
+    fields = node_fields(inbound, target, srv.host, pin, hop)
     auth = fields["password"] or ""
     if not auth:
         raise HTTPException(409, detail="This hysteria client has no auth token")

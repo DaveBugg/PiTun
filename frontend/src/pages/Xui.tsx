@@ -1325,7 +1325,7 @@ function AddInboundModal({
             <div className="text-[11px] uppercase tracking-wider text-gray-500">
               {t('Preset fields', 'Поля пресета')}
             </div>
-            {preset.fields.map((f) => (
+            {preset.fields.filter((f) => !(f.name.startsWith('hop_') && values.hop !== 'on')).map((f) => (
               <div key={f.name}>
                 <label className="text-xs text-gray-400 block mb-1">
                   {f.label}
@@ -1333,13 +1333,26 @@ function AddInboundModal({
                     <span className="text-gray-600 ml-1">({t('optional', 'необязательно')})</span>
                   )}
                 </label>
-                <input
-                  type={f.type === 'int' ? 'number' : 'text'}
-                  value={values[f.name] ?? ''}
-                  onChange={(e) => setValues((v) => ({ ...v, [f.name]: e.target.value }))}
-                  placeholder={f.placeholder || (f.default ?? '')}
-                  className="w-full rounded-lg bg-gray-900 border border-gray-800 px-3 py-2 text-sm text-gray-100 focus:border-brand-500 focus:outline-hidden"
-                />
+                {f.type === 'select' && f.choices ? (
+                  <select
+                    value={values[f.name] ?? f.default ?? ''}
+                    onChange={(e) => setValues((v) => ({ ...v, [f.name]: e.target.value }))}
+                    className="w-full rounded-lg bg-gray-900 border border-gray-800 px-3 py-2 text-sm text-gray-100 focus:border-brand-500 focus:outline-hidden"
+                  >
+                    {f.choices.map((c) => <option key={c} value={c}>{c}</option>)}
+                  </select>
+                ) : (
+                  <input
+                    type={f.type === 'int' ? 'number' : 'text'}
+                    value={values[f.name] ?? ''}
+                    onChange={(e) => setValues((v) => ({ ...v, [f.name]: e.target.value }))}
+                    placeholder={f.placeholder || (f.default ?? '')}
+                    className="w-full rounded-lg bg-gray-900 border border-gray-800 px-3 py-2 text-sm text-gray-100 focus:border-brand-500 focus:outline-hidden"
+                  />
+                )}
+                {f.type === 'select' && f.help && (
+                  <p className="mt-1 text-[11px] text-gray-500 leading-snug">{f.help}</p>
+                )}
                 {f.name === 'port' && (
                   <PortCheck
                     className="mt-1.5"

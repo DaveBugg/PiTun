@@ -622,7 +622,7 @@ async def _fetch_subscription_unlocked(sub_id: int) -> None:
             "reality_pbk", "reality_sid", "reality_spx",
             "wg_private_key", "wg_public_key", "wg_preshared_key",
             "wg_endpoint", "wg_mtu", "wg_reserved", "wg_local_address",
-            "hy2_obfs", "hy2_obfs_password",
+            "hy2_obfs", "hy2_obfs_password", "hy2_hop_ports", "hy2_hop_interval",
             "group", "note",
         )
 

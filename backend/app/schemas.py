@@ -74,6 +74,8 @@ class NodeBase(BaseModel):
     wg_local_address: Optional[str] = None
     hy2_obfs: Optional[str] = None
     hy2_obfs_password: Optional[str] = None
+    hy2_hop_ports: Optional[str] = None
+    hy2_hop_interval: Optional[str] = None
     # NaiveProxy
     internal_port: Optional[int] = None
     naive_padding: bool = True

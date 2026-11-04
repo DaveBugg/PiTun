@@ -50,6 +50,8 @@ const DEFAULTS: FormData = {
   wg_local_address: '',
   hy2_obfs: '',
   hy2_obfs_password: '',
+  hy2_hop_ports: '',
+  hy2_hop_interval: '',
   naive_padding: true,
   group: '',
   note: '',
@@ -317,6 +319,8 @@ export function NodeForm({ initial, onSave, onCancel, loading, nodes = [] }: Pro
             {fld('SNI', inp('sni'))}
             {fld('Obfs type', inp('hy2_obfs'), 'e.g. salamander')}
             {fld('Obfs password', inp('hy2_obfs_password'))}
+            {fld('Port hopping range', inp('hy2_hop_ports'), 'UDP, e.g. 20000-32000; empty = off')}
+            {fld('Hop interval (s)', inp('hy2_hop_interval'), 'e.g. 10-30')}
             <CertPinField
               value={form.pinned_cert_sha256 ?? ''}
               onChange={(v) => set('pinned_cert_sha256', v)}

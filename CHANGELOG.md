@@ -4,6 +4,39 @@ All notable user-facing changes to PiTun. Full per-release detail lives in the
 [GitHub Releases](https://github.com/DaveBugg/PiTun/releases); this file is the
 committed summary.
 
+## v1.7.3 — 2026-11-04
+
+**Hysteria2 that hides its port and hops across ports, and an update page that shows its progress.**
+
+### Added
+
+- **Hysteria2 can hide its port and hop across ports** (X-ui → Add inbound →
+  Hysteria2). "How the port looks" has three modes:
+  - *site* — a probe that speaks HTTP/3 to the UDP port gets the panel's own web
+    site (relayed from the same name over TCP, so both answers are identical).
+    The default on x-ui-pro, where the certificate is a real one;
+  - *noise* — salamander obfuscation: no readable QUIC header, so neither the SNI
+    nor the self-signed certificate of a bare panel is visible. The default on
+    bare;
+  - *none* — plain Hysteria2.
+  The password of the obfuscation travels with the exported node and the share
+  link (`obfs=salamander&obfs-password=…`).
+- **Port hopping** (optional). The client moves across a UDP range (20000-32000
+  by default) every 10-30 s; the VPS redirects the range to the inbound's port
+  with an nftables rule in its own table, loaded at boot and removed with the
+  inbound. Only the first packet of a flow is redirected, so the VPS's own
+  traffic (DNS replies and the like) is never touched; a range that contains a
+  UDP port something already listens on is refused. Node form: "Port hopping
+  range" and "Hop interval"; share links carry `mport=`.
+
+### Fixed
+
+- **The update progress bar vanished right after "Update now".** The host agent
+  consumes the request before it writes its first status, and for those seconds
+  the status file still held the previous run, so the page saw nothing in flight
+  and stopped looking. The agent now writes "running" first, and the page keeps
+  watching (and says "Starting the update…") until the status changes.
+
 ## v1.7.2 — 2026-11-03
 
 **Circles check the speed before switching; smaller fixes around them.**

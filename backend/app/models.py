@@ -97,6 +97,10 @@ class Node(SQLModel, table=True):
     # Hysteria2
     hy2_obfs: Optional[str] = None
     hy2_obfs_password: Optional[str] = None
+    # Port hopping: the client moves across this UDP port range ("20000-40000")
+    # every interval ("10-30" seconds). The server redirects the range to its port.
+    hy2_hop_ports: Optional[str] = None
+    hy2_hop_interval: Optional[str] = None
 
     # NaiveProxy (HTTPS forward proxy via Caddy + forwardproxy plugin)
     # Auth reuses `uuid` (user) and `password` (pass) — same convention as socks.

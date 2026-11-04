@@ -61,6 +61,8 @@ export interface Node {
   wg_local_address?: string
   hy2_obfs?: string
   hy2_obfs_password?: string
+  hy2_hop_ports?: string
+  hy2_hop_interval?: string
   // NaiveProxy
   internal_port?: number
   naive_padding?: boolean

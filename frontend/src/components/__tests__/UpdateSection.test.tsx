@@ -233,3 +233,28 @@ describe('UpdateSection result banner', () => {
     expect(screen.queryByText(/Installer exited with code 1/)).not.toBeInTheDocument()
   })
 })
+
+describe('UpdateSection right after "Update now"', () => {
+  it('keeps showing "starting" while the status file still holds the previous run', async () => {
+    const old = {
+      state: 'done' as const, pct: 100, step: 'done', message: 'Updated', ok: true,
+      from: '1.6.6', to: '1.7.1', updated_at: new Date(Date.now() - 3600_000).toISOString(),
+      request_pending: false,
+    }
+    vi.mocked(updateApi.status).mockResolvedValue(old)
+    vi.mocked(updateApi.check).mockResolvedValue({
+      current: '1.7.1', latest: 'v1.7.2', update_available: true,
+      network_path: 'direct', notes: null, error: null,
+    })
+    // The agent consumed the request but has not written anything yet: still the old run.
+    vi.mocked(updateApi.start).mockResolvedValue({ ...old })
+    render(wrap(<UpdateSection />))
+    await userEvent.click(screen.getByRole('button', { name: /check for updates/i }))
+    await userEvent.click(await screen.findByRole('button', { name: /update now/i }))
+
+    expect(await screen.findByText(/Starting the update|Запуск обновления/)).toBeInTheDocument()
+    // Not offered again while it starts.
+    expect(screen.getByRole('button', { name: /update now/i })).toBeDisabled()
+  })
+})
+

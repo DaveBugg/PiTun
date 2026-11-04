@@ -344,6 +344,10 @@ def _parse_hy2(uri: str) -> Optional[Dict[str, Any]]:
         "pinned_cert_sha256": try_normalize_pin(_qs(params, "pinSHA256") or _qs(params, "pcs")) or None,
         "hy2_obfs": _qs(params, "obfs"),
         "hy2_obfs_password": _qs(params, "obfs-password"),
+        # `mport` is the standard hysteria2 name for a hop range; the interval has
+        # no standard spelling, `hop-interval` is PiTun's own.
+        "hy2_hop_ports": _qs(params, "mport") or None,
+        "hy2_hop_interval": _qs(params, "hop-interval") or None,
     }
     return node
 
@@ -532,6 +536,8 @@ def _clash_proxy_to_node(p: Dict[str, Any]) -> Optional[Dict[str, Any]]:
             "sni": p.get("sni", "") or server,
             "hy2_obfs": (p.get("obfs") or ""),
             "hy2_obfs_password": (p.get("obfs-password") or ""),
+            "hy2_hop_ports": (str(p.get("ports") or "") or None),
+            "hy2_hop_interval": (str(p.get("hop-interval") or "") or None),
         })
     elif ptype == "wireguard":
         base.update({

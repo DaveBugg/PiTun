@@ -14,7 +14,7 @@
  *    tells the operator which route answered, and an unreachable check
  *    says so instead of quietly claiming the latest version.
  */
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   ArrowUpCircle, CheckCircle2, Loader2, RefreshCw, AlertTriangle, Info, X,
@@ -34,6 +34,12 @@ const ACTIVE_STATES = ['queued', 'running']
 const DONE_BANNER_MS = 30 * 60 * 1000
 const DISMISS_KEY = 'pitun.update.dismissed'
 
+// After "Update now" the host agent may need a few seconds before it writes its
+// first status (it consumes the request, then resolves the network path), and
+// for that moment the status file still shows the PREVIOUS run. Keep watching,
+// and keep showing "starting", until the file changes or this long has passed.
+const LAUNCH_GRACE_MS = 120_000
+
 function readDismissed(): string {
   try { return localStorage.getItem(DISMISS_KEY) ?? '' } catch { return '' }
 }
@@ -45,13 +51,23 @@ export function UpdateSection() {
   const [checkError, setCheckError] = useState<string | null>(null)
   const [dismissed, setDismissed] = useState(readDismissed)
 
+  // Set when an update is requested: when, and the status stamp it was requested over.
+  const launch = useRef<{ since: number; stamp: string } | null>(null)
+  const [, tick] = useState(0)
+  const stillLaunching = (stamp: string | undefined) =>
+    launch.current !== null
+    && Date.now() - launch.current.since < LAUNCH_GRACE_MS
+    && (stamp ?? '') === launch.current.stamp
+
   const status = useQuery({
     queryKey: ['system', 'update', 'status'],
     queryFn: () => updateApi.status(),
     // Poll only while something is in flight. A finished update leaves a
     // terminal state on disk, so there is nothing to watch afterwards.
     refetchInterval: (q) =>
-      ACTIVE_STATES.includes(q.state.data?.state ?? '') || q.state.data?.request_pending === true
+      ACTIVE_STATES.includes(q.state.data?.state ?? '')
+        || q.state.data?.request_pending === true
+        || stillLaunching(q.state.data?.updated_at ?? '')
         ? 2000
         : false,
     // Mid-update the backend is down; keep the last known state rather
@@ -61,8 +77,11 @@ export function UpdateSection() {
 
   // A request the host agent has not picked up yet counts as in flight too:
   // the status file still holds the previous run until it starts.
+  const launching = stillLaunching(status.data?.updated_at ?? '')
   const busy =
-    ACTIVE_STATES.includes(status.data?.state ?? '') || status.data?.request_pending === true
+    ACTIVE_STATES.includes(status.data?.state ?? '')
+    || status.data?.request_pending === true
+    || launching
   // The backend goes away during its own restart. While busy, a failed
   // poll means "restarting", not "broken".
   const restarting = busy && status.isError
@@ -76,7 +95,9 @@ export function UpdateSection() {
   const start = useMutation({
     mutationFn: (force: boolean) => updateApi.start({ force }),
     onSuccess: (data) => {
+      launch.current = { since: Date.now(), stamp: data.updated_at ?? '' }
       qc.setQueryData(['system', 'update', 'status'], data)
+      tick((n) => n + 1)
     },
   })
 
@@ -156,16 +177,18 @@ ${base}` : base,
             <span>
               {restarting
                 ? t('Restarting services…', 'Перезапуск сервисов…')
-                : (status.data?.message || t('Updating…', 'Обновление…'))}
+                : launching && !ACTIVE_STATES.includes(status.data?.state ?? '')
+                  ? t('Starting the update…', 'Запуск обновления…')
+                  : (status.data?.message || t('Updating…', 'Обновление…'))}
             </span>
             <span className="ml-auto font-mono text-xs text-brand-300">
-              {status.data?.pct ?? 0}%
+              {launching && !ACTIVE_STATES.includes(status.data?.state ?? '') ? 0 : (status.data?.pct ?? 0)}%
             </span>
           </div>
           <div className="h-1.5 w-full overflow-hidden rounded-full bg-gray-800">
             <div
               className="h-full rounded-full bg-brand-500 transition-all duration-500"
-              style={{ width: `${Math.min(100, Math.max(0, status.data?.pct ?? 0))}%` }}
+              style={{ width: `${launching && !ACTIVE_STATES.includes(status.data?.state ?? '') ? 0 : Math.min(100, Math.max(0, status.data?.pct ?? 0))}%` }}
             />
           </div>
           {status.data?.request_pending && status.data?.state === 'queued' && (

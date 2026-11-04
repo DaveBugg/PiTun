@@ -434,7 +434,11 @@ agent_once() {
     [[ -f "$REQUEST_FILE" ]] || { log "No update request pending."; return 0; }
 
     local req; req="$(cat "$REQUEST_FILE" 2>/dev/null)"
-    # Consume the request FIRST: a request that crashes the agent must
+    # Say we are running BEFORE the request disappears: until the first real
+    # status is written the file still holds the previous run, and the UI would
+    # see nothing in flight in between.
+    status_write running 1 start "Update requested"
+    # Consume the request: a request that crashes the agent must
     # not be retried forever by the path unit.
     rm -f "$REQUEST_FILE"
 
