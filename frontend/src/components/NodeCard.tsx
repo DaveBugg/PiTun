@@ -5,6 +5,7 @@ import { clsx } from 'clsx'
 import type { Node } from '@/types'
 import { StatusBadge } from './StatusBadge'
 import { useServers } from '@/hooks/useServers'
+import { useSubscriptionNames } from '@/hooks/useSubscriptionNames'
 import { splitCountryPrefix } from '@/lib/countryPrefix'
 import { countryFlag, countryName } from '@/lib/countries'
 import { useAppStore } from '@/store'
@@ -79,6 +80,8 @@ export function NodeCard({
   // Look up the source server for the "from <name>" label. Cached query —
   // shared with the Servers page, no extra cost when both are mounted.
   const { data: servers = [] } = useServers()
+  const subNames = useSubscriptionNames()
+  const subName = node.subscription_id != null ? subNames.get(node.subscription_id) : undefined
   const sourceServer = node.server_id
     ? servers.find((s) => s.id === node.server_id)
     : undefined
@@ -142,6 +145,14 @@ export function NodeCard({
                 </span>
               )}
               <span className="text-sm font-medium text-gray-100 truncate">{country.name}</span>
+              {node.subscription_id != null && (
+                <span
+                  className="shrink-0 rounded-sm border border-brand-200 bg-brand-50 text-brand-700 dark:border-brand-800/50 dark:bg-brand-900/30 dark:text-brand-300 px-1.5 py-0.5 text-[10px]"
+                  title="Subscription"
+                >
+                  {subName ?? `sub #${node.subscription_id}`}
+                </span>
+              )}
               {isActive && (
                 <span className="rounded-full bg-brand-50 dark:bg-brand-600/20 px-2 py-0.5 text-xs text-brand-400">
                   Active

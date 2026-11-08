@@ -751,6 +751,8 @@ export interface NodeCircle {
   /** Linked Subscription: its refresh keeps this circle's membership in
    *  sync (manual members are preserved). null = managed by hand. */
   subscription_id?: number | null
+  /** Every subscription the circle follows (subscription_id is the first). */
+  subscription_ids?: number[]
   /** ISO codes whose nodes a linked circle never takes, whatever the subscription serves. */
   excluded_countries?: string[]
   /** Nodes unticked by hand: remembered so a refresh does not put them back. */

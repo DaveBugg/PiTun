@@ -903,10 +903,25 @@ class NodeCircleBase(BaseModel):
     # Link to a Subscription (None = manually managed). When set, the
     # subscription's refresh keeps this circle's membership in sync.
     subscription_id: Optional[int] = None
+    # Every subscription the circle follows; `subscription_id` mirrors the first.
+    subscription_ids: List[int] = []
     # Nodes a subscription refresh must not put back into this circle, and
     # countries (ISO codes) whose nodes never join it.
     excluded_node_ids: List[int] = []
     excluded_countries: List[str] = []
+
+    @field_validator("subscription_ids", mode="before")
+    @classmethod
+    def parse_sub_ids(cls, v):
+        from app.core.circle_filters import parse_list
+        return [int(i) for i in parse_list(v)]
+
+    @model_validator(mode="after")
+    def mirror_subscription_id(self):
+        if not self.subscription_ids and self.subscription_id is not None:
+            self.subscription_ids = [self.subscription_id]
+        self.subscription_id = self.subscription_ids[0] if self.subscription_ids else None
+        return self
 
     @field_validator("excluded_countries", mode="before")
     @classmethod
@@ -954,6 +969,7 @@ class NodeCircleUpdate(BaseModel):
     min_speed_mbps: Optional[float] = None
     # Send an explicit `null` to unlink (falls back to manual management).
     subscription_id: Optional[int] = None
+    subscription_ids: Optional[List[int]] = None
     excluded_node_ids: Optional[List[int]] = None
     excluded_countries: Optional[List[str]] = None
 
@@ -1492,6 +1508,7 @@ class SettingsRead(BaseModel):
     # see _apply_xray_config in core/config_gen for the threat-model
     # rationale.
     xui_panel_bypass: bool = False
+
     chain_drift_check: bool = True
     circle_http_probe: bool = True
     lan_proxy_auth_enabled: bool = False
@@ -1610,6 +1627,7 @@ class SettingsUpdate(BaseModel):
     timezone: Optional[str] = None
     # LAN proxy auth (see SettingsRead docstring)
     xui_panel_bypass: Optional[bool] = None
+
     chain_drift_check: Optional[bool] = None
     circle_http_probe: Optional[bool] = None
     lan_proxy_auth_enabled: Optional[bool] = None

@@ -4,6 +4,15 @@ All notable user-facing changes to PiTun. Full per-release detail lives in the
 [GitHub Releases](https://github.com/DaveBugg/PiTun/releases); this file is the
 committed summary.
 
+## v1.7.7 — 2026-11-08
+
+**A node circle can follow several subscriptions, and nodes show which subscription they came from.**
+
+### Added
+
+- A circle's "Sync from subscription" is now a multi-select: tick as many subscriptions as you like and the circle stays in sync with each of them on every refresh. Hand-picked members are kept; unticked nodes and excluded countries still apply.
+- Each node shows its subscription as a badge on the Nodes page, and in the circle editor's node list (left of the node number).
+
 ## v1.7.6 — 2026-11-04
 
 **Hysteria2 nodes are health-checked over UDP.**

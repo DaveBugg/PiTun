@@ -490,6 +490,9 @@ class NodeCircle(SQLModel, table=True):
     # from another subscription) are preserved. NULL = manually managed, which
     # is the existing behaviour for every pre-existing circle.
     subscription_id: Optional[int] = Field(default=None, foreign_key="subscription.id")
+    # JSON list of every subscription the circle follows (subscription_id is its
+    # first entry, kept for older readers).
+    subscription_ids: str = "[]"
     # What a subscription refresh must not put back (JSON lists): nodes unticked
     # by hand, and countries (ISO codes) whose nodes never join. core/circle_filters.
     excluded_node_ids: str = "[]"

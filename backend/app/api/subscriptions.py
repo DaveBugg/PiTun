@@ -745,9 +745,11 @@ async def _fetch_subscription_unlocked(sub_id: int) -> None:
         # current node set — so the reload heuristic below would miss it.
         # Track it explicitly and force the re-apply.
         synced_live_circle = False
-        linked_circles = (await session.exec(
-            select(NodeCircle).where(NodeCircle.subscription_id == sub_id)
-        )).all()
+        from app.core import circle_filters as _cf0
+        linked_circles = [
+            c for c in (await session.exec(select(NodeCircle))).all()
+            if sub_id in _cf0.parse_ids(c.subscription_ids) or c.subscription_id == sub_id
+        ]
         if linked_circles:
             import json as _json
             # Post-upsert membership of this subscription, fastest first so

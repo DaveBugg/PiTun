@@ -8,6 +8,7 @@ import { circleApi, subsApi } from '@/api/client'
 import { useNodes } from '@/hooks/useNodes'
 import { useSystemSettings, useUpdateSettings } from '@/hooks/useSystem'
 import { useT } from '@/hooks/useT'
+import { useSubscriptionNames } from '@/hooks/useSubscriptionNames'
 import { useConfirm } from '@/components/ConfirmModal'
 import { ModalShell } from '@/components/ModalShell'
 import { CountrySelect } from '@/components/CountrySelect'
@@ -47,7 +48,7 @@ function formatLastRotated(iso?: string): string {
 
 interface ModalProps {
   initial?: NodeCircle
-  nodeOptions: { id: number; name: string }[]
+  nodeOptions: { id: number; name: string; subscription_id?: number }[]
   onSave: (data: NodeCircleCreate) => void
   onCancel: () => void
   loading?: boolean
@@ -72,9 +73,15 @@ function CircleModal({ initial, nodeOptions, onSave, onCancel, loading }: ModalP
     new Set(initial?.node_ids ?? [])
   )
   // Optional subscription link — '' means "managed by hand" (sent as null).
-  const [subscriptionId, setSubscriptionId] = useState<number | ''>(
-    initial?.subscription_id ?? ''
+  const [subscriptionIds, setSubscriptionIds] = useState<number[]>(
+    initial?.subscription_ids?.length
+      ? initial.subscription_ids
+      : initial?.subscription_id != null ? [initial.subscription_id] : []
   )
+  const linked = subscriptionIds.length > 0
+  const subNames = useSubscriptionNames()
+  const toggleSub = (id: number) =>
+    setSubscriptionIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]))
   // What a linked circle refuses even though the subscription serves it.
   const [excludedCountries, setExcludedCountries] = useState<string[]>(initial?.excluded_countries ?? [])
   const [excludedIds, setExcludedIds] = useState<number[]>(initial?.excluded_node_ids ?? [])
@@ -130,7 +137,8 @@ function CircleModal({ initial, nodeOptions, onSave, onCancel, loading }: ModalP
       node_ids: Array.from(selectedIds),
       // null (not undefined) so clearing the link actually reaches the PATCH
       // body — the backend patches with exclude_unset.
-      subscription_id: subscriptionId === '' ? null : Number(subscriptionId),
+      subscription_ids: subscriptionIds,
+      subscription_id: subscriptionIds[0] ?? null,
       excluded_countries: excludedCountries,
       excluded_node_ids: excludedIds.filter((id) => !selectedIds.has(id)),
     })
@@ -254,27 +262,37 @@ function CircleModal({ initial, nodeOptions, onSave, onCancel, loading }: ModalP
             'Свяжи круг с подпиской — и каждое её обновление поддерживает состав в актуальном виде: ноды, которые панель ещё отдаёт, добавляются (в т.ч. вернувшаяся под новым адресом), исчезнувшие убираются. Ноды, выбранные вручную (или из другой подписки), всегда сохраняются. Без связи состав ведёшь сам.',
           )} />
         </label>
-        <select
-          value={subscriptionId === '' ? '' : String(subscriptionId)}
-          onChange={(e) => setSubscriptionId(e.target.value === '' ? '' : Number(e.target.value))}
-          className="w-full rounded-sm bg-gray-800 border border-gray-700 px-3 py-1.5 text-sm text-gray-100 focus:border-brand-500 focus:outline-hidden"
-        >
-          <option value="">{t('Not linked — manual membership', 'Без связи — состав вручную')}</option>
-          {subs.map((s) => (
-            <option key={s.id} value={s.id}>{s.name}</option>
-          ))}
-        </select>
-        {subscriptionId !== '' && (
+        <div className="rounded-sm bg-gray-800 border border-gray-700 max-h-32 overflow-y-auto divide-y divide-gray-700/50">
+          {subs.length === 0 ? (
+            <div className="px-3 py-3 text-sm text-gray-500 text-center">
+              {t('No subscriptions yet', 'Подписок пока нет')}
+            </div>
+          ) : (
+            subs.map((s) => (
+              <label key={s.id} className="flex items-center gap-3 px-3 py-1.5 cursor-pointer hover:bg-gray-700/50 select-none">
+                <input
+                  type="checkbox"
+                  checked={subscriptionIds.includes(s.id)}
+                  onChange={() => toggleSub(s.id)}
+                  className="rounded-sm border-gray-600 bg-gray-700 text-brand-500"
+                />
+                <span className="text-sm text-gray-200">{s.name}</span>
+                <span className="ml-auto text-xs text-gray-600">{s.node_count} {t('nodes', 'нод')}</span>
+              </label>
+            ))
+          )}
+        </div>
+        {linked && (
           <p className="mt-1 text-[11px] text-gray-500">
             {t(
-              'Membership updates automatically on each refresh of this subscription.',
-              'Состав обновляется автоматически при каждом обновлении этой подписки.',
+              'Membership updates automatically on each refresh of these subscriptions.',
+              'Состав обновляется автоматически при каждом обновлении этих подписок.',
             )}
           </p>
         )}
       </div>
 
-      {subscriptionId !== '' && (
+      {linked && (
         <div>
           <label className="flex items-center gap-1 text-xs font-medium text-gray-400 mb-1">
             {t('Never include countries', 'Никогда не включать страны')}
@@ -359,7 +377,12 @@ function CircleModal({ initial, nodeOptions, onSave, onCancel, loading }: ModalP
                   className="rounded-sm border-gray-600 bg-gray-700 text-brand-500"
                 />
                 <span className="text-sm text-gray-200">{node.name}</span>
-                <span className="ml-auto text-xs text-gray-600 font-mono">#{node.id}</span>
+                {node.subscription_id != null && (
+                  <span className="ml-auto rounded-sm border border-brand-800/50 bg-brand-900/30 text-brand-300 px-1.5 py-0.5 text-[10px] truncate max-w-[40%]">
+                    {subNames.get(node.subscription_id) ?? `sub #${node.subscription_id}`}
+                  </span>
+                )}
+                <span className={clsx('text-xs text-gray-600 font-mono', node.subscription_id == null && 'ml-auto')}>#{node.id}</span>
               </label>
             ))
           )}
@@ -448,7 +471,7 @@ export function NodeCircles() {
     },
   })
 
-  const nodeOptions = nodes.map((n) => ({ id: n.id, name: n.name }))
+  const nodeOptions = nodes.map((n) => ({ id: n.id, name: n.name, subscription_id: n.subscription_id }))
   // Ids that still resolve to a real node — used to flag circles that a
   // subscription refresh may have shrunk (dead ids pruned, or a moved node
   // that came back as a new id and wasn't auto-re-added).
@@ -523,8 +546,9 @@ export function NodeCircles() {
                   {circle.node_ids.length} node{circle.node_ids.length !== 1 ? 's' : ''}
                 </span>
 
-                {circle.subscription_id != null && (
+                {(circle.subscription_ids?.length ? circle.subscription_ids : circle.subscription_id != null ? [circle.subscription_id] : []).map((sid) => (
                   <span
+                    key={sid}
                     className="inline-flex items-center gap-1 rounded-sm border border-brand-200 bg-brand-50 text-brand-700 dark:border-brand-800/50 dark:bg-brand-900/30 dark:text-brand-300 px-1.5 py-0.5 text-[11px]"
                     title={t(
                       'Membership is kept in sync with this subscription on every refresh. Manually added nodes are preserved.',
@@ -532,9 +556,9 @@ export function NodeCircles() {
                     )}
                   >
                     <RefreshCw className="h-3 w-3" />
-                    {subNameById.get(circle.subscription_id) ?? t('synced', 'синхронизирован')}
+                    {subNameById.get(sid) ?? t('synced', 'синхронизирован')}
                   </span>
-                )}
+                ))}
 
                 {(circle.excluded_countries?.length ?? 0) > 0 && (
                   <span
@@ -563,7 +587,7 @@ export function NodeCircles() {
 
                 {/* A linked circle is repaired automatically on the next
                    refresh, so only nag about a genuinely unmanaged one. */}
-                {circle.subscription_id == null &&
+                {!(circle.subscription_ids?.length || circle.subscription_id != null) &&
                   (circle.node_ids.some((id) => !nodeIdSet.has(id)) || circle.node_ids.length < 2) && (
                   <span
                     className="inline-flex items-center gap-1 rounded-sm border border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-800/50 dark:bg-amber-950/30 dark:text-amber-300 px-1.5 py-0.5 text-[11px]"
