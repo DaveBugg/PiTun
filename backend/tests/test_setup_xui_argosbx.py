@@ -62,9 +62,11 @@ def sandbox(tmp_path):
     )
     (shim / "crontab").chmod((shim / "crontab").stat().st_mode | stat.S_IEXEC)
     # a sleeper whose *executable* sits inside the fake agsbx dir
+    # (a shell, not `sleep`: on some runners `sleep` is a multi-call binary that
+    # refuses to run under another name)
     sleeper = agsbx / "sing-box"
-    shutil.copy(shutil.which("sleep"), sleeper)
-    proc = subprocess.Popen([str(sleeper), "300"])
+    shutil.copy(shutil.which("sh"), sleeper)
+    proc = subprocess.Popen([str(sleeper), "-c", "sleep 300; true"])
     yield dict(root=tmp_path, agsbx=agsbx, web=web, cron=cron, shim=shim, proc=proc)
     if proc.poll() is None:
         proc.kill()
