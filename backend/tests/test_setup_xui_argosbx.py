@@ -160,3 +160,10 @@ def test_cleanup_runs_after_the_mode_branch_not_only_for_x_ui_pro():
     assert lines[calls[0]] == "remove_argosbx", "must not be nested in an if-branch"
     branch_end = max(i for i, ln in enumerate(lines[:calls[0]]) if ln == "fi")
     assert any("bare" in ln.lower() for ln in lines[:branch_end]), "bare branch precedes the call"
+
+
+def test_base_packages_include_sudo():
+    # x-ui-pro.sh shells out to sudo; minimal VPS images don't ship it.
+    text = SCRIPT.read_text(encoding="utf-8", errors="ignore")
+    block = text.split("Installing base packages", 1)[1].split("\n\n", 1)[0]
+    assert " sudo" in block

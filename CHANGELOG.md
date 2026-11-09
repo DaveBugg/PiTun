@@ -4,6 +4,14 @@ All notable user-facing changes to PiTun. Full per-release detail lives in the
 [GitHub Releases](https://github.com/DaveBugg/PiTun/releases); this file is the
 committed summary.
 
+## v1.7.8 — 2026-11-09
+
+**Installing an x-ui-pro server works on VPS images without `sudo`.**
+
+### Fixed
+
+- The x-ui server installer now installs `sudo` first. On a minimal image the upstream x-ui-pro installer died with "sudo: command not found" and then reported a misleading SSL / rate-limit failure.
+
 ## v1.7.7 — 2026-11-08
 
 **A node circle can follow several subscriptions, and nodes show which subscription they came from.**

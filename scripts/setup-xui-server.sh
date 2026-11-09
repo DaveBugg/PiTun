@@ -218,7 +218,10 @@ log "Installing base packages..."
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
 apt-get install -y -qq \
-    curl wget jq sqlite3 openssl apache2-utils ca-certificates ufw unzip
+    curl wget jq sqlite3 openssl apache2-utils ca-certificates ufw unzip sudo
+# `sudo` is missing on minimal VPS images, and x-ui-pro.sh calls it for every
+# apt/certbot step: without it the installer dies with "sudo: command not found"
+# and then reports a bogus SSL failure.
 # `unzip` is needed by x-ui-pro.sh's random-fakesite step (it downloads
 # a ~268 MB master.zip from GFW4Fun/randomfakehtml and unzips it). The
 # upstream script doesn't apt-install unzip itself, so without this line
