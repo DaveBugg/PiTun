@@ -4,7 +4,7 @@ All notable user-facing changes to PiTun. Full per-release detail lives in the
 [GitHub Releases](https://github.com/DaveBugg/PiTun/releases); this file is the
 committed summary.
 
-## v1.7.10 — 2026-11-11
+## v1.7.11 — 2026-11-12
 
 **Choose which node DNS goes through, and test DoH through a node.**
 
