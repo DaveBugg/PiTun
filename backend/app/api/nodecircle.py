@@ -23,10 +23,22 @@ async def list_circles(session: AsyncSession = Depends(get_session)):
     # per circle — visible on dashboards with many circles.
     current_ids: set[int] = set()
     circle_payloads = []
+    # The node traffic really uses is `active_node_id`. A manual switch or a
+    # failover changes it without touching the circle's stored position, so
+    # an enabled circle that contains it reports THAT as its current node.
+    from app.models import Settings as DBSettings
+    row = (await session.exec(select(DBSettings).where(DBSettings.key == "active_node_id"))).first()
+    try:
+        active_id = int(row.value) if row and row.value else None
+    except (TypeError, ValueError):
+        active_id = None
     for c in circles:
         data = NodeCircleRead.model_validate(c).model_dump()
         node_ids = data.get("node_ids", [])
         idx = data.get("current_index", 0)
+        if c.enabled and active_id is not None and active_id in node_ids:
+            idx = node_ids.index(active_id)
+            data["current_index"] = idx
         cur_id: Optional[int] = None
         if node_ids and idx < len(node_ids):
             cur_id = node_ids[idx]

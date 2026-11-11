@@ -76,3 +76,28 @@ def test_patch_can_shrink_to_one_and_unlink(client, admin_user, auth_headers, se
     assert r.json()["subscription_ids"] == [b] and r.json()["subscription_id"] == b
     r = client.patch(f"/api/nodecircle/{cid}", json={"subscription_ids": []}, headers=auth_headers)
     assert r.json()["subscription_ids"] == [] and r.json()["subscription_id"] is None
+
+
+def test_circle_reports_the_really_active_node_as_current(client, admin_user, auth_headers, session):
+    from app.models import Settings as DBSettings
+    nodes = []
+    for i in range(3):
+        n = Node(name=f"n{i}", protocol="vless", address=f"192.0.2.{10+i}", port=443,
+                 uuid="u", transport="tcp", enabled=True)
+        session.add(n)
+        session.commit()
+        session.refresh(n)
+        nodes.append(n.id)
+    c = NodeCircle(name="c", node_ids=json.dumps(nodes), mode="best", interval_min=5,
+                   interval_max=10, enabled=True, current_index=0)
+    session.add(c)
+    row = session.exec(select(DBSettings).where(DBSettings.key == "active_node_id")).first()
+    if row:
+        row.value = str(nodes[2])
+        session.add(row)
+    else:
+        session.add(DBSettings(key="active_node_id", value=str(nodes[2])))
+    session.commit()
+    out = client.get("/api/nodecircle", headers=auth_headers).json()
+    mine = [x for x in out if x["name"] == "c"][0]
+    assert mine["current_index"] == 2 and mine["current_node_name"] == "n2"

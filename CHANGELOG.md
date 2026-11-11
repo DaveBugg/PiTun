@@ -4,6 +4,19 @@ All notable user-facing changes to PiTun. Full per-release detail lives in the
 [GitHub Releases](https://github.com/DaveBugg/PiTun/releases); this file is the
 committed summary.
 
+## v1.7.9 — 2026-11-11
+
+**Circles with a speed target rotate again, and the active node is shown consistently.**
+
+### Fixed
+
+- A "Best" circle with a minimum speed never rotated: its speed checks outlasted the rotation deadline, so every rotation was cancelled halfway. Such circles now get time to finish measuring.
+- A circle now reports the node that is really active as its current one, so the Dashboard and the circle list no longer disagree with the Nodes page after a manual switch or a failover.
+
+### Changed
+
+- The active node is pinned at the top of the Nodes page on every page and under any filter, and is no longer repeated in the list below.
+
 ## v1.7.8 — 2026-11-09
 
 **Installing an x-ui-pro server works on VPS images without `sudo`.**

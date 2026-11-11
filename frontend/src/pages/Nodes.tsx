@@ -157,8 +157,9 @@ export function Nodes() {
   // owns the active node, we still want it pinned at the top so they
   // never lose sight of which Node traffic is flowing through.
   const { data: activeNode } = useActiveNode(status?.active_node_id ?? null)
-  const showActivePin =
-    activeNode != null && !nodes.some((n) => n.id === activeNode.id)
+  // Always pinned on top, on every page; the list below skips it.
+  const showActivePin = activeNode != null
+  const listNodes = activeNode ? nodes.filter((n) => n.id !== activeNode.id) : nodes
 
   const createNode = useCreateNode()
   const updateNode = useUpdateNode()
@@ -229,7 +230,7 @@ export function Nodes() {
     // existing values. Relative ordering of the dragged set is what
     // the user actually wants — minor interleaving with non-visible
     // rows is acceptable. See note on `canDrag` above.
-    const ids = nodes.map((n) => n.id)
+    const ids = listNodes.map((n) => n.id)
     const fromIndex = ids.indexOf(dragId)
     const toIndex = ids.indexOf(targetId)
     if (fromIndex === -1 || toIndex === -1) return
@@ -454,7 +455,7 @@ export function Nodes() {
         </div>
       ) : (
         <div className="grid gap-3">
-          {nodes.map((node) => (
+          {listNodes.map((node) => (
             <div
               key={node.id}
               draggable={canDrag}

@@ -279,6 +279,17 @@ class CircleScheduler:
                     deadline += self._HTTP_PROBE_EXTRA_DEADLINE_S
             except Exception:  # noqa: BLE001 — never block a rotation on a settings read
                 pass
+            # A "best" circle with a speed target measures candidates, which takes
+            # far longer than a ping: without this room every rotation hit the
+            # deadline mid-measurement and was thrown away, so the circle never
+            # moved.
+            try:
+                async with AsyncSession(get_async_engine()) as _s:
+                    _c = await _s.get(NodeCircle, circle_id)
+                    if _c and _c.mode == "best" and (_c.min_speed_mbps or 0) > 0:
+                        deadline += self._SPEED_BUDGET_S + 60.0
+            except Exception:  # noqa: BLE001
+                pass
             try:
                 async with asyncio.timeout(deadline):
                     return await self._do_rotate(circle_id, from_scheduler)
