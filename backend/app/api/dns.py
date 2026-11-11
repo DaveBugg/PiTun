@@ -1,6 +1,7 @@
 """DNS management endpoints."""
 import asyncio
 import logging
+import re
 import socket
 import time
 from datetime import datetime, timedelta, timezone
@@ -13,13 +14,14 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.core.dataplane import dispatch_dataplane
 from app.database import get_session
-from app.models import DNSRule, DNSQueryLog, Settings as DBSettings
+from app.models import DNSRule, DNSQueryLog, Node, Settings as DBSettings
 from app.schemas import (
     DNSRuleCreate,
     DNSRuleRead,
     DNSRuleUpdate,
     DNSSettingsRead,
     DNSSettingsUpdate,
+    DNSTestNodeRequest,
     DNSTestRequest,
     DNSTestResult,
     DNSQueryLogRead,
@@ -45,6 +47,7 @@ _DNS_SETTING_KEYS = {
     "dns_disable_fallback",
     "dns_query_strategy",
     "host_fallback_dns",
+    "dns_outbound",
 }
 
 
@@ -71,6 +74,7 @@ def _settings_map_to_dns(m: dict) -> DNSSettingsRead:
         dns_disable_fallback=m.get("dns_disable_fallback", "true").lower() == "true",
         dns_query_strategy=m.get("dns_query_strategy", "UseIPv4"),
         host_fallback_dns=m.get("host_fallback_dns", ""),
+        dns_outbound=m.get("dns_outbound", ""),
     )
 
 
@@ -111,6 +115,28 @@ async def _auto_reload_xray(
 
 # ── DNS Settings ──────────────────────────────────────────────────────────────
 
+async def _validated_dns_outbound(session: AsyncSession, raw: str) -> str:
+    """"" | "direct" | "node-<id>" of an existing, enabled node — else 400."""
+    val = (raw or "").strip()
+    if val in ("", "direct"):
+        return val
+    m = re.fullmatch(r"node-(\d+)", val)
+    if not m:
+        raise HTTPException(400, 'dns_outbound must be "", "direct" or "node-<id>"')
+    node = await session.get(Node, int(m.group(1)))
+    if node is None or not node.enabled:
+        raise HTTPException(400, "The chosen DNS node does not exist or is disabled")
+    from app.core.config_gen import dns_node_dialable
+    all_nodes = list((await session.exec(select(Node))).all())
+    if not dns_node_dialable(node, all_nodes):
+        raise HTTPException(
+            400,
+            "This node is reached by hostname; DNS through it would loop. "
+            "Pick a node whose address is an IP, or use Direct.",
+        )
+    return val
+
+
 @router.get("/settings", response_model=DNSSettingsRead)
 async def get_dns_settings(session: AsyncSession = Depends(get_session)):
     m = await _get_settings_map(session)
@@ -124,6 +150,12 @@ async def update_dns_settings(
     session: AsyncSession = Depends(get_session),
 ):
     updates = body.model_dump(exclude_none=True)
+    if "dns_outbound" in updates:
+        # An unchanged value (e.g. a node disabled since it was chosen) must not
+        # block saving other DNS settings; only a NEW choice is validated.
+        current = (await _get_settings_map(session)).get("dns_outbound", "")
+        if (updates["dns_outbound"] or "").strip() != current:
+            updates["dns_outbound"] = await _validated_dns_outbound(session, updates["dns_outbound"])
     for field, val in updates.items():
         if field in _DNS_SETTING_KEYS:
             await _upsert_setting(session, field, str(val).lower() if isinstance(val, bool) else str(val))
@@ -422,7 +454,7 @@ async def _resolve_via_xray(domain: str) -> tuple[list[str], int]:
     return ips, int((time.monotonic() - start) * 1000)
 
 
-async def _resolve_doh(domain: str, server: str) -> tuple[list[str], int]:
+async def _resolve_doh(domain: str, server: str, proxy: Optional[str] = None) -> tuple[list[str], int]:
     """Resolve an A record over DoH using RFC 8484 wire format
     (`application/dns-message`) — the universal DoH encoding every server
     speaks, including DoH-by-IP (Cloudflare 1.1.1.1, Google 8.8.8.8,
@@ -446,7 +478,7 @@ async def _resolve_doh(domain: str, server: str) -> tuple[list[str], int]:
     txid = b'\x00\x00'
     query = _build_dns_a_query(domain, txid)
 
-    async with httpx.AsyncClient(timeout=10) as client:
+    async with httpx.AsyncClient(timeout=10, proxy=proxy) as client:
         resp = await client.post(
             server,
             content=query,
@@ -530,3 +562,88 @@ async def test_dns(body: DNSTestRequest):
             server_used=server or "system",
             error=str(exc),
         )
+
+
+_TEST_NODE_DEADLINE_S = 25.0
+
+
+@router.post("/test-node", response_model=DNSTestResult)
+async def test_dns_through_node(
+    body: DNSTestNodeRequest, session: AsyncSession = Depends(get_session),
+):
+    """Resolve a domain over DoH THROUGH one node (throwaway tunnel, or the live
+    one for the active node) — shows whether DNS works over that path."""
+    from urllib.parse import urlparse
+    import ipaddress
+    from app.core import speedtest as st
+    from app.core.healthcheck import HealthChecker
+
+    domain = body.domain.strip().rstrip(".")
+    if not domain:
+        raise HTTPException(400, "domain is required")
+    node = await session.get(Node, body.node_id)
+    if node is None:
+        raise HTTPException(404, "Node not found")
+
+    server = (body.server or "").strip()
+    if not server:
+        m = await _get_settings_map(session)
+        server = (m.get("dns_upstream") or "8.8.8.8").strip()
+    host = urlparse(server).hostname if server.startswith("http") else server
+    if host:
+        if host.lower() == "localhost" or host.lower().endswith((".local", ".internal", ".localhost")):
+            raise HTTPException(400, "DNS server must not be a private address")
+        try:
+            if not ipaddress.ip_address(host).is_global:
+                raise HTTPException(400, "DNS server must not be a private address")
+        except ValueError:
+            pass
+    label = f"{server} via {node.name}"
+
+    proc = None
+    tmp_path = None
+    try:
+        async def _run() -> DNSTestResult:
+            nonlocal proc, tmp_path
+            if await st._live_socks_ready(node.id):
+                port = st.SPEED_PROBE_PORT
+            else:
+                chain = await st._resolve_chain(node)
+                entry_ip = None
+                if chain[0].protocol != "naive":
+                    entry_ip = await HealthChecker._resolve_direct(chain[0].address)
+                elif not chain[0].internal_port or not await st._port_open("127.0.0.1", int(chain[0].internal_port)):
+                    return DNSTestResult(resolved_ips=[], latency_ms=0, server_used=label,
+                                         error="naive sidecar is not running")
+                starting = asyncio.ensure_future(st._start_temp_xray(node, chain, entry_ip))
+                try:
+                    port, proc, tmp_path, err = await asyncio.shield(starting)
+                except asyncio.CancelledError:
+                    # Cancelled mid-start: let the start finish, then tear it down
+                    # so no xray process / credentials file is left behind.
+                    try:
+                        _p, _proc, _tmp, _e = await starting
+                        await st._cleanup(_proc, _tmp)
+                    except Exception:  # noqa: BLE001
+                        pass
+                    raise
+                if proc is None or err:
+                    return DNSTestResult(resolved_ips=[], latency_ms=0, server_used=label,
+                                         error=err or "could not start a tunnel through the node")
+            ips, latency = await _resolve_doh(domain, server, proxy=f"socks5h://127.0.0.1:{port}")
+            if not ips:
+                return DNSTestResult(resolved_ips=[], latency_ms=latency, server_used=label,
+                                     error="DoH answered through the node, but with no address for this domain")
+            return DNSTestResult(resolved_ips=ips, latency_ms=latency, server_used=label)
+
+        return await asyncio.wait_for(_run(), timeout=_TEST_NODE_DEADLINE_S)
+    except asyncio.TimeoutError:
+        return DNSTestResult(resolved_ips=[], latency_ms=0, server_used=label,
+                             error="timed out — DoH does not answer through this node")
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        return DNSTestResult(resolved_ips=[], latency_ms=0, server_used=label,
+                             error=st._why(exc, "dns.test_node"))
+    finally:
+        await st._cleanup(proc, tmp_path)

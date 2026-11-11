@@ -1737,6 +1737,9 @@ class DNSSettingsRead(BaseModel):
     # Comma-separated IPv4 fallback resolvers for the BOX's own DNS
     # (subscriptions/geo/panels/healthchecks). Empty = router-only.
     host_fallback_dns: str = ""
+    # Where queries to the DNS upstream leave from: "" = normal routing rules,
+    # "direct" = bypass the proxy, "node-<id>" = through that node.
+    dns_outbound: str = ""
 
 
 class DNSSettingsUpdate(BaseModel):
@@ -1754,10 +1757,17 @@ class DNSSettingsUpdate(BaseModel):
     dns_disable_fallback: Optional[bool] = None
     dns_query_strategy: Optional[str] = None
     host_fallback_dns: Optional[str] = None
+    dns_outbound: Optional[str] = None
 
 
 class DNSTestRequest(BaseModel):
     domain: str
+    server: Optional[str] = None
+
+
+class DNSTestNodeRequest(BaseModel):
+    domain: str
+    node_id: int
     server: Optional[str] = None
 
 

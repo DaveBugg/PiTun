@@ -711,6 +711,45 @@ def _routing_rule_to_xray(
     return xray_rule
 
 
+# Routing inboundTag carried by the DNS upstream servers when the operator
+# chose where DNS leaves from (Settings `dns_outbound`).
+DNS_UPSTREAM_TAG = "pitun-dns"
+
+
+def dns_outbound_setting(settings_map: Dict[str, str]) -> str:
+    """Normalised `dns_outbound`: "" (not set), "direct" or "node-<id>"."""
+    val = (settings_map.get("dns_outbound") or "").strip()
+    if val == "direct":
+        return val
+    if val.startswith("node-") and val[5:].isascii() and val[5:].isdigit():
+        return val
+    return ""
+
+
+def dns_node_dialable(node: Node, all_nodes: List[Node]) -> bool:
+    """Can DNS be routed through `node` without a resolver loop?
+
+    The node's entry hop is dialled by address; a hostname there is resolved by
+    xray's own DNS, whose queries would be routed through that same node. So the
+    entry hop must be an IP literal (naive points at its local sidecar)."""
+    import ipaddress
+    by_id = {n.id: n for n in all_nodes}
+    entry, seen = node, {node.id}
+    while entry.chain_node_id and entry.chain_node_id in by_id and entry.chain_node_id not in seen:
+        entry = by_id[entry.chain_node_id]
+        seen.add(entry.id)
+    if entry.protocol == "naive":
+        return True
+    host = entry.address or ""
+    if entry.protocol == "wireguard" and getattr(entry, "wg_endpoint", None):
+        host = entry.wg_endpoint.rsplit(":", 1)[0].strip("[]")
+    try:
+        ipaddress.ip_address(host)
+        return True
+    except ValueError:
+        return False
+
+
 def _build_dns_section(
     settings_map: Dict[str, str],
     dns_rules: Optional[List[DNSRule]] = None,
@@ -869,12 +908,18 @@ def _build_dns_section(
     # circular dependency (the proxy node's address itself needs to
     # be resolved before the proxy can be used).
     pinned_servers: List[Any] = []
+    dns_out = dns_outbound_setting(settings_map)
     for srv in dns_servers:
         if srv == "fakedns":
             pinned_servers.append(srv)  # sentinel — no outbound
             continue
         if isinstance(srv, str):
-            pinned_servers.append({"address": srv, "outboundTag": "direct"})
+            entry_s: Dict[str, Any] = {"address": srv, "outboundTag": "direct"}
+            # Upstreams the operator pointed at a specific path carry the DNS
+            # tag; a routing rule on it (generate_config) picks the outbound.
+            if dns_out:
+                entry_s["tag"] = DNS_UPSTREAM_TAG
+            pinned_servers.append(entry_s)
         elif isinstance(srv, dict):
             # Preserve any existing outboundTag (currently none, but
             # defensive against future per-server overrides).
@@ -1259,6 +1304,33 @@ def generate_config(
                         logger.warning("Skip node %d: %s", node.id, exc)
                     break
 
+    # The node DNS goes through (Settings → DNS). Built here when nothing else
+    # already brought it in; if it can't be built the DNS tag is dropped below
+    # and DNS falls back to the normal routing instead of breaking xray.
+    dns_out = dns_outbound_setting(settings_map)
+    if dns_out.startswith("node-"):
+        _dns_nid = int(dns_out[5:])
+        if not any(o.get("tag") == dns_out for o in outbounds):
+            _dns_node = next((n for n in all_nodes if n.id == _dns_nid and n.enabled), None)
+            if _dns_node is not None and not dns_node_dialable(_dns_node, all_nodes):
+                logger.warning("DNS node %d is dialled by hostname - DNS would loop through it", _dns_nid)
+                _dns_node = None
+            if _dns_node is not None:
+                try:
+                    _dns_ob = _build_outbound(_dns_node)
+                    _apply_chain(_dns_node, _dns_ob, outbounds, used_ids, all_nodes)
+                    outbounds.append(_dns_ob)
+                    used_ids.add(_dns_node.id)
+                except Exception as exc:
+                    logger.warning("DNS node %d unusable: %s", _dns_nid, exc)
+        if not any(o.get("tag") == dns_out for o in outbounds):
+            logger.warning("DNS node %s is not available — DNS follows normal routing", dns_out)
+            dns_out = ""
+    if not dns_out:
+        for _srv in dns_section.get("servers", []):
+            if isinstance(_srv, dict) and _srv.get("tag") == DNS_UPSTREAM_TAG:
+                del _srv["tag"]
+
     # Additional nodes referenced by balancer groups
     if balancer_groups:
         for bg in balancer_groups:
@@ -1339,6 +1411,15 @@ def generate_config(
         "inboundTag": ["dns-in", "dns-in-53"],
         "outboundTag": "dns-out",
     })
+
+    # Where DNS upstream queries leave from, when the operator chose (before the
+    # port-53 pin and every user rule so nothing captures them first).
+    if dns_out:
+        routing_rules.append({
+            "type": "field",
+            "inboundTag": [DNS_UPSTREAM_TAG],
+            "outboundTag": dns_out,
+        })
 
     # System-level DNS-upstream protection (since v1.3.5). Forces any
     # destination port 53 to the `direct` outbound BEFORE user rules

@@ -18,6 +18,8 @@ import { dnsApi, systemApi } from '@/api/client'
 import { InfoTip } from '@/components/InfoTip'
 import { HostDnsHelp } from '@/components/HostDnsHelp'
 import { useT } from '@/hooks/useT'
+import { useNodes } from '@/hooks/useNodes'
+import { useSystemStatus } from '@/hooks/useSystem'
 import type { DnsRule, DnsRuleCreate, DnsSettings, DnsTestResult, DnsQueryLog, DnsQueryStats, SystemSettings } from '@/types'
 
 // ── helpers ───────────────────────────────────────────────────────────────────
@@ -78,6 +80,12 @@ function Input({
   )
 }
 
+/** "node-41" -> 41; anything else -> null. */
+function parseNodeOutbound(v: string | undefined): number | null {
+  const m = /^node-(\d+)$/.exec(v ?? '')
+  return m ? Number(m[1]) : null
+}
+
 // ── DNS Settings section ──────────────────────────────────────────────────────
 
 function DnsSettingsSection({
@@ -98,6 +106,14 @@ function DnsSettingsSection({
 
   const set = <K extends keyof DnsSettings>(k: K, v: DnsSettings[K]) =>
     setForm((prev) => ({ ...prev, [k]: v }))
+
+  const { data: nodes = [] } = useNodes()
+  const enabledNodes = nodes.filter((n) => n.enabled)
+  const dnsOutbound = form.dns_outbound ?? ''
+  // Saved "node-<id>" that is not among the enabled nodes: keep it visible.
+  const savedNodeId = parseNodeOutbound(dnsOutbound)
+  const missingNodeId =
+    savedNodeId !== null && !enabledNodes.some((n) => n.id === savedNodeId) ? savedNodeId : null
 
   return (
     <div className="rounded-xl border border-gray-800 bg-gray-900/30 p-5 space-y-5">
@@ -239,6 +255,34 @@ function DnsSettingsSection({
             <option value="UseIPv6">UseIPv6 — IPv6 only</option>
           </select>
         </div>
+      </div>
+
+      {/* Which outbound the DNS upstream traffic leaves through */}
+      <div>
+        <label className="flex items-center gap-1 text-xs font-medium text-gray-400 mb-1">
+          {t('DNS goes through', 'DNS идёт через')}
+          <InfoTip className="ml-0.5" text={t(
+            'With a node chosen, queries to the DNS upstream (DoH / DoT / plain) are sent via that node. Useful when DoH to the upstream is blocked or breaks on the active node. With "Direct" the DNS never touches the proxy.',
+            'Если выбрана нода, запросы к DNS-upstream (DoH / DoT / plain) идут через неё. Полезно, когда DoH до upstream заблокирован или ломается на активной ноде. При "Напрямую" DNS никогда не проходит через прокси.',
+          )} />
+        </label>
+        <select
+          aria-label={t('DNS goes through', 'DNS идёт через')}
+          value={dnsOutbound}
+          onChange={(e) => set('dns_outbound', e.target.value)}
+          className="rounded-sm bg-gray-800 border border-gray-700 px-3 py-1.5 text-sm text-gray-100 focus:border-brand-500 focus:outline-hidden"
+        >
+          <option value="">{t('Default — follow routing rules', 'По умолчанию — по правилам маршрутизации')}</option>
+          <option value="direct">{t('Direct (bypass proxy)', 'Напрямую (мимо прокси)')}</option>
+          {enabledNodes.map((n) => (
+            <option key={n.id} value={`node-${n.id}`}>{n.name}</option>
+          ))}
+          {missingNodeId !== null && (
+            <option value={dnsOutbound}>
+              {t(`node #${missingNodeId} (missing)`, `нода #${missingNodeId} (не найдена)`)}
+            </option>
+          )}
+        </select>
       </div>
 
       {/* Host resolver — the BOX's own DNS, separate from client DNS above */}
@@ -637,6 +681,111 @@ function DnsTestSection() {
   )
 }
 
+// ── DNS Test through a node ───────────────────────────────────────────────────
+
+function DnsNodeTestSection({ dnsOutbound }: { dnsOutbound: string }) {
+  const t = useT()
+  const { data: nodes = [] } = useNodes()
+  const { data: status } = useSystemStatus()
+  const enabledNodes = nodes.filter((n) => n.enabled)
+  const [domain, setDomain] = useState('')
+  const [picked, setPicked] = useState<number | null>(null)
+
+  // Default: node chosen in "DNS goes through", else active node, else first.
+  const outboundId = parseNodeOutbound(dnsOutbound)
+  const activeId = status?.active_node_id ?? null
+  const defaultId =
+    [outboundId, activeId].find((id) => id != null && enabledNodes.some((n) => n.id === id))
+    ?? enabledNodes[0]?.id
+    ?? null
+  const nodeId = picked ?? defaultId
+
+  const mutation = useMutation({
+    mutationFn: () => dnsApi.testViaNode({ domain, node_id: nodeId as number }),
+  })
+  const result = mutation.data
+  const nodeName = enabledNodes.find((n) => n.id === nodeId)?.name ?? `#${nodeId}`
+  const errorText = mutation.isError
+    ? ((mutation.error as { response?: { data?: { detail?: string } }; message?: string })
+        .response?.data?.detail
+        ?? (mutation.error as Error).message)
+    : null
+
+  return (
+    <div className="rounded-xl border border-gray-800 bg-gray-900/30 p-5 space-y-4">
+      <h2 className="text-sm font-semibold text-gray-200 flex items-center gap-2">
+        <Search className="h-4 w-4 text-brand-400" />
+        {t('Test through a node', 'Проверка через ноду')}
+        <InfoTip text={t(
+          'Resolves the domain over DoH through the chosen node using a throwaway tunnel. Shows whether DoH really works through that node. Can take up to ~25 s.',
+          'Резолвит домен по DoH через выбранную ноду во временном туннеле. Показывает, работает ли DoH через эту ноду на самом деле. Может занять до ~25 с.',
+        )} />
+      </h2>
+
+      <div className="flex gap-3 items-end flex-wrap">
+        <Input
+          label={t('Domain', 'Домен')}
+          value={domain}
+          onChange={setDomain}
+          placeholder="google.com"
+          className="flex-1 min-w-40"
+        />
+        <div className="flex-1 min-w-40">
+          <label className="block text-xs font-medium text-gray-400 mb-1">{t('Node', 'Нода')}</label>
+          <select
+            aria-label={t('Node', 'Нода')}
+            value={nodeId ?? ''}
+            onChange={(e) => setPicked(Number(e.target.value))}
+            className="w-full rounded-sm bg-gray-800 border border-gray-700 px-3 py-1.5 text-sm text-gray-100 focus:border-brand-500 focus:outline-hidden"
+          >
+            {enabledNodes.map((n) => (
+              <option key={n.id} value={n.id}>{n.name}</option>
+            ))}
+          </select>
+        </div>
+        <button
+          onClick={() => mutation.mutate()}
+          disabled={!domain || nodeId == null || mutation.isPending}
+          className="flex items-center gap-2 rounded-lg bg-brand-600 px-4 py-1.5 text-sm font-medium text-white hover:bg-brand-500 disabled:opacity-50 transition-colors mb-0.5"
+        >
+          {mutation.isPending ? t('Testing…', 'Проверка…') : t('Test DoH via node', 'Проверить DoH через ноду')}
+        </button>
+      </div>
+
+      {mutation.isPending && (
+        <p className="text-xs text-gray-500">
+          {t('Starting a tunnel and querying, up to ~25 s…', 'Поднимаем туннель и делаем запрос, до ~25 с…')}
+        </p>
+      )}
+
+      {!mutation.isPending && (errorText || result) && (
+        <div className="rounded-lg border border-gray-700 bg-gray-800/50 p-4 text-xs space-y-2">
+          {errorText || result?.error ? (
+            <div className="flex items-center gap-2 text-red-600 dark:text-red-400">
+              <XCircle className="h-4 w-4 shrink-0" />
+              <span>{errorText ?? result?.error}</span>
+            </div>
+          ) : result && (
+            <>
+              <div className="flex items-center gap-2 text-green-600 dark:text-green-400">
+                <CheckCircle className="h-4 w-4 shrink-0" />
+                <span>
+                  {t(`DoH query worked through ${nodeName}`, `DoH-запрос прошёл через ${nodeName}`)}:{' '}
+                  <span className="font-mono">{result.resolved_ips.join(', ')}</span>
+                </span>
+              </div>
+              <div className="text-gray-500 space-x-4">
+                <span>Latency: <span className="text-gray-300">{result.latency_ms}ms</span></span>
+                <span>Server: <span className="text-gray-300 font-mono">{result.server_used}</span></span>
+              </div>
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
 // ── DNS Query Log section ─────────────────────────────────────────────────────
 
 function DnsQueryLogSection({
@@ -939,6 +1088,8 @@ export function DNS() {
       />
 
       <DnsTestSection />
+
+      <DnsNodeTestSection dnsOutbound={dnsSettings?.dns_outbound ?? ''} />
 
       <DnsQueryLogSection
         settings={sysSettings}

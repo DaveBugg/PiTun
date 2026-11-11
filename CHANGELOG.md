@@ -4,6 +4,15 @@ All notable user-facing changes to PiTun. Full per-release detail lives in the
 [GitHub Releases](https://github.com/DaveBugg/PiTun/releases); this file is the
 committed summary.
 
+## v1.7.10 — 2026-11-11
+
+**Choose which node DNS goes through, and test DoH through a node.**
+
+### Added
+
+- Settings → DNS → "DNS goes through": send queries to the DNS upstream (primary, secondary, fallback) through a specific node, directly (bypassing the proxy), or leave the default (follows the routing rules, unchanged). If the chosen node is removed or disabled, DNS falls back to the default instead of breaking.
+- "Test through a node" on the DNS page: resolves a domain over DoH through any node in a throwaway tunnel, so you can see whether DoH really works over that path.
+
 ## v1.7.9 — 2026-11-11
 
 **Circles with a speed target rotate again, and the active node is shown consistently.**

@@ -675,6 +675,15 @@ export interface DnsSettings {
   dns_query_strategy?: string
   /** Comma-separated IPv4 fallback resolvers for the box's OWN DNS. */
   host_fallback_dns?: string
+  /** "" = follow routing rules, "direct" = bypass proxy, "node-<id>" = via that node. */
+  dns_outbound?: string
+}
+
+export interface DnsTestNodeRequest {
+  domain: string
+  node_id: number
+  /** DoH URL or host; backend defaults to the configured upstream. */
+  server?: string
 }
 
 export interface DnsTestResult {

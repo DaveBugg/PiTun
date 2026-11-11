@@ -12,7 +12,7 @@ import type {
   SystemStatus, SystemSettings, SystemVersions, ProxyMode,
   GeoDataStatus, GeoUpdateProgress,
   DecoyTemplate,
-  DnsRule, DnsRuleCreate, DnsRuleUpdate, DnsSettings, DnsTestResult,
+  DnsRule, DnsRuleCreate, DnsRuleUpdate, DnsSettings, DnsTestResult, DnsTestNodeRequest,
   DnsQueryLog, DnsQueryStats,
   HealthResult, SpeedTestResult,
   BalancerGroup, BalancerGroupCreate, BalancerGroupUpdate,
@@ -508,6 +508,10 @@ export const dnsApi = {
 
   testViaXray: (domain: string) =>
     http.post<DnsTestResult>('/dns/test-xray', { domain }).then(r => r.data),
+
+  // Throwaway tunnel + DoH query: can take ~25 s on the backend.
+  testViaNode: (data: DnsTestNodeRequest) =>
+    http.post<DnsTestResult>('/dns/test-node', data, { timeout: 60_000 }).then(r => r.data),
 
   getQueryLogs: (params?: { domain?: string; limit?: number; offset?: number; cache_only?: boolean }) =>
     http.get<DnsQueryLog[]>('/dns/queries', { params }).then(r => r.data),
