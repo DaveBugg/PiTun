@@ -698,13 +698,18 @@ function DnsNodeTestSection({ dnsOutbound }: { dnsOutbound: string }) {
     [outboundId, activeId].find((id) => id != null && enabledNodes.some((n) => n.id === id))
     ?? enabledNodes[0]?.id
     ?? null
-  const nodeId = picked ?? defaultId
+  // A pick that is no longer an enabled node falls back to the default.
+  const nodeId = picked != null && enabledNodes.some((n) => n.id === picked) ? picked : defaultId
+  const [testedName, setTestedName] = useState('')
 
   const mutation = useMutation({
-    mutationFn: () => dnsApi.testViaNode({ domain, node_id: nodeId as number }),
+    mutationFn: () => {
+      setTestedName(enabledNodes.find((n) => n.id === nodeId)?.name ?? `#${nodeId}`)
+      return dnsApi.testViaNode({ domain, node_id: nodeId as number })
+    },
   })
   const result = mutation.data
-  const nodeName = enabledNodes.find((n) => n.id === nodeId)?.name ?? `#${nodeId}`
+  const nodeName = testedName
   const errorText = mutation.isError
     ? ((mutation.error as { response?: { data?: { detail?: string } }; message?: string })
         .response?.data?.detail
@@ -1041,7 +1046,14 @@ export function DNS() {
 
   const saveSettings = useMutation({
     mutationFn: (data: Partial<DnsSettings>) => dnsApi.updateSettings(data),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['dns', 'settings'] }),
+    // The save is done once the server answered. Don't wait on the refetch: the
+    // xray reload that follows a DNS change can drop that request, and a pending
+    // mutation then looks like a stuck "Saving...". Show the saved values now and
+    // refresh a moment later, once the reload has settled.
+    onSuccess: (saved) => {
+      qc.setQueryData(['dns', 'settings'], saved)
+      setTimeout(() => { void qc.invalidateQueries({ queryKey: ['dns', 'settings'] }) }, 2500)
+    },
   })
 
   const createRule = useMutation({

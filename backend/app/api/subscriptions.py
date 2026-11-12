@@ -313,6 +313,31 @@ async def _fetch_subscription(sub_id: int) -> None:
         _REFRESH_IN_FLIGHT.discard(sub_id)
 
 
+def userinfo_problem(raw: str) -> str:
+    """Why a panel hands out placeholder nodes, read from its
+    `subscription-userinfo` header (upload/download/total bytes, expire epoch):
+    an used-up quota or an expired plan. "" when the header says nothing."""
+    from datetime import datetime, timezone
+    info: dict = {}
+    for part in (raw or "").split(";"):
+        key, _, val = part.strip().partition("=")
+        try:
+            info[key.strip().lower()] = max(0, int(float(val)))
+        except (ValueError, OverflowError):
+            continue
+    total = info.get("total", 0)
+    used = info.get("upload", 0) + info.get("download", 0)
+    if total > 0 and used >= total:
+        gib = 1024 ** 3
+        fmt = (lambda b: f"{b / gib:.0f}") if total >= 10 * gib else (lambda b: f"{b / gib:.2f}")
+        return f"traffic quota used up ({fmt(used)} of {fmt(total)} GB)"
+    expire = info.get("expire", 0)
+    if expire > 0 and expire < datetime.now(tz=timezone.utc).timestamp():
+        day = datetime.fromtimestamp(expire, tz=timezone.utc).strftime("%Y-%m-%d")
+        return f"subscription expired on {day}"
+    return ""
+
+
 async def _fetch_subscription_unlocked(sub_id: int) -> None:
     """The actual fetch — separate from the wrapper so the mutex
     cleanup `finally:` block stays the only exit point."""
@@ -328,6 +353,7 @@ async def _fetch_subscription_unlocked(sub_id: int) -> None:
 
         content: str = ""
         err_msg: str = ""
+        userinfo: str = ""
 
         try:
             async with httpx.AsyncClient(
@@ -340,6 +366,7 @@ async def _fetch_subscription_unlocked(sub_id: int) -> None:
                 resp = await client.get(sub.url, headers=headers)
                 resp.raise_for_status()
                 content = resp.text
+                userinfo = (getattr(resp, "headers", None) or {}).get("subscription-userinfo", "") or ""
         except Exception as exc:
             from app.core import error_log
             err_msg = error_log.record(
@@ -415,7 +442,10 @@ async def _fetch_subscription_unlocked(sub_id: int) -> None:
 
         if dummy_names and not parsed:
             # Panel returned only dummy nodes — report as error
-            sub.last_error = f"Panel: {dummy_names[0]}"
+            problem = userinfo_problem(userinfo)
+            sub.last_error = (
+                f"Panel: {problem}" if problem else f"Panel: {dummy_names[0]}"
+            )
             sub.last_updated = datetime.now(tz=timezone.utc)
             session.add(sub)
             await session.commit()

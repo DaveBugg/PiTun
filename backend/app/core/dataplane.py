@@ -28,6 +28,7 @@ Notes for callers:
   schedulers, the watchdog and the failover path use, since they have no
   response to protect.
 """
+import asyncio
 import logging
 from typing import Optional
 
@@ -104,8 +105,10 @@ async def apply_dataplane(action: Action = "reload") -> None:
         await _apply_nftables(session, settings_map)
 
 
-async def _guarded(action: Action) -> None:
+async def _guarded(action: Action, delay: float = 0.0) -> None:
     try:
+        if delay > 0:
+            await asyncio.sleep(delay)
         await apply_dataplane(action)
     except Exception as exc:  # noqa: BLE001
         # Nobody is listening any more — the response went out first.
@@ -117,10 +120,13 @@ async def _guarded(action: Action) -> None:
 
 
 async def dispatch_dataplane(
-    background_tasks: Optional[BackgroundTasks], action: Action = "reload",
+    background_tasks: Optional[BackgroundTasks], action: Action = "reload", *, delay: float = 0.0,
 ) -> None:
-    """Apply now, or after the response when `background_tasks` is given."""
+    """Apply now, or after the response when `background_tasks` is given.
+
+    `delay` (deferred only) lets the caller's follow-up requests finish before the
+    restart briefly drops connections."""
     if background_tasks is None:
         await apply_dataplane(action)
         return
-    background_tasks.add_task(_guarded, action)
+    background_tasks.add_task(_guarded, action, delay)

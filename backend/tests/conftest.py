@@ -305,3 +305,20 @@ def sample_circle_fixture(session, sample_node):
     session.commit()
     session.refresh(circle)
     return circle
+
+
+@pytest.fixture(autouse=True)
+def _reset_circle_dead_memory():
+    """The scheduler is a process-wide singleton; node ids repeat across tests."""
+    from app.core.circle_scheduler import circle_scheduler
+    circle_scheduler._dead_until.clear()
+    yield
+    circle_scheduler._dead_until.clear()
+
+
+@pytest.fixture(autouse=True)
+def _no_real_http_health_check(monkeypatch):
+    """The live internet check spawns a throwaway xray; tests opt in explicitly."""
+    from unittest.mock import AsyncMock
+    from app.core.healthcheck import HealthChecker
+    monkeypatch.setattr(HealthChecker, "_http_ok", AsyncMock(return_value=True))

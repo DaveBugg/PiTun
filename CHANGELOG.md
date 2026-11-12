@@ -4,6 +4,20 @@ All notable user-facing changes to PiTun. Full per-release detail lives in the
 [GitHub Releases](https://github.com/DaveBugg/PiTun/releases); this file is the
 committed summary.
 
+## v1.7.12 — 2026-11-12
+
+**Circles stop falling back to dead nodes, and saving DNS settings no longer hangs.**
+
+### Fixed
+
+- A circle with a speed target could rotate onto a node that carried no traffic at all, because a node whose test could not connect was treated as "not measured yet" and used as the fallback. Such a node is now treated as offline.
+- A node that just failed its internet check is skipped for a few minutes instead of being probed again on every rotation.
+- Saving DNS settings could show "Network Error" and leave the button on "Saving...": the page waited for a refetch that the xray reload dropped. The save now completes as soon as the server answers, and the reload is deferred briefly.
+- The "unreachable" message of a failed node test is no longer empty when the underlying error has no text.
+- With failover on, the active node is now checked for real traffic (about every 3 minutes), not only an open port. A node that accepts connections but returns nothing — typically an account whose traffic ran out — triggers failover, and failover no longer picks such a node as the replacement. Only a tunnel that came up and carried nothing counts against a node — a check that could not start its own test tunnel never does — and the check follows the same Settings switch as the circle's internet check.
+- A subscription whose panel answers with placeholder nodes now says why when the panel reports it: "traffic quota used up (601 of 600 GB)" or "subscription expired on <date>", instead of the unhelpful "Panel: proxy".
+- "Test through a node" on the DNS page works when the saved upstream is DoT/DoQ/plain or a LAN resolver (it tests DoH against the same public host, or a public resolver), refuses disabled nodes, and names the node that was actually tested.
+
 ## v1.7.11 — 2026-11-12
 
 **Choose which node DNS goes through, and test DoH through a node.**

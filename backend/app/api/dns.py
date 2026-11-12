@@ -108,7 +108,7 @@ async def _auto_reload_xray(
         await _regenerate_and_write(session)
         # Deferred when we have a response to protect — the reload
         # restarts xray and would sever the caller's own connection.
-        await dispatch_dataplane(background_tasks, "reload")
+        await dispatch_dataplane(background_tasks, "reload", delay=1.5)
     except Exception as exc:
         logger.warning("Auto-reload after DNS change failed: %s", exc)
 
@@ -584,20 +584,43 @@ async def test_dns_through_node(
     node = await session.get(Node, body.node_id)
     if node is None:
         raise HTTPException(404, "Node not found")
+    if not node.enabled:
+        raise HTTPException(400, "Node is disabled")
+
+    def _host_of(srv: str) -> str:
+        # "https://h/dns-query", "tls://h", "quic://h:853", "h", "h:53" -> "h"
+        if "://" in srv:
+            return urlparse(srv).hostname or ""
+        return srv.rsplit(":", 1)[0] if srv.count(":") == 1 else srv.strip("[]")
+
+    def _is_private(h: str) -> bool:
+        hl = h.lower()
+        if hl == "localhost" or hl.endswith((".local", ".internal", ".localhost", ".lan")):
+            return True
+        try:
+            return not ipaddress.ip_address(hl).is_global
+        except ValueError:
+            return False
 
     server = (body.server or "").strip()
-    if not server:
-        m = await _get_settings_map(session)
-        server = (m.get("dns_upstream") or "8.8.8.8").strip()
-    host = urlparse(server).hostname if server.startswith("http") else server
-    if host:
-        if host.lower() == "localhost" or host.lower().endswith((".local", ".internal", ".localhost")):
+    if server:
+        host = _host_of(server)
+        if not host or _is_private(host):
             raise HTTPException(400, "DNS server must not be a private address")
-        try:
-            if not ipaddress.ip_address(host).is_global:
-                raise HTTPException(400, "DNS server must not be a private address")
-        except ValueError:
-            pass
+        if not server.startswith("https://"):
+            server = host  # DoH is asked of the same host (https://<host>/dns-query)
+    else:
+        # The saved upstream may be plain/DoT/DoQ or a LAN resolver; this test is
+        # DoH through a node, so use its host over DoH, or a public one.
+        m = await _get_settings_map(session)
+        up = (m.get("dns_upstream") or "").strip()
+        host = _host_of(up) if up else ""
+        if up.startswith("https://") and host and not _is_private(host):
+            server = up
+        elif host and not _is_private(host):
+            server = host
+        else:
+            server = "8.8.8.8"
     label = f"{server} via {node.name}"
 
     proc = None

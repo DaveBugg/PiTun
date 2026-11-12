@@ -79,6 +79,16 @@ _REACH_TARGETS = [
 ]
 _REACH_TIMEOUT_S = 6.0
 
+
+def no_traffic_through_tunnel(res: Dict) -> bool:
+    """True only when a reachability check got the tunnel up and the test
+    requests through it failed. A failure to build or start the tunnel (chain,
+    DNS, xray start, naive sidecar) says nothing about the node's traffic."""
+    if res.get("ok"):
+        return False
+    detail = str(res.get("detail") or "")
+    return detail.startswith(tuple(f"{label}:" for label, _ in _REACH_TARGETS))
+
 # Exit identity: which address does the internet see on the far side of the
 # tunnel, and in which country? Cloudflare's trace endpoint answers both in
 # one tiny `key=value` body — `ip=` and its own geolocation `loc=` — so the
@@ -480,7 +490,7 @@ async def _probe_reachable(socks_port: int, rounds: int = 2) -> Tuple[bool, Opti
                     return True, int((loop.time() - t0) * 1000), label
                 detail = f"{label}: HTTP {resp.status_code}"
             except Exception as exc:  # noqa: BLE001 — any transport error = not reachable
-                detail = f"{label}: {str(exc)[:80]}"
+                detail = f"{label}: {(str(exc) or type(exc).__name__)[:80]}"
         if r < max(1, rounds) - 1:
             await asyncio.sleep(0.4)
     return False, None, detail

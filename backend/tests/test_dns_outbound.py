@@ -1,6 +1,8 @@
 """Settings → DNS "DNS goes through": which outbound the DNS upstream queries use."""
 import copy
 
+import pytest
+
 from app.core.config_gen import DNS_UPSTREAM_TAG, generate_config
 from tests.test_config_gen import _default_settings, _find_outbound, _make_node
 
@@ -185,3 +187,50 @@ def test_hostname_node_is_refused_by_the_api(client, admin_user, auth_headers, s
     session.refresh(n)
     r = client.patch("/api/dns/settings", json={"dns_outbound": f"node-{n.id}"}, headers=auth_headers)
     assert r.status_code == 400 and "hostname" in r.json()["detail"]
+
+
+@pytest.mark.parametrize("upstream,expected", [
+    ("tls://1.1.1.1", "1.1.1.1"),
+    ("quic://dns.example.com:853", "dns.example.com"),
+    ("https://dns.example.com/dns-query", "https://dns.example.com/dns-query"),
+    ("192.168.1.53", "8.8.8.8"),          # LAN resolver: test with a public one
+    ("", "8.8.8.8"),
+])
+def test_test_node_turns_the_saved_upstream_into_a_doh_server(client, admin_user, auth_headers, session,
+                                                               upstream, expected):
+    from unittest import mock
+    from unittest.mock import AsyncMock
+    from app.models import Node, Settings
+    n = Node(name="via", protocol="vless", address="192.0.2.7", port=443, uuid="u",
+             transport="tcp", enabled=True)
+    session.add(n)
+    session.add(Settings(key="dns_upstream", value=upstream))
+    session.commit(); session.refresh(n)
+    seen = {}
+
+    async def fake_doh(domain, server, proxy=None):
+        seen["server"] = server
+        return ["192.0.2.50"], 5
+
+    with mock.patch("app.core.speedtest._live_socks_ready", new=AsyncMock(return_value=True)), \
+         mock.patch("app.api.dns._resolve_doh", new=fake_doh):
+        r = client.post("/api/dns/test-node", headers=auth_headers,
+                        json={"domain": "example.com", "node_id": n.id})
+    assert r.status_code == 200, r.text
+    assert seen["server"] == expected
+
+
+def test_test_node_refuses_private_server_hidden_behind_a_scheme_and_disabled_nodes(
+        client, admin_user, auth_headers, session):
+    from app.models import Node
+    n = Node(name="via", protocol="vless", address="192.0.2.7", port=443, uuid="u",
+             transport="tcp", enabled=True)
+    off = Node(name="off", protocol="vless", address="192.0.2.8", port=443, uuid="u",
+               transport="tcp", enabled=False)
+    session.add(n); session.add(off); session.commit(); session.refresh(n); session.refresh(off)
+    r = client.post("/api/dns/test-node", headers=auth_headers,
+                    json={"domain": "example.com", "node_id": n.id, "server": "tls://10.0.0.1"})
+    assert r.status_code == 400
+    r = client.post("/api/dns/test-node", headers=auth_headers,
+                    json={"domain": "example.com", "node_id": off.id})
+    assert r.status_code == 400

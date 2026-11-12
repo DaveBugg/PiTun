@@ -37,6 +37,10 @@ async def _get_active_node(session) -> Optional[Node]:
 class CircleScheduler:
     def __init__(self) -> None:
         self._speed_tokens: dict[int, float] = {}
+        # node id -> (loop time until which a node that just failed its internet
+        # check is not probed again, whether its port still answered). A rotation
+        # would otherwise walk the same dead nodes first every time.
+        self._dead_until: dict[int, tuple[float, bool]] = {}
         self._task: Optional[asyncio.Task] = None
         self._running = False
         self._next_rotate: dict[int, datetime] = {}
@@ -181,6 +185,7 @@ class CircleScheduler:
     _SPEED_SLOW_MIN_S = 1800
     _SPEED_SLOW_MAX_S = 14400
     _HTTP_PROBE_EXTRA_DEADLINE_S = 30.0
+    _DEAD_MEMORY_S = 300.0
 
     @staticmethod
     async def _http_probe_enabled() -> bool:
@@ -193,7 +198,7 @@ class CircleScheduler:
     async def _speed_verdict(
         self, cand: dict, target_mbps: float, fresh_s: int, slow_s: int, *, allow_test: bool,
     ) -> tuple[str, Optional[float], bool]:
-        """("ok" | "slow" | "unknown", mbps, ran_a_test) for one candidate.
+        """("ok" | "slow" | "unknown" | "offline", mbps, ran_a_test) for one candidate.
 
         A good measurement younger than `fresh_s`, or a slow one younger than
         `slow_s`, is used as it is; an older one is replaced by a live test while
@@ -229,6 +234,9 @@ class CircleScheduler:
                 logger.warning("NodeCircle speed check of node %s failed: %s", cand.get("id"), exc)
                 return ("unknown", None, True)
             if mbps is None:
+                if result.get("reachable") is False:
+                    cand["_speed_err"] = str(result.get("error") or "")[:120]
+                    return ("offline", None, True)
                 return ("unknown", None, True)
             return ("ok" if float(mbps) >= target_mbps else "slow", float(mbps), True)
         if stored is not None:
@@ -252,6 +260,10 @@ class CircleScheduler:
         except Exception as exc:  # noqa: BLE001
             from app.core import error_log
             error_log.record("circle.http_probe", exc, node_id=node_id)
+            return True, ""
+        from app.core.speedtest import no_traffic_through_tunnel
+        if not res.get("ok") and not no_traffic_through_tunnel(res):
+            # The tunnel itself could not be built or started: not the node's fault.
             return True, ""
         return bool(res.get("ok")), str(res.get("detail") or "")
 
@@ -498,7 +510,17 @@ class CircleScheduler:
         slow: list[tuple[float, dict]] = []
         unmeasured: Optional[dict] = None
 
+        now_loop = asyncio.get_event_loop().time()
         for cand in candidates:
+            dead_until, port_answered = self._dead_until.get(cand["id"], (0.0, False))
+            if dead_until > now_loop:
+                # Failed its internet check a moment ago — not worth probing again.
+                # Only an HTTP-probe failure may serve as the TCP-only fallback,
+                # the same as when it is probed live; a dead speed test may not.
+                if port_answered and tcp_only is None:
+                    tcp_only = cand
+                failed.append((cand["name"], "failed its internet check recently"))
+                continue
             # Probe with single retry — `_probe_with_retry` catches
             # transient SYN drops / brief packet loss that would
             # otherwise mark a healthy node as dead and cost us a
@@ -512,6 +534,7 @@ class CircleScheduler:
                 http_probes_left -= 1
                 http_ok, http_detail = await self._http_probe(cand["id"])
                 if not http_ok:
+                    self._dead_until[cand["id"]] = (now_loop + self._DEAD_MEMORY_S, True)
                     if tcp_only is None:
                         tcp_only = cand
                     result = {
@@ -526,6 +549,14 @@ class CircleScheduler:
                 )
                 if ran:
                     speed_checks_left -= 1
+                if verdict == "offline":
+                    # The node could not carry traffic at all: it is dead, not
+                    # "unmeasured", so it must never become the fallback.
+                    self._dead_until[cand["id"]] = (now_loop + self._DEAD_MEMORY_S, False)
+                    result = {
+                        "is_online": False,
+                        "error": f"no internet through the node ({cand.pop('_speed_err', '') or 'speed test could not connect'})",
+                    }
                 if verdict == "slow":
                     slow.append((mbps or 0.0, cand))
                     logger.info(

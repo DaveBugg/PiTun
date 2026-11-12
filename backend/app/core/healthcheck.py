@@ -24,6 +24,8 @@ class HealthChecker:
         self._task: Optional[asyncio.Task] = None
         self._full_task: Optional[asyncio.Task] = None
         self._fail_counts: Dict[int, int] = {}
+        # node id -> (loop time, passed) of its last internet check.
+        self._http_state: Dict[int, tuple] = {}
         self._running = False
 
     def start(self) -> None:
@@ -94,6 +96,28 @@ class HealthChecker:
         except (TypeError, ValueError):
             return 300
 
+    _HTTP_RECHECK_S = 180.0
+    _HTTP_RECHECK_FAILED_S = 60.0
+    _HTTP_CHECK_TIMEOUT_S = 40.0
+
+    async def _http_ok(self, node_id: int) -> bool:
+        """Does real traffic get through `node_id`? A fault in the check itself
+        counts as OK: it must never push a healthy node out of service."""
+        from app.core.speedtest import no_traffic_through_tunnel, reachability_check
+        try:
+            async with AsyncSession(get_async_engine()) as session:
+                node = await session.get(Node, node_id)
+                if node is None:
+                    return True
+            res = await asyncio.wait_for(reachability_check(node), timeout=self._HTTP_CHECK_TIMEOUT_S)
+        except asyncio.TimeoutError:
+            return False
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("HTTP health check of node %d faulted: %s", node_id, exc)
+            return True
+        # Only a tunnel that came up and carried nothing counts against the node.
+        return not no_traffic_through_tunnel(res)
+
     async def _check_active_node(self) -> None:
         async with AsyncSession(get_async_engine()) as session:
             active_id = await self._get_setting(session, "active_node_id")
@@ -111,11 +135,20 @@ class HealthChecker:
             node_name = node.name
             probe_protocol = node.protocol
             probe_internal_port = node.internal_port
+            failover_on = (
+                (await self._get_setting(session, "failover_enabled") or "false").lower() == "true"
+            )
+            # Same switch as the circle's internet check (Settings): when the
+            # test endpoints are blocked here, it must be possible to turn off.
+            http_check_on = (
+                (await self._get_setting(session, "circle_http_probe") or "true").lower() != "false"
+            )
 
         result = await self._probe_node(
             probe_addr, probe_port, probe_udp,
             protocol=probe_protocol, internal_port=probe_internal_port,
         )
+        loop_now = asyncio.get_event_loop().time()
 
         async with AsyncSession(get_async_engine()) as session:
             db_node = await session.get(Node, node_id)
@@ -126,13 +159,27 @@ class HealthChecker:
                 session.add(db_node)
                 await session.commit()
 
-            if result["is_online"]:
+            alive = bool(result["is_online"])
+            reason = "health check failed"
+            if alive and failover_on and http_check_on and probe_protocol != "wireguard":
+                # The port answers, but does traffic actually come back? A node
+                # whose account ran out accepts connections and returns nothing.
+                checked_at, passed = self._http_state.get(node_id, (-1e9, True))
+                ttl = self._HTTP_RECHECK_S if passed else self._HTTP_RECHECK_FAILED_S
+                if loop_now - checked_at >= ttl:
+                    passed = await self._http_ok(node_id)
+                    self._http_state[node_id] = (loop_now, passed)
+                if not passed:
+                    alive = False
+                    reason = "port answers but no internet through the node"
+
+            if alive:
                 self._fail_counts[node_id] = 0
             else:
                 self._fail_counts[node_id] = self._fail_counts.get(node_id, 0) + 1
                 logger.warning(
-                    "Node %d (%s) health check failed (%d/%d)",
-                    node_id, node_name,
+                    "Node %d (%s) %s (%d/%d)",
+                    node_id, node_name, reason,
                     self._fail_counts[node_id], settings.health_fail_threshold,
                 )
                 if self._fail_counts[node_id] >= settings.health_fail_threshold:
@@ -171,6 +218,9 @@ class HealthChecker:
             # picking one deterministically (first by id) is good enough.
             circle_for_node = await self._find_circle_for_node(session, failed_node_id)
 
+            http_check_on = (
+                (await self._get_setting(session, "circle_http_probe") or "true").lower() != "false"
+            )
             failover_ids_raw = await self._get_setting(session, "failover_node_ids") or "[]"
             try:
                 failover_ids: List[int] = json.loads(failover_ids_raw)
@@ -239,6 +289,10 @@ class HealthChecker:
                 cand["address"], cand["port"], udp=cand["udp"],
                 protocol=cand["protocol"], internal_port=cand["internal_port"],
             )
+            if result["is_online"] and cand["protocol"] != "wireguard" and http_check_on:
+                if not await self._http_ok(cand["id"]):
+                    logger.info("Failover: candidate node %d answers but carries no traffic, skipping", cand["id"])
+                    continue
             if result["is_online"]:
                 async with AsyncSession(get_async_engine()) as session:
                     # Re-check the candidate is still present and enabled
@@ -285,6 +339,9 @@ class HealthChecker:
                 self._fail_counts[failed_node_id] = 0
                 return
 
+        # Start counting again rather than re-running the whole failover (one
+        # throwaway tunnel per candidate) on every following tick.
+        self._fail_counts[failed_node_id] = 0
         logger.error("Failover: no available fallback nodes found")
         from app.core.events import record_event
         await record_event(
