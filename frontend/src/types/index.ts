@@ -356,6 +356,33 @@ export interface ArpDevice {
 
 // ── Subscription ──────────────────────────────────────────────────────────────
 
+export interface DecodedLink {
+  kind: string
+  url: string
+  host: string
+  name?: string | null
+}
+
+export type LinkKeyKind = 'happ_crypt5' | 'happ_rsa' | 'v2raytun' | 'incy' | 'body_aes'
+
+export interface LinkKey {
+  id: string
+  kind: LinkKeyKind
+  name: string
+  fingerprint: string
+}
+
+export interface LinkKeyCreate {
+  kind: LinkKeyKind
+  name: string
+  value: string
+}
+
+export interface LinkKeyList {
+  custom: LinkKey[]
+  builtin: Record<LinkKeyKind, number>
+}
+
 export interface Subscription {
   id: number
   name: string

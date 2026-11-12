@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import {
-  Download, Fingerprint, Link, Plus, RefreshCw, Rss, Trash2, Upload, Zap,
+  Download, Fingerprint, KeyRound, Link, Lock, Plus, RefreshCw, Rss, Trash2, Upload, Zap,
 } from 'lucide-react'
 import { InfoTip } from '@/components/InfoTip'
 import { clsx } from 'clsx'
@@ -9,6 +9,7 @@ import { subsApi, uaTemplatesApi } from '@/api/client'
 import { useConfirm } from '@/components/ConfirmModal'
 import { ModalShell } from '@/components/ModalShell'
 import { UserAgentTemplatesModal } from '@/components/UserAgentTemplatesModal'
+import { LinkKeysModal } from '@/components/LinkKeysModal'
 import { useT } from '@/hooks/useT'
 import { apiErrorText } from '@/lib/apiError'
 import type { Subscription, SubscriptionCreate, UserAgentTemplate } from '@/types'
@@ -29,6 +30,16 @@ const INTERVAL_PRESETS = [
   { label: '3d', value: 259200 },
   { label: '7d', value: 604800 },
 ]
+
+/** Client links that hide the real URL; the backend decodes them. */
+const SPECIAL_LINK = /^(happ|v2raytun|incy):\/\//i
+
+function linkLabel(url: string): string | null {
+  const m = /^(happ|v2raytun|incy):\/\/([^/]+)/i.exec(url.trim())
+  if (!m) return null
+  const host = m[2].toLowerCase()
+  return host.startsWith('crypt') ? `${m[1]} ${host}` : `${m[1]} link`
+}
 
 function SubForm({
   initial,
@@ -93,8 +104,9 @@ function SubForm({
           value={form.url}
           onChange={(e) => set('url', e.target.value)}
           required
-          type="url"
-          placeholder="https://provider.com/sub?token=…"
+          type="text"
+          spellCheck={false}
+          placeholder="https://provider.com/sub?token=…  ·  happ://crypt5/…  ·  incy://crypt1/…"
           className="w-full rounded-sm bg-gray-800 border border-gray-700 px-3 py-1.5 text-sm text-gray-100 font-mono focus:border-brand-500 focus:outline-hidden"
         />
       </div>
@@ -249,6 +261,9 @@ export function Subscriptions() {
   const [editSub, setEditSub] = useState<Subscription | null>(null)
   const [quickUrl, setQuickUrl] = useState('')
   const [templatesOpen, setTemplatesOpen] = useState(false)
+  const [keysOpen, setKeysOpen] = useState(false)
+  const [quickError, setQuickError] = useState<string | null>(null)
+  const [quickBusy, setQuickBusy] = useState(false)
   const [uaNotice, setUaNotice] = useState<string | null>(null)
   const importRef = useRef<HTMLInputElement>(null)
   const qc = useQueryClient()
@@ -379,13 +394,21 @@ export function Subscriptions() {
       qc.invalidateQueries({ queryKey: ['nodes'] })
       setModal('none')
       setQuickUrl('')
+      setQuickError(null)
     },
+    onError: (err) => setQuickError(apiErrorText(err, t('Could not add the subscription', 'Не удалось добавить подписку'))),
   })
   const update = useMutation({
     mutationFn: ({ id, data }: { id: number; data: Partial<SubscriptionCreate> }) =>
       subsApi.update(id, data),
     onSuccess: () => { qc.invalidateQueries({ queryKey: ['subscriptions'] }); setModal('none') },
   })
+  // A failed save's message belongs to that attempt, not the next dialog.
+  const resetCreate = create.reset
+  const resetUpdate = update.reset
+  useEffect(() => {
+    if (modal === 'none') { resetCreate(); resetUpdate() }
+  }, [modal, resetCreate, resetUpdate])
   const del = useMutation({
     mutationFn: (id: number) => subsApi.delete(id),
     onSuccess: () => {
@@ -419,9 +442,33 @@ export function Subscriptions() {
     },
   })
 
-  const handleQuickAdd = () => {
+  const handleQuickAdd = async () => {
     const url = quickUrl.trim()
     if (!url) return
+    setQuickError(null)
+    if (SPECIAL_LINK.test(url)) {
+      // Encrypted client link: ask the backend what it hides, for the name
+      // and to fail early on a missing key.
+      setQuickBusy(true)
+      try {
+        const d = await subsApi.decodeLink(url)
+        const name = d.name || d.host.replace(/^(www|sub|api)\./, '').split('.')[0] || 'Subscription'
+        create.mutate({
+          name,
+          url,
+          ua: /^happ:/i.test(url) && uaTemplates.some((x) => x.key === 'happ') ? 'happ' : 'v2ray',
+          filter_regex: '',
+          auto_update: true,
+          update_interval: 86400,
+          enabled: true,
+        })
+      } catch (err) {
+        setQuickError(apiErrorText(err, t('Could not decode the link', 'Не удалось расшифровать ссылку')))
+      } finally {
+        setQuickBusy(false)
+      }
+      return
+    }
     try {
       const parsed = new URL(url)
       const name = parsed.hostname.replace(/^(www|sub|api)\./, '').split('.')[0] || 'Subscription'
@@ -469,6 +516,15 @@ export function Subscriptions() {
               <Fingerprint className="h-4 w-4" />
               <span className="hidden sm:inline">{t('UA templates', 'Шаблоны UA')}</span>
               <span className="sm:hidden">UA</span>
+            </button>
+            <span className="h-5 w-px bg-gray-700" aria-hidden="true" />
+            <button
+              onClick={() => setKeysOpen(true)}
+              title={t('Keys for encrypted links (happ://crypt, incy://crypt)', 'Ключи для зашифрованных ссылок (happ://crypt, incy://crypt)')}
+              aria-label={t('Encrypted link keys', 'Ключи зашифрованных ссылок')}
+              className="px-2.5 py-2 text-gray-400 hover:bg-gray-700 hover:text-gray-200 transition-colors"
+            >
+              <KeyRound className="h-4 w-4" />
             </button>
             <span className="h-5 w-px bg-gray-700" aria-hidden="true" />
             <button
@@ -537,27 +593,28 @@ export function Subscriptions() {
       <div className="rounded-xl border border-gray-800 bg-gray-900/30 p-3">
         <label className="flex items-center gap-1.5 text-xs font-medium text-gray-500 mb-2">
           <Zap className="h-3.5 w-3.5" />
-          Quick Add — paste subscription URL
+          Quick Add — paste subscription URL or a happ:// / incy:// link
         </label>
         <div className="flex gap-2">
           <div className="relative flex-1">
             <Link className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-600" />
             <input
               value={quickUrl}
-              onChange={(e) => setQuickUrl(e.target.value)}
-              onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); handleQuickAdd() } }}
+              onChange={(e) => { setQuickUrl(e.target.value); setQuickError(null) }}
+              onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); void handleQuickAdd() } }}
               placeholder="https://provider.com/sub?token=abc123"
               className="w-full rounded-lg bg-gray-800 border border-gray-700 pl-9 pr-3 py-2 text-sm text-gray-100 font-mono focus:border-brand-500 focus:outline-hidden"
             />
           </div>
           <button
-            onClick={handleQuickAdd}
-            disabled={!quickUrl.trim() || create.isPending}
+            onClick={() => void handleQuickAdd()}
+            disabled={!quickUrl.trim() || create.isPending || quickBusy}
             className="rounded-lg bg-brand-600 px-4 py-2 text-sm font-medium text-white hover:bg-brand-500 disabled:opacity-50 transition-colors whitespace-nowrap"
           >
-            {create.isPending ? 'Adding…' : 'Add'}
+            {create.isPending || quickBusy ? 'Adding…' : 'Add'}
           </button>
         </div>
+        {quickError && <p role="alert" className="text-xs text-red-400 mt-1.5">{quickError}</p>}
         <p className="text-[11px] text-gray-600 mt-1.5">
           Auto-update: 24h · UA: v2ray · Press Enter or click Add. Edit settings later on the subscription card.
         </p>
@@ -582,7 +639,17 @@ export function Subscriptions() {
                     <Rss className="h-5 w-5 text-brand-400 shrink-0 mt-0.5" />
                     <div className="min-w-0">
                       <div className="text-sm font-medium text-gray-100">{sub.name}</div>
-                      <div className="text-xs text-gray-500 font-mono mt-0.5 truncate">{sub.url}</div>
+                      <div className="flex items-center gap-1.5 mt-0.5 min-w-0">
+                        {linkLabel(sub.url) && (
+                          <span
+                            className="inline-flex shrink-0 items-center gap-1 rounded-sm bg-gray-800 px-1.5 py-0.5 text-[10px] text-gray-300"
+                            title={t('Encrypted client link, decoded on every refresh', 'Зашифрованная ссылка клиента, расшифровывается при каждом обновлении')}
+                          >
+                            <Lock className="h-3 w-3" />{linkLabel(sub.url)}
+                          </span>
+                        )}
+                        <span className="text-xs text-gray-500 font-mono truncate">{sub.url}</span>
+                      </div>
                       <div className="flex flex-wrap items-center gap-x-3 gap-y-1 mt-2 text-xs text-gray-600">
                         <span className="text-gray-400 font-medium">{sub.node_count} nodes</span>
                         {/* Resolved UA on hover: the key alone doesn't say
@@ -683,6 +750,11 @@ export function Subscriptions() {
               templates={uaTemplates}
               onManageTemplates={() => setTemplatesOpen(true)}
             />
+            {(create.error || update.error) && (
+              <p role="alert" className="mt-3 text-xs text-red-400">
+                {apiErrorText(create.error ?? update.error, t('Could not save', 'Не удалось сохранить'))}
+              </p>
+            )}
           </div>
         </ModalShell>
       )}
@@ -692,6 +764,7 @@ export function Subscriptions() {
       {templatesOpen && (
         <UserAgentTemplatesModal onClose={() => setTemplatesOpen(false)} />
       )}
+      {keysOpen && <LinkKeysModal onClose={() => setKeysOpen(false)} />}
     </div>
   )
 }

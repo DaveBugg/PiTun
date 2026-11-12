@@ -4,6 +4,17 @@ All notable user-facing changes to PiTun. Full per-release detail lives in the
 [GitHub Releases](https://github.com/DaveBugg/PiTun/releases); this file is the
 committed summary.
 
+## v1.7.13 — 2026-11-12
+
+**Subscriptions accept encrypted client links.**
+
+### Added
+
+- A subscription can be added from an encrypted client link instead of a plain https URL: `happ://crypt/` … `happ://crypt5/`, `v2raytun://crypt/` and `incy://crypt1/`, plus the plain `happ://add/` and `incy://add/` / `incy://import/` wrappers. The link is stored as pasted and decoded on every refresh; the URL inside goes through the same checks as a typed one.
+- Panels that encrypt the subscription body (`?key=keyNN` in the URL and an `Encrypt-Tag` response header) are decrypted transparently.
+- Subscriptions → key button: add keys for encrypted links when a client starts using new ones, without waiting for a release. Key values are write-only; the list shows a fingerprint.
+- Quick Add decodes the link first, names the subscription after it, and says plainly when a key is missing.
+
 ## v1.7.12 — 2026-11-12
 
 **Circles stop falling back to dead nodes, and saving DNS settings no longer hangs.**

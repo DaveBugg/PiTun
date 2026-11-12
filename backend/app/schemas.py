@@ -1198,6 +1198,39 @@ class UserAgentTemplateImportResponse(BaseModel):
 
 # ─── Subscription ─────────────────────────────────────────────────────────────
 
+def check_public_http_url(v: str) -> str:
+    """A subscription URL must be http(s) and not point inside the LAN."""
+    if not v.startswith(("http://", "https://")):
+        raise ValueError("URL must start with http:// or https://")
+    from urllib.parse import urlparse
+    import ipaddress
+    import socket
+    host = urlparse(v).hostname or ""
+    if not host:
+        raise ValueError("URL has no hostname")
+    # Block obvious internal names
+    if host in ("localhost", "0.0.0.0", "::1") or host.startswith("169.254."):
+        raise ValueError("URL must not point to internal addresses")
+    # Check if host is an IP literal
+    try:
+        ip = ipaddress.ip_address(host)
+        if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved:
+            raise ValueError("URL must not point to private/internal addresses")
+    except ValueError as e:
+        if "private" in str(e) or "internal" in str(e):
+            raise
+        # hostname — resolve and check all IPs
+        try:
+            resolved = socket.getaddrinfo(host, None, socket.AF_UNSPEC, socket.SOCK_STREAM)
+            for _, _, _, _, addr in resolved:
+                resolved_ip = ipaddress.ip_address(addr[0])
+                if resolved_ip.is_private or resolved_ip.is_loopback or resolved_ip.is_link_local:
+                    raise ValueError(f"URL hostname resolves to private address ({addr[0]})")
+        except socket.gaierror:
+            pass  # DNS resolution failed — let httpx handle it later
+    return v
+
+
 class SubscriptionBase(BaseModel):
     name: str
     url: str
@@ -1215,35 +1248,13 @@ class SubscriptionBase(BaseModel):
     def validate_url(cls, v: str) -> str:
         if v is None:
             return v
-        if not v.startswith(("http://", "https://")):
-            raise ValueError("URL must start with http:// or https://")
-        from urllib.parse import urlparse
-        import ipaddress
-        import socket
-        host = urlparse(v).hostname or ""
-        if not host:
-            raise ValueError("URL has no hostname")
-        # Block obvious internal names
-        if host in ("localhost", "0.0.0.0", "::1") or host.startswith("169.254."):
-            raise ValueError("URL must not point to internal addresses")
-        # Check if host is an IP literal
-        try:
-            ip = ipaddress.ip_address(host)
-            if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved:
-                raise ValueError("URL must not point to private/internal addresses")
-        except ValueError as e:
-            if "private" in str(e) or "internal" in str(e):
-                raise
-            # hostname — resolve and check all IPs
-            try:
-                resolved = socket.getaddrinfo(host, None, socket.AF_UNSPEC, socket.SOCK_STREAM)
-                for _, _, _, _, addr in resolved:
-                    resolved_ip = ipaddress.ip_address(addr[0])
-                    if resolved_ip.is_private or resolved_ip.is_loopback or resolved_ip.is_link_local:
-                        raise ValueError(f"URL hostname resolves to private address ({addr[0]})")
-            except socket.gaierror:
-                pass  # DNS resolution failed — let httpx handle it later
-        return v
+        v = v.strip()
+        from app.core.sub_links import is_special_link
+        if is_special_link(v):
+            # Encrypted / wrapped client links are resolved (and the URL inside
+            # checked) by the API, which has the operator's extra keys.
+            return v
+        return check_public_http_url(v)
 
 
 class SubscriptionCreate(SubscriptionBase):

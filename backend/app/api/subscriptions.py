@@ -6,6 +6,7 @@ from typing import List, Optional
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
+from pydantic import BaseModel
 from sqlmodel import select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
@@ -17,6 +18,110 @@ from app.schemas import SubscriptionCreate, SubscriptionRead, SubscriptionUpdate
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/subscriptions", tags=["subscriptions"])
+
+# ── encrypted / wrapped links ────────────────────────────────────────────────
+
+async def _resolve_checked(session: AsyncSession, link: str):
+    """Decode a happ:// / v2raytun:// / incy:// link and apply the same URL
+    rules as a plain one. Raises 400 with a safe message."""
+    from app.core import sub_links
+    from app.schemas import check_public_http_url
+    try:
+        resolved = sub_links.resolve_link(link, await sub_links.load_custom_keys(session))
+    except sub_links.SubLinkError as exc:
+        raise HTTPException(400, str(exc)) from None
+    try:
+        await asyncio.to_thread(check_public_http_url, resolved.url)
+    except ValueError as exc:
+        raise HTTPException(400, f"The link decodes to a URL that is not allowed: {exc}") from None
+    return resolved
+
+
+class DecodeLinkRequest(BaseModel):
+    link: str
+
+
+@router.post("/decode-link")
+async def decode_link(body: DecodeLinkRequest, session: AsyncSession = Depends(get_session)):
+    """What a pasted link resolves to: lets the UI name the subscription and
+    show the real URL before saving."""
+    from urllib.parse import urlsplit
+    link = (body.link or "").strip()
+    if not link:
+        raise HTTPException(400, "Empty link")
+    resolved = await _resolve_checked(session, link)
+    return {
+        "kind": resolved.kind,
+        "url": resolved.url,
+        "host": urlsplit(resolved.url).hostname or "",
+        "name": resolved.name,
+    }
+
+
+class LinkKeyCreate(BaseModel):
+    kind: str
+    name: str
+    value: str
+
+
+async def _save_link_keys(session: AsyncSession, keys: list) -> None:
+    import json
+    from app.core.sub_links import SETTING_KEY
+    row = (await session.exec(select(DBSettings).where(DBSettings.key == SETTING_KEY))).first()
+    if row is None:
+        row = DBSettings(key=SETTING_KEY, value="[]")
+    row.value = json.dumps(keys)
+    session.add(row)
+    await session.commit()
+
+
+def _link_key_view(k: dict) -> dict:
+    from app.core.sub_links import fingerprint
+    return {"id": fingerprint(k["kind"] + ":" + k["name"] + ":" + k["value"]),
+            "kind": k["kind"], "name": k["name"], "fingerprint": fingerprint(k["value"])}
+
+
+@router.get("/link-keys")
+async def list_link_keys(session: AsyncSession = Depends(get_session)):
+    """Operator-added keys (values are never returned) and the built-in counts."""
+    from app.core import sub_link_keys as b
+    from app.core.sub_links import load_custom_keys
+    return {
+        "custom": [_link_key_view(k) for k in await load_custom_keys(session)],
+        "builtin": {
+            "happ_rsa": len(b.HAPP_RSA_KEYS), "happ_crypt5": len(b.HAPP_CRYPT5_KEYS),
+            "v2raytun": len(b.V2RAYTUN_KEYS), "incy": len(b.INCY_KEYS),
+            "body_aes": len(b.BODY_AES_KEYS),
+        },
+    }
+
+
+@router.post("/link-keys", status_code=201)
+async def add_link_key(body: LinkKeyCreate, session: AsyncSession = Depends(get_session)):
+    from app.core.sub_links import load_custom_keys, validate_key
+    entry = {"kind": body.kind.strip(), "name": body.name.strip(), "value": body.value.strip()}
+    try:
+        validate_key(entry["kind"], entry["name"], entry["value"])
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from None
+    keys = await load_custom_keys(session)
+    view = _link_key_view(entry)
+    if any(_link_key_view(k)["id"] == view["id"] for k in keys):
+        raise HTTPException(409, "This key is already added")
+    keys.append(entry)
+    await _save_link_keys(session, keys)
+    return view
+
+
+@router.delete("/link-keys/{key_id}", status_code=204)
+async def delete_link_key(key_id: str, session: AsyncSession = Depends(get_session)):
+    from app.core.sub_links import load_custom_keys
+    keys = await load_custom_keys(session)
+    left = [k for k in keys if _link_key_view(k)["id"] != key_id]
+    if len(left) == len(keys):
+        raise HTTPException(404, "Key not found")
+    await _save_link_keys(session, left)
+
 
 # ── CRUD ──────────────────────────────────────────────────────────────────────
 
@@ -31,6 +136,9 @@ async def create_subscription(
     background_tasks: BackgroundTasks,
     session: AsyncSession = Depends(get_session),
 ):
+    from app.core.sub_links import is_special_link
+    if is_special_link(data.url):
+        await _resolve_checked(session, data.url)
     sub = Subscription(**data.model_dump())
     session.add(sub)
     await session.commit()
@@ -54,7 +162,11 @@ async def update_subscription(
     sub = await session.get(Subscription, sub_id)
     if not sub:
         raise HTTPException(404, "Subscription not found")
-    for k, v in data.model_dump(exclude_unset=True).items():
+    updates = data.model_dump(exclude_unset=True)
+    from app.core.sub_links import is_special_link
+    if updates.get("url") and updates["url"] != sub.url and is_special_link(updates["url"]):
+        await _resolve_checked(session, updates["url"])
+    for k, v in updates.items():
         setattr(sub, k, v)
     session.add(sub)
     await session.commit()
@@ -355,7 +467,19 @@ async def _fetch_subscription_unlocked(sub_id: int) -> None:
         err_msg: str = ""
         userinfo: str = ""
 
+        from app.core import sub_links
+        fetch_url = sub.url
         try:
+            link_keys = await sub_links.load_custom_keys(session)
+            if sub_links.is_special_link(sub.url):
+                # Resolved on every fetch, so keys added later still apply.
+                from app.schemas import check_public_http_url
+                fetch_url = sub_links.resolve_link(sub.url, link_keys).url
+                try:
+                    await asyncio.to_thread(check_public_http_url, fetch_url)
+                except ValueError as exc:
+                    raise sub_links.SubLinkError(
+                        f"the link decodes to a URL that is not allowed: {exc}") from None
             async with httpx.AsyncClient(
                 follow_redirects=True,
                 timeout=30,
@@ -363,15 +487,21 @@ async def _fetch_subscription_unlocked(sub_id: int) -> None:
                 # a per-subscription opt-in rather than the default.
                 verify=not sub.allow_insecure_tls,
             ) as client:
-                resp = await client.get(sub.url, headers=headers)
+                resp = await client.get(fetch_url, headers=headers)
                 resp.raise_for_status()
-                content = resp.text
-                userinfo = (getattr(resp, "headers", None) or {}).get("subscription-userinfo", "") or ""
+                resp_headers = getattr(resp, "headers", None) or {}
+                content = sub_links.decrypt_body(resp.text, fetch_url, resp_headers, link_keys)
+                userinfo = resp_headers.get("subscription-userinfo", "") or ""
+                if not isinstance(userinfo, str):
+                    userinfo = ""
+        except sub_links.SubLinkError as exc:
+            err_msg = f"Link: {exc}"
+            logger.error("Subscription %d link failed: %s", sub_id, err_msg)
         except Exception as exc:
             from app.core import error_log
             err_msg = error_log.record(
                 "subscription.fetch", exc,
-                subscription_id=sub_id, url=error_log.redact_url(sub.url),
+                subscription_id=sub_id, url=error_log.redact_url(fetch_url),
             )
             logger.error("Subscription %d fetch failed: %s", sub_id, err_msg)
 

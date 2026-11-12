@@ -7,6 +7,7 @@ import type {
   RoutingRule, RoutingRuleCreate, RoutingRuleUpdate, ArpDevice,
   BulkRuleCreate, BulkRuleResult,
   Subscription, SubscriptionCreate, SubscriptionUpdate,
+  DecodedLink, LinkKey, LinkKeyCreate, LinkKeyList,
   UserAgentTemplate, UserAgentTemplateCreate, UserAgentTemplateUpdate,
   UserAgentTemplateImportResult,
   SystemStatus, SystemSettings, SystemVersions, ProxyMode,
@@ -356,6 +357,19 @@ export const subsApi = {
 
   refresh: (id: number) =>
     http.post(`/subscriptions/${id}/refresh`).then(r => r.data),
+
+  /** Resolve a happ:// / v2raytun:// / incy:// link to its https URL. */
+  decodeLink: (link: string) =>
+    http.post<DecodedLink>('/subscriptions/decode-link', { link }).then(r => r.data),
+
+  linkKeys: () =>
+    http.get<LinkKeyList>('/subscriptions/link-keys').then(r => r.data),
+
+  addLinkKey: (data: LinkKeyCreate) =>
+    http.post<LinkKey>('/subscriptions/link-keys', data).then(r => r.data),
+
+  deleteLinkKey: (id: string) =>
+    http.delete(`/subscriptions/link-keys/${id}`),
 }
 
 // ── User-Agent templates ──────────────────────────────────────────────────────
