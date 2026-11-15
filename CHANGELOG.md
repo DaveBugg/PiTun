@@ -4,6 +4,16 @@ All notable user-facing changes to PiTun. Full per-release detail lives in the
 [GitHub Releases](https://github.com/DaveBugg/PiTun/releases); this file is the
 committed summary.
 
+## v1.7.14 — 2026-11-15
+
+**An update badge in the header, and circles say what they decided.**
+
+### Added
+
+- PiTun checks GitHub for a new release once a day. When there is one, a badge with the version appears next to the logo and opens Settings → Updates with the update ready to install.
+- Circles: "Rotate on schedule even when the current node is fine". Off (as before), a scheduled tick keeps an active node that is online and within the max latency; on, every tick picks the best node again.
+- Each circle shows when it was last checked and what it decided ("kept 'X': healthy (61 ms)", "rotated to 'Y'", "all candidates failed…"), so a circle that keeps a good node no longer looks stuck behind an old "Last rotated".
+
 ## v1.7.13 — 2026-11-12
 
 **Subscriptions accept encrypted client links.**

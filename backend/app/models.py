@@ -497,6 +497,13 @@ class NodeCircle(SQLModel, table=True):
     # by hand, and countries (ISO codes) whose nodes never join. core/circle_filters.
     excluded_node_ids: str = "[]"
     excluded_countries: str = "[]"
+    # Off: a scheduled tick keeps an active node that is online and within the
+    # latency budget. On: every tick rotates.
+    rotate_when_healthy: bool = False
+    # When the scheduler last looked at this circle and what it decided, so
+    # "no rotation for days" reads as "kept, healthy" rather than "stuck".
+    last_checked: Optional[datetime] = None
+    last_check_result: Optional[str] = None
 
 
 class AutoCheckConfig(SQLModel, table=True):

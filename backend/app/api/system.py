@@ -1730,8 +1730,22 @@ async def check_update(
     """Ask GitHub for the newest release. Advisory — applies nothing."""
     from app.core.updater import check_for_update
 
+    from app.core.updater import remember_check
+
     settings_map = await _load_settings_map(session)
-    return await check_for_update(settings_map, prerelease=prerelease)
+    result = await check_for_update(settings_map, prerelease=prerelease)
+    if not prerelease:
+        remember_check(result)
+    return result
+
+
+@router.get("/update/available")
+async def update_available():
+    """Result of the daily background check (no network call): drives the
+    header badge."""
+    from app.core.updater import cached_check
+
+    return cached_check()
 
 
 @router.get("/update/status", response_model=UpdateStatus)

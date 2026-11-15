@@ -63,6 +63,7 @@ function CircleModal({ initial, nodeOptions, onSave, onCancel, loading }: ModalP
   // be transiently empty. "0" / empty = disabled.
   const [maxLatency, setMaxLatency] = useState(String(initial?.max_latency_ms ?? 0))
   const [minSpeed, setMinSpeed] = useState(String(initial?.min_speed_mbps ?? 50))
+  const [rotateWhenHealthy, setRotateWhenHealthy] = useState(initial?.rotate_when_healthy ?? false)
   // Interval inputs are kept as strings so the user can transiently clear
   // the field while typing (`Number('')` = 0, which would lock them into
   // a leading-zero state like "035"). We parse on submit; empty/invalid
@@ -134,6 +135,7 @@ function CircleModal({ initial, nodeOptions, onSave, onCancel, loading }: ModalP
       // hidden value never silently filters a sequential/random circle.
       max_latency_ms: mode === 'best' ? Math.max(0, parseInt(maxLatency, 10) || 0) : 0,
       min_speed_mbps: mode === 'best' ? Math.max(0, parseFloat(minSpeed) || 0) : 0,
+      rotate_when_healthy: rotateWhenHealthy,
       node_ids: Array.from(selectedIds),
       // null (not undefined) so clearing the link actually reaches the PATCH
       // body — the backend patches with exclude_unset.
@@ -251,6 +253,19 @@ function CircleModal({ initial, nodeOptions, onSave, onCancel, loading }: ModalP
               className="w-full rounded-sm bg-gray-800 border border-gray-700 px-3 py-1.5 text-sm text-gray-100 focus:border-brand-500 focus:outline-hidden"
             />
           </div>
+          <label className="col-span-2 flex items-center gap-2 text-xs text-gray-300 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={rotateWhenHealthy}
+              onChange={(e) => setRotateWhenHealthy(e.target.checked)}
+              className="rounded-sm border-gray-600 bg-gray-800"
+            />
+            {t('Rotate on schedule even when the current node is fine', 'Ротировать по расписанию, даже если текущая нода в порядке')}
+            <InfoTip position="bottom" className="ml-0.5" text={t(
+              'Off: with a max latency set, a scheduled tick keeps an active node that is online and within it (manual "rotate" and failover always switch). On: every tick picks the best node again.',
+              'Выкл.: если задан лимит задержки, плановая проверка оставляет активную ноду, пока она онлайн и в лимите (ручная ротация и failover переключают всегда). Вкл.: каждая проверка заново выбирает лучшую ноду.',
+            )} />
+          </label>
         </div>
       )}
 
@@ -661,6 +676,14 @@ export function NodeCircles() {
                 <span>
                   Last rotated: {formatLastRotated(circle.last_rotated)}
                 </span>
+                {circle.last_checked && (
+                  <span title={circle.last_check_result ?? undefined} className="min-w-0 truncate">
+                    {t('Checked', 'Проверка')}: {formatLastRotated(circle.last_checked)}
+                    {circle.last_check_result && (
+                      <span className="text-gray-600"> — {circle.last_check_result}</span>
+                    )}
+                  </span>
+                )}
               </div>
 
               {/* Node chips */}

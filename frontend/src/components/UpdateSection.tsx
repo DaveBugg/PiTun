@@ -143,6 +143,15 @@ export function UpdateSection() {
     onError: (err) => setCheckError(apiErrorText(err, t('Check failed', 'Проверка не удалась'))),
   })
 
+  // Arrived from the header badge: scroll here and show the update at once.
+  const rootRef = useRef<HTMLDivElement>(null)
+  const checkNow = check.mutate
+  useEffect(() => {
+    if (window.location.hash !== '#update') return
+    rootRef.current?.scrollIntoView({ block: 'start' })
+    checkNow()
+  }, [checkNow])
+
   const start = useMutation({
     // Pin the version the user was shown: the agent would otherwise look the
     // latest release up again and could disagree with the check just made.
@@ -207,7 +216,7 @@ ${base}` : base,
   }
 
   return (
-    <div className="rounded-xl border border-gray-800 bg-gray-900/30 p-5 space-y-4">
+    <div id="update" ref={rootRef} className="rounded-xl border border-gray-800 bg-gray-900/30 p-5 space-y-4 scroll-mt-4">
       <div className="flex items-center justify-between gap-3 flex-wrap">
         <h2 className="text-sm font-semibold text-gray-200 flex items-center gap-2">
           <ArrowUpCircle className="h-4 w-4 text-brand-400" />

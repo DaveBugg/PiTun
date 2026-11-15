@@ -777,7 +777,18 @@ export interface UpdateStatus {
   request_pending: boolean
 }
 
+export interface UpdateAvailable {
+  current: string
+  latest: string | null
+  update_available: boolean
+  checked_at: string | null
+}
+
 export const updateApi = {
+  /** Cached result of the backend's daily check — no GitHub call. */
+  available: () =>
+    http.get<UpdateAvailable>('/system/update/available').then(r => r.data),
+
   check: (prerelease = false) =>
     http.get<UpdateCheckResult>('/system/update/check', { params: { prerelease } })
       .then(r => r.data),

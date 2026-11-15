@@ -84,6 +84,8 @@ async def lifespan(app: FastAPI):
     chain_drift_scheduler.start()
     domain_stats_scheduler.start()
     asyncio.create_task(_reapply_limits())
+    from app.core.updater import auto_check_loop
+    _update_check_task = asyncio.create_task(auto_check_loop())
 
     try:
         from app.core.xui_deployment import backfill as _backfill_xui_deployments
@@ -300,6 +302,7 @@ async def lifespan(app: FastAPI):
     logger.info("PiTun backend shutting down")
     from app.core.geo_scheduler import geo_scheduler
 
+    _update_check_task.cancel()
     health_checker.stop()
     subscription_scheduler.stop()
     circle_scheduler.stop()

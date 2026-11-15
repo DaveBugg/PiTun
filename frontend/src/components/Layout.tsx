@@ -28,12 +28,14 @@ import {
   Moon,
   Cloud,
   Menu,
+  ArrowUpCircle,
 } from 'lucide-react'
 import { clsx } from 'clsx'
 import { useAppStore } from '@/store'
 import { useSystemStatus } from '@/hooks/useSystem'
 import { useEscapeKey } from '@/hooks/useEscapeKey'
-import { authApi } from '@/api/client'
+import { authApi, updateApi } from '@/api/client'
+import { useQuery } from '@tanstack/react-query'
 import { VersionPopover } from '@/components/VersionPopover'
 import PanelUnreachableBanner from '@/components/PanelUnreachableBanner'
 import RouterConfirmBanner from '@/components/RouterConfirmBanner'
@@ -72,6 +74,33 @@ const NAV: { to: string; icon: typeof Scale; label: string; experimental?: boole
 
 // Routes after which a thin separator line groups the nav visually.
 const DIVIDE_AFTER = new Set(['/routing', '/subscriptions', '/chains', '/devices', '/router', '/settings'])
+
+/** Shown next to the logo when the backend's daily check found a newer release. */
+function UpdateBadge({ collapsed }: { collapsed: boolean }) {
+  const { data } = useQuery({
+    queryKey: ['system', 'update', 'available'],
+    queryFn: () => updateApi.available(),
+    // The backend checks GitHub once a day; this only reads its cache.
+    refetchInterval: 30 * 60_000,
+    staleTime: 10 * 60_000,
+    retry: false,
+  })
+  if (!data?.update_available || !data.latest) return null
+  return (
+    <Link
+      to="/settings#update"
+      title={`PiTun ${data.latest} — ${data.current} installed`}
+      className={clsx(
+        'ml-auto flex items-center gap-1 rounded-full bg-green-600/20 border border-green-600/40 px-2 py-0.5',
+        'text-[11px] font-medium text-green-400 hover:bg-green-600/30 transition-colors',
+        collapsed && 'md:hidden',
+      )}
+    >
+      <ArrowUpCircle className="h-3.5 w-3.5" />
+      {data.latest}
+    </Link>
+  )
+}
 
 export function Layout() {
   const {
@@ -250,6 +279,7 @@ export function Layout() {
           >
             PiTun
           </span>
+          <UpdateBadge collapsed={sidebarCollapsed} />
         </div>
 
         {/* Nav */}

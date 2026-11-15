@@ -593,6 +593,43 @@ class TestRotateQualityFilters:
         assert session.get(NodeCircle, circle.id).current_index == 1
 
 
+    @pytest.mark.asyncio
+    async def test_skip_is_recorded_as_the_check_outcome(self, client, admin_user, auth_headers, session):
+        n0 = _mk_node(session, name="N0-active", address="10.0.0.0", is_online=True, latency_ms=30)
+        n1 = _mk_node(session, name="N1", address="10.0.0.1")
+        circle = _mk_circle(session, [n0.id, n1.id], current_index=0)
+        _set_circle_filters(session, circle, max_latency_ms=100)
+        _set_active(session, n0.id)
+        from app.core.circle_scheduler import circle_scheduler
+        assert await circle_scheduler.rotate_circle(circle.id, from_scheduler=True) is False
+        r = client.get(f"/api/nodecircle/{circle.id}", headers=auth_headers).json()
+        assert r["last_checked"] is not None
+        assert "kept 'N0-active'" in r["last_check_result"] and "30 ms" in r["last_check_result"]
+        assert r["last_rotated"] is None
+
+    @pytest.mark.asyncio
+    async def test_rotate_when_healthy_rotates_on_a_scheduled_tick(self, client, admin_user, auth_headers, session):
+        n0 = _mk_node(session, name="N0-active", address="10.0.0.0", is_online=True, latency_ms=30)
+        n1 = _mk_node(session, name="N1", address="10.0.0.1")
+        circle = _mk_circle(session, [n0.id, n1.id], current_index=0)
+        _set_circle_filters(session, circle, max_latency_ms=100)
+        _set_active(session, n0.id)
+        r = client.patch(f"/api/nodecircle/{circle.id}", json={"rotate_when_healthy": True},
+                         headers=auth_headers)
+        assert r.status_code == 200 and r.json()["rotate_when_healthy"] is True
+
+        async def probe(addr, port, udp, **kw):
+            return {"is_online": True, "latency_ms": 10}
+
+        with (
+            patch("app.core.healthcheck.health_checker._probe_node", side_effect=probe),
+            patch("app.core.circle_scheduler.CircleScheduler._seamless_rotate", new_callable=AsyncMock),
+        ):
+            from app.core.circle_scheduler import circle_scheduler
+            assert await circle_scheduler.rotate_circle(circle.id, from_scheduler=True) is True
+        r = client.get(f"/api/nodecircle/{circle.id}", headers=auth_headers).json()
+        assert r["current_index"] == 1 and r["last_check_result"] == "rotated to 'N1'"
+
 class TestSpeedPersistence:
     @pytest.mark.asyncio
     async def test_speedtest_persists_on_node(self, client, admin_user, auth_headers, session):

@@ -248,3 +248,53 @@ def write_request(
         logger.warning("Could not seed the update status: %s", exc)
     _atomic(REQUEST_FILE, json.dumps(body))
     return body
+
+
+# ── Daily background check ───────────────────────────────────────────────────
+#
+# The header badge reads this cache, so opening the UI never waits on GitHub.
+
+_AUTO_FIRST_DELAY_S = 120
+_AUTO_INTERVAL_S = 24 * 3600
+_last_auto: Optional[Dict[str, Any]] = None
+
+
+def remember_check(result: Dict[str, Any]) -> None:
+    """Keep a check result for the badge (a manual check counts too)."""
+    global _last_auto
+    if result.get("error"):
+        return  # a failed check must not hide an update found earlier
+    _last_auto = {**result, "checked_at": datetime.now(tz=timezone.utc).isoformat()}
+
+
+def cached_check() -> Dict[str, Any]:
+    if _last_auto is None:
+        return {"current": APP_VERSION, "latest": None, "update_available": False, "checked_at": None}
+    data = dict(_last_auto)
+    data["current"] = APP_VERSION
+    data["update_available"] = bool(data.get("latest")) and is_newer(data["latest"], APP_VERSION)
+    return data
+
+
+async def _settings_map() -> Dict[str, str]:
+    from sqlmodel import select
+    from sqlmodel.ext.asyncio.session import AsyncSession
+    from app.database import get_async_engine
+    from app.models import Settings as DBSettings
+    async with AsyncSession(get_async_engine()) as session:
+        rows = (await session.exec(select(DBSettings))).all()
+    return {r.key: r.value for r in rows}
+
+
+async def auto_check_loop() -> None:
+    import asyncio
+    await asyncio.sleep(_AUTO_FIRST_DELAY_S)
+    while True:
+        try:
+            result = await check_for_update(await _settings_map())
+            remember_check(result)
+            if result.get("update_available"):
+                logger.info("Update available: %s (running %s)", result.get("latest"), APP_VERSION)
+        except Exception as exc:  # noqa: BLE001 — advisory, never fatal
+            logger.debug("daily update check failed: %s", exc)
+        await asyncio.sleep(_AUTO_INTERVAL_S)

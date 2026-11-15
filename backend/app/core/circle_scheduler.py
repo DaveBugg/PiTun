@@ -41,6 +41,7 @@ class CircleScheduler:
         # check is not probed again, whether its port still answered). A rotation
         # would otherwise walk the same dead nodes first every time.
         self._dead_until: dict[int, tuple[float, bool]] = {}
+        self._outcome: dict[int, str] = {}
         self._task: Optional[asyncio.Task] = None
         self._running = False
         self._next_rotate: dict[int, datetime] = {}
@@ -53,6 +54,24 @@ class CircleScheduler:
         # of the first. Per-circle (not global) so rotations of
         # different circles don't queue behind each other.
         self._rotate_locks: dict[int, asyncio.Lock] = {}
+
+    def _note(self, circle_id: int, text: str) -> None:
+        """What this rotation attempt decided, for `last_check_result`."""
+        self._outcome[circle_id] = text[:200]
+
+    async def _save_outcome(self, circle_id: int, rotated: bool) -> None:
+        text = self._outcome.pop(circle_id, None) or ("rotated" if rotated else "kept the current node")
+        try:
+            async with AsyncSession(get_async_engine()) as session:
+                circle = await session.get(NodeCircle, circle_id)
+                if circle is None:
+                    return
+                circle.last_checked = datetime.now(tz=timezone.utc)
+                circle.last_check_result = text
+                session.add(circle)
+                await session.commit()
+        except Exception as exc:  # noqa: BLE001 — bookkeeping only
+            logger.debug("NodeCircle %d: could not store the check outcome: %s", circle_id, exc)
 
     def _get_rotate_lock(self, circle_id: int) -> asyncio.Lock:
         lock = self._rotate_locks.get(circle_id)
@@ -302,16 +321,20 @@ class CircleScheduler:
                         deadline += self._SPEED_BUDGET_S + 60.0
             except Exception:  # noqa: BLE001
                 pass
+            self._outcome.pop(circle_id, None)
             try:
                 async with asyncio.timeout(deadline):
-                    return await self._do_rotate(circle_id, from_scheduler)
+                    rotated = await self._do_rotate(circle_id, from_scheduler)
             except asyncio.TimeoutError:
                 logger.warning(
                     "NodeCircle %d: rotation exceeded %.0fs deadline — aborted, "
                     "will retry on next tick",
                     circle_id, deadline,
                 )
-                return False
+                self._note(circle_id, f"check took longer than {deadline:.0f}s, aborted")
+                rotated = False
+            await self._save_outcome(circle_id, rotated)
+            return rotated
 
     async def _do_rotate(self, circle_id: int, from_scheduler: bool = False) -> bool:
         """Pre-ping + rotate to first alive candidate.
@@ -403,7 +426,7 @@ class CircleScheduler:
             # churn off an active node that's still online and within budget.
             # Manual "rotate now" and failover pass from_scheduler=False and
             # always rotate. Untested latency (None) never blocks a rotation.
-            if from_scheduler and max_latency_ms > 0:
+            if from_scheduler and max_latency_ms > 0 and not getattr(circle, "rotate_when_healthy", False):
                 active = await _get_active_node(session)
                 if (active is not None and active.is_online
                         and active.latency_ms is not None
@@ -412,6 +435,7 @@ class CircleScheduler:
                         "NodeCircle %d: active node %d healthy (%dms <= %dms) — skip rotation",
                         circle_id, active.id, active.latency_ms, max_latency_ms,
                     )
+                    self._note(circle_id, f"kept '{active.name}': healthy ({active.latency_ms} ms)")
                     return False
 
             # Build candidate order: random/best collect all, sequential walks
@@ -468,6 +492,7 @@ class CircleScheduler:
 
         if not candidates:
             logger.warning("NodeCircle %d: no enabled candidates to rotate to", circle_id)
+            self._note(circle_id, "no enabled candidate passed the filters")
             return False
 
         # ── Phase 2: probe each candidate, take the first that's alive ───────
@@ -664,6 +689,7 @@ class CircleScheduler:
                 entity_id=circle_id,
                 dedup_window_sec=300,
             )
+            self._note(circle_id, f"all {len(candidates)} candidates failed their checks, kept the current node")
             return False
 
         next_node_id = selected["id"]
@@ -725,6 +751,7 @@ class CircleScheduler:
         )
 
         await self._seamless_rotate(prev_node_id, next_node_id)
+        self._note(circle_id, f"rotated to '{next_node_name}'")
         return True
 
     async def _seamless_rotate(

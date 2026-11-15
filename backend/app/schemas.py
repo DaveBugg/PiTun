@@ -909,6 +909,7 @@ class NodeCircleBase(BaseModel):
     # countries (ISO codes) whose nodes never join it.
     excluded_node_ids: List[int] = []
     excluded_countries: List[str] = []
+    rotate_when_healthy: bool = False
 
     @field_validator("subscription_ids", mode="before")
     @classmethod
@@ -972,6 +973,7 @@ class NodeCircleUpdate(BaseModel):
     subscription_ids: Optional[List[int]] = None
     excluded_node_ids: Optional[List[int]] = None
     excluded_countries: Optional[List[str]] = None
+    rotate_when_healthy: Optional[bool] = None
 
     @field_validator("excluded_countries", mode="before")
     @classmethod
@@ -994,6 +996,8 @@ class NodeCircleRead(NodeCircleBase):
     id: int
     current_index: int = 0
     last_rotated: Optional[datetime] = None
+    last_checked: Optional[datetime] = None
+    last_check_result: Optional[str] = None
     # Current active node name from the circle
     current_node_name: Optional[str] = None
 
