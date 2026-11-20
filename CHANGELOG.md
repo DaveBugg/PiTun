@@ -4,6 +4,14 @@ All notable user-facing changes to PiTun. Full per-release detail lives in the
 [GitHub Releases](https://github.com/DaveBugg/PiTun/releases); this file is the
 committed summary.
 
+## v1.8.0-beta.9 — 2026-11-20
+
+**Fixes the broken v1.8.0-beta.8 backend image.** Use this instead of beta.8.
+
+### Fixed
+
+- The beta.8 backend image was built without its Python packages: a pinned `cryptography` version conflicted with `asyncssh`, and the image build ignored the failed install. The pin is gone (asyncssh decides the version again), and a failed package install now fails the image build. Everything listed under beta.8 is included.
+
 ## v1.8.0-beta.8 — 2026-11-20
 
 **A wrong routing rule can no longer take the LAN offline; dependency security fixes.**

@@ -93,9 +93,11 @@ COPY requirements.txt .
 # anything wheels embedded directly (rare but happens). Together with
 # PYTHONDONTWRITEBYTECODE=1 (set above), the resulting image has zero
 # *.pyc files, removing an entire class of bytecode-vs-runtime mismatches.
+# The cleanup may find nothing; pip itself must fail the build (a trailing
+# `|| true` once let an image ship without any Python packages).
 RUN pip install --no-cache-dir --no-compile -r requirements.txt && \
-    find /usr/local/lib -name '*.pyc' -delete 2>/dev/null && \
-    find /usr/local/lib -name '__pycache__' -type d -exec rm -rf {} + 2>/dev/null || true
+    { find /usr/local/lib -name '*.pyc' -delete 2>/dev/null; \
+      find /usr/local/lib -name '__pycache__' -type d -exec rm -rf {} + 2>/dev/null; true; }
 
 # Bundled xray-core binary. The geoip.dat / geosite.dat databases stay on
 # the host (bind-mounted RW into /usr/local/share/xray) so they remain
