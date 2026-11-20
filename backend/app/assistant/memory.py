@@ -24,7 +24,7 @@ async def list_facts(session) -> List[AssistantFact]:
     return list((await session.exec(select(AssistantFact).order_by(AssistantFact.id))).all())
 
 
-async def add_fact(session, text: str) -> Tuple[Optional[AssistantFact], Optional[str]]:
+async def add_fact(session, text: str, confirmed: bool = True) -> Tuple[Optional[AssistantFact], Optional[str]]:
     """-> (fact, None) or (None, why not)."""
     t = " ".join((text or "").split())[:MAX_FACT_CHARS]
     if len(t) < 3:
@@ -39,7 +39,7 @@ async def add_fact(session, text: str) -> Tuple[Optional[AssistantFact], Optiona
     if len(facts) >= MAX_FACTS:
         return None, (f"memory is full ({MAX_FACTS} facts); ask the user to delete old ones "
                       "in Settings -> Assistant")
-    fact = AssistantFact(text=t)
+    fact = AssistantFact(text=t, confirmed=confirmed)
     session.add(fact)
     await session.commit()
     await session.refresh(fact)
@@ -55,7 +55,20 @@ async def delete_fact(session, fact_id: int) -> bool:
     return True
 
 
+async def confirm_fact(session, fact_id: int) -> bool:
+    fact = await session.get(AssistantFact, fact_id)
+    if fact is None:
+        return False
+    fact.confirmed = True
+    session.add(fact)
+    await session.commit()
+    return True
+
+
 def facts_block(facts: List[AssistantFact], redactor) -> str:
+    # A fact the model saved is used only after the user confirmed it, so an
+    # injected instruction cannot persist into every later chat by itself.
+    facts = [f for f in facts if f.confirmed]
     if not facts:
         return ""
     lines, size = [], 0

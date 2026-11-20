@@ -6,6 +6,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { assistantApi } from '@/api/client'
 import type { AssistantProvider, AssistantSettings, AssistantSettingsPatch } from '@/api/client'
 import { InfoTip } from '@/components/InfoTip'
+import { AssistantMcp } from '@/components/AssistantMcp'
 import { useT } from '@/hooks/useT'
 import { apiErrorText } from '@/lib/apiError'
 
@@ -31,6 +32,7 @@ function Facts() {
     onSuccess: () => { setText(''); refresh() },
   })
   const del = useMutation({ mutationFn: (id: number) => assistantApi.deleteFact(id), onSuccess: refresh })
+  const ok = useMutation({ mutationFn: (id: number) => assistantApi.confirmFact(id), onSuccess: refresh })
   return (
     <div>
       <label className="flex items-center gap-1 text-xs font-medium text-gray-400 mb-1">
@@ -47,7 +49,19 @@ function Facts() {
         {(facts.data ?? []).map((f) => (
           <div key={f.id} className="flex items-start gap-2 px-3 py-1.5 text-xs text-gray-300">
             <span className="text-gray-600 font-mono">#{f.id}</span>
-            <span className="flex-1">{f.text}</span>
+            <span className={clsx('flex-1', !f.confirmed && 'text-yellow-300')}>
+              {f.text}
+              {!f.confirmed && (
+                <span className="ml-1.5 text-[10px] text-yellow-600">
+                  {t('(proposed by the assistant, not used until you confirm)', '(предложил помощник, не используется, пока не подтвердите)')}
+                </span>
+              )}
+            </span>
+            {!f.confirmed && (
+              <button onClick={() => ok.mutate(f.id)} className="text-yellow-400 hover:text-yellow-200">
+                {t('Confirm', 'Подтвердить')}
+              </button>
+            )}
             <button onClick={() => del.mutate(f.id)} aria-label={t('Delete', 'Удалить')}
                     className="text-gray-600 hover:text-red-400"><Trash2 className="h-3.5 w-3.5" /></button>
           </div>
@@ -311,7 +325,7 @@ export function AssistantSection() {
             {s.voice_mode === 'server' && (
               <div>
                 <label className="block text-xs font-medium text-gray-400 mb-1">{t('Speech server URL', 'Адрес сервера речи')}</label>
-                <input defaultValue={s.stt_url} key={s.stt_url} placeholder="http://192.168.1.50:8000/v1"
+                <input defaultValue={s.stt_url} key={s.stt_url} placeholder="http://<host>:8000/v1"
                        onBlur={(e) => { if (e.target.value.trim() !== s.stt_url) save.mutate({ stt_url: e.target.value }) }}
                        className={INPUT} />
               </div>
@@ -369,6 +383,8 @@ export function AssistantSection() {
       {error && <div className="text-xs text-red-400">{error}</div>}
 
       <Facts />
+
+      <AssistantMcp enabled={s.mcp_enabled} onToggle={(p) => save.mutate(p)} />
     </div>
   )
 }

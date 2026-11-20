@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 
 import { assistantApi } from '@/api/client'
 
@@ -15,6 +15,7 @@ interface Recognizer {
   onend: (() => void) | null
   start: () => void
   stop: () => void
+  abort?: () => void
 }
 
 function recognizerClass(): (new () => Recognizer) | null {
@@ -40,8 +41,11 @@ export function useVoiceInput(mode: Mode, lang: string, onText: (text: string, f
   const [error, setError] = useState<string | null>(null)
   const rec = useRef<Recognizer | null>(null)
   const media = useRef<MediaRecorder | null>(null)
+  const stream = useRef<MediaStream | null>(null)
+  const starting = useRef(false)
 
   const start = async () => {
+    if (starting.current || rec.current || media.current) return
     setError(null)
     if (mode === 'browser') {
       const Cls = recognizerClass()
@@ -67,13 +71,17 @@ export function useVoiceInput(mode: Mode, lang: string, onText: (text: string, f
       setState('listening')
       return
     }
+    starting.current = true
+    setState('listening')
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
-      const mr = new MediaRecorder(stream)
+      const ms = await navigator.mediaDevices.getUserMedia({ audio: true })
+      stream.current = ms
+      const mr = new MediaRecorder(ms)
       const chunks: Blob[] = []
       mr.ondataavailable = (e) => { if (e.data.size) chunks.push(e.data) }
       mr.onstop = async () => {
-        stream.getTracks().forEach((tr) => tr.stop())
+        ms.getTracks().forEach((tr) => tr.stop())
+        stream.current = null
         media.current = null
         const blob = new Blob(chunks, { type: mr.mimeType || 'audio/webm' })
         if (!blob.size) { setState('idle'); return }
@@ -89,10 +97,11 @@ export function useVoiceInput(mode: Mode, lang: string, onText: (text: string, f
       }
       media.current = mr
       mr.start()
-      setState('listening')
     } catch (err) {
       setError((err as Error).message)
       setState('idle')
+    } finally {
+      starting.current = false
     }
   }
 
@@ -100,6 +109,13 @@ export function useVoiceInput(mode: Mode, lang: string, onText: (text: string, f
     rec.current?.stop()
     if (media.current && media.current.state !== 'inactive') media.current.stop()
   }
+
+  // Never leave the microphone open when the component goes away.
+  useEffect(() => () => {
+    rec.current?.abort?.()
+    if (media.current && media.current.state !== 'inactive') media.current.stop()
+    stream.current?.getTracks().forEach((tr) => tr.stop())
+  }, [])
 
   return { state, error, start, stop, toggle: () => (state === 'listening' ? stop() : void start()) }
 }

@@ -52,7 +52,8 @@ def test_pasted_server_becomes_a_plan_and_the_password_never_reaches_the_model(
     assert plan["steps"][1]["path"] == "/servers/{{step1.id}}/test"
     sent = json.dumps(fake.seen) + json.dumps(fake.systems)
     assert "S3cr3t-pass" not in sent and "203.0.113.5" not in sent
-    assert fake.tools == [[]] and f"plan #{plan['id']}" in fake.systems[0]
+    # one phrasing call; any tool call in it is ignored
+    assert len(fake.seen) == 1 and f"plan #{plan['id']}" in fake.systems[0]
     stored = " ".join(r.content for r in session.exec(select(AssistantMessage)).all())
     assert "S3cr3t-pass" not in stored
     row = session.exec(select(AssistantPlan)).one()

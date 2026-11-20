@@ -12,6 +12,7 @@ share one adapter; Anthropic goes through its official SDK.
 from __future__ import annotations
 
 import json
+import secrets
 import logging
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
@@ -77,6 +78,16 @@ def _http_error(exc: Exception) -> ProviderError:
     return ProviderError(f"{type(exc).__name__}: {str(exc)[:200]}")
 
 
+# (base_url, model) of local servers that refused a request with tools.
+_NO_TOOLS: set = set()
+_TOOL_REFUSALS = ("does not support tools", "tool", "jinja", "auto tool choice", "tool_choice", "function")
+
+
+def _refuses_tools(text: str) -> bool:
+    t = (text or "").lower()
+    return any(k in t for k in _TOOL_REFUSALS)
+
+
 # ── OpenAI-compatible (OpenRouter, OpenAI, local) ────────────────────────────
 
 class OpenAICompatProvider:
@@ -112,7 +123,9 @@ class OpenAICompatProvider:
                 else:
                     out.append({"role": "user", "content": m.get("content") or ""})
             elif m["role"] == "assistant":
-                msg: Dict[str, Any] = {"role": "assistant", "content": m.get("content") or None}
+                # null content is only valid next to tool calls
+                msg: Dict[str, Any] = {"role": "assistant",
+                                       "content": m.get("content") or (None if m.get("tool_calls") else "(no reply)")}
                 if m.get("tool_calls"):
                     msg["tool_calls"] = [{
                         "id": tc["id"], "type": "function",
@@ -128,7 +141,8 @@ class OpenAICompatProvider:
             "model": self.s.model,
             "messages": self._messages(system, messages),
         }
-        if tools:
+        no_tools_key = (self.s.base_url, self.s.model)
+        if tools and no_tools_key not in _NO_TOOLS:
             body["tools"] = [{"type": "function", "function": t} for t in tools]
             body["tool_choice"] = "auto"
         if self.s.provider == "openrouter":
@@ -137,6 +151,15 @@ class OpenAICompatProvider:
             body["temperature"] = 0
         try:
             r = await self.client.post("/chat/completions", json=body)
+            if (r.status_code == 400 and "tools" in body and self.s.provider == "local"
+                    and _refuses_tools(r.text)):
+                # Model/server without tool calling (Ollama model without tool
+                # support, llama.cpp without --jinja, vLLM without auto tool
+                # choice): small mode reads a JSON tool call from the text.
+                _NO_TOOLS.add(no_tools_key)
+                body.pop("tools", None)
+                body.pop("tool_choice", None)
+                r = await self.client.post("/chat/completions", json=body)
             r.raise_for_status()
             data = r.json()
         except Exception as exc:  # noqa: BLE001
@@ -156,10 +179,16 @@ class OpenAICompatProvider:
         for i, tc in enumerate(msg.get("tool_calls") or []):
             fn = tc.get("function") or {}
             turn.tool_calls.append({
-                "id": tc.get("id") or f"call_{i}",
+                "id": tc.get("id") or f"call_{secrets.token_hex(6)}",
                 "name": fn.get("name") or "",
                 "arguments": _parse_args(fn.get("arguments")),
             })
+        if turn.stop == "length" and turn.tool_calls:
+            # A cut-off tool call has broken arguments: do not run it.
+            turn.tool_calls = []
+            turn.text = (turn.text + "\n" if turn.text else "") + "(the answer was cut off; ask again more briefly)"
+        elif turn.stop == "content_filter" and not turn.text:
+            turn.text = "The provider's content filter stopped this answer."
         return turn
 
     async def complete_json(self, system: str, messages: List[dict], schema: dict) -> Optional[ModelTurn]:
@@ -170,7 +199,9 @@ class OpenAICompatProvider:
                    {"type": "json_object"}]
         for fmt in formats:
             body: Dict[str, Any] = {"model": self.s.model, "messages": self._messages(system, messages),
-                                    "response_format": fmt, "temperature": 0}
+                                    "response_format": fmt}
+            if self.s.provider == "local":
+                body["temperature"] = 0
             try:
                 r = await self.client.post("/chat/completions", json=body)
             except httpx.HTTPError as exc:
@@ -245,7 +276,7 @@ class AnthropicProvider:
         proxy = _proxy(s)
         kwargs: Dict[str, Any] = {"api_key": s.api_key, "max_retries": 2, "timeout": 180.0}
         if s.base_urls.get("anthropic"):
-            kwargs["base_url"] = s.base_urls["anthropic"].removesuffix("/v1")
+            kwargs["base_url"] = s.base_urls["anthropic"].rstrip("/").removesuffix("/v1")
         if proxy:
             kwargs["http_client"] = anthropic.DefaultAsyncHttpxClient(proxy=proxy)
         self.client = anthropic.AsyncAnthropic(**kwargs)
@@ -306,12 +337,22 @@ class AnthropicProvider:
         if tools:
             params["tools"] = [{"name": t["name"], "description": t["description"],
                                 "input_schema": t["parameters"]} for t in tools]
+        betas: List[str] = []
         if self.model.startswith(_EFFORT_PREFIXES):
             params["output_config"] = {"effort": "medium"}
+            # History is not append-only (summary, trimmed window, old
+            # screenshots, facts in the system prompt): a thinking block that
+            # no longer matches its conversation is dropped, not a hard 400.
+            params["thinking"] = {"type": "adaptive", "block_binding": {"prefix_mismatch_behavior": "drop_block"}}
+            betas.append("thinking-binding-controls-2026-08-01")
+        # Cache the growing conversation too, not only tools + system.
+        params["cache_control"] = {"type": "ephemeral"}
         try:
             if self.model.startswith(_FALLBACK_MODELS):
                 resp = await self.client.beta.messages.create(
-                    betas=["server-side-fallback-2026-07-01"], fallbacks="default", **params)
+                    betas=betas + ["server-side-fallback-2026-07-01"], fallbacks="default", **params)
+            elif betas:
+                resp = await self.client.beta.messages.create(betas=betas, **params)
             else:
                 resp = await self.client.messages.create(**params)
         except anthropic.AuthenticationError:
@@ -328,17 +369,21 @@ class AnthropicProvider:
             raise ProviderError("could not connect to the provider") from None
 
         turn = ModelTurn(stop=resp.stop_reason or "")
-        if resp.stop_reason == "refusal":
-            turn.text = "The model declined this request."
         keep = []
         for b in resp.content:
             if b.type == "text":
                 turn.text += b.text
             elif b.type == "tool_use":
                 turn.tool_calls.append({"id": b.id, "name": b.name, "arguments": _parse_args(b.input)})
-            if b.type in ("text", "tool_use", "thinking", "redacted_thinking"):
-                keep.append(b.to_dict())
-        turn.raw = {"provider": "anthropic", "model": self.model, "content": keep}
+            # Every block goes back unchanged (thinking, fallback markers...).
+            keep.append(b.to_dict())
+        if resp.stop_reason == "refusal":
+            turn.text = (turn.text + "\n\n" if turn.text else "") + "The model declined this request."
+        elif resp.stop_reason == "max_tokens" and turn.tool_calls:
+            turn.tool_calls = []
+            turn.text = (turn.text + "\n" if turn.text else "") + "(the answer was cut off; ask again more briefly)"
+            keep = []
+        turn.raw = {"provider": "anthropic", "model": self.model, "content": keep} if keep else None
         u = resp.usage
         turn.input_tokens = int((u.input_tokens or 0) + (getattr(u, "cache_read_input_tokens", 0) or 0)
                                 + (getattr(u, "cache_creation_input_tokens", 0) or 0))

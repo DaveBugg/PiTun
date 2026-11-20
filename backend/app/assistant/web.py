@@ -78,19 +78,31 @@ def page_text(raw: str) -> str:
     return _text(_DROP.sub(" ", raw))[:MAX_PAGE_CHARS]
 
 
-async def _public(host: str) -> bool:
+async def _public_ip(host: str) -> Optional[str]:
+    """One public address of the host, or None when any of them is not public.
+    The caller connects to exactly this address (no second lookup that a
+    rebinding DNS could answer with a LAN address)."""
+    try:
+        ipaddress.ip_address(host)
+        literal = True
+    except ValueError:
+        literal = False
     try:
         infos = await asyncio.get_running_loop().getaddrinfo(host, None, type=socket.SOCK_STREAM)
     except OSError:
-        return False
+        return None
+    addrs = []
     for info in infos:
         try:
             ip = ipaddress.ip_address(info[4][0])
         except ValueError:
-            return False
+            return None
         if not ip.is_global:
-            return False
-    return bool(infos)
+            return None
+        addrs.append(str(ip))
+    if not addrs:
+        return None
+    return host if literal else addrs[0]
 
 
 def _client(proxy: Optional[str]) -> httpx.AsyncClient:
@@ -121,11 +133,19 @@ async def fetch(url: str, proxy: Optional[str]) -> dict:
         u = urlparse(url)
         if u.scheme not in ("http", "https") or not u.hostname:
             raise WebError("only http(s) URLs")
-        if not await _public(u.hostname):
+        ip = await _public_ip(u.hostname)
+        if ip is None:
             raise WebError("that address is not public")
+        # Connect to the checked address; Host header and TLS name stay the
+        # site's own, so virtual hosts and certificates still work.
+        target = httpx.URL(url).copy_with(host=ip)
+        headers = {"Host": u.netloc.rsplit("@", 1)[-1]}
+        ext = {"sni_hostname": u.hostname} if u.scheme == "https" else {}
         async with _client(proxy) as c:
             try:
-                async with c.stream("GET", url) as r:
+                req = c.build_request("GET", target, headers=headers, extensions=ext)
+                r = await c.send(req, stream=True)
+                try:
                     if r.is_redirect and r.headers.get("location"):
                         url = str(httpx.URL(url).join(r.headers["location"]))
                         continue
@@ -136,6 +156,8 @@ async def fetch(url: str, proxy: Optional[str]) -> dict:
                             break
                     ctype = r.headers.get("content-type", "")
                     status = r.status_code
+                finally:
+                    await r.aclose()
             except httpx.HTTPError as exc:
                 raise WebError(f"fetch failed: {type(exc).__name__}") from None
         raw = body.decode("utf-8", "replace")

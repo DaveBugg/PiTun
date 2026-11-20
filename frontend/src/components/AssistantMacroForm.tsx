@@ -25,7 +25,11 @@ function toText(v: unknown): string {
 function fromText(p: AssistantMacroParam, raw: string): unknown {
   const v = raw.trim()
   if (p.type === 'array') return v ? v.split(/[,\s]+/).filter(Boolean) : []
-  if (p.type === 'integer' || p.type === 'number') return v === '' ? undefined : Number(v)
+  if (p.type === 'integer' || p.type === 'number') {
+    if (v === '') return undefined
+    const n = Number(v.replace(',', '.'))
+    return Number.isFinite(n) ? (p.type === 'integer' ? Math.round(n) : n) : undefined
+  }
   return v
 }
 
@@ -47,8 +51,11 @@ export function MacroForm({ macro, initial, reason, busy, onSubmit, onClose }: {
   const [text, setText] = useState<Record<string, string>>(
     () => Object.fromEntries(Object.keys(props).map((k) => [k, toText(initial[k])])))
   const [flags, setFlags] = useState<Record<string, boolean>>(
-    () => Object.fromEntries(Object.entries(props).filter(([, p]) => p.type === 'boolean').map(([k]) => [k, !!initial[k]])))
+    () => Object.fromEntries(Object.entries(props).filter(([, p]) => p.type === 'boolean')
+      .map(([k]) => [k, initial[k] === true || initial[k] === 'true'])))
   const missing = [...required].filter((k) => !(text[k] ?? '').trim())
+  const badNumbers = Object.entries(props).filter(([k, p]) => (p.type === 'integer' || p.type === 'number')
+    && (text[k] ?? '').trim() !== '' && !Number.isFinite(Number((text[k] ?? '').trim().replace(',', '.')))).map(([k]) => k)
   const label = MACRO_LABEL[macro.name] ? t(MACRO_LABEL[macro.name].en, MACRO_LABEL[macro.name].ru) : macro.name
 
   const submit = () => {
@@ -63,7 +70,7 @@ export function MacroForm({ macro, initial, reason, busy, onSubmit, onClose }: {
 
   return (
     <form
-      onSubmit={(e) => { e.preventDefault(); if (!missing.length) submit() }}
+      onSubmit={(e) => { e.preventDefault(); if (!missing.length && !badNumbers.length) submit() }}
       className="rounded-lg border border-brand-800 bg-brand-900/20 p-3 text-xs space-y-2"
     >
       <div className="flex items-start justify-between gap-2">
@@ -93,7 +100,10 @@ export function MacroForm({ macro, initial, reason, busy, onSubmit, onClose }: {
           )}
         </label>
       ))}
-      <button type="submit" disabled={busy || missing.length > 0}
+      {badNumbers.length > 0 && (
+        <div className="text-[11px] text-red-400">{t('Not a number:', 'Не число:')} {badNumbers.join(', ')}</div>
+      )}
+      <button type="submit" disabled={busy || missing.length > 0 || badNumbers.length > 0}
               className="rounded-md bg-brand-600 px-3 py-1.5 text-xs text-white hover:bg-brand-500 disabled:opacity-50">
         {macro.name === 'diagnose' ? t('Check', 'Проверить') : t('Prepare the plan', 'Подготовить план')}
       </button>

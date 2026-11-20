@@ -353,10 +353,24 @@ export function Settings() {
             <Lock className="h-3.5 w-3.5" />
             {t('Download PiTun root CA', 'Скачать root-CA PiTun')}
           </a>
+          {window.location.protocol === 'https:' ? (
+            <p className="text-[12px] text-green-400">
+              {t('This page is open over HTTPS now.', 'Эта страница сейчас открыта по HTTPS.')}
+            </p>
+          ) : (
+            <p className="text-[12px] text-yellow-400">
+              {t('This page is open over plain HTTP: the certificate does not apply here. Open ',
+                'Эта страница открыта по обычному HTTP — сертификат здесь не действует. Откройте ')}
+              <a href={`https://${window.location.hostname}/`} className="underline hover:text-yellow-300">
+                https://{window.location.hostname}/
+              </a>
+              {t(' (bookmark that address).', ' (и сохраните в закладки этот адрес).')}
+            </p>
+          )}
           <p className="text-[11px] text-gray-600">
             {t(
-              'After trusting the CA, reopen the panel over https://. macOS: add to Keychain → System and mark "Always Trust". Windows: import into "Trusted Root Certification Authorities". Firefox: Settings → Privacy → Certificates → Import (trust for websites).',
-              'После доверия CA открой панель по https://. macOS: добавь в Keychain → System и поставь «Always Trust». Windows: импорт в «Доверенные корневые центры сертификации». Firefox: Настройки → Приватность → Сертификаты → Импорт (доверять сайтам).',
+              'Trusting the CA: Windows — open the file, "Install certificate" → Current user → "Place all certificates in the following store" → "Trusted Root Certification Authorities" (the automatic choice puts it in the wrong store), then restart the browser. macOS: Keychain → System, "Always Trust". Firefox has its own store: Settings → Privacy → Certificates → Import (trust for websites). Android/iOS: install as a CA certificate in security settings.',
+              'Доверие CA: Windows — открыть файл, «Установить сертификат» → Текущий пользователь → «Поместить все сертификаты в следующее хранилище» → «Доверенные корневые центры сертификации» (автовыбор кладёт его не туда), затем перезапустить браузер. macOS: Keychain → System, «Always Trust». У Firefox своё хранилище: Настройки → Приватность → Сертификаты → Импорт (доверять сайтам). Android/iOS: установить как сертификат ЦС в настройках безопасности.',
             )}
           </p>
         </div>

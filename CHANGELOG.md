@@ -4,6 +4,32 @@ All notable user-facing changes to PiTun. Full per-release detail lives in the
 [GitHub Releases](https://github.com/DaveBugg/PiTun/releases); this file is the
 committed summary.
 
+## v1.8.0-beta.5 — 2026-11-20
+
+**Assistant beta: MCP server for external agents, security and stability fixes from an audit.**
+
+### Added
+
+- MCP server at `/api/mcp` (Streamable HTTP) for Claude Code, Claude Desktop or any MCP client: the same lookups as the built-in assistant (search, read, find nodes and devices, diagnose) and, with a "can propose plans" token, the ready-made tasks and plans. Proposed changes never apply by themselves: they wait in the chat panel ("MCP: <token name>") until you approve them; the client checks the outcome with `plan_status`. Off by default; Settings → Assistant → MCP issues tokens (shown once, stored as a hash, read-only or plan scope) and shows ready-to-paste client commands. Secrets and server addresses are hidden from the client the same way as from the built-in model.
+- Plans waiting for approval show as a badge on the assistant button and a strip at the top of the chat.
+- Settings → HTTPS says whether the page is open over HTTPS and links to the https:// address of this box; the Windows steps name the right certificate store.
+
+### Changed
+
+- Facts the assistant wants to remember wait for your confirmation (Settings → Assistant) before they are used in later chats.
+- After an update the gateway nginx is checked and restarted, so changes to `nginx.conf` take effect (they did not before).
+
+### Fixed
+
+- Security: the assistant's API calls are checked much more strictly — encoded or relative paths are refused, and backup/restore, exports with credentials, network apply/rollback, panel and PiTun self-updates, uninstall and uploads are off limits. More kinds of secrets are hidden from the model (Reality short ids, seeds, client uuids, panel passwords and tokens, Wi-Fi passphrase, proxy links and subscription URLs in text, WireGuard keys, IPv6 server addresses), including in your own messages. Web pages are fetched from the address that was checked (no DNS rebinding into the LAN), and diagnosis does not probe LAN addresses.
+- Issuing nodes from x-ui failed at the export step.
+- A plan could be applied twice by a fast double click, or stay "running" forever after an internal error; a plan that failed half-way can now be undone, and a retried undo skips the steps that already succeeded.
+- Routing a device no longer takes over a rule shared with other devices.
+- The result of an applied plan is no longer lost when the tab is closed during a long VPS install.
+- Anthropic: a chat could break for good with "thinking block ... different conversation"; cut-off tool calls are no longer run; the whole conversation is cached.
+- OpenAI-compatible: an empty reply no longer breaks the rest of the chat; local models whose server refuses tool calls fall back to JSON in the text.
+- Chat panel: "New chat" and deleting a chat work as expected, the chat cannot be switched while an answer streams, Stop also stops approvals and forms, the microphone is released when the panel closes, forms keep their own values, and decimal commas are accepted in forms.
+
 ## v1.8.0-beta.4 — 2026-11-19
 
 **Assistant beta: voice input, add a server by pasting its access.**

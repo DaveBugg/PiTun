@@ -49,6 +49,8 @@ class AssistantSettings:
     stt_url: str = ""
     stt_model: str = ""
     voice_lang: str = ""  # "" = auto / the UI language
+    # /api/mcp for external agents (tokens in the mcptoken table).
+    mcp_enabled: bool = False
     keys: Dict[str, str] = field(default_factory=dict)  # provider -> plain key
     usage: Dict[str, dict] = field(default_factory=dict)  # "YYYY-MM" -> counters
 
@@ -133,6 +135,7 @@ async def load(session) -> AssistantSettings:
         stt_url=get("stt_url", ""),
         stt_model=get("stt_model", ""),
         voice_lang=get("voice_lang", ""),
+        mcp_enabled=get("mcp_enabled", "false").lower() == "true",
         usage=_json(get("usage"), {}),
     )
     try:
@@ -168,6 +171,7 @@ async def save(session, s: AssistantSettings) -> None:
     await _put(session, "stt_url", s.stt_url)
     await _put(session, "stt_model", s.stt_model)
     await _put(session, "voice_lang", s.voice_lang)
+    await _put(session, "mcp_enabled", "true" if s.mcp_enabled else "false")
     await _put(session, "monthly_token_limit", str(s.monthly_token_limit))
     await _put(session, "keys", json.dumps({p: encrypt(k) for p, k in s.keys.items() if k}))
     await session.commit()

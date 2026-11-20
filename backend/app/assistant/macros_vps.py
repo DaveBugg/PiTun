@@ -210,7 +210,7 @@ async def issue_nodes(session, args: dict, executor=None):
                       "body": {"label": lb}, "note": f"client {lb}", "no_undo": True})
         steps.append({"method": "POST",
                       "path": f"/xui/servers/{xs.id}/inbounds/{ib_ref}/clients/{lb}/export-node",
-                      "note": f"node from {lb}", "no_undo": True})
+                      "body": {}, "note": f"node from {lb}", "no_undo": True})
     summary = (f"{count} node(s) from {srv.name}, {where}: clients {', '.join(labels)}, each exported "
                "as a PiTun node. Undo does not apply here; remove clients on the x-ui page.")
     return MacroResult(title=f"{count} node(s) from {srv.name}"[:120], summary=summary, steps=steps)

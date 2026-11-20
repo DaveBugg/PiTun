@@ -37,7 +37,7 @@ const TOOL_LABEL: Record<string, { en: string; ru: string }> = {
   route_device: { en: 'routing a device', ru: 'маршрут устройства' },
   build_circle: { en: 'building a circle', ru: 'сборка циркла' },
   add_site_rule: { en: 'rule for a site', ru: 'правило для сайта' },
-  remember: { en: 'remembered', ru: 'запомнил' },
+  remember: { en: 'proposed a fact to remember (confirm it in Settings → Assistant)', ru: 'предложил запомнить факт (подтвердите в Настройки → Помощник)' },
   forget: { en: 'forgot a fact', ru: 'забыл факт' },
   deploy_server: { en: 'install on a VPS', ru: 'установка на VPS' },
   issue_nodes: { en: 'issuing nodes', ru: 'выпуск нод' },
@@ -211,6 +211,13 @@ export function AssistantPanel() {
   const voiceBase = useRef('')
   const endRef = useRef<HTMLDivElement>(null)
   const abortRef = useRef<AbortController | null>(null)
+  const formSeq = useRef(0)
+
+  /** End of a stream: stop spinners of tool steps that never finished. */
+  const settle = () => {
+    setBusy(false)
+    setItems((p) => p.map((it) => (it.kind === 'tool' && it.ok === undefined ? { ...it, ok: false } : it)))
+  }
 
   const settings = useQuery({
     queryKey: ['assistant', 'settings'],
@@ -224,30 +231,59 @@ export function AssistantPanel() {
     enabled: open && !!settings.data?.enabled,
     staleTime: Infinity,
   })
+  const pending = useQuery({
+    queryKey: ['assistant', 'pending'],
+    queryFn: () => assistantApi.pendingPlans(),
+    enabled: !!(settings.data?.enabled || settings.data?.mcp_enabled),
+    refetchInterval: 20_000,
+  })
+  const waiting = (pending.data ?? []).filter((p) => p.conversation_id !== cid)
   const convs = useQuery({
     queryKey: ['assistant', 'conversations'],
     queryFn: () => assistantApi.conversations(),
-    enabled: open && !!settings.data?.enabled,
+    enabled: open && !!(settings.data?.enabled || settings.data?.mcp_enabled),
   })
 
   useEffect(() => { endRef.current?.scrollIntoView({ block: 'end' }) }, [items, open])
 
+  // The latest chat is opened once per panel opening; "+" and delete leave
+  // an empty new chat instead of jumping back to the latest one.
+  const autoOpened = useRef(false)
+  useEffect(() => { if (!open) autoOpened.current = false }, [open])
+
   const load = async (id: number) => {
+    autoOpened.current = true
     setCid(id)
-    const c = await assistantApi.conversation(id)
-    setItems(c.items)
+    setItems([])
+    try {
+      const c = await assistantApi.conversation(id)
+      setItems(c.items)
+    } catch (err) {
+      setCid(null)
+      setItems([{ kind: 'error', text: (err as Error).message }])
+      void qc.invalidateQueries({ queryKey: ['assistant', 'conversations'] })
+    }
+  }
+
+  const newChat = () => {
+    autoOpened.current = true
+    setCid(null)
+    setItems([])
   }
 
   useEffect(() => {
-    if (open && cid === null && convs.data && convs.data.length > 0) void load(convs.data[0].id)
+    if (open && !autoOpened.current && cid === null && convs.data && convs.data.length > 0) {
+      void load(convs.data[0].id)
+    }
   }, [open, cid, convs.data])
 
   const del = useMutation({
     mutationFn: (id: number) => assistantApi.deleteConversation(id),
     onSuccess: () => {
-      setCid(null); setItems([])
+      newChat()
       void qc.invalidateQueries({ queryKey: ['assistant', 'conversations'] })
     },
+    onError: (err) => setItems((p) => [...p, { kind: 'error', text: (err as Error).message }]),
   })
 
   const voiceMode = settings.data?.voice_mode ?? 'off'
@@ -257,6 +293,7 @@ export function AssistantPanel() {
     setInput(base + (base && text ? ' ' : '') + text)
   })
   const noVoice = voiceUnavailable(voiceMode)
+  useEffect(() => { if (!open) voice.stop() }, [open])  // eslint-disable-line react-hooks/exhaustive-deps
   const micTitle = noVoice === 'insecure'
     ? t('Voice needs the page over HTTPS (or localhost)', 'Голосу нужна страница по HTTPS (или localhost)')
     : noVoice === 'unsupported'
@@ -296,7 +333,7 @@ export function AssistantPanel() {
           break
         }
         case 'error': next.push({ kind: 'error', text: e.message }); break
-        case 'form': next.push({ kind: 'form', macro: e.macro, args: e.args, reason: e.reason }); break
+        case 'form': next.push({ kind: 'form', macro: e.macro, args: e.args, reason: e.reason, fid: ++formSeq.current }); break
         default: break
       }
       return next
@@ -317,6 +354,8 @@ export function AssistantPanel() {
     const msg = text.trim()
     const pics = images
     if ((!msg && pics.length === 0) || busy) return
+    voice.stop()
+    voiceBase.current = ''
     setBusy(true)
     setInput('')
     setImages([])
@@ -335,7 +374,7 @@ export function AssistantPanel() {
         setItems((p) => [...p, { kind: 'error', text: (err as Error).message }])
       }
     } finally {
-      setBusy(false)
+      settle()
       abortRef.current = null
       void qc.invalidateQueries({ queryKey: ['assistant', 'conversations'] })
     }
@@ -350,19 +389,23 @@ export function AssistantPanel() {
 
   const openForm = (name: string) => {
     setMenu(false)
-    setItems((p) => [...p, { kind: 'form', macro: name, args: {} }])
+    setItems((p) => [...p, { kind: 'form', macro: name, args: {}, fid: ++formSeq.current }])
   }
 
-  const runForm = async (index: number, name: string, args: Record<string, unknown>) => {
+  const dropForm = (fid?: number) => setItems((p) => p.filter((it) => !(it.kind === 'form' && it.fid === fid)))
+
+  const runForm = async (fid: number | undefined, name: string, args: Record<string, unknown>) => {
     setBusy(true)
-    setItems((p) => p.filter((_, k) => k !== index))
+    dropForm(fid)
     try {
       const id = await ensureChat()
-      await assistantApi.runMacro(id, name, args, onEvent)
+      abortRef.current = new AbortController()
+      await assistantApi.runMacro(id, name, args, onEvent, abortRef.current.signal)
     } catch (err) {
-      setItems((p) => [...p, { kind: 'error', text: (err as Error).message }])
+      if ((err as Error).name !== 'AbortError') setItems((p) => [...p, { kind: 'error', text: (err as Error).message }])
     } finally {
-      setBusy(false)
+      settle()
+      abortRef.current = null
       void qc.invalidateQueries({ queryKey: ['assistant', 'conversations'] })
     }
   }
@@ -388,13 +431,15 @@ export function AssistantPanel() {
     }
     setBusy(true)
     try {
-      await assistantApi.decide(plan.id, d, onEvent)
+      abortRef.current = new AbortController()
+      await assistantApi.decide(plan.id, d, onEvent, abortRef.current.signal)
+    } catch (err) {
+      if ((err as Error).name !== 'AbortError') setItems((p) => [...p, { kind: 'error', text: (err as Error).message }])
+    } finally {
+      settle()
+      abortRef.current = null
       // Applied changes touch other pages' data.
       void qc.invalidateQueries()
-    } catch (err) {
-      setItems((p) => [...p, { kind: 'error', text: (err as Error).message }])
-    } finally {
-      setBusy(false)
     }
   }
 
@@ -420,7 +465,7 @@ export function AssistantPanel() {
     }
   }
 
-  if (!settings.data?.enabled) return null
+  if (!settings.data?.enabled && !settings.data?.mcp_enabled) return null
 
   return (
     <>
@@ -432,6 +477,12 @@ export function AssistantPanel() {
           className="fixed bottom-5 right-5 z-40 flex h-12 w-12 items-center justify-center rounded-full bg-brand-600 text-white shadow-lg hover:bg-brand-500 transition-colors"
         >
           <Sparkles className="h-5 w-5" />
+          {(pending.data ?? []).length > 0 && (
+            <span className="absolute -right-1 -top-1 min-w-5 rounded-full bg-yellow-500 px-1 text-[11px] font-semibold leading-5 text-gray-950"
+                  title={t('Plans waiting for approval', 'Планы ждут подтверждения')}>
+              {(pending.data ?? []).length}
+            </span>
+          )}
         </button>
       )}
       {open && (
@@ -444,13 +495,14 @@ export function AssistantPanel() {
             <Bot className="h-5 w-5 text-brand-400 shrink-0" />
             <select
               value={cid ?? ''}
+              disabled={busy}
               onChange={(e) => { if (e.target.value) void load(Number(e.target.value)) }}
               className="min-w-0 flex-1 truncate rounded-sm bg-gray-900 border border-gray-800 px-2 py-1 text-sm text-gray-200"
             >
               {cid === null && <option value="">{t('New chat', 'Новый чат')}</option>}
               {(convs.data ?? []).map((c) => <option key={c.id} value={c.id}>{c.title}</option>)}
             </select>
-            <button onClick={() => { setCid(null); setItems([]) }} disabled={busy}
+            <button onClick={newChat} disabled={busy}
                     title={t('New chat', 'Новый чат')} className="text-gray-400 hover:text-gray-200 disabled:opacity-50">
               <Plus className="h-4 w-4" />
             </button>
@@ -471,6 +523,17 @@ export function AssistantPanel() {
             </button>
           </div>
 
+          {waiting.length > 0 && (
+            <div className="border-b border-gray-800 bg-yellow-950/20 px-3 py-1.5 text-[11px] text-yellow-300 space-y-0.5">
+              {waiting.slice(0, 3).map((p) => (
+                <button key={p.id} type="button" disabled={busy} onClick={() => void load(p.conversation_id)}
+                        className="block w-full truncate text-left hover:text-yellow-200 disabled:opacity-50">
+                  {t('Waiting for approval', 'Ждёт подтверждения')}: #{p.id} {p.title}
+                  <span className="text-yellow-600"> · {p.conversation_title}</span>
+                </button>
+              ))}
+            </div>
+          )}
           <div className="flex-1 overflow-y-auto px-3 py-3 space-y-2">
             {items.length === 0 && (
               <div className="space-y-3 pt-2">
@@ -506,9 +569,7 @@ export function AssistantPanel() {
                     {(it.images ?? []).length > 0 && (
                       <div className="flex flex-wrap gap-1.5">
                         {(it.images ?? []).map((src, j) => (
-                          <a key={j} href={src} target="_blank" rel="noreferrer">
-                            <img src={src} alt="" className="h-16 max-w-[120px] rounded-sm object-cover" />
-                          </a>
+                          <img key={j} src={src} alt="" className="h-16 max-w-[120px] rounded-sm object-cover" />
                         ))}
                       </div>
                     )}
@@ -536,9 +597,9 @@ export function AssistantPanel() {
               if (it.kind === 'form') {
                 const spec = (macros.data ?? []).find((m) => m.name === it.macro)
                 if (!spec) return null
-                return <MacroForm key={i} macro={spec} initial={it.args} reason={it.reason} busy={busy}
-                                  onSubmit={(args) => void runForm(i, it.macro, args)}
-                                  onClose={() => setItems((p) => p.filter((_, k) => k !== i))} />
+                return <MacroForm key={`form-${it.fid ?? i}`} macro={spec} initial={it.args} reason={it.reason} busy={busy}
+                                  onSubmit={(args) => void runForm(it.fid, it.macro, args)}
+                                  onClose={() => dropForm(it.fid)} />
               }
               if (it.kind === 'note') {
                 return null  // what the model was told after a plan; the card already shows it
@@ -610,7 +671,7 @@ export function AssistantPanel() {
             {noVoice !== 'off' && (
               <button type="button"
                       onClick={() => { if (voice.state === 'idle') voiceBase.current = input.trim(); voice.toggle() }}
-                      disabled={busy || noVoice !== null || voice.state === 'transcribing'}
+                      disabled={(busy && voice.state === 'idle') || noVoice !== null || voice.state === 'transcribing'}
                       title={voice.error ? `${micTitle} — ${voice.error}` : micTitle}
                       className={clsx('flex h-9 w-9 items-center justify-center rounded-lg disabled:opacity-50',
                         voice.state === 'listening' ? 'bg-red-600/80 text-white animate-pulse'

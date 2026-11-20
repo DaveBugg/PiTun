@@ -1292,6 +1292,21 @@ if [[ "$DRY_RUN" != "1" ]]; then
     # recreate it when only those files changed, so it could keep serving the old
     # config (or an unlinked dist). A restart is a blink for the page, nothing more.
     docker restart pitun-frontend >/dev/null 2>&1 || true
+    # Same for the gateway nginx: nginx.conf is a single-file bind mount, and
+    # a replaced file is a new inode the running container never sees, so an
+    # update that changes nginx.conf did not apply it. Check the new config in
+    # the container's network (upstream names resolve there) before restarting.
+    if docker ps --format '{{.Names}}' | grep -qx pitun-nginx; then
+        NGINX_IMAGE=$(docker inspect -f '{{.Config.Image}}' pitun-nginx 2>/dev/null)
+        if docker run --rm --network container:pitun-nginx \
+                -v "$INSTALL_DIR/nginx.conf:/etc/nginx/nginx.conf:ro" \
+                -v /etc/pitun/certs:/etc/nginx/certs:ro \
+                "$NGINX_IMAGE" nginx -t >/dev/null 2>&1; then
+            docker restart pitun-nginx >/dev/null 2>&1 || true
+        else
+            warn "The new nginx.conf failed 'nginx -t'; nginx keeps the old config. Check $INSTALL_DIR/nginx.conf."
+        fi
+    fi
     # Router-mode sidecars are not compose services (the backend starts them
     # on demand), so `compose up` never builds them. Boxes installed through
     # this path had no dnsmasq/hostapd image at all and router mode failed on

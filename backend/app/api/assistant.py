@@ -14,7 +14,7 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 from app.assistant import settings as asettings
 from app.core.auth import get_current_user
 from app.database import get_session
-from app.models import AssistantConversation, AssistantFact, AssistantMessage, AssistantPlan, User
+from app.models import AssistantConversation, AssistantFact, AssistantMessage, AssistantPlan, McpToken, User
 
 router = APIRouter(prefix="/assistant", tags=["assistant"])
 
@@ -36,6 +36,7 @@ def _settings_view(s: asettings.AssistantSettings) -> dict:
         "stt_url": s.stt_url,
         "stt_model": s.stt_model,
         "voice_lang": s.voice_lang,
+        "mcp_enabled": s.mcp_enabled,
         "monthly_token_limit": s.monthly_token_limit,
         "has_key": {p: bool(s.keys.get(p)) for p in asettings.PROVIDERS},
         "usage": s.month_usage(),
@@ -55,6 +56,7 @@ class SettingsPatch(BaseModel):
     stt_url: Optional[str] = None
     stt_model: Optional[str] = None
     voice_lang: Optional[str] = None
+    mcp_enabled: Optional[bool] = None
     monthly_token_limit: Optional[int] = None
     # For the provider being saved; "" removes the stored key.
     api_key: Optional[str] = None
@@ -94,6 +96,8 @@ async def patch_settings(body: SettingsPatch, session: AsyncSession = Depends(ge
         s.small_mode = body.small_mode
     if body.web_search is not None:
         s.web_search = body.web_search
+    if body.mcp_enabled is not None:
+        s.mcp_enabled = body.mcp_enabled
     if body.voice_mode is not None:
         from app.assistant.voice import VOICE_MODES
         if body.voice_mode not in VOICE_MODES:
@@ -178,7 +182,8 @@ class FactBody(BaseModel):
 @router.get("/facts")
 async def list_facts(session: AsyncSession = Depends(get_session)):
     from app.assistant.memory import list_facts as _list
-    return [{"id": f.id, "text": f.text, "created_at": f.created_at} for f in await _list(session)]
+    return [{"id": f.id, "text": f.text, "created_at": f.created_at, "confirmed": f.confirmed}
+            for f in await _list(session)]
 
 
 @router.post("/facts", status_code=201)
@@ -187,7 +192,14 @@ async def add_fact(body: FactBody, session: AsyncSession = Depends(get_session))
     fact, why = await _add(session, body.text)
     if fact is None:
         raise HTTPException(400, why)
-    return {"id": fact.id, "text": fact.text, "created_at": fact.created_at}
+    return {"id": fact.id, "text": fact.text, "created_at": fact.created_at, "confirmed": fact.confirmed}
+
+
+@router.post("/facts/{fact_id}/confirm", status_code=204)
+async def confirm_fact(fact_id: int, session: AsyncSession = Depends(get_session)):
+    from app.assistant.memory import confirm_fact as _confirm
+    if not await _confirm(session, fact_id):
+        raise HTTPException(404, "Fact not found")
 
 
 @router.delete("/facts/{fact_id}", status_code=204)
@@ -353,7 +365,73 @@ async def run_macro_form(cid: int, body: MacroBody, session: AsyncSession = Depe
     return _stream(gen())
 
 
+# ── MCP tokens ────────────────────────────────────────────────────────────────
+
+class McpTokenIn(BaseModel):
+    name: str
+    scope: str = "read"
+
+
+def _token_view(t: McpToken) -> dict:
+    return {"id": t.id, "name": t.name, "prefix": t.prefix, "scope": t.scope, "created_by": t.created_by,
+            "created_at": t.created_at, "last_used_at": t.last_used_at, "revoked": t.revoked}
+
+
+@router.get("/mcp/tokens")
+async def list_mcp_tokens(session: AsyncSession = Depends(get_session)):
+    rows = (await session.exec(select(McpToken).where(McpToken.revoked == False)  # noqa: E712
+                               .order_by(McpToken.id))).all()
+    return [_token_view(t) for t in rows]
+
+
+@router.post("/mcp/tokens", status_code=201)
+async def create_mcp_token(body: McpTokenIn, session: AsyncSession = Depends(get_session),
+                           user: User = Depends(get_current_user)):
+    """The token is in this answer only; PiTun keeps its hash."""
+    from app.assistant import mcp_server
+    name = body.name.strip()[:60]
+    if not name:
+        raise HTTPException(400, "name is required")
+    if body.scope not in mcp_server.SCOPES:
+        raise HTTPException(400, f"scope must be one of {', '.join(mcp_server.SCOPES)}")
+    token = mcp_server.new_token()
+    row = McpToken(name=name, token_hash=mcp_server.hash_token(token), prefix=token[:10],
+                   scope=body.scope, created_by=user.username)
+    session.add(row)
+    await session.commit()
+    await session.refresh(row)
+    return {**_token_view(row), "token": token}
+
+
+@router.delete("/mcp/tokens/{tid}", status_code=204)
+async def revoke_mcp_token(tid: int, session: AsyncSession = Depends(get_session)):
+    row = await session.get(McpToken, tid)
+    if row is None:
+        raise HTTPException(404, "Token not found")
+    row.revoked = True
+    session.add(row)
+    await session.commit()
+
+
 # ── plans ─────────────────────────────────────────────────────────────────────
+
+@router.get("/plans")
+async def list_plans(status: str = "pending", session: AsyncSession = Depends(get_session)):
+    """Plans in a state (default: waiting for approval), newest first, with
+    their chat — for the badge on the assistant button."""
+    from app.assistant.agent import plan_view
+    rows = (await session.exec(select(AssistantPlan).where(AssistantPlan.status == status)
+                               .order_by(AssistantPlan.id.desc()).limit(50))).all()
+    convs = {c.id: c for c in (await session.exec(select(AssistantConversation))).all()}
+    out = []
+    for p in rows:
+        c = convs.get(p.conversation_id)
+        v = plan_view(p)
+        out.append({"id": v["id"], "title": v["title"], "status": v["status"], "created_at": v["created_at"],
+                    "conversation_id": p.conversation_id, "conversation_title": c.title if c else "",
+                    "source": c.source if c else "chat"})
+    return out
+
 
 @router.post("/plans/{plan_id}/{decision}")
 async def decide_plan(plan_id: int, decision: str, session: AsyncSession = Depends(get_session),
@@ -361,15 +439,19 @@ async def decide_plan(plan_id: int, decision: str, session: AsyncSession = Depen
     """approve -> run the plan; reject -> drop it. Then the model is told and
     answers; the response streams like a message: a `plan` event first.
     undo -> revert an executed plan (no model turn)."""
-    from app.assistant.agent import execute_plan, follow_jobs, run_turn, store_rejection, undo_plan
+    from app.assistant.agent import (execute_plan, follow_jobs, jobs_note, run_turn, store_plan_note,
+                                     store_rejection, undo_plan)
+    from app.assistant.redact import Redactor
     if decision not in ("approve", "reject", "undo"):
         raise HTTPException(404, "Unknown decision")
-    await _require_enabled(session)
     plan = await session.get(AssistantPlan, plan_id)
     if plan is None:
         raise HTTPException(404, "Plan not found")
+    owner = await session.get(AssistantConversation, plan.conversation_id)
+    if not (owner is not None and owner.source == "mcp" and (await asettings.load(session)).mcp_enabled):
+        await _require_enabled(session)
     if decision == "undo":
-        if plan.status != "executed":
+        if plan.status not in ("executed", "failed"):
             raise HTTPException(409, f"Only an executed plan can be undone (this one is {plan.status})")
         view = await undo_plan(plan_id, user.username)
         if "undo_ok" not in view:
@@ -378,17 +460,30 @@ async def decide_plan(plan_id: int, decision: str, session: AsyncSession = Depen
     if plan.status != "pending":
         raise HTTPException(409, f"Plan is already {plan.status}")
     cid = plan.conversation_id
+    conv = await session.get(AssistantConversation, cid)
+    from_mcp = conv is not None and conv.source == "mcp"
     view = await execute_plan(plan_id, user.username, approve=(decision == "approve"))
+    if view.get("claimed") is False:
+        raise HTTPException(409, f"Plan is already {view['status']}")
+    ran = decision == "approve" and view["status"] in ("executed", "failed")
+    if ran and not from_mcp:
+        await store_plan_note(cid, view)
+    elif decision == "reject" and not from_mcp:
+        # The model is told, but does not need to answer a rejection.
+        await store_rejection(cid, plan_id)
 
     async def gen():
         yield {"type": "plan", "plan": view}
-        if decision == "approve" and view["status"] in ("executed", "failed"):
+        if ran:
             async for ev in follow_jobs(view):
                 yield ev
-            async for ev in run_turn(cid, user.username, note_plan=view):
-                yield ev
-        else:
-            # The model is told, but does not need to answer a rejection.
-            await store_rejection(cid, plan_id)
+        if from_mcp or not ran:
+            # MCP: the external client is the model; it reads plan_status.
             yield {"type": "done"}
+            return
+        if view.get("jobs"):
+            c = await session.get(AssistantConversation, cid)
+            await store_plan_note(cid, view, jobs_note(view, Redactor(json.loads(c.redaction_map or "{}"))))
+        async for ev in run_turn(cid, user.username):
+            yield ev
     return _stream(gen())

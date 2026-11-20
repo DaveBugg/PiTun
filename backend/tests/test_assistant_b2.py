@@ -256,9 +256,10 @@ def test_facts_are_saved_shown_injected_and_deletable(client, admin_user, auth_h
     ])
     _chat(client, auth_headers, fake, "запомни: телевизор — это Samsung в гостиной")
     results = [m for m in fake.seen[-1] if m["role"] == "tool"]
-    assert "Saved as fact" in results[0]["content"] and results[1]["is_error"]
+    assert "Proposed as fact" in results[0]["content"] and results[1]["is_error"]
     facts = client.get("/api/assistant/facts", headers=auth_headers).json()
     assert [f["text"] for f in facts] == ["The TV is the Samsung in the living room"]
+    assert client.post(f"/api/assistant/facts/{facts[0]['id']}/confirm", headers=auth_headers).status_code == 204
 
     r = client.post("/api/assistant/facts", json={"text": "Never use exits at 203.0.113.50"}, headers=auth_headers)
     assert r.status_code == 201

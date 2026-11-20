@@ -1667,6 +1667,7 @@ export interface AssistantSettings {
   stt_url: string
   stt_model: string
   voice_lang: string
+  mcp_enabled: boolean
   monthly_token_limit: number
   has_key: Record<AssistantProvider, boolean>
   usage: { input: number; output: number; cost: number; requests: number }
@@ -1685,6 +1686,7 @@ export interface AssistantSettingsPatch {
   stt_url?: string
   stt_model?: string
   voice_lang?: string
+  mcp_enabled?: boolean
   monthly_token_limit?: number
   api_key?: string
 }
@@ -1733,6 +1735,7 @@ export interface AssistantFact {
   id: number
   text: string
   created_at: string
+  confirmed: boolean
 }
 
 export interface AssistantLocalServer {
@@ -1756,6 +1759,25 @@ export interface AssistantMacro {
   parameters: { properties: Record<string, AssistantMacroParam>; required?: string[] }
 }
 
+export interface AssistantMcpToken {
+  id: number
+  name: string
+  prefix: string
+  scope: 'read' | 'plan'
+  created_by: string
+  created_at: string
+  last_used_at: string | null
+}
+
+export interface AssistantPendingPlan {
+  id: number
+  title: string
+  status: string
+  conversation_id: number
+  conversation_title: string
+  source: 'chat' | 'mcp'
+}
+
 export interface AssistantJob {
   plan_id: number
   step: number
@@ -1766,7 +1788,7 @@ export interface AssistantJob {
 
 export type AssistantItem =
   | { kind: 'user' | 'assistant' | 'note'; text: string; images?: string[] }
-  | { kind: 'form'; macro: string; args: Record<string, unknown>; reason?: string }
+  | { kind: 'form'; macro: string; args: Record<string, unknown>; reason?: string; fid?: number }
   | { kind: 'tool'; name: string; summary: string; ok?: boolean }
   | { kind: 'plan'; plan: AssistantPlan }
   | { kind: 'error'; text: string }
@@ -1794,7 +1816,10 @@ async function ndjson<E>(path: string, body: unknown, onEvent: (e: E) => void, s
   })
   if (!resp.ok || !resp.body) {
     let detail = `HTTP ${resp.status}`
-    try { const j = await resp.json(); if (j?.detail) detail = String(j.detail) } catch { /* not json */ }
+    try {
+      const j = await resp.json()
+      if (j?.detail) detail = typeof j.detail === 'string' ? j.detail : JSON.stringify(j.detail)
+    } catch { /* not json */ }
     throw new Error(detail)
   }
   const reader = resp.body.getReader()
@@ -1802,7 +1827,11 @@ async function ndjson<E>(path: string, body: unknown, onEvent: (e: E) => void, s
   let buf = ''
   for (;;) {
     const { done, value } = await reader.read()
-    if (done) break
+    if (done) {
+      buf += decoder.decode()
+      if (buf.trim()) { try { onEvent(JSON.parse(buf.trim()) as E) } catch { /* partial */ } }
+      break
+    }
     buf += decoder.decode(value, { stream: true })
     let nl: number
     while ((nl = buf.indexOf('\n')) >= 0) {
@@ -1833,21 +1862,29 @@ export const assistantApi = {
   send: (id: number, text: string, images: AssistantImage[], onEvent: (e: AssistantEvent) => void,
     signal?: AbortSignal) =>
     ndjson<AssistantEvent>(`/assistant/conversations/${id}/messages`, { text, images }, onEvent, signal),
-  decide: (planId: number, decision: 'approve' | 'reject', onEvent: (e: AssistantEvent) => void) =>
-    ndjson<AssistantEvent>(`/assistant/plans/${planId}/${decision}`, undefined, onEvent),
+  decide: (planId: number, decision: 'approve' | 'reject', onEvent: (e: AssistantEvent) => void,
+    signal?: AbortSignal) =>
+    ndjson<AssistantEvent>(`/assistant/plans/${planId}/${decision}`, undefined, onEvent, signal),
   transcribe: (audio: Blob, language: string) => {
     const fd = new FormData()
     fd.append('audio', audio, audio.type.includes('ogg') ? 'speech.ogg' : audio.type.includes('mp4') ? 'speech.m4a' : 'speech.webm')
     fd.append('language', language)
     return http.post<{ text: string }>('/assistant/transcribe', fd, { timeout: 150_000 }).then(r => r.data.text)
   },
+  mcpTokens: () => http.get<AssistantMcpToken[]>('/assistant/mcp/tokens').then(r => r.data),
+  createMcpToken: (name: string, scope: 'read' | 'plan') =>
+    http.post<AssistantMcpToken & { token: string }>('/assistant/mcp/tokens', { name, scope }).then(r => r.data),
+  revokeMcpToken: (id: number) => http.delete(`/assistant/mcp/tokens/${id}`),
+  pendingPlans: () => http.get<AssistantPendingPlan[]>('/assistant/plans', { params: { status: 'pending' } }).then(r => r.data),
   macros: () => http.get<AssistantMacro[]>('/assistant/macros').then(r => r.data),
-  runMacro: (id: number, name: string, args: Record<string, unknown>, onEvent: (e: AssistantEvent) => void) =>
-    ndjson<AssistantEvent>(`/assistant/conversations/${id}/macro`, { name, args }, onEvent),
+  runMacro: (id: number, name: string, args: Record<string, unknown>, onEvent: (e: AssistantEvent) => void,
+    signal?: AbortSignal) =>
+    ndjson<AssistantEvent>(`/assistant/conversations/${id}/macro`, { name, args }, onEvent, signal),
   undo: (planId: number) =>
     http.post<AssistantPlan>(`/assistant/plans/${planId}/undo`, undefined, { timeout: 120_000 }).then(r => r.data),
   facts: () => http.get<AssistantFact[]>('/assistant/facts').then(r => r.data),
   addFact: (text: string) => http.post<AssistantFact>('/assistant/facts', { text }).then(r => r.data),
+  confirmFact: (id: number) => http.post(`/assistant/facts/${id}/confirm`),
   deleteFact: (id: number) => http.delete(`/assistant/facts/${id}`),
   discover: () =>
     http.get<AssistantLocalServer[]>('/assistant/discover', { timeout: 60_000 }).then(r => r.data),

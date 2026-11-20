@@ -144,17 +144,23 @@ async def route_device(session, args: dict) -> MacroResult:
     steps: List[dict] = []
     rule_name = f"{dname} via {node['name']}"[:120]
     rules = (await session.exec(select(RoutingRule).where(RoutingRule.rule_type == "src_ip"))).all()
-    existing = next((r for r in rules if r.routing_set_id is None
-                     and dev["ip"] in [v.strip() for v in (r.match_value or "").split(",")]), None)
+    def ips(r) -> List[str]:
+        return [v.strip() for v in (r.match_value or "").split(",") if v.strip()]
+    # Reuse only a rule for this device alone: a rule shared with other
+    # devices would move them too.
+    existing = next((r for r in rules if r.routing_set_id is None and ips(r) == [dev["ip"]]), None)
+    shared = next((r for r in rules if r.routing_set_id is None and dev["ip"] in ips(r) and len(ips(r)) > 1), None)
     if existing:
         steps.append({"method": "PATCH", "path": f"/routing/rules/{existing.id}",
                       "body": {"name": rule_name, "action": f"node:{node['id']}", "enabled": True},
                       "note": f"update the existing rule '{existing.name}'"})
     else:
+        order = max(0, min(10, (shared.order or 10) - 1)) if shared else 10
         steps.append({"method": "POST", "path": "/routing/rules",
                       "body": {"name": rule_name, "rule_type": "src_ip", "match_value": dev["ip"],
-                               "action": f"node:{node['id']}", "order": 10, "enabled": True},
-                      "note": f"all traffic of {dname} ({dev['ip']}) through {node['name']}"})
+                               "action": f"node:{node['id']}", "order": order, "enabled": True},
+                      "note": f"all traffic of {dname} ({dev['ip']}) through {node['name']}"
+                              + (f"; placed before the shared rule '{shared.name}'" if shared else "")})
 
     mode = await _setting(session, "device_routing_mode", "all")
     device = await session.get(Device, dev["id"])

@@ -426,6 +426,9 @@ app.include_router(xui.router, prefix="/api", dependencies=_auth)
 app.include_router(network.router, prefix="/api", dependencies=_auth)
 from app.api import assistant as assistant_api
 app.include_router(assistant_api.router, prefix="/api", dependencies=_auth)
+# MCP clients authenticate with their own tokens, not the panel login.
+from app.api import mcp as mcp_api
+app.include_router(mcp_api.router, prefix="/api")
 
 
 # ── Health ────────────────────────────────────────────────────────────────────

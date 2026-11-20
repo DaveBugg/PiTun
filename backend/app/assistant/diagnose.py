@@ -92,7 +92,10 @@ async def diagnose(session, args: dict, executor) -> dict:
 
     site = str(args.get("site") or "").strip()
     if site:
-        body = {"target": site, "test_reachability": True, "verify_routing": True}
+        from app.assistant.redact import _is_private_host
+        # No connection test to LAN addresses: diagnose must not become a
+        # LAN scanner driven by text the model read somewhere.
+        body = {"target": site, "test_reachability": not _is_private_host(site), "verify_routing": True}
         if mac:
             body["from_mac"] = mac
         ex = await executor.call("POST", "/diagnostics/explain", None, body)

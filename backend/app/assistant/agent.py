@@ -139,6 +139,12 @@ def _strip_old_images(h: List[dict]) -> List[dict]:
 _JSON_BLOCK = re.compile(r"\{.*\}", re.DOTALL)
 
 
+def _call_id(kind: str) -> str:
+    """Tool-call ids must be unique within a chat (Anthropic, some vLLM models)."""
+    import secrets
+    return f"{kind}_{secrets.token_hex(6)}"
+
+
 def text_tool_call(text: str, names: set) -> Optional[dict]:
     """A tool call written as JSON in the text (small models without native
     tool calls): {"tool": name, "arguments": {...}} or {"name": ..., ...}."""
@@ -160,7 +166,7 @@ def text_tool_call(text: str, names: set) -> Optional[dict]:
             return None
     if name not in names or not isinstance(args, dict):
         return None
-    return {"id": "text_call", "name": name, "arguments": args}
+    return {"id": _call_id("text"), "name": name, "arguments": args}
 
 
 def tools_for(small: bool, web: bool = False) -> List[dict]:
@@ -216,7 +222,7 @@ async def route(provider, history: List[dict], tools: List[dict]):
         return None, None
     tc = text_tool_call(turn.text, set(names))
     if tc:
-        tc["id"] = "router_call"
+        tc["id"] = _call_id("router")
     return tc, turn
 
 
@@ -242,7 +248,7 @@ def plan_view(plan: AssistantPlan) -> dict:
         "before": _mask(json.loads(plan.before or "[]")), "status": plan.status,
         "results": json.loads(plan.results or "[]"),
         "created_at": plan.created_at, "decided_at": plan.decided_at, "decided_by": plan.decided_by,
-        "can_undo": plan.status == "executed" and bool(undo.get("steps")),
+        "can_undo": plan.status in ("executed", "failed") and bool(undo.get("steps")),
         "undo_skipped": undo.get("skipped") or [],
     }
 
@@ -317,6 +323,12 @@ async def _run(conversation_id: int, username: str, user_text: Optional[str],
             row = AssistantMessage(conversation_id=conversation_id, role=msg["role"],
                                    content=json.dumps(msg, ensure_ascii=False, default=str))
             session.add(row)
+            if redactor.changed:
+                # Saved with the message that uses it: a turn cut short (closed
+                # tab, provider error) must not lose the placeholder table.
+                c = await session.get(AssistantConversation, conversation_id)
+                c.redaction_map = json.dumps(redactor.map, ensure_ascii=False)
+                session.add(c)
             await session.commit()
             await session.refresh(row)
             return row
@@ -338,7 +350,9 @@ async def _run(conversation_id: int, username: str, user_text: Optional[str],
             user_text = hidden
             yield {"type": "user_masked", "text": shown}
         if user_text is not None:
-            umsg: dict = {"role": "user", "content": user_text}
+            # A pasted subscription URL or proxy link is hidden from the model
+            # like any other secret; the executor puts it back in plans.
+            umsg: dict = {"role": "user", "content": redactor.hide(user_text)}
             if images:
                 umsg["images"] = images[:MAX_IMAGES]
             if pasted_plan is not None:
@@ -421,8 +435,11 @@ async def _run(conversation_id: int, username: str, user_text: Optional[str],
             system += (f"\n\nThe user just pasted SSH credentials. PiTun itself prepared plan #{pasted_plan.id}: "
                        "save this server and test the connection. You never see the password. Tell the user "
                        "briefly to check and approve the plan; do not make another plan and do not call tools.")
-            tools = []
 
+        # Only phrase the answer: one call, tool calls in it are ignored.
+        phrase_only = pasted_plan is not None
+        if phrase_only:
+            max_steps = 1
         try:
             routed = None
             if small and user_text is not None and pasted_plan is None:
@@ -437,14 +454,19 @@ async def _run(conversation_id: int, username: str, user_text: Optional[str],
                 amsg = {"role": "assistant", "content": "", "tool_calls": [routed]}
                 await store(amsg)
                 history.append(amsg)
+                routed_form = None
                 async for ev in call_tool(routed):
                     if ev["type"] != "_result":
                         yield ev
                     elif ev["error"] and routed["name"] in MACRO_NAMES:
-                        failures[routed["name"]] = 1
-                # The model only phrases the answer: one call, its tool calls ignored.
+                        # The router already was the second try: offer the form.
+                        routed_form = form_event(routed, ev["result"])
+                if routed_form is not None:
+                    yield routed_form
+                    max_steps = 0
                 tools = [t for t in tools if t["name"] in (routed["name"], "find_nodes", "find_devices")]
-                max_steps = 1
+                max_steps = min(max_steps, 1)
+                phrase_only = True
             for _step in range(max_steps):
                 try:
                     turn = await provider.chat(system, history, tools)
@@ -454,10 +476,10 @@ async def _run(conversation_id: int, username: str, user_text: Optional[str],
                 await asettings.add_usage(session, turn.input_tokens, turn.output_tokens, turn.cost)
                 yield {"type": "usage", "input": turn.input_tokens, "output": turn.output_tokens,
                        "cost": turn.cost}
-                if routed is not None:
+                if phrase_only:
                     turn.tool_calls = []
                     turn.raw = None
-                if not turn.tool_calls and small and routed is None:
+                if not turn.tool_calls and small and not phrase_only:
                     tc = text_tool_call(turn.text, names)
                     if tc:
                         turn.tool_calls = [tc]
@@ -486,7 +508,7 @@ async def _run(conversation_id: int, username: str, user_text: Optional[str],
                     yield offer_form
                     break
             else:
-                if routed is None:
+                if not phrase_only and max_steps:
                     yield {"type": "error", "message": f"Stopped after {max_steps} steps."}
         finally:
             await provider.close()
@@ -523,7 +545,7 @@ async def run_form(conversation_id: int, username: str, name: str, args: dict) -
             shown = json.dumps(args, ensure_ascii=False)
             await store({"role": "user", "content": f"[The user filled in the form for {name}: {redactor.hide(shown)}]",
                          "note": True})
-            tc = {"id": "form_call", "name": name, "arguments": redactor.hide(args)}
+            tc = {"id": _call_id("form"), "name": name, "arguments": redactor.hide(args)}
             await store({"role": "assistant", "content": "", "tool_calls": [tc]})
 
             async def save_plan(title, summary, steps, before) -> int:
@@ -539,7 +561,7 @@ async def run_form(conversation_id: int, username: str, name: str, args: dict) -
             ctx = ToolContext(session, redactor, Executor(username), save_plan, web_proxy=s.web_proxy)
             yield {"type": "tool", "name": name, "summary": redactor.reveal(_short_args(name, args))}
             result, is_error, plan_id = await run_tool(ctx, name, tc["arguments"])
-            tmsg = {"role": "tool", "tool_call_id": "form_call", "name": name, "content": result,
+            tmsg = {"role": "tool", "tool_call_id": tc["id"], "name": name, "content": result,
                     "is_error": is_error}
             if plan_id:
                 tmsg["plan_id"] = plan_id
@@ -564,24 +586,29 @@ async def execute_plan(plan_id: int, username: str, approve: bool) -> Optional[d
             return None
         if plan.status != "pending":
             return plan_view(plan)
-        plan.decided_at = datetime.now(tz=timezone.utc)
-        plan.decided_by = username
-        if not approve:
-            plan.status = "rejected"
-            session.add(plan)
-            await session.commit()
-            await session.refresh(plan)
-            return plan_view(plan)
-        # Claim it before running so a double click cannot run it twice.
-        plan.status = "running"
-        session.add(plan)
+        # Claim it atomically: of two clicks at once only one wins.
+        from sqlalchemy import update
+        claimed = await session.execute(
+            update(AssistantPlan).where(AssistantPlan.id == plan_id, AssistantPlan.status == "pending")
+            .values(status="running" if approve else "rejected", decided_by=username,
+                    decided_at=datetime.now(tz=timezone.utc)))
         await session.commit()
+        await session.refresh(plan)
+        if claimed.rowcount != 1 or not approve:
+            view = plan_view(plan)
+            view["claimed"] = claimed.rowcount == 1
+            return view
         steps = json.loads(plan.steps or "[]")
 
     ex = Executor(username)
-    # The state right before running (the plan may have waited a while).
-    before = [await ex.snapshot_before(st) for st in steps]
-    ok, results = await ex.run_plan(steps)
+    try:
+        # The state right before running (the plan may have waited a while).
+        before = [await ex.snapshot_before(st) for st in steps]
+        ok, results = await ex.run_plan(steps)
+    except Exception as exc:  # noqa: BLE001 — never leave a plan stuck in "running"
+        logger.exception("Assistant plan %d crashed", plan_id)
+        before, ok = [None] * len(steps), False
+        results = [{"status": 0, "ok": False, "body": {"detail": f"{type(exc).__name__}: {str(exc)[:300]}"}}]
     undo, skipped = undo_steps(steps, before, results)
 
     async with AsyncSession(get_async_engine(), expire_on_commit=False) as session:
@@ -605,17 +632,27 @@ async def undo_plan(plan_id: int, username: str) -> Optional[dict]:
         view = plan_view(plan)
         if not view["can_undo"]:
             return view
+        was = plan.status
         plan.status = "running"
         session.add(plan)
         await session.commit()
         undo = json.loads(plan.undo or "{}")
 
-    ok, results = await Executor(username).run_plan(undo.get("steps") or [])
+    steps = undo.get("steps") or []
+    try:
+        ok, results = await Executor(username).run_plan(steps)
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Assistant plan %d undo crashed", plan_id)
+        ok, results = False, [{"status": 0, "ok": False, "body": {"detail": f"{type(exc).__name__}: {str(exc)[:300]}"}}]
 
     async with AsyncSession(get_async_engine(), expire_on_commit=False) as session:
         plan = await session.get(AssistantPlan, plan_id)
-        # A failed undo leaves the plan "executed" so it can be retried.
-        plan.status = "undone" if ok else "executed"
+        # A failed undo keeps the earlier status so it can be retried, and only
+        # the steps that did not succeed are tried again.
+        plan.status = "undone" if ok else was
+        if not ok:
+            done = sum(1 for r in results if r.get("ok"))
+            undo["steps"] = steps[done:]
         undo["results"] = results
         plan.undo = json.dumps(undo, ensure_ascii=False, default=str)
         session.add(plan)
@@ -658,6 +695,7 @@ async def follow_jobs(view: dict) -> AsyncIterator[dict]:
     from app.core.jobs import job_manager
     loop = asyncio.get_running_loop()
     outcome = []
+    deadline = loop.time() + JOB_TIMEOUT  # for all jobs of the plan together
     for step, job_id in plan_jobs(view):
         q: asyncio.Queue = asyncio.Queue()
 
@@ -670,7 +708,6 @@ async def follow_jobs(view: dict) -> AsyncIterator[dict]:
                 await queue.put(None)
 
         task = asyncio.create_task(pump())
-        deadline = loop.time() + JOB_TIMEOUT
         last, last_sent = "", 0.0
         try:
             while loop.time() < deadline:
@@ -727,6 +764,34 @@ def plan_note(plan: dict, redactor: Redactor) -> str:
                      + f". Result: {json.dumps(redactor.hide(j.get('result')), ensure_ascii=False, default=str)[:800]}"
                      + "\nLast output lines:\n" + "\n".join(redactor.hide(j.get("log_tail") or [])))
     lines.append("Check the results and tell the user briefly what changed (or what went wrong).]")
+    return "\n".join(lines)
+
+
+async def store_plan_note(conversation_id: int, view: dict, text: Optional[str] = None) -> None:
+    """Tell the model what happened to a plan (stored at once, so a closed tab
+    or a busy chat cannot lose it)."""
+    async with AsyncSession(get_async_engine(), expire_on_commit=False) as session:
+        conv = await session.get(AssistantConversation, conversation_id)
+        if conv is None:
+            return
+        redactor = Redactor(json.loads(conv.redaction_map or "{}"))
+        note = text if text is not None else plan_note(view, redactor)
+        session.add(AssistantMessage(conversation_id=conversation_id, role="user",
+                                     content=json.dumps({"role": "user", "content": redactor.hide(note), "note": True},
+                                                        ensure_ascii=False)))
+        if redactor.changed:
+            conv.redaction_map = json.dumps(redactor.map, ensure_ascii=False)
+            session.add(conv)
+        await session.commit()
+
+
+def jobs_note(view: dict, redactor: Redactor) -> str:
+    lines = [f"[Background jobs of plan #{view['id']} finished:"]
+    for j in view.get("jobs") or []:
+        lines.append(f"Step {j['step']}: {j['status']}" + (f", error: {redactor.hide(j['error'])}" if j.get("error") else "")
+                     + f". Result: {json.dumps(redactor.hide(j.get('result')), ensure_ascii=False, default=str)[:800]}"
+                     + "\nLast output lines:\n" + "\n".join(redactor.hide(j.get("log_tail") or [])))
+    lines.append("Tell the user briefly how it went.]")
     return "\n".join(lines)
 
 

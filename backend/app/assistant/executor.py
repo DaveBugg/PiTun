@@ -17,17 +17,32 @@ import httpx
 API_PREFIX = "/api"
 MUTATING = ("POST", "PATCH", "PUT", "DELETE")
 
-# Never callable by the assistant (regex on the path after /api).
+# Never callable by the assistant, for any method (regex on the path after
+# /api). tests/test_assistant_b5.py walks every route against this list.
 _DENY = [
     r"^/auth(/|$)",
     r"^/assistant(/|$)",
     r"^/mcp(/|$)",
-    r"^/system/update/start$",
-    r"^/system/(reboot|shutdown|restart-host|factory-reset)",
-    r"^/backup/restore",
-    r"^/backup/import",
-    r"^/scripts(/|$)",          # arbitrary script execution on servers
+    r"^/scripts(/|$)",                                   # script execution / install scripts
+    r"^/system/update(/|$)",                             # PiTun self-update
+    r"^/system/(reboot|shutdown|restart-host|factory-reset|restart|stop|start)$",
+    r"^/system/backup(/|$)",                             # export with secrets, restore
+    r"^/backup(/|$)",
+    r"^/network/(apply|rollback|backups)(/|$)",          # can cut the box off the LAN
+    r"^/network/router-mode/confirm$",
     r"^/servers/[^/]+/(exec|shell|ssh)",
+    r"^/servers/[^/]+/uninstall(/|$)",
+    r"^/servers/[^/]+/[a-z]+-install-script$",
+    r"^/servers/[^/]+/deployments/[^/]+/clients/[^/]+/conf$",   # WireGuard private keys
+    r"^/(servers|nodes|user-agents)/export-",            # exports with credentials
+    r"^/nodes/[^/]+/uri$",
+    r"^/xui/servers/[^/]+/uri$",
+    r"^/xui/servers/[^/]+/inbounds/[^/]+/clients/[^/]+/share-uri$",
+    r"^/xui/servers/[^/]+/(panel-update|xray/update)$",
+    r"^/subscriptions/link-keys(/|$)",
+    r"^/subscriptions/decode-link$",
+    r"^/templates/upload$",
+    r"^/xui/servers/[^/]+/fakesite/upload$",
 ]
 _DENY_RE = [re.compile(p) for p in _DENY]
 
@@ -61,8 +76,27 @@ def normalize_path(path: str) -> str:
     return p.split("?", 1)[0]
 
 
+_SAFE_PATH = re.compile(r"^/?[A-Za-z0-9_\-./:@~]*$")
+_REF_SEGMENT = re.compile(r"(?<=/)\{\{step\d+\.[A-Za-z0-9_.\[\]]+\}\}(?=/|$)")
+
+
+def path_problem(path: str) -> Optional[str]:
+    """Paths are plain: no encoding, no query, no dot segments. A
+    {{stepN.field}} reference may only fill a whole segment."""
+    p = _REF_SEGMENT.sub("1", path or "")
+    if not _SAFE_PATH.match(p):
+        return "the path may only contain letters, digits and - _ . / : @ ~ (put the query string in 'query')"
+    segs = p.strip("/").split("/")
+    if any(sg in (".", "..") for sg in segs) or "//" in p.lstrip("/"):
+        return "the path may not contain empty, '.' or '..' segments"
+    return None
+
+
 def denied(path: str) -> bool:
-    tail = normalize_path(path)[len(API_PREFIX):]
+    raw = _REF_SEGMENT.sub("1", path or "")
+    if path_problem(path):
+        return True
+    tail = normalize_path(raw)[len(API_PREFIX):]
     return any(r.search(tail) for r in _DENY_RE)
 
 
@@ -83,9 +117,12 @@ def validate_step(step: dict, allow_get: bool = False) -> Optional[str]:
     path = str(step.get("path") or "")
     if not path:
         return "path is required"
+    problem = path_problem(path)
+    if problem:
+        return problem
     if denied(path):
         return f"{path} is not available to the assistant"
-    if "{{step" not in path and not match_route(method, path):
+    if not match_route(method, _REF_SEGMENT.sub("1", path)):
         return f"no API operation {method} {normalize_path(path)}"
     if step.get("body") is not None and not isinstance(step.get("body"), (dict, list)):
         return "body must be a JSON object or list"
@@ -132,6 +169,9 @@ class Executor:
 
     async def call(self, method: str, path: str, query: Optional[dict] = None,
                    body: Any = None) -> Dict[str, Any]:
+        # Last gate for every call (plans, read, macros): filled paths too.
+        if "{{" in path or path_problem(path) or denied(path) or not match_route(method, path):
+            return {"status": 0, "ok": False, "body": {"detail": f"{method} {path} is not available to the assistant"}}
         transport = httpx.ASGITransport(app=_app())
         async with httpx.AsyncClient(transport=transport, base_url="http://assistant.internal",
                                      timeout=httpx.Timeout(300.0)) as client:
@@ -205,6 +245,10 @@ def undo_steps(steps: List[dict], before: List[Any], results: List[dict]) -> Tup
                              "note": f"put back the old values of {label}"})
             else:
                 skipped.append(f"{label}: the old values are unknown")
+        elif method == "POST" and re.match(r"^/(xui|servers)/", path):
+            # Remote side effects (panels, VPS): the id in the answer is not
+            # what a DELETE would take.
+            skipped.append(f"{label}: changes on a server or panel are not undone from here")
         elif method == "POST" and isinstance(res.get("body"), dict) and res["body"].get("id") is not None:
             target = f"{path.rstrip('/')}/{res['body']['id']}"
             if match_route("DELETE", target) and not denied(target):

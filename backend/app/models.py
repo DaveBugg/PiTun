@@ -962,6 +962,10 @@ class AssistantConversation(SQLModel, table=True):
     # messages with id <= summary_upto are no longer sent to the model.
     summary: str = ""
     summary_upto: int = 0
+    # "chat" (the panel) or "mcp" (plans proposed by an external MCP client;
+    # no model turn after a decision there).
+    source: str = "chat"
+    mcp_token_id: Optional[int] = None
 
 
 class AssistantMessage(SQLModel, table=True):
@@ -990,9 +994,25 @@ class AssistantPlan(SQLModel, table=True):
     decided_by: Optional[str] = None
 
 
+class McpToken(SQLModel, table=True):
+    """Access token for PiTun's MCP endpoint (/api/mcp). Only a hash is kept;
+    the token is shown once when created."""
+    id: Optional[int] = Field(default=None, primary_key=True)
+    name: str
+    token_hash: str = Field(index=True)
+    prefix: str = ""          # first characters, to tell tokens apart in the UI
+    scope: str = "read"       # read | plan (may propose plans; they wait for approval)
+    created_by: str = ""      # API calls run as this user
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    last_used_at: Optional[datetime] = None
+    revoked: bool = False
+
+
 class AssistantFact(SQLModel, table=True):
     """A short statement about this install the assistant should remember
     ("the TV is the Samsung in the living room"). Stored with real values."""
     id: Optional[int] = Field(default=None, primary_key=True)
     text: str
+    # Facts the model saved wait for the user; only confirmed ones reach the model.
+    confirmed: bool = True
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
