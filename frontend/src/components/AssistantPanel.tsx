@@ -573,6 +573,12 @@ export function AssistantPanel() {
                         ))}
                       </div>
                     )}
+                    {(it.images_removed ?? 0) > 0 && (
+                      <div className="text-[11px] text-gray-500">
+                        {t(`${it.images_removed} screenshot(s) removed after the retention period`,
+                          `скриншотов удалено по сроку хранения: ${it.images_removed}`)}
+                      </div>
+                    )}
                     {it.text && it.text !== '(screenshot)' && <div>{it.text}</div>}
                   </div>
                 )

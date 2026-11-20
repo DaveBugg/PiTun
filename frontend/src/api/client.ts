@@ -1668,6 +1668,7 @@ export interface AssistantSettings {
   stt_model: string
   voice_lang: string
   mcp_enabled: boolean
+  screenshot_days: number
   monthly_token_limit: number
   has_key: Record<AssistantProvider, boolean>
   usage: { input: number; output: number; cost: number; requests: number }
@@ -1687,6 +1688,7 @@ export interface AssistantSettingsPatch {
   stt_model?: string
   voice_lang?: string
   mcp_enabled?: boolean
+  screenshot_days?: number
   monthly_token_limit?: number
   api_key?: string
 }
@@ -1787,7 +1789,7 @@ export interface AssistantJob {
 }
 
 export type AssistantItem =
-  | { kind: 'user' | 'assistant' | 'note'; text: string; images?: string[] }
+  | { kind: 'user' | 'assistant' | 'note'; text: string; images?: string[]; images_removed?: number }
   | { kind: 'form'; macro: string; args: Record<string, unknown>; reason?: string; fid?: number }
   | { kind: 'tool'; name: string; summary: string; ok?: boolean }
   | { kind: 'plan'; plan: AssistantPlan }

@@ -51,6 +51,8 @@ class AssistantSettings:
     voice_lang: str = ""  # "" = auto / the UI language
     # /api/mcp for external agents (tokens in the mcptoken table).
     mcp_enabled: bool = False
+    # Screenshots are removed from stored chats after this many days.
+    screenshot_days: int = 7
     keys: Dict[str, str] = field(default_factory=dict)  # provider -> plain key
     usage: Dict[str, dict] = field(default_factory=dict)  # "YYYY-MM" -> counters
 
@@ -142,6 +144,10 @@ async def load(session) -> AssistantSettings:
         s.monthly_token_limit = max(0, int(get("monthly_token_limit", "0") or 0))
     except ValueError:
         s.monthly_token_limit = 0
+    try:
+        s.screenshot_days = min(365, max(1, int(get("screenshot_days", "7") or 7)))
+    except ValueError:
+        s.screenshot_days = 7
     if s.provider not in PROVIDERS:
         s.provider = "openrouter"
     if s.egress not in EGRESS:
@@ -172,6 +178,7 @@ async def save(session, s: AssistantSettings) -> None:
     await _put(session, "stt_model", s.stt_model)
     await _put(session, "voice_lang", s.voice_lang)
     await _put(session, "mcp_enabled", "true" if s.mcp_enabled else "false")
+    await _put(session, "screenshot_days", str(s.screenshot_days))
     await _put(session, "monthly_token_limit", str(s.monthly_token_limit))
     await _put(session, "keys", json.dumps({p: encrypt(k) for p, k in s.keys.items() if k}))
     await session.commit()

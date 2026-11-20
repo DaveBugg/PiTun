@@ -4,6 +4,15 @@ All notable user-facing changes to PiTun. Full per-release detail lives in the
 [GitHub Releases](https://github.com/DaveBugg/PiTun/releases); this file is the
 committed summary.
 
+## v1.8.0-beta.6 — 2026-11-20
+
+**Assistant beta: automatic cleanup.**
+
+### Added
+
+- Screenshots sent to the assistant are removed from stored chats after a retention period (Settings → Assistant → Keep screenshots: 1–90 days, default 7; checked hourly). The chat text stays and the message shows how many screenshots were removed.
+- Internal per-chat locks of idle chats are cleaned up hourly.
+
 ## v1.8.0-beta.5 — 2026-11-20
 
 **Assistant beta: MCP server for external agents, security and stability fixes from an audit.**

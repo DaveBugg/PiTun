@@ -37,6 +37,7 @@ def _settings_view(s: asettings.AssistantSettings) -> dict:
         "stt_model": s.stt_model,
         "voice_lang": s.voice_lang,
         "mcp_enabled": s.mcp_enabled,
+        "screenshot_days": s.screenshot_days,
         "monthly_token_limit": s.monthly_token_limit,
         "has_key": {p: bool(s.keys.get(p)) for p in asettings.PROVIDERS},
         "usage": s.month_usage(),
@@ -57,6 +58,7 @@ class SettingsPatch(BaseModel):
     stt_model: Optional[str] = None
     voice_lang: Optional[str] = None
     mcp_enabled: Optional[bool] = None
+    screenshot_days: Optional[int] = None
     monthly_token_limit: Optional[int] = None
     # For the provider being saved; "" removes the stored key.
     api_key: Optional[str] = None
@@ -98,6 +100,10 @@ async def patch_settings(body: SettingsPatch, session: AsyncSession = Depends(ge
         s.web_search = body.web_search
     if body.mcp_enabled is not None:
         s.mcp_enabled = body.mcp_enabled
+    if body.screenshot_days is not None:
+        if not 1 <= body.screenshot_days <= 365:
+            raise HTTPException(400, "screenshot_days must be 1..365")
+        s.screenshot_days = body.screenshot_days
     if body.voice_mode is not None:
         from app.assistant.voice import VOICE_MODES
         if body.voice_mode not in VOICE_MODES:
@@ -253,6 +259,8 @@ async def get_conversation(cid: int, session: AsyncSession = Depends(get_session
             item = {"kind": "note" if m.get("note") else "user", "text": red.reveal(m.get("content") or "")}
             if m.get("images"):
                 item["images"] = [f"data:{im.get('media_type')};base64,{im.get('data')}" for im in m["images"]]
+            if m.get("images_removed"):
+                item["images_removed"] = m["images_removed"]
             items.append(item)
             if m.get("plan_id") in plans:  # pasted server credentials -> plan made by the box
                 items.append({"kind": "plan", "plan": plans[m["plan_id"]]})

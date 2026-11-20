@@ -340,6 +340,22 @@ export function AssistantSection() {
         )}
       </div>
 
+      <div>
+        <label className="flex items-center gap-1 text-xs font-medium text-gray-400 mb-1">
+          {t('Keep screenshots', 'Хранить скриншоты')}
+          <InfoTip className="ml-0.5" text={t(
+            'Screenshots sent to the assistant are removed from the stored chats after this time (checked hourly). The text of the chat stays.',
+            'Скриншоты, отправленные помощнику, удаляются из сохранённых чатов через это время (проверка раз в час). Текст чата остаётся.',
+          )} />
+        </label>
+        <select value={s.screenshot_days} onChange={(e) => save.mutate({ screenshot_days: Number(e.target.value) })}
+                className={clsx(INPUT, 'sm:w-60')}>
+          {[1, 3, 7, 30, 90].map((d) => (
+            <option key={d} value={d}>{t(`${d} day(s)`, `${d} дн.`)}</option>
+          ))}
+        </select>
+      </div>
+
       <label className="flex items-center gap-2 text-xs text-gray-300">
         <input type="checkbox" checked={s.web_search} onChange={(e) => save.mutate({ web_search: e.target.checked })} />
         {t('Web search', 'Поиск в интернете')}

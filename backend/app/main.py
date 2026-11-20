@@ -86,6 +86,8 @@ async def lifespan(app: FastAPI):
     asyncio.create_task(_reapply_limits())
     from app.core.updater import auto_check_loop
     _update_check_task = asyncio.create_task(auto_check_loop())
+    from app.assistant.cleanup import cleanup_loop
+    _assistant_cleanup_task = asyncio.create_task(cleanup_loop())
 
     try:
         from app.core.xui_deployment import backfill as _backfill_xui_deployments
@@ -303,6 +305,7 @@ async def lifespan(app: FastAPI):
     from app.core.geo_scheduler import geo_scheduler
 
     _update_check_task.cancel()
+    _assistant_cleanup_task.cancel()
     health_checker.stop()
     subscription_scheduler.stop()
     circle_scheduler.stop()
