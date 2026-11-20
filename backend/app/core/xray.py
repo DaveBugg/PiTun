@@ -89,6 +89,10 @@ class XrayManager:
         self._version: Optional[str] = None
         self._log_task: Optional[asyncio.Task] = None
         self._lock = asyncio.Lock()
+        # Whether xray should be running: set by a start, cleared only by an
+        # explicit stop (a crash keeps it), so a reload can bring a crashed
+        # xray back without starting one the operator stopped on purpose.
+        self.wanted = False
 
     @property
     def is_running(self) -> bool:
@@ -163,6 +167,7 @@ class XrayManager:
     async def stop(self) -> None:
         await self._acquire_lock_or_raise("stop")
         try:
+            self.wanted = False
             await self._stop_unlocked()
         finally:
             self._lock.release()
@@ -212,6 +217,7 @@ class XrayManager:
             env=env,
         )
         self._start_time = time.time()
+        self.wanted = True
         logger.info("xray started (pid=%d)", self._process.pid)
 
         self._log_task = asyncio.create_task(self._read_logs())
@@ -332,10 +338,10 @@ async def _auto_restart_if_enabled(*, from_boot: bool = False) -> None:
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
-            _, stderr = await asyncio.wait_for(proc.communicate(), timeout=10)
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=10)
             if proc.returncode != 0:
                 logger.error("Auto-restart aborted: config verification failed:\n%s",
-                             stderr.decode(errors="replace")[-500:])
+                             (stderr.decode(errors="replace") + stdout.decode(errors="replace"))[-500:])
                 return
 
         async with AsyncSession(get_async_engine()) as session:

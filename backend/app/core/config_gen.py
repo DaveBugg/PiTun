@@ -647,7 +647,15 @@ def _routing_rule_to_xray(
     single `node-<id>` outbound — so circle rotation can hot-swap the
     selected node via the gRPC balancerOverride API without a restart.
     """
-    values = [v.strip() for v in rule.match_value.split(",") if v.strip()]
+    from app.core.rule_values import keep_valid
+    values, dropped = keep_valid(rule.rule_type, [v.strip() for v in (rule.match_value or "").split(",") if v.strip()])
+    if dropped:
+        # One bad value (a domain in an IP rule, a typo) must not make xray
+        # refuse the whole config and take the LAN's gateway down.
+        logger.warning("Routing rule %s (%r): skipped values xray would refuse: %s",
+                       getattr(rule, "id", "?"), getattr(rule, "name", ""), ", ".join(dropped[:10]))
+    if not values:
+        return None
 
     xray_rule: Dict[str, Any] = {"type": "field"}
 
@@ -1694,6 +1702,21 @@ def _explain_xray_stderr(stderr: str) -> str | None:
     return None
 
 
+def _restore_previous_config() -> bool:
+    """Put back the config xray ran with before the last write (if any)."""
+    path = Path(settings.xray_config_path)
+    prev = path.with_suffix(path.suffix + ".prev")
+    if not prev.exists():
+        return False
+    try:
+        os.replace(prev, path)
+    except OSError as exc:
+        logger.error("Could not restore the previous xray config: %s", exc)
+        return False
+    logger.error("New xray config was rejected; the previous working config is kept")
+    return True
+
+
 async def _persist_validation_error(message: str | None) -> None:
     """Save (or clear) the last xray validation error in the Settings
     table so the UI can surface it on the Diagnostics / Dashboard page.
@@ -1797,6 +1820,14 @@ async def _write_config_unlocked(
             json.dump(config, f, indent=2)
             f.flush()
             os.fsync(f.fileno())
+        if path.exists():
+            # The config xray runs with now: put back if the new one fails
+            # validation, so a reload never swaps in a config xray refuses.
+            prev = path.with_suffix(path.suffix + ".prev")
+            try:
+                prev.write_bytes(path.read_bytes())
+            except OSError:
+                pass
         os.replace(tmp, path)
 
     await asyncio.to_thread(_write)
@@ -1818,7 +1849,7 @@ async def _write_config_unlocked(
             stderr=asyncio.subprocess.PIPE,
         )
         try:
-            _, stderr = await asyncio.wait_for(proc.communicate(), timeout=10)
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=10)
         except asyncio.TimeoutError:
             proc.kill()
             await proc.wait()
@@ -1833,7 +1864,13 @@ async def _write_config_unlocked(
             await _persist_validation_error(None)
             return None
 
+        # xray prints "Failed to start: ..." on stdout, not stderr.
         stderr_text = stderr.decode(errors="replace")
+        failed = [ln for ln in stdout.decode(errors="replace").splitlines() if "Failed to start" in ln
+                  or ln.startswith("main:") or "infra/conf" in ln]
+        if failed:
+            stderr_text = (stderr_text + "\n" + "\n".join(failed)).strip()
+        await asyncio.to_thread(_restore_previous_config)
         hint = _explain_xray_stderr(stderr_text)
         tail = stderr_text.strip().splitlines()[-1] if stderr_text.strip() else "(empty stderr)"
 

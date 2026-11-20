@@ -63,6 +63,16 @@ async def _validate_action(session: AsyncSession, action: str) -> None:
             raise HTTPException(400, f"Action references missing balancer {bid}")
 
 
+def _validate_values(rule_type: str, match_value: str) -> None:
+    """Refuse values of the wrong kind for the rule type (e.g. domains in
+    an IP rule): xray refuses the whole config for one such value, and the
+    LAN loses its gateway."""
+    from app.core.rule_values import check
+    problem = check(rule_type, match_value or "")
+    if problem:
+        raise HTTPException(400, problem)
+
+
 def _validate_geo_tags(rule_type: str, match_value: str) -> None:
     """Reject rule saves that reference a `geosite:X` or `geoip:X` tag
     absent from the currently loaded `.dat` files.
@@ -311,6 +321,7 @@ async def dismiss_auto_disabled_all(session: AsyncSession = Depends(get_session)
 async def create_rule(data: RoutingRuleCreate,
     background_tasks: BackgroundTasks, session: AsyncSession = Depends(get_session)):
     await _validate_action(session, data.action)
+    _validate_values(data.rule_type, data.match_value or "")
     _validate_geo_tags(data.rule_type, data.match_value or "")
     await _validate_routing_set_id(session, data.routing_set_id)
     rule = RoutingRule(**data.model_dump())
@@ -345,6 +356,8 @@ async def update_rule(rule_id: int, data: RoutingRuleUpdate,
     # back to the existing row for the other side.
     new_rule_type = patch.get("rule_type", rule.rule_type)
     new_match_value = patch.get("match_value", rule.match_value)
+    if "rule_type" in patch or "match_value" in patch:
+        _validate_values(new_rule_type, new_match_value or "")
     if new_rule_type in {"geosite", "geoip", "domain"}:
         _validate_geo_tags(new_rule_type, new_match_value or "")
     for k, v in patch.items():
@@ -405,6 +418,8 @@ async def bulk_create_rules(body: BulkRuleCreate,
         raise HTTPException(400, "No values provided")
 
     match_value = ",".join(parts)
+    _validate_values(body.rule_type, match_value)
+    _validate_geo_tags(body.rule_type, match_value)
     name = f"{body.rule_type}:{body.action} ({len(parts)} values)"
 
     rule = RoutingRule(
@@ -578,6 +593,7 @@ async def _filter_importable(
             dropped += 1
             continue
         try:
+            _validate_values(inc.rule_type, inc.match_value or "")
             _validate_geo_tags(inc.rule_type, inc.match_value or "")
         except HTTPException:
             dropped += 1

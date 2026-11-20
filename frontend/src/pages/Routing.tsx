@@ -12,6 +12,7 @@ import { RoutingSetModal } from '@/components/RoutingSetModal'
 import { RoutingExportModal } from '@/components/RoutingExportModal'
 import { RoutingImportModal } from '@/components/RoutingImportModal'
 import { useT } from '@/hooks/useT'
+import { apiErrorText } from '@/lib/apiError'
 import { useAppStore } from '@/store'
 import { useSystemSettings } from '@/hooks/useSystem'
 import {
@@ -1010,10 +1011,15 @@ export function Routing() {
             <RuleEditor
               initial={editRule ?? undefined}
               nodeOptions={nodeOptions}
-              onSave={handleSave}
-              onCancel={() => setModal('none')}
+              onSave={(v) => { createRule.reset(); updateRule.reset(); handleSave(v) }}
+              onCancel={() => { createRule.reset(); updateRule.reset(); setModal('none') }}
               loading={createRule.isPending || updateRule.isPending}
             />
+            {(createRule.error || updateRule.error) && (
+              <div role="alert" className="mt-3 rounded-lg border border-red-900/60 bg-red-950/30 px-3 py-2 text-sm text-red-300">
+                {apiErrorText(createRule.error ?? updateRule.error, t('Could not save the rule', 'Не удалось сохранить правило'))}
+              </div>
+            )}
           </div>
         </ModalShell>
       )}

@@ -4,6 +4,23 @@ All notable user-facing changes to PiTun. Full per-release detail lives in the
 [GitHub Releases](https://github.com/DaveBugg/PiTun/releases); this file is the
 committed summary.
 
+## v1.8.0-beta.8 — 2026-11-20
+
+**A wrong routing rule can no longer take the LAN offline; dependency security fixes.**
+
+### Fixed
+
+- A routing rule with values of the wrong kind (seen live: 16 domains saved as an IP rule) made xray refuse its config, xray died, and the gateway kept sending the whole LAN into it. Now:
+  - the rule is refused when saved, with a hint ("these are domains, choose the rule type 'domain'"); ports, protocols, MAC addresses, geo tags and domains are checked the same way, and the error shows in the rule form;
+  - values xray would refuse are skipped when the config is generated (rules already in the database, imports), with a warning in the log;
+  - a new config that fails xray's check no longer replaces the working one: xray keeps running with the previous config, and the real xray error is shown instead of "empty stderr";
+  - "Reload config" and rule changes bring back an xray that crashed (one stopped on purpose stays stopped).
+
+### Security
+
+- Login tokens now use PyJWT instead of python-jose, which has an open advisory with no fixed release (algorithm confusion with DER-encoded keys; PiTun's HS256 tokens were not exploitable, but the library is no longer used). Existing logins stay valid.
+- Frontend build and test tooling updated to fixed versions: undici (via jsdom), follow-redirects (via axios), minimatch (via the TypeScript ESLint parser) and Vitest. None of these are part of the served web UI.
+
 ## v1.8.0-beta.6 — 2026-11-20
 
 **Assistant beta: automatic cleanup.**

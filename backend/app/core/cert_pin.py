@@ -82,7 +82,7 @@ async def fetch_leaf_pin(host: str, port: int, sni: Optional[str] = None, timeou
 
 def _describe(der: bytes) -> dict:
     """Subject/issuer/expiry for the confirmation line in the UI. Uses
-    `cryptography` (already a dependency via python-jose) when present."""
+    `cryptography` (already a pinned dependency) when present."""
     try:
         from cryptography import x509
 

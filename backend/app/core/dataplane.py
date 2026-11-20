@@ -95,12 +95,17 @@ async def apply_dataplane(action: Action = "reload") -> None:
         elif action == "restart":
             await xray_manager.restart()
         else:
-            # A reload with nothing running is a no-op: `/system/start`
-            # owns bringing it up, and re-applying nftables here would
-            # point redirects at a port with no listener.
+            # Nothing running: bring xray back only if it crashed (still
+            # wanted); one the operator stopped stays stopped, and nftables
+            # is not pointed at a port with no listener.
+            if not xray_manager.is_running:
+                if not xray_manager.wanted:
+                    return
+                await xray_manager.start()
+            else:
+                await xray_manager.reload()
             if not xray_manager.is_running:
                 return
-            await xray_manager.reload()
 
         await _apply_nftables(session, settings_map)
 
