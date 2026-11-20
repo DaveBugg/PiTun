@@ -1648,3 +1648,207 @@ export function createLogSocket(onLine: (line: string) => void): WebSocket {
   }
   return ws
 }
+
+// ── AI assistant ──────────────────────────────────────────────────────────────
+
+export type AssistantProvider = 'openrouter' | 'openai' | 'anthropic' | 'local'
+
+export interface AssistantSettings {
+  enabled: boolean
+  provider: AssistantProvider
+  model: string
+  base_url: string
+  default_base_url: string
+  egress: 'active' | 'direct'
+  small_mode: 'auto' | 'on' | 'off'
+  small_active: boolean
+  web_search: boolean
+  voice_mode: 'browser' | 'provider' | 'server' | 'off'
+  stt_url: string
+  stt_model: string
+  voice_lang: string
+  monthly_token_limit: number
+  has_key: Record<AssistantProvider, boolean>
+  usage: { input: number; output: number; cost: number; requests: number }
+  providers: AssistantProvider[]
+}
+
+export interface AssistantSettingsPatch {
+  enabled?: boolean
+  provider?: AssistantProvider
+  model?: string
+  base_url?: string
+  egress?: 'active' | 'direct'
+  small_mode?: 'auto' | 'on' | 'off'
+  web_search?: boolean
+  voice_mode?: 'browser' | 'provider' | 'server' | 'off'
+  stt_url?: string
+  stt_model?: string
+  voice_lang?: string
+  monthly_token_limit?: number
+  api_key?: string
+}
+
+export interface AssistantModel {
+  id: string
+  name: string
+  context?: number | null
+  tools?: boolean
+  vision?: boolean
+  prompt_price?: number | null
+  completion_price?: number | null
+}
+
+export interface AssistantPlanStep {
+  method: string
+  path: string
+  query?: Record<string, unknown> | null
+  body?: unknown
+  note?: string
+  no_undo?: boolean
+}
+
+export interface AssistantPlan {
+  id: number
+  conversation_id: number
+  title: string
+  summary: string
+  steps: AssistantPlanStep[]
+  before: unknown[]
+  status: 'pending' | 'running' | 'executed' | 'failed' | 'rejected' | 'undone'
+  results: { status: number; ok: boolean; body: unknown }[]
+  decided_by?: string | null
+  can_undo?: boolean
+  undo_skipped?: string[]
+  undo_ok?: boolean
+  undo_error?: unknown
+}
+
+export interface AssistantImage {
+  media_type: string
+  data: string // base64, no data: prefix
+}
+
+export interface AssistantFact {
+  id: number
+  text: string
+  created_at: string
+}
+
+export interface AssistantLocalServer {
+  base_url: string
+  kind: string
+  host: string
+  port: number
+  models: string[]
+}
+
+export interface AssistantMacroParam {
+  type?: string
+  description?: string
+  enum?: string[]
+  items?: { type?: string }
+}
+
+export interface AssistantMacro {
+  name: string
+  description: string
+  parameters: { properties: Record<string, AssistantMacroParam>; required?: string[] }
+}
+
+export interface AssistantJob {
+  plan_id: number
+  step: number
+  job_id: string
+  status: string
+  line: string
+}
+
+export type AssistantItem =
+  | { kind: 'user' | 'assistant' | 'note'; text: string; images?: string[] }
+  | { kind: 'form'; macro: string; args: Record<string, unknown>; reason?: string }
+  | { kind: 'tool'; name: string; summary: string; ok?: boolean }
+  | { kind: 'plan'; plan: AssistantPlan }
+  | { kind: 'error'; text: string }
+
+export type AssistantEvent =
+  | { type: 'message'; text: string }
+  | { type: 'user_masked'; text: string }
+  | { type: 'tool'; name: string; summary: string }
+  | { type: 'tool_done'; name: string; ok: boolean }
+  | { type: 'plan'; plan: AssistantPlan }
+  | { type: 'usage'; input: number; output: number; cost: number }
+  | ({ type: 'job' } & AssistantJob)
+  | { type: 'form'; macro: string; args: Record<string, unknown>; reason?: string }
+  | { type: 'error'; message: string }
+  | { type: 'done' }
+
+/** POST and read an NDJSON event stream (fetch, so the Bearer header carries auth). */
+async function ndjson<E>(path: string, body: unknown, onEvent: (e: E) => void, signal?: AbortSignal) {
+  const token = localStorage.getItem('pitun_token')
+  const resp = await fetch(`${BASE}${path}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+    body: body === undefined ? undefined : JSON.stringify(body),
+    signal,
+  })
+  if (!resp.ok || !resp.body) {
+    let detail = `HTTP ${resp.status}`
+    try { const j = await resp.json(); if (j?.detail) detail = String(j.detail) } catch { /* not json */ }
+    throw new Error(detail)
+  }
+  const reader = resp.body.getReader()
+  const decoder = new TextDecoder()
+  let buf = ''
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (done) break
+    buf += decoder.decode(value, { stream: true })
+    let nl: number
+    while ((nl = buf.indexOf('\n')) >= 0) {
+      const line = buf.slice(0, nl).trim()
+      buf = buf.slice(nl + 1)
+      if (line) {
+        try { onEvent(JSON.parse(line) as E) } catch { /* skip partial */ }
+      }
+    }
+  }
+}
+
+export const assistantApi = {
+  settings: () => http.get<AssistantSettings>('/assistant/settings').then(r => r.data),
+  patchSettings: (data: AssistantSettingsPatch) =>
+    http.patch<AssistantSettings>('/assistant/settings', data).then(r => r.data),
+  test: () =>
+    http.post<{ ok: boolean; tool_calling: boolean; error: string | null; note?: string | null }>(
+      '/assistant/test', undefined, { timeout: 200_000 }).then(r => r.data),
+  models: () => http.get<AssistantModel[]>('/assistant/models', { timeout: 60_000 }).then(r => r.data),
+  conversations: () =>
+    http.get<{ id: number; title: string; updated_at: string }[]>('/assistant/conversations').then(r => r.data),
+  createConversation: () =>
+    http.post<{ id: number; title: string }>('/assistant/conversations').then(r => r.data),
+  conversation: (id: number) =>
+    http.get<{ id: number; title: string; items: AssistantItem[] }>(`/assistant/conversations/${id}`).then(r => r.data),
+  deleteConversation: (id: number) => http.delete(`/assistant/conversations/${id}`),
+  send: (id: number, text: string, images: AssistantImage[], onEvent: (e: AssistantEvent) => void,
+    signal?: AbortSignal) =>
+    ndjson<AssistantEvent>(`/assistant/conversations/${id}/messages`, { text, images }, onEvent, signal),
+  decide: (planId: number, decision: 'approve' | 'reject', onEvent: (e: AssistantEvent) => void) =>
+    ndjson<AssistantEvent>(`/assistant/plans/${planId}/${decision}`, undefined, onEvent),
+  transcribe: (audio: Blob, language: string) => {
+    const fd = new FormData()
+    fd.append('audio', audio, audio.type.includes('ogg') ? 'speech.ogg' : audio.type.includes('mp4') ? 'speech.m4a' : 'speech.webm')
+    fd.append('language', language)
+    return http.post<{ text: string }>('/assistant/transcribe', fd, { timeout: 150_000 }).then(r => r.data.text)
+  },
+  macros: () => http.get<AssistantMacro[]>('/assistant/macros').then(r => r.data),
+  runMacro: (id: number, name: string, args: Record<string, unknown>, onEvent: (e: AssistantEvent) => void) =>
+    ndjson<AssistantEvent>(`/assistant/conversations/${id}/macro`, { name, args }, onEvent),
+  undo: (planId: number) =>
+    http.post<AssistantPlan>(`/assistant/plans/${planId}/undo`, undefined, { timeout: 120_000 }).then(r => r.data),
+  facts: () => http.get<AssistantFact[]>('/assistant/facts').then(r => r.data),
+  addFact: (text: string) => http.post<AssistantFact>('/assistant/facts', { text }).then(r => r.data),
+  deleteFact: (id: number) => http.delete(`/assistant/facts/${id}`),
+  discover: () =>
+    http.get<AssistantLocalServer[]>('/assistant/discover', { timeout: 60_000 }).then(r => r.data),
+}

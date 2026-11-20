@@ -39,6 +39,7 @@ import { useQuery } from '@tanstack/react-query'
 import { VersionPopover } from '@/components/VersionPopover'
 import PanelUnreachableBanner from '@/components/PanelUnreachableBanner'
 import RouterConfirmBanner from '@/components/RouterConfirmBanner'
+import { AssistantPanel } from '@/components/AssistantPanel'
 
 function getUsername(): string {
   try {
@@ -638,6 +639,7 @@ export function Layout() {
           </form>
         </div>
       )}
+      <AssistantPanel />
     </div>
   )
 }

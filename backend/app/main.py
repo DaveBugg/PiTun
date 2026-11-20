@@ -424,6 +424,8 @@ app.include_router(server_clients.router, prefix="/api", dependencies=_auth)
 app.include_router(xui.router, prefix="/api", dependencies=_auth)
 # Host network configuration UI (since v1.3.3) — auth-gated.
 app.include_router(network.router, prefix="/api", dependencies=_auth)
+from app.api import assistant as assistant_api
+app.include_router(assistant_api.router, prefix="/api", dependencies=_auth)
 
 
 # ── Health ────────────────────────────────────────────────────────────────────

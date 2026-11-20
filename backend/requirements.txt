@@ -25,3 +25,7 @@ asyncssh==2.24.0
 # The feature is opt-in — the .mmdb file itself is operator-supplied and
 # never shipped (MaxMind EULA), so this dep is inert until the file exists.
 maxminddb==2.6.2
+
+# anthropic: official SDK for the assistant's Anthropic provider (app/assistant).
+# OpenRouter / OpenAI / local models use plain httpx (OpenAI-compatible API).
+anthropic==2.10.0

@@ -4,6 +4,58 @@ All notable user-facing changes to PiTun. Full per-release detail lives in the
 [GitHub Releases](https://github.com/DaveBugg/PiTun/releases); this file is the
 committed summary.
 
+## v1.8.0-beta.4 — 2026-11-19
+
+**Assistant beta: voice input, add a server by pasting its access.**
+
+First published beta of the AI assistant (off by default: Settings → Assistant). It also contains everything listed under beta.3, beta.2 and beta.1 below, which were not released separately.
+
+### Added
+
+- Voice input: a mic button in the chat. The text lands in the input box for editing before it is sent. Settings → Assistant → Voice input: the browser's own recognition (default), the provider's speech-to-text (OpenAI, or a local server that has it), or an OpenAI-compatible whisper server in the LAN; speech language auto or fixed. Browsers allow the mic only over HTTPS or on localhost.
+- Add a server by pasting its access into the chat, one value per line: IP (or `user@host:port`), password, then optionally user (default root) and port (default 22); `ip: … / password: …` lines work too. The box reads it itself and prepares a plan "save the server + test SSH" (or updates a server with the same address). The password never reaches the model and is not kept in the chat history; plan cards show secrets as dots.
+
+## v1.8.0-beta.3 — 2026-11-19
+
+**Assistant beta: VPS installs, issuing nodes, diagnosis, web search.**
+
+### Added
+
+- Install a panel on a VPS from chat: "put x-ui on the Frankfurt server" prepares a plan for a server already on the Servers page (with a domain: x-ui-pro with nginx and Let's Encrypt; without one: bare 3x-ui for Reality; naive and WireGuard too). After approval the chat follows the install and shows its progress; lines with credentials are hidden. SSH passwords and keys are never asked for in chat.
+- Issue nodes from an x-ui panel: clients are added to an existing inbound (or a new one from a preset on a free port) and each becomes a PiTun node.
+- Diagnosis: "why does example.com not open on the TV?" runs read-only checks (box health, xray, active node, the device's routing, where the site goes and whether it connects) and explains what it found.
+- Web search: the assistant can search the web and open public pages, for example to find a service's domains before a site rule. Requests go out the same way as the provider's; private addresses cannot be opened. Can be switched off in Settings → Assistant.
+- Quick actions (⚡ in the chat): every ready-made task as a form, no model needed. A small model that fails a task twice gets the same form, filled in with what it understood.
+- Small-model mode: the task is picked by one short call with JSON-constrained output, then the model only phrases the answer.
+
+## v1.8.0-beta.2 — 2026-11-19
+
+**Assistant beta: screenshots, memory, undo, small local models.**
+
+### Added
+
+- Screenshots: paste, drop or attach up to 4 images to a message ("what does this error mean?"). They are shrunk in the browser and sent to the model as they are, so crop out anything private; older screenshots are not re-sent on later turns.
+- Memory: the assistant can remember short facts about this install ("the TV is the Samsung in the living room") and uses them in every chat. Settings → Assistant lists them; add or delete there. Long chats are folded into a running summary instead of being cut off.
+- Undo on an applied plan: changed fields get their old values back, created items are deleted, deleted items are re-created (with a new id). The card says which steps cannot be reverted.
+- Ready-made tasks with plain-word arguments: route a device through a node, build a circle from a subscription without some countries, add a rule for a site (domains the LAN really looked up are added). The server finds the ids, reuses existing rules and circles, and asks back when a device name is ambiguous.
+- Small-model mode (auto for local models): only the ready-made tasks, a short prompt and short history; a tool call written as JSON in the reply is understood too.
+- Local model: "Find in LAN" probes the box and the devices on the network for Ollama, LM Studio, llama.cpp and vLLM servers and lists their models.
+
+### Changed
+
+- nginx: assistant requests accept bodies up to 16 MB and may stay silent for up to 10 minutes.
+
+## v1.8.0-beta.1 — 2026-11-19
+
+**Beta: an AI assistant inside PiTun.** Turned off by default (Settings → Assistant).
+
+### Added
+
+- A chat (the ✦ button) that turns requests into PiTun changes: "route the TV through the fastest German node", "build a best circle from my subscription without RU", "send chatgpt.com through a Dutch node". It finds nodes and devices from loose descriptions, reads the current state, and proposes every change as a **plan card**; nothing runs until you press Apply. After a plan runs, the assistant checks the results.
+- Providers: OpenRouter (default), OpenAI, Anthropic, or a local model in the LAN through any OpenAI-compatible server (Ollama, LM Studio, llama.cpp, vLLM). "Test connection" checks that the model really calls tools. Requests to cloud providers can go through the active node or directly.
+- Keys are stored encrypted and never returned by the API. Passwords, keys, UUIDs, subscription URLs and server addresses are replaced with placeholders before anything reaches the model, and put back only when a plan runs.
+- Monthly token limit and a usage counter. Auth, updates, backups and the assistant's own settings are off limits to it.
+
 ## v1.7.14 — 2026-11-15
 
 **An update badge in the header, and circles say what they decided.**

@@ -5,6 +5,7 @@ import { systemApi } from '@/api/client'
 import HostNetworkSection from '@/components/HostNetworkSection'
 import BackupSection from '@/components/BackupSection'
 import { UpdateSection } from '@/components/UpdateSection'
+import { AssistantSection } from '@/components/AssistantSection'
 import { ResourceLimitsForm } from '@/components/ResourceLimitsForm'
 import {
   Settings as SettingsIcon,
@@ -274,6 +275,8 @@ export function Settings() {
           setting, and burying it inside a settings card made it
           unfindable. */}
       <UpdateSection />
+
+      <AssistantSection />
 
       {/* Restart warning */}
       {hasChanges && (

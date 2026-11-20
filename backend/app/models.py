@@ -947,3 +947,52 @@ class ChainClientChannel(SQLModel, table=True):
     created_at: datetime = Field(
         default_factory=lambda: datetime.now(timezone.utc),
     )
+
+
+# ── AI assistant (1.8.0) ─────────────────────────────────────────────────────
+
+class AssistantConversation(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    title: str = "New chat"
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    # placeholder -> real value for secrets hidden from the model (JSON)
+    redaction_map: str = "{}"
+    # Older turns folded into a running summary (redacted, like the messages);
+    # messages with id <= summary_upto are no longer sent to the model.
+    summary: str = ""
+    summary_upto: int = 0
+
+
+class AssistantMessage(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    conversation_id: int = Field(foreign_key="assistantconversation.id", index=True)
+    # user | assistant | tool — stored exactly as the model saw it (redacted)
+    role: str
+    content: str = "{}"  # JSON of the message in the OpenAI chat format
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class AssistantPlan(SQLModel, table=True):
+    """A batch of changes the assistant proposed; runs only once approved."""
+    id: Optional[int] = Field(default=None, primary_key=True)
+    conversation_id: int = Field(foreign_key="assistantconversation.id", index=True)
+    title: str = ""
+    summary: str = ""
+    steps: str = "[]"     # JSON: [{method, path, query, body, note}] (real values)
+    before: str = "[]"    # JSON: current state of what each step touches
+    status: str = "pending"  # pending | running | executed | failed | rejected | undone
+    results: str = "[]"   # JSON: [{status, ok, body}]
+    # JSON: steps that revert an executed plan (computed when it ran)
+    undo: str = "[]"
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    decided_at: Optional[datetime] = None
+    decided_by: Optional[str] = None
+
+
+class AssistantFact(SQLModel, table=True):
+    """A short statement about this install the assistant should remember
+    ("the TV is the Samsung in the living room"). Stored with real values."""
+    id: Optional[int] = Field(default=None, primary_key=True)
+    text: str
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
