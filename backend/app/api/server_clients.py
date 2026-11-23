@@ -47,6 +47,9 @@ from app.schemas import (
     DeploymentClientSyncResult,
     ExportClientToNodeRequest,
     NodeRead,
+    OutboundSocksConfig,
+    WireGuardOutboundSocksRequest,
+    WireGuardOutboundSocksState,
 )
 
 logger = logging.getLogger(__name__)
@@ -645,3 +648,103 @@ def _server_port_from_dep(dep: ServerDeployment) -> int:
     if isinstance(p, str) and p.isdigit():
         return int(p)
     return 51820
+
+
+# ── Outbound SOCKS5 mode ─────────────────────────────────────────────────────
+
+outbound_router = APIRouter(
+    prefix="/servers/{server_id:int}/deployments/wireguard",
+    tags=["server-clients"],
+)
+
+
+def _outbound_socks_state(dep: ServerDeployment) -> WireGuardOutboundSocksState:
+    try:
+        cfg = json.loads(dep.config_json or "{}")
+    except (ValueError, TypeError):
+        cfg = {}
+    raw = cfg.get("outbound_socks")
+    if not isinstance(raw, dict) or not raw.get("host"):
+        return WireGuardOutboundSocksState(enabled=False)
+    return WireGuardOutboundSocksState(
+        enabled=True,
+        socks=OutboundSocksConfig(
+            host=raw["host"],
+            port=int(raw.get("port") or 1080),
+            username=raw.get("username") or "",
+            password=raw.get("password") or "",
+            udp=bool(raw.get("udp", False)),
+        ),
+    )
+
+
+async def _save_outbound_socks(
+    dep: ServerDeployment,
+    state: Optional[OutboundSocksConfig],
+    session: AsyncSession,
+) -> None:
+    try:
+        cfg = json.loads(dep.config_json or "{}")
+    except (ValueError, TypeError):
+        cfg = {}
+    if state is None:
+        cfg.pop("outbound_socks", None)
+    else:
+        cfg["outbound_socks"] = state.model_dump()
+    dep.config_json = json.dumps(cfg)
+    session.add(dep)
+    await session.commit()
+
+
+@outbound_router.get(
+    "/outbound-socks",
+    response_model=WireGuardOutboundSocksState,
+)
+async def get_outbound_socks(
+    server_id: int, session: AsyncSession = Depends(get_session),
+):
+    """The configured outbound-SOCKS5 mode (as last applied — PiTun's
+    record, not a live probe of the server)."""
+    _, dep = await _resolve_deployment(server_id, session)
+    return _outbound_socks_state(dep)
+
+
+@outbound_router.post(
+    "/outbound-socks",
+    response_model=WireGuardOutboundSocksState,
+)
+async def set_outbound_socks(
+    server_id: int,
+    body: WireGuardOutboundSocksRequest,
+    session: AsyncSession = Depends(get_session),
+):
+    """Toggle the outbound-SOCKS5 mode on an already-installed WireGuard
+    server. Runs the script's setup/remove sub-command over SSH; the
+    deployment row is updated only after the server reports success.
+    """
+    server, dep = await _resolve_deployment(server_id, session)
+
+    if not body.enabled:
+        await _exec_wg(server, "remove-outbound-socks", timeout=90.0)
+        await _save_outbound_socks(dep, None, session)
+        return WireGuardOutboundSocksState(enabled=False)
+
+    socks = body.socks
+    if socks is None or not socks.host.strip():
+        raise HTTPException(
+            status_code=400,
+            detail="enabled=true requires socks.host",
+        )
+    extra_env = {
+        "SOCKS_HOST": socks.host.strip(),
+        "SOCKS_PORT": str(socks.port),
+        "SOCKS_UDP": "yes" if socks.udp else "no",
+    }
+    if socks.username:
+        extra_env["SOCKS_USER"] = socks.username
+        extra_env["SOCKS_PASS"] = socks.password
+    await _exec_wg(
+        server, "setup-outbound-socks", extra_env=extra_env, timeout=180.0,
+    )
+    await _save_outbound_socks(dep, socks, session)
+    return WireGuardOutboundSocksState(enabled=True, socks=socks)

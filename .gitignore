@@ -76,6 +76,8 @@ notes_*.md
 keys.md
 deploy_2nd.py
 CLAUDE.md
+AGENTS.md
+.kimi-code/
 
 # Local backup of the pre-public git history. Kept on the maintainer's
 # machine so old commits stay accessible (they reference personal IPs /

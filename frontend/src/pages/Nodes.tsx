@@ -36,6 +36,7 @@ import { ModalShell } from '@/components/ModalShell'
 import { AutoCheckModal } from '@/components/AutoCheckModal'
 import { SpeedAllButton } from '@/components/SpeedAllButton'
 import { apiErrorText } from '@/lib/apiError'
+import { loadHideUnavailable, saveHideUnavailable } from '@/lib/nodeFilters'
 import type { Node, NodeCreate, NodePageParams } from '@/types'
 
 type Modal = 'none' | 'add' | 'edit' | 'import'
@@ -78,6 +79,10 @@ function loadDirection(): SortDirection {
   }
 }
 
+// "Hide unreachable" quick filter, persisted like page size. Hides nodes
+// whose last health check failed (no ping / web unreachable). Wins over
+// the popup's status filter while on.
+
 export function Nodes() {
   const t = useT()
   const confirm = useConfirm()
@@ -89,6 +94,7 @@ export function Nodes() {
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState<number>(loadPageSize)
   const [direction, setDirection] = useState<SortDirection>(loadDirection)
+  const [hideUnavailable, setHideUnavailable] = useState<boolean>(loadHideUnavailable)
 
   // Reset to first page whenever the result set changes shape — any
   // filter / search / page-size flip can invalidate the current
@@ -99,7 +105,7 @@ export function Nodes() {
   }, [
     search,
     filters.subscription_id, filters.local, filters.protocol,
-    filters.online, filters.group, pageSize,
+    filters.online, filters.group, pageSize, hideUnavailable,
   ])
 
   // Persist page-size choice. Storage write fires only on actual change
@@ -113,6 +119,10 @@ export function Nodes() {
     try { localStorage.setItem(DIRECTION_KEY, direction) } catch { /* same */ }
   }, [direction])
 
+  useEffect(() => {
+    saveHideUnavailable(hideUnavailable)
+  }, [hideUnavailable])
+
   const pageParams: NodePageParams = useMemo(() => ({
     limit: pageSize,
     offset: (page - 1) * pageSize,
@@ -120,10 +130,10 @@ export function Nodes() {
     subscription_id: filters.subscription_id,
     local: filters.local,
     protocol: filters.protocol,
-    online: filters.online,
+    online: hideUnavailable ? true : filters.online,
     group: filters.group,
     direction,
-  }), [page, pageSize, search, filters, direction])
+  }), [page, pageSize, search, filters, direction, hideUnavailable])
 
   const { data: pageData, isLoading } = useNodesPage(pageParams)
   const nodes = pageData?.items ?? []
@@ -358,6 +368,20 @@ export function Nodes() {
           onChange={setFilters}
           protocols={KNOWN_PROTOCOLS}
         />
+        {/* Quick "hide dead nodes" toggle. Wins over the popup's
+            status filter while on; the choice persists across reloads. */}
+        <label
+          className="flex items-center gap-1.5 rounded-lg border border-gray-800 bg-gray-900 px-2.5 py-2 text-sm text-gray-400 hover:text-gray-200 hover:border-gray-700 transition-colors cursor-pointer select-none"
+          title={t('Hide nodes whose last check failed (no ping / web unreachable)', 'Скрывать ноды, у которых последняя проверка не удалась (нет пинга / веб недоступен)')}
+        >
+          <input
+            type="checkbox"
+            checked={hideUnavailable}
+            onChange={(e) => setHideUnavailable(e.target.checked)}
+            className="h-3.5 w-3.5 accent-brand-500"
+          />
+          <span className="text-xs">{t('Hide unreachable', 'Скрывать недоступные')}</span>
+        </label>
         {/* Sort-direction toggle. Single button that flips between
             'newest first' (default — natural for subscription pulls)
             and 'oldest first'. The `Node.order` column stays primary

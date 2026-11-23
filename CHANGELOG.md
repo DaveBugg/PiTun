@@ -4,6 +4,22 @@ All notable user-facing changes to PiTun. Full per-release detail lives in the
 [GitHub Releases](https://github.com/DaveBugg/PiTun/releases); this file is the
 committed summary.
 
+## v1.8.0-beta.10 — 2026-11-24
+
+**Safer chains on shared panels, WireGuard egress through your own SOCKS5, and friendlier node pickers.**
+
+### Added
+
+- WireGuard servers can route all peer traffic through an upstream SOCKS5 proxy (for example one already running on the same VPS): enable it during install (Deploy → WireGuard → "Route peer traffic through an upstream SOCKS5 proxy") or later from the clients modal. Only WireGuard peers are proxied — SSH and the server's own traffic are untouched, DNS is resolved through the proxy, and UDP is blocked unless the proxy supports it.
+- Long node lists get search: the "Chain via" picker in the node form and the routing rule's target-node picker are now searchable dropdowns, the Dashboard active-node picker and NodeCircle membership lists filter as you type, and the chain picker hides unreachable nodes by default.
+- Nodes page: a persistent "Hide unreachable" checkbox hides nodes whose last check failed (no ping / web unreachable); the choice survives reloads and also drives the chain picker.
+- Settings → HTTPS: "Re-issue certificate" button (useful after the box's LAN IP changes) and a Knowledge Base article on trusting the PiTun CA.
+
+### Fixed
+
+- Two PiTun boxes sharing one x-ui panel no longer fight over chains: the relay config push merges with what is already on the panel instead of replacing it, chain inbounds carry an ownership mark so one install never deletes another install's rows, and tearing down your last chain no longer wipes a foreign install's routes. Reinstalling or uninstalling x-ui on a server that hosts chains now shows a warning first (including chains owned by a different PiTun install).
+- Chain delete never removed its inbounds from the panel: the ownership guard crashed on an internal attribute error before every delete (since v1.6.8). Fixed; remote inbounds are removed again, still guarded against deleting someone else's rows.
+
 ## v1.8.0-beta.9 — 2026-11-20
 
 **Fixes the broken v1.8.0-beta.8 backend image.** Use this instead of beta.8.

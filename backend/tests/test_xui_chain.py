@@ -659,7 +659,7 @@ class TestChainDeleteNodeCleanup:
             ch = ChainChannel(
                 chain_id=chain.id, name="alpha", client_sni="a.example",
                 relay_port=443, exit_port=8443,
-                relay_inbound_remote_id=0, exit_inbound_remote_id=0,
+                relay_inbound_remote_id=11, exit_inbound_remote_id=12,
                 relay_pbk="rp", relay_sid="rs", relay_pvk="rv",
                 exit_uuid="u", exit_pbk="p", exit_sid="s",
             )
@@ -704,10 +704,23 @@ class TestChainDeleteNodeCleanup:
         bind = session.get_bind()
         session.close()
 
-        with mock.patch("app.core.xui_chain.XuiClient") as MC:
+        with (
+            mock.patch("app.core.xui_chain.XuiClient") as MC,
+            mock.patch("app.core.xui_chain._clear_xray_template_via_ssh",
+                       new_callable=AsyncMock),
+        ):
             inst = MC.return_value.__aenter__.return_value
             inst.del_inbound = AsyncMock(return_value=None)
             inst.restart_xray = AsyncMock(return_value=None)
+            # The delete guard verifies ownership before deleting: relay
+            # inbound 11 (remark VPN-ALPHA, port 443), exit 12 (ALPHA-Exit,
+            # 8443) — both still look like ours.
+            inst.get_inbound = AsyncMock(side_effect=lambda rid: (
+                {"remark": "VPN-ALPHA", "port": 443} if rid == 11
+                else {"remark": "ALPHA-Exit", "port": 8443}
+            ))
+            inst.get_xray_setting = AsyncMock(return_value={})
+            inst.push_xray_setting = AsyncMock(return_value=None)
 
             async def run():
                 async with AsyncSession(get_async_engine()) as s:
@@ -717,6 +730,12 @@ class TestChainDeleteNodeCleanup:
                         chain=chain, channel=channel, session=s,
                     )
             self._run(run)
+
+        # Regression: the guard used to crash on a wrong attribute name
+        # before ever reaching del_inbound — remote inbounds survived
+        # every chain delete.
+        deleted = {c.args[0] for c in inst.del_inbound.await_args_list}
+        assert {11, 12} <= deleted
 
         with SyncSession(bind) as s:
             assert s.get(Node, made["X"]["node"]) is None, \
@@ -745,6 +764,12 @@ class TestChainDeleteNodeCleanup:
             inst = MC.return_value.__aenter__.return_value
             inst.del_inbound = AsyncMock(return_value=None)
             inst.restart_xray = AsyncMock(return_value=None)
+            inst.get_inbound = AsyncMock(side_effect=lambda rid: (
+                {"remark": "VPN-ALPHA", "port": 443} if rid == 11
+                else {"remark": "ALPHA-Exit", "port": 8443}
+            ))
+            inst.get_xray_setting = AsyncMock(return_value={})
+            inst.push_xray_setting = AsyncMock(return_value=None)
 
             async def run():
                 async with AsyncSession(get_async_engine()) as s:
@@ -757,6 +782,9 @@ class TestChainDeleteNodeCleanup:
                         chain=chain, channels=channels, session=s,
                     )
             self._run(run)
+
+        deleted = {c.args[0] for c in inst.del_inbound.await_args_list}
+        assert {11, 12} <= deleted
 
         with SyncSession(bind) as s:
             assert s.get(ProxyChain, made["X"]["chain"]) is None

@@ -7,6 +7,7 @@ import {
 
 import { serversApi } from '@/api/client'
 import { ModalShell } from '@/components/ModalShell'
+import { OutboundSocksSection } from '@/components/OutboundSocksSection'
 import { useT } from '@/hooks/useT'
 import { useConfirm } from '@/components/ConfirmModal'
 import {
@@ -319,6 +320,9 @@ export function ManageClientsModal({
             </table>
           </div>
         )}
+
+        {/* Outbound SOCKS5 retrofit — toggles the mode on the live server */}
+        <OutboundSocksSection serverId={server.id} />
 
         {/* Footer */}
         <div className="flex justify-end pt-4">

@@ -28,6 +28,7 @@ import {
 import { clsx } from 'clsx'
 import { useT } from '@/hooks/useT'
 import { useConfirm } from '@/components/ConfirmModal'
+import { apiErrorText } from '@/lib/apiError'
 import type { SystemSettings } from '@/types'
 
 // Dynamic key-value form that mirrors `SystemSettings` but preserves
@@ -353,6 +354,7 @@ export function Settings() {
             <Lock className="h-3.5 w-3.5" />
             {t('Download PiTun root CA', 'Скачать root-CA PiTun')}
           </a>
+          <HttpsReissueButton />
           {window.location.protocol === 'https:' ? (
             <p className="text-[12px] text-green-400">
               {t('This page is open over HTTPS now.', 'Эта страница сейчас открыта по HTTPS.')}
@@ -581,6 +583,53 @@ function PasswordField({
         </button>
       </div>
       {hint && <p className="text-[11px] text-gray-600 mt-1">{hint}</p>}
+    </div>
+  )
+}
+
+
+// Force re-issue of the HTTPS leaf certificate (same host-side
+// gen-cert.sh that install.sh runs). HTTP on :80 is untouched, so a
+// failed re-issue can't lock anyone out.
+function HttpsReissueButton() {
+  const t = useT()
+  const [state, setState] = useState<'idle' | 'busy' | 'ok' | 'err'>('idle')
+  const [detail, setDetail] = useState('')
+  const reissue = useMutation({
+    mutationFn: () => systemApi.reissueHttpsCert(),
+    onSuccess: (r) => {
+      setState('ok')
+      setDetail(
+        r.nginx_reloaded
+          ? t('Certificate re-issued; nginx reloaded.', 'Сертификат перевыпущен; nginx перезагружен.')
+          : t('Certificate re-issued, but the nginx reload failed — restart pitun-nginx on the box.', 'Сертификат перевыпущен, но перезагрузка nginx не удалась — перезапустите pitun-nginx на боксе.'),
+      )
+    },
+    onError: (e) => {
+      setState('err')
+      setDetail(apiErrorText(e, 're-issue failed'))
+    },
+  })
+  return (
+    <div className="space-y-1.5">
+      <button
+        type="button"
+        onClick={() => { setState('busy'); setDetail(''); reissue.mutate() }}
+        disabled={state === 'busy'}
+        className="inline-flex items-center gap-2 rounded-lg bg-gray-800 hover:bg-gray-700 px-3 py-2 text-[12px] text-gray-200 font-medium disabled:opacity-50 transition-colors"
+        title={t(
+          'Re-issue the panel certificate (e.g. after the LAN IP changed). Plain HTTP keeps working either way.',
+          'Перевыпустить сертификат панели (например, после смены LAN IP). Обычный HTTP продолжит работать в любом случае.',
+        )}
+      >
+        <RefreshCw className={clsx('h-3.5 w-3.5', state === 'busy' && 'animate-spin')} />
+        {state === 'busy' ? t('Re-issuing…', 'Перевыпускаю…') : t('Re-issue certificate', 'Перевыпустить сертификат')}
+      </button>
+      {detail && (
+        <p className={clsx('text-[11px]', state === 'err' ? 'text-red-400' : 'text-green-400')}>
+          {detail}
+        </p>
+      )}
     </div>
   )
 }

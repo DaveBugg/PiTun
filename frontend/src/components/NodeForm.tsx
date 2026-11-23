@@ -4,6 +4,8 @@ import { InfoTip } from '@/components/InfoTip'
 import { useT } from '@/hooks/useT'
 import { useServers } from '@/hooks/useServers'
 import { CertPinField } from '@/components/CertPinField'
+import { SearchableSelect } from '@/components/SearchableSelect'
+import { loadHideUnavailable, saveHideUnavailable } from '@/lib/nodeFilters'
 
 type FormData = Omit<NodeCreate, 'order'>
 
@@ -71,6 +73,7 @@ export function NodeForm({ initial, onSave, onCancel, loading, nodes = [] }: Pro
   const t = useT()
   const [form, setForm] = useState<FormData>({ ...DEFAULTS, ...initial })
   const [chainNodeId, setChainNodeId] = useState(initial?.chain_node_id?.toString() ?? '')
+  const [hideUnavailable, setHideUnavailable] = useState<boolean>(loadHideUnavailable)
   const [serverId, setServerId] = useState(initial?.server_id?.toString() ?? '')
   // Servers list is small (1-5 typical) and the form is short-lived, so
   // fetching here on mount keeps the API surface simple — we don't have
@@ -374,23 +377,45 @@ export function NodeForm({ initial, onSave, onCancel, loading, nodes = [] }: Pro
           Chain via (double tunnel)
           <InfoTip text="Advanced: route this node's traffic through another node as outer transport. Creates a double tunnel — the chain node is the outer (visible) layer, this node is the inner layer. Note: WireGuard nodes can't be a relay (xray can't tunnel through WireGuard) — they only work as the chain's exit, so they're not listed here." />
         </h3>
-        <select
+        <SearchableSelect
           value={chainNodeId}
-          onChange={(e) => setChainNodeId(e.target.value)}
-          className="w-full rounded-sm bg-gray-800 border border-gray-700 px-3 py-1.5 text-sm text-gray-100 focus:border-brand-500 focus:outline-hidden"
-        >
-          <option value="">None (single tunnel)</option>
-          {nodes
+          onChange={setChainNodeId}
+          placeholder={t('None (single tunnel)', 'Нет (один туннель)')}
+          options={(() => {
             // WireGuard can't be a relay — xray can't tunnel traffic
             // THROUGH a WG outbound (0 bytes); it only works as the exit
             // hop. So exclude WG nodes from the "chain through" list.
-            .filter((n) => n.id !== (initial as Node | undefined)?.id && n.protocol !== 'wireguard')
-            .map((n) => (
-              <option key={n.id} value={n.id.toString()}>
-                {n.name} ({n.protocol} · {n.address})
-              </option>
-            ))}
-        </select>
+            const selfId = (initial as Node | undefined)?.id
+            const candidates = nodes.filter(
+              (n) => n.id !== selfId && n.protocol !== 'wireguard',
+            )
+            const visible = hideUnavailable
+              ? candidates.filter((n) => n.is_online || n.id === Number(chainNodeId))
+              : candidates
+            return [
+              { value: '', label: t('None (single tunnel)', 'Нет (один туннель)') },
+              ...visible.map((n) => ({
+                value: n.id.toString(),
+                label: `${n.name}${n.is_online ? '' : ` (${t('offline', 'недоступна')})`}`,
+                hint: `${n.protocol} · ${n.address}`,
+              })),
+            ]
+          })()}
+          footer={(
+            <label className="flex items-center gap-1.5 text-xs text-gray-400 cursor-pointer select-none">
+              <input
+                type="checkbox"
+                checked={hideUnavailable}
+                onChange={(e) => {
+                  setHideUnavailable(e.target.checked)
+                  saveHideUnavailable(e.target.checked)
+                }}
+                className="h-3.5 w-3.5 accent-brand-500"
+              />
+              {t('Hide unreachable nodes', 'Скрывать недоступные ноды')}
+            </label>
+          )}
+        />
         {chainNodeId && (() => {
           const chainNode = nodes.find(n => n.id === Number(chainNodeId))
           return chainNode ? (

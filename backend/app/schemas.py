@@ -356,6 +356,25 @@ class ServerTestAllResult(BaseModel):
     results: List[ServerTestResult]
 
 
+class ServerChainPresence(BaseModel):
+    """Chain footprint on a server's x-ui panel — shown before a
+    reinstall/uninstall so the operator sees what would be wiped."""
+    server_id: int
+    # Chains in THIS install's DB bound to the server's panel(s).
+    local_chains: int = 0
+    # Live panel scan (None when no panel is registered/reachable):
+    own_marked_inbounds: Optional[int] = None      # `[pitun:<our id>]`
+    foreign_marked_inbounds: Optional[int] = None  # `[pitun:<other id>]`
+    legacy_chain_inbounds: Optional[int] = None    # `chain-*` tag, no mark
+    error: Optional[str] = None
+
+
+class HttpsCertReissueResult(BaseModel):
+    ok: bool
+    output: str = ""
+    nginx_reloaded: bool = False
+
+
 # ── Auto-deploy (since v1.3.0) ───────────────────────────────────────────────
 #
 # `POST /api/servers/{id}/deploy` runs an install script remotely via SSH and,
@@ -624,6 +643,28 @@ class ExportClientToNodeRequest(BaseModel):
     node_name: Optional[str] = None
     enabled: Optional[bool] = None
     force: bool = False
+
+
+class OutboundSocksConfig(BaseModel):
+    """Upstream SOCKS5 proxy for the WireGuard server's peer egress."""
+    host: str
+    port: int = 1080
+    username: str = ""
+    password: str = ""
+    # Proxy supports UDP ASSOCIATE — otherwise UDP is blocked server-side
+    # (DNS still works: sing-box hijacks it over TCP through the proxy).
+    udp: bool = False
+
+
+class WireGuardOutboundSocksRequest(BaseModel):
+    """`enabled=false` ignores `socks` and reverts peers to direct egress."""
+    enabled: bool
+    socks: Optional[OutboundSocksConfig] = None
+
+
+class WireGuardOutboundSocksState(BaseModel):
+    enabled: bool = False
+    socks: Optional[OutboundSocksConfig] = None
 
 
 # ─── Routing Rules ────────────────────────────────────────────────────────────

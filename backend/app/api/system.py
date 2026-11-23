@@ -17,6 +17,7 @@ from app.schemas import (
     ActiveNodeUpdate,
     DataVersions,
     HostVersions,
+    HttpsCertReissueResult,
     ModeUpdate,
     PitunVersions,
     RuntimeVersions,
@@ -546,6 +547,26 @@ async def reload_config(
     """
     await _regenerate_and_write(session)
     await dispatch_dataplane(background_tasks, "reload")
+
+
+@router.post("/https-cert/reissue", response_model=HttpsCertReissueResult)
+async def reissue_https_cert():
+    """Force re-issue of the panel's HTTPS leaf certificate.
+
+    Runs the host's gen-cert.sh with --force (same script install.sh
+    uses) and reloads the gateway nginx. Plain HTTP on :80 is
+    unaffected, so a failure here can never lock the operator out.
+    """
+    from app.core.https_cert import https_cert_manager
+
+    try:
+        result = await https_cert_manager.reissue()
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=str(e)[:400]) from e
+    return HttpsCertReissueResult(
+        ok=result.ok, output=result.output,
+        nginx_reloaded=result.nginx_reloaded,
+    )
 
 
 # ── Mode ──────────────────────────────────────────────────────────────────────

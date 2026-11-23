@@ -311,7 +311,15 @@ def build_wireguard_env(
     allowed_ips: Optional[str] = None,
     server_pub_ip: Optional[str] = None,
     ssh_port: Optional[int] = None,
-    sub_command: Literal["install", "add-client", "remove-client", "list-clients", "get-conf"] = "install",
+    socks_host: Optional[str] = None,
+    socks_port: Optional[int] = None,
+    socks_user: Optional[str] = None,
+    socks_pass: Optional[str] = None,
+    socks_udp: Optional[bool] = None,
+    sub_command: Literal[
+        "install", "add-client", "remove-client", "list-clients", "get-conf",
+        "setup-outbound-socks", "remove-outbound-socks",
+    ] = "install",
 ) -> dict[str, str]:
     """Build the env-var dict for `setup-wireguard-server.sh`.
 
@@ -321,8 +329,14 @@ def build_wireguard_env(
     arg via the `_build_remote_command` env injector — see
     PITUN_WG_SUBCOMMAND below.
 
-    `client_name` is required for everything except `list-clients`;
-    we still validate non-empty here to surface API errors early.
+    `client_name` is required for install/add-client/remove-client/
+    get-conf; we still validate non-empty here to surface API errors
+    early.
+
+    The socks_* keys select the optional outbound-SOCKS5 mode (peer
+    egress via an upstream SOCKS5 proxy). On `install` the script runs
+    the mode setup at the end when SOCKS_HOST is set; the dedicated
+    sub-commands toggle it on an already-installed server.
 
     Defaults mirror `setup-wireguard-server.sh`:
       * server_port: 51820
@@ -332,7 +346,10 @@ def build_wireguard_env(
       * allowed_ips: 0.0.0.0/0,::/0
       * server_pub_ip: autodetected on the VPS
     """
-    if sub_command != "list-clients" and not client_name:
+    needs_client = sub_command in (
+        "install", "add-client", "remove-client", "get-conf",
+    )
+    if needs_client and not client_name:
         raise ValueError("client_name is required for sub_command=" + sub_command)
 
     env: dict[str, str] = {
@@ -357,6 +374,15 @@ def build_wireguard_env(
         env["ALLOWED_IPS"] = allowed_ips
     if server_pub_ip:
         env["SERVER_PUB_IP"] = server_pub_ip
+    if socks_host:
+        env["SOCKS_HOST"] = socks_host
+        if socks_port is not None:
+            env["SOCKS_PORT"] = str(socks_port)
+        if socks_user:
+            env["SOCKS_USER"] = socks_user
+        if socks_pass:
+            env["SOCKS_PASS"] = socks_pass
+        env["SOCKS_UDP"] = "yes" if socks_udp else "no"
     # SSH port — only meaningful on `install` (subsequent add-client etc.
     # never touch sshd). Validated to 1-65535 to keep the script's bash
     # parser from blowing up; out-of-range becomes "" → script no-op.
@@ -368,6 +394,31 @@ def build_wireguard_env(
         except (TypeError, ValueError):
             pass
     return env
+
+
+def _socks_kwargs(raw) -> dict:
+    """Normalise the optional `outbound_socks` config dict into
+    build_wireguard_env kwargs. Empty/disabled → no kwargs."""
+    if not isinstance(raw, dict):
+        return {}
+    host = (raw.get("host") or "").strip()
+    if not host:
+        return {}
+    try:
+        port = int(raw.get("port") or 1080)
+        if not 1 <= port <= 65535:
+            raise ValueError
+    except (TypeError, ValueError):
+        raise ValueError(
+            f"outbound_socks.port must be 1..65535 (got: {raw.get('port')!r})"
+        ) from None
+    return {
+        "socks_host": host,
+        "socks_port": port,
+        "socks_user": (raw.get("username") or "").strip() or None,
+        "socks_pass": raw.get("password") or None,
+        "socks_udp": bool(raw.get("udp", False)),
+    }
 
 
 def build_plan(protocol: str, config: dict) -> DeployPlan:
@@ -413,6 +464,7 @@ def build_plan(protocol: str, config: dict) -> DeployPlan:
             allowed_ips=config.get("allowed_ips"),
             server_pub_ip=config.get("server_pub_ip"),
             ssh_port=config.get("ssh_port"),
+            **_socks_kwargs(config.get("outbound_socks")),
             sub_command="install",
         )
     else:

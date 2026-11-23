@@ -38,15 +38,22 @@ Schema decisions documented inline:
 """
 from __future__ import annotations
 
+import copy
 import json
 import logging
+import re
 import secrets
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 
 from sqlmodel.ext.asyncio.session import AsyncSession
 
+from app.core.install_id import (
+    get_install_id,
+    mark_remark,
+    remark_owner,
+)
 from app.core.ssh import exec_remote_script
 from app.core.xray_policy import level_zero
 from app.core.xui_api import XuiAPIError, XuiClient
@@ -257,6 +264,122 @@ def _relay_tag(chain_id: int, channel_name: str) -> str:
     return f"chain-{chain_id}-{channel_name}-relay"
 
 
+_CHAIN_TAG_RE = re.compile(r"^chain-(\d+)-")
+# Scaffolding tags every PiTun-built template carries; foreign entries
+# are anything else.
+_STANDARD_OUTBOUND_TAGS = frozenset({"direct", "blocked", "api"})
+
+
+def _chain_id_of_tag(tag: str) -> Optional[int]:
+    m = _CHAIN_TAG_RE.match(tag or "")
+    return int(m.group(1)) if m else None
+
+
+def _rule_tags(rule: Dict[str, Any]) -> List[str]:
+    tags: List[str] = []
+    it = rule.get("inboundTag")
+    if isinstance(it, str):
+        tags.append(it)
+    elif isinstance(it, list):
+        tags.extend(t for t in it if isinstance(t, str))
+    ot = rule.get("outboundTag")
+    if isinstance(ot, str):
+        tags.append(ot)
+    return tags
+
+
+def _foreign_entries(
+    current: Dict[str, Any],
+    own_chain_ids: Set[int],
+) -> "tuple[List[Dict[str, Any]], List[Dict[str, Any]]]":
+    """Outbounds/rules in the panel's current template that are NOT ours.
+
+    "Ours" = chain entries for our chain ids plus the standard
+    direct/blocked/api scaffolding we re-emit on every push. Anything
+    else — another PiTun install's chains on the same panel, hand-made
+    template entries — is preserved verbatim.
+    """
+
+    def is_own(tag: str) -> bool:
+        cid = _chain_id_of_tag(tag)
+        return cid is not None and cid in own_chain_ids
+
+    outbounds = [
+        ob for ob in current.get("outbounds") or []
+        if isinstance(ob, dict)
+        and (ob.get("tag") or "") not in _STANDARD_OUTBOUND_TAGS
+        and not is_own(ob.get("tag") or "")
+    ]
+    rules = []
+    for rule in (current.get("routing") or {}).get("rules") or []:
+        if not isinstance(rule, dict):
+            continue
+        tags = _rule_tags(rule)
+        if "api" in tags or any(is_own(t) for t in tags):
+            continue
+        if rule.get("outboundTag") == "blocked" and not any(
+            _chain_id_of_tag(t) is not None for t in tags
+        ):
+            continue  # the stock bittorrent block — ours re-adds it
+        rules.append(rule)
+    return outbounds, rules
+
+
+def merge_relay_template(
+    *,
+    current: Any,
+    ours: Dict[str, Any],
+    own_chain_ids: Set[int],
+) -> Dict[str, Any]:
+    """Merge our fresh template into the panel's existing one.
+
+    The relay's xrayTemplateConfig is panel-wide, so a blind replace
+    wipes entries another PiTun install pushed for ITS chains (the
+    cross-box trap). We replace only what we own and carry the rest
+    over unchanged. `outbounds[0]` stays our `direct` — xray's default
+    egress for unmatched inbounds.
+    """
+    if not isinstance(current, dict) or not isinstance(current.get("outbounds"), list):
+        return ours
+    foreign_outbounds, foreign_rules = _foreign_entries(current, own_chain_ids)
+    if not foreign_outbounds and not foreign_rules:
+        return ours
+
+    merged = copy.deepcopy(ours)
+    merged["outbounds"] = list(ours.get("outbounds") or []) + foreign_outbounds
+    our_rules = list((ours.get("routing") or {}).get("rules") or [])
+    if our_rules and our_rules[-1].get("outboundTag") == "blocked":
+        merged_rules = our_rules[:-1] + foreign_rules + [our_rules[-1]]
+    else:
+        merged_rules = our_rules + foreign_rules
+    merged.setdefault("routing", {})["rules"] = merged_rules
+    return merged
+
+
+async def _template_has_foreign_entries(
+    client: "XuiClient",
+    *,
+    own_chain_ids: Set[int],
+) -> bool:
+    """True when the panel's live template holds entries we don't own.
+
+    Read failure assumes foreign — clearing the template in that state
+    could wipe a sibling install's chains.
+    """
+    try:
+        current = await client.get_xray_setting()
+    except Exception as e:  # noqa: BLE001
+        logger.warning(
+            "template foreign-check failed (%s) — assuming foreign entries present", e,
+        )
+        return True
+    if not isinstance(current, dict):
+        return False
+    outbounds, rules = _foreign_entries(current, own_chain_ids)
+    return bool(outbounds or rules)
+
+
+
 # ── Build helpers — keep panel-payload generation pure-functional so ───────
 # the orchestrator can be unit-tested without an httpx pool.
 
@@ -284,6 +407,7 @@ def _build_exit_inbound_payload(
     public_key: str,
     short_id: str,
     bootstrap_email: str,
+    owner: str = "",
 ) -> Dict[str, Any]:
     """xhttp + Reality inbound on the exit panel.
 
@@ -335,7 +459,9 @@ def _build_exit_inbound_payload(
     }
     return {
         "up": 0, "down": 0, "total": 0,
-        "remark": channel.exit_remark or f"{channel.name.upper()}-Exit",
+        "remark": mark_remark(
+            channel.exit_remark or f"{channel.name.upper()}-Exit", owner,
+        ),
         "enable": True, "expiryTime": 0,
         "listen": "", "port": channel.exit_port,
         "protocol": "vless",
@@ -355,6 +481,7 @@ def _build_relay_inbound_payload(
     public_key: str,
     short_id: str,
     bootstrap_email: str,
+    owner: str = "",
 ) -> Dict[str, Any]:
     """TCP + Reality + xtls-rprx-vision inbound on the relay panel.
 
@@ -402,7 +529,9 @@ def _build_relay_inbound_payload(
     }
     return {
         "up": 0, "down": 0, "total": 0,
-        "remark": channel.relay_remark or f"VPN-{channel.name.upper()}",
+        "remark": mark_remark(
+            channel.relay_remark or f"VPN-{channel.name.upper()}", owner,
+        ),
         "enable": True, "expiryTime": 0,
         "listen": "", "port": channel.relay_port,
         "protocol": "vless",
@@ -755,19 +884,36 @@ async def _push_xray_template(
     *,
     relay_client: XuiClient,
     template: Dict[str, Any],
+    own_chain_ids: Optional[Set[int]] = None,
 ) -> None:
-    """Replace the relay's xray template via /panel/xray/update.
+    """Merge-push the relay's xray template via /panel/xray/update.
 
     3x-ui v3.0.1 dropped `xrayTemplateConfig` from /panel/setting/all
     — xray config now lives in its own XraySettingController under
-    /panel/xray/*. We fetch the current template (just to preserve
-    `outboundTestUrl`), then push the new one. Cookie+CSRF auth —
-    requires the relay XuiClient to be built with `panel_user` +
-    `panel_pass`.
+    /panel/xray/*. We fetch the current template (to preserve
+    `outboundTestUrl` and to merge foreign entries — another PiTun
+    install sharing this relay must not lose its chain routes), then
+    push the merged result. Cookie+CSRF auth — requires the relay
+    XuiClient to be built with `panel_user` + `panel_pass`.
+
+    `own_chain_ids` defaults to the chain ids found in our fresh
+    template; delete paths pass it explicitly so the entries of the
+    chain being removed are also recognised as ours and stripped.
     """
     current = await relay_client.get_xray_setting()
     test_url = current.get("outboundTestUrl") if isinstance(current, dict) else None
-    await relay_client.push_xray_setting(template, test_url)
+    if own_chain_ids is None:
+        own_chain_ids = {
+            cid
+            for ob in template.get("outbounds") or []
+            if isinstance(ob, dict)
+            for cid in [_chain_id_of_tag(ob.get("tag") or "")]
+            if cid is not None
+        }
+    merged = merge_relay_template(
+        current=current, ours=template, own_chain_ids=own_chain_ids,
+    )
+    await relay_client.push_xray_setting(merged, test_url)
 
 
 async def _restart_xray(relay_client: XuiClient) -> None:
@@ -967,6 +1113,11 @@ async def orchestrate_create(
     for row in channel_rows:
         await session.refresh(row)
 
+    # Ownership mark for the panel-side remarks — lets deletes and
+    # foreign-checks tell our inbounds from another install's on a
+    # shared panel.
+    install_id = await get_install_id(session)
+
     # Step 4 — panel-side create. Track every (panel, remote_id)
     # pair we successfully add so rollback can undo them.
     created_exit: List[int] = []   # remote_ids on exit panel
@@ -999,6 +1150,7 @@ async def orchestrate_create(
                     private_key=exit_pvk, public_key=exit_pbk,
                     short_id=exit_sid,
                     bootstrap_email=bootstrap_email,
+                    owner=install_id,
                 )
                 exit_created = await exit_client.add_inbound(
                     _wrap_settings_json(exit_payload),
@@ -1018,6 +1170,7 @@ async def orchestrate_create(
                     private_key=relay_pvk, public_key=relay_pbk,
                     short_id=relay_sid,
                     bootstrap_email=bootstrap_email,
+                    owner=install_id,
                 )
                 relay_created = await relay_client.add_inbound(
                     _wrap_settings_json(relay_payload),
@@ -1111,29 +1264,43 @@ async def orchestrate_create(
 
 async def _del_inbound_if_ours(
     client, remote_id: int, remark: str, port: int, label: str,
+    install_id: str = "",
 ) -> None:
     """Delete an inbound only while it still looks like the one we created.
 
     A panel reinstall re-issues low ids, so a stored id can end up pointing at
-    someone else's inbound. We delete when the remark OR the port still
-    matches ours; anything else is left alone and logged.
+    someone else's inbound. Ownership check, strongest first:
+      1. The remote remark carries a `[pitun:<id>]` mark — delete only when
+         the id is ours; a foreign install's rows are never touched.
+      2. Legacy rows (no mark): delete when the remark OR the port still
+         matches ours; anything else is left alone and logged.
     """
     try:
         current = await client.get_inbound(remote_id)
     except XuiAPIError as e:
         logger.warning("%s: inbound %s not found or unreadable (%s) — not deleting", label, remote_id, e)
         return
-    same_remark = str(current.get("remark") or "") == remark
-    try:
-        same_port = int(current.get("port") or 0) == int(port)
-    except (TypeError, ValueError):
-        same_port = False
-    if not (same_remark or same_port):
-        logger.warning(
-            "%s: inbound %s is %r on port %s, not %r on port %s — left in place",
-            label, remote_id, current.get("remark"), current.get("port"), remark, port,
-        )
-        return
+    remote_remark = str(current.get("remark") or "")
+    owner = remark_owner(remote_remark)
+    if owner is not None:
+        if install_id and owner != install_id:
+            logger.warning(
+                "%s: inbound %s belongs to another PiTun install (%s) — left in place",
+                label, remote_id, owner,
+            )
+            return
+    else:
+        same_remark = remote_remark == remark
+        try:
+            same_port = int(current.get("port") or 0) == int(port)
+        except (TypeError, ValueError):
+            same_port = False
+        if not (same_remark or same_port):
+            logger.warning(
+                "%s: inbound %s is %r on port %s, not %r on port %s — left in place",
+                label, remote_id, current.get("remark"), current.get("port"), remark, port,
+            )
+            return
     await client.del_inbound(remote_id)
 
 
@@ -1210,6 +1377,7 @@ async def orchestrate_delete_channel(
     False when the caller should drop the ProxyChain row too.
     """
     _no_expire_on_commit(session)
+    install_id = await get_install_id(session)
 
     exit_xs = await session.get(XuiServer, chain.exit_xui_server_id)
     relay_xs = await session.get(XuiServer, chain.relay_xui_server_id)
@@ -1249,8 +1417,9 @@ async def orchestrate_delete_channel(
                 try:
                     await _del_inbound_if_ours(
                         c, channel.exit_inbound_remote_id,
-                        channel.exit_remark or f"{channel.name.upper()}-Exit",
+                        channel.exit_inbound_remark or f"{channel.name.upper()}-Exit",
                         channel.exit_port, "delete_channel(exit)",
+                        install_id=install_id,
                     )
                 except Exception as e:  # noqa: BLE001
                     logger.warning(
@@ -1271,8 +1440,9 @@ async def orchestrate_delete_channel(
                 try:
                     await _del_inbound_if_ours(
                         c, channel.relay_inbound_remote_id,
-                        channel.relay_remark or f"VPN-{channel.name.upper()}",
+                        channel.relay_inbound_remark or f"VPN-{channel.name.upper()}",
                         channel.relay_port, "delete_channel(relay)",
+                        install_id=install_id,
                     )
                 except Exception as e:  # noqa: BLE001
                     logger.warning(
@@ -1301,15 +1471,31 @@ async def orchestrate_delete_channel(
                             "delete_channel: relay template repush failed: %s", e,
                         )
                 else:
-                    # Last channel — clear the panel template entirely
-                    # so the panel's auto-routing kicks back in. We
-                    # also clear via SSH because pushing an empty
-                    # template doesn't reset xray's running config
-                    # (the bare-panel gotcha we hit in beta.7).
+                    # Last channel of ours — normally clear the panel
+                    # template entirely so the panel's auto-routing kicks
+                    # back in (pushing an empty template doesn't reset
+                    # xray's running config — the bare-panel gotcha from
+                    # beta.7). But when the template still carries entries
+                    # we don't own (another PiTun install shares this
+                    # relay), a hard clear would wipe their routes — swap
+                    # it for a merged push instead.
                     await session.delete(channel)
                     await session.flush()
                     try:
-                        await _clear_xray_template_via_ssh(relay_srv)
+                        if await _template_has_foreign_entries(
+                            c, own_chain_ids={chain.id},
+                        ):
+                            template = await build_combined_relay_template(
+                                session=session,
+                                relay_xui_server_id=chain.relay_xui_server_id,
+                            )
+                            await _push_xray_template(
+                                relay_client=c, template=template,
+                                own_chain_ids={chain.id},
+                            )
+                            await _restart_xray(c)
+                        else:
+                            await _clear_xray_template_via_ssh(relay_srv)
                     except Exception as e:  # noqa: BLE001
                         logger.warning(
                             "delete_channel: relay template clear failed: %s", e,
@@ -1369,6 +1555,7 @@ async def orchestrate_delete(
     clean slate for the next chain on the same relay. So we do.
     """
     _no_expire_on_commit(session)
+    install_id = await get_install_id(session)
     exit_xs = await session.get(XuiServer, chain.exit_xui_server_id)
     relay_xs = await session.get(XuiServer, chain.relay_xui_server_id)
     exit_srv = await session.get(Server, exit_xs.server_id) if exit_xs else None
@@ -1385,8 +1572,9 @@ async def orchestrate_delete(
                         try:
                             await _del_inbound_if_ours(
                                 c, ch.exit_inbound_remote_id,
-                                ch.exit_remark or f"{ch.name.upper()}-Exit",
+                                ch.exit_inbound_remark or f"{ch.name.upper()}-Exit",
                                 ch.exit_port, "delete(exit)",
+                                install_id=install_id,
                             )
                         except Exception as e:  # noqa: BLE001
                             logger.warning(
@@ -1408,8 +1596,9 @@ async def orchestrate_delete(
                         try:
                             await _del_inbound_if_ours(
                                 c, ch.relay_inbound_remote_id,
-                                ch.relay_remark or f"VPN-{ch.name.upper()}",
+                                ch.relay_inbound_remark or f"VPN-{ch.name.upper()}",
                                 ch.relay_port, "delete(relay)",
+                                install_id=install_id,
                             )
                         except Exception as e:  # noqa: BLE001
                             logger.warning(
@@ -1446,12 +1635,30 @@ async def orchestrate_delete(
                         )
                         await _push_xray_template(
                             relay_client=c, template=template,
+                            own_chain_ids={chain.id},
                         )
                         await _restart_xray(c)
                     else:
-                        # Last chain on this relay — restore panel's
-                        # auto-routing.
-                        await _clear_xray_template_via_ssh(relay_srv)
+                        # Last chain of ours on this relay — restore
+                        # the panel's auto-routing, unless the template
+                        # still carries entries we don't own (another
+                        # PiTun install): then a merged push instead of
+                        # a hard clear so their routes survive.
+                        if await _template_has_foreign_entries(
+                            c, own_chain_ids={chain.id},
+                        ):
+                            template = await build_combined_relay_template(
+                                session=session,
+                                relay_xui_server_id=chain.relay_xui_server_id,
+                                exclude_chain_id=chain.id,
+                            )
+                            await _push_xray_template(
+                                relay_client=c, template=template,
+                                own_chain_ids={chain.id},
+                            )
+                            await _restart_xray(c)
+                        else:
+                            await _clear_xray_template_via_ssh(relay_srv)
                 except Exception as e:  # noqa: BLE001
                     logger.warning(
                         "delete: relay template cleanup failed: %s", e,

@@ -59,7 +59,7 @@ build), `compose up`, host-network (начиная с 1.3.3). Скрипты в
 | Пара | Протокол |
 |---|---|
 | `setup-naive-server.sh` / `uninstall-naive-server.sh` | NaiveProxy (Caddy + forwardproxy, Let's Encrypt сертификат, systemd unit). |
-| `setup-wireguard-server.sh` / `uninstall-wireguard-server.sh` | WireGuard (multi-client, sub-command диспетчер: `install` / `add-client` / `remove-client` / `list-clients`). |
+| `setup-wireguard-server.sh` / `uninstall-wireguard-server.sh` | WireGuard (multi-client, sub-command диспетчер: `install` / `add-client` / `remove-client` / `list-clients` / `get-conf` / `setup-outbound-socks` / `remove-outbound-socks`). |
 | `setup-xui-server.sh` / `uninstall-xui-server.sh` | 3x-ui или x-ui-pro (режим выбирается автоматически по тому, задан ли `DOMAIN=`). |
 | `cleanup-go.sh` | Хелпер — снимает Go SDK + build-кэш которые тянут установщики xui-pro и naive. Вызывается автоматом, безопасен к source'у из любого post-install контекста. |
 

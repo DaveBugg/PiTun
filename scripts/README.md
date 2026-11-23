@@ -57,7 +57,7 @@ fires them over SSH. You can run them by hand for testing or recovery.
 | Pair | Protocol |
 |---|---|
 | `setup-naive-server.sh` / `uninstall-naive-server.sh` | NaiveProxy (Caddy + forwardproxy, Let's Encrypt cert, systemd unit). |
-| `setup-wireguard-server.sh` / `uninstall-wireguard-server.sh` | WireGuard (multi-client, sub-command dispatcher: `install` / `add-client` / `remove-client` / `list-clients`). |
+| `setup-wireguard-server.sh` / `uninstall-wireguard-server.sh` | WireGuard (multi-client, sub-command dispatcher: `install` / `add-client` / `remove-client` / `list-clients` / `get-conf` / `setup-outbound-socks` / `remove-outbound-socks`). |
 | `setup-xui-server.sh` / `uninstall-xui-server.sh` | 3x-ui or x-ui-pro (mode auto-selected by whether `DOMAIN=` is set). |
 | `cleanup-go.sh` | Helper sweep of the Go toolchain + build cache that the two heavyweight installers (xui-pro and naive) pull in. Called automatically; safe to source from any post-install context. |
 

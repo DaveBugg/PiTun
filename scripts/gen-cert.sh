@@ -15,11 +15,19 @@
 # Idempotent: safe to run on every deploy. MUST run BEFORE nginx starts —
 # nginx with `listen 443 ssl` aborts if the cert files are absent.
 #
-# Usage:  gen-cert.sh [LAN_IP]
+# Usage:  gen-cert.sh [--force] [LAN_IP]
+#   --force  re-issue the leaf even when the current one is valid
+#            (manual re-issue from the UI).
 #   LAN_IP defaults to GATEWAY_IP from /opt/pitun/.env, else the src IP of the
 #   default route, else 127.0.0.1.
 # ============================================================================
 set -euo pipefail
+
+FORCE=0
+if [ "${1:-}" = "--force" ]; then
+    FORCE=1
+    shift
+fi
 
 CERT_DIR="${PITUN_CERT_DIR:-/etc/pitun/certs}"
 CA_KEY="$CERT_DIR/pitun-ca.key"
@@ -53,7 +61,10 @@ fi
 
 # ── 2. Leaf cert — (re)issue when missing or IP not covered ──
 need_leaf=0
-if [ ! -s "$SRV_CRT" ] || [ ! -s "$SRV_KEY" ]; then
+if [ "$FORCE" = "1" ]; then
+    need_leaf=1
+    echo "[gen-cert] forced re-issue requested"
+elif [ ! -s "$SRV_CRT" ] || [ ! -s "$SRV_KEY" ]; then
     need_leaf=1
 elif ! openssl x509 -in "$SRV_CRT" -noout -text 2>/dev/null \
         | grep -oE 'IP Address:[0-9.]+' | grep -Fxq "IP Address:$LAN_IP"; then

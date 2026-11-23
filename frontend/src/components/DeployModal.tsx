@@ -9,6 +9,7 @@ import {
 
 import { serversApi } from '@/api/client'
 import { ModalShell } from '@/components/ModalShell'
+import { ChainPresenceWarning } from '@/components/ChainPresenceWarning'
 import { TemplatePicker } from '@/components/TemplatePicker'
 import { SshPortField } from '@/components/SshPortField'
 import { DirectToggle } from '@/components/DirectToggle'
@@ -137,6 +138,14 @@ export function DeployModal({
   const [wgAllowedIps, setWgAllowedIps] = useState(
     wgCfg.allowed_ips ?? '0.0.0.0/0,::/0',
   )
+  // Outbound SOCKS5 mode (peer egress through an upstream proxy).
+  const wgSocksCfg = wgCfg.outbound_socks
+  const [wgSocksEnabled, setWgSocksEnabled] = useState(!!wgSocksCfg?.host)
+  const [wgSocksHost, setWgSocksHost] = useState(wgSocksCfg?.host ?? '')
+  const [wgSocksPort, setWgSocksPort] = useState(wgSocksCfg?.port?.toString() ?? '1080')
+  const [wgSocksUser, setWgSocksUser] = useState(wgSocksCfg?.username ?? '')
+  const [wgSocksPass, setWgSocksPass] = useState(wgSocksCfg?.password ?? '')
+  const [wgSocksUdp, setWgSocksUdp] = useState(!!wgSocksCfg?.udp)
 
   // x-ui fields (since v1.3.0-beta.7). `domain` empty → bare-mode
   // upstream 3x-ui (no nginx, panel on self-signed cert); set → full
@@ -193,6 +202,15 @@ export function DeployModal({
       setError(t('Server port must be 1–65535', 'Порт сервера должен быть 1–65535'))
       return null
     }
+    if (wgSocksEnabled && !wgSocksHost.trim()) {
+      setError(t('SOCKS5 host is required when outbound proxy is enabled', 'Укажите хост SOCKS5, раз режим включён'))
+      return null
+    }
+    const socksPort = Number(wgSocksPort.trim() || '1080')
+    if (wgSocksEnabled && (Number.isNaN(socksPort) || socksPort < 1 || socksPort > 65535)) {
+      setError(t('SOCKS5 port must be 1–65535', 'Порт SOCKS5 должен быть 1–65535'))
+      return null
+    }
     return {
       server_port: port,
       dns_1: wgDns1.trim() || undefined,
@@ -200,6 +218,15 @@ export function DeployModal({
       allowed_ips: wgAllowedIps.trim() || undefined,
       client_name: wgClientName.trim() || undefined,
       ssh_port: sshPort.trim() ? Number(sshPort.trim()) : undefined,
+      outbound_socks: wgSocksEnabled
+        ? {
+            host: wgSocksHost.trim(),
+            port: socksPort,
+            username: wgSocksUser.trim() || undefined,
+            password: wgSocksPass || undefined,
+            udp: wgSocksUdp || undefined,
+          }
+        : undefined,
     }
   }
 
@@ -248,6 +275,7 @@ export function DeployModal({
 
         {!jobId && (
           <DeployForm
+            serverId={server.id}
             protocol={protocol}
             setProtocol={setProtocol}
             domain={domain}
@@ -268,6 +296,12 @@ export function DeployModal({
             wgDns1={wgDns1}
             wgDns2={wgDns2}
             wgAllowedIps={wgAllowedIps}
+            wgSocksEnabled={wgSocksEnabled}
+            wgSocksHost={wgSocksHost}
+            wgSocksPort={wgSocksPort}
+            wgSocksUser={wgSocksUser}
+            wgSocksPass={wgSocksPass}
+            wgSocksUdp={wgSocksUdp}
             error={error}
             submitting={submitting}
             direct={direct}
@@ -286,6 +320,12 @@ export function DeployModal({
             setWgDns1={setWgDns1}
             setWgDns2={setWgDns2}
             setWgAllowedIps={setWgAllowedIps}
+            setWgSocksEnabled={setWgSocksEnabled}
+            setWgSocksHost={setWgSocksHost}
+            setWgSocksPort={setWgSocksPort}
+            setWgSocksUser={setWgSocksUser}
+            setWgSocksPass={setWgSocksPass}
+            setWgSocksUdp={setWgSocksUdp}
             onSubmit={onStart}
             onCancel={onClose}
           />
@@ -308,6 +348,7 @@ export function DeployModal({
 // ── Form (pre-start) ────────────────────────────────────────────────────────
 
 function DeployForm(props: {
+  serverId: number
   protocol: ServerDeploymentProtocol
   setProtocol: (p: ServerDeploymentProtocol) => void
   domain: string; email: string; naiveUser: string; naivePass: string
@@ -322,6 +363,8 @@ function DeployForm(props: {
   naiveBlocksXuiPro: boolean
   wgClientName: string; wgServerPort: string; wgDns1: string
   wgDns2: string; wgAllowedIps: string
+  wgSocksEnabled: boolean; wgSocksHost: string; wgSocksPort: string
+  wgSocksUser: string; wgSocksPass: string; wgSocksUdp: boolean
   error: string; submitting: boolean
   direct: boolean; setDirect: (v: boolean) => void
   setDomain: (v: string) => void
@@ -338,6 +381,12 @@ function DeployForm(props: {
   setWgDns1: (v: string) => void
   setWgDns2: (v: string) => void
   setWgAllowedIps: (v: string) => void
+  setWgSocksEnabled: (v: boolean) => void
+  setWgSocksHost: (v: string) => void
+  setWgSocksPort: (v: string) => void
+  setWgSocksUser: (v: string) => void
+  setWgSocksPass: (v: string) => void
+  setWgSocksUdp: (v: boolean) => void
   onSubmit: (e: React.FormEvent) => void
   onCancel: () => void
 }) {
@@ -420,6 +469,7 @@ function DeployForm(props: {
           naiveBlocksXuiPro={props.naiveBlocksXuiPro}
         />
       )}
+      {isXui && <ChainPresenceWarning serverId={props.serverId} />}
       {isWg && (
         <WireGuardFields
           clientName={props.wgClientName}
@@ -427,11 +477,23 @@ function DeployForm(props: {
           dns1={props.wgDns1}
           dns2={props.wgDns2}
           allowedIps={props.wgAllowedIps}
+          socksEnabled={props.wgSocksEnabled}
+          socksHost={props.wgSocksHost}
+          socksPort={props.wgSocksPort}
+          socksUser={props.wgSocksUser}
+          socksPass={props.wgSocksPass}
+          socksUdp={props.wgSocksUdp}
           setClientName={props.setWgClientName}
           setServerPort={props.setWgServerPort}
           setDns1={props.setWgDns1}
           setDns2={props.setWgDns2}
           setAllowedIps={props.setWgAllowedIps}
+          setSocksEnabled={props.setWgSocksEnabled}
+          setSocksHost={props.setWgSocksHost}
+          setSocksPort={props.setWgSocksPort}
+          setSocksUser={props.setWgSocksUser}
+          setSocksPass={props.setWgSocksPass}
+          setSocksUdp={props.setWgSocksUdp}
         />
       )}
 
@@ -762,11 +824,19 @@ function NaiveFields(props: {
 function WireGuardFields(props: {
   clientName: string; serverPort: string; dns1: string; dns2: string
   allowedIps: string
+  socksEnabled: boolean; socksHost: string; socksPort: string
+  socksUser: string; socksPass: string; socksUdp: boolean
   setClientName: (v: string) => void
   setServerPort: (v: string) => void
   setDns1: (v: string) => void
   setDns2: (v: string) => void
   setAllowedIps: (v: string) => void
+  setSocksEnabled: (v: boolean) => void
+  setSocksHost: (v: string) => void
+  setSocksPort: (v: string) => void
+  setSocksUser: (v: string) => void
+  setSocksPass: (v: string) => void
+  setSocksUdp: (v: boolean) => void
 }) {
   const t = useT()
   return (
@@ -835,6 +905,86 @@ function WireGuardFields(props: {
           className={inputCls}
         />
       </FieldL>
+
+      {/* Outbound SOCKS5 — peer egress leaves the VPS via an upstream
+          proxy instead of the plain MASQUERADE. Can be toggled later
+          from the clients modal too. */}
+      <div className="rounded-lg border border-gray-800 p-3 space-y-3">
+        <label className="flex items-center gap-2 text-sm text-gray-300 cursor-pointer select-none">
+          <input
+            type="checkbox"
+            checked={props.socksEnabled}
+            onChange={(e) => props.setSocksEnabled(e.target.checked)}
+            className="rounded-sm border-gray-600 bg-gray-800 text-brand-500"
+          />
+          {t('Route peer traffic through an upstream SOCKS5 proxy', 'Завернуть трафик пиров в upstream SOCKS5-прокси')}
+        </label>
+        {props.socksEnabled && (
+          <>
+            <div className="grid grid-cols-3 gap-3">
+              <div className="col-span-2">
+                <FieldL label={t('SOCKS5 host', 'SOCKS5 хост')}>
+                  <input
+                    type="text"
+                    value={props.socksHost}
+                    onChange={(e) => props.setSocksHost(e.target.value)}
+                    placeholder="127.0.0.1"
+                    className={inputCls}
+                  />
+                </FieldL>
+              </div>
+              <FieldL label={t('Port', 'Порт')}>
+                <input
+                  type="number"
+                  min={1}
+                  max={65535}
+                  value={props.socksPort}
+                  onChange={(e) => props.setSocksPort(e.target.value)}
+                  className={inputCls}
+                />
+              </FieldL>
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <FieldL label={t('Username (optional)', 'Логин (необязательно)')}>
+                <input
+                  type="text"
+                  value={props.socksUser}
+                  onChange={(e) => props.setSocksUser(e.target.value)}
+                  className={inputCls}
+                  autoComplete="off"
+                />
+              </FieldL>
+              <FieldL label={t('Password (optional)', 'Пароль (необязательно)')}>
+                <input
+                  type="password"
+                  value={props.socksPass}
+                  onChange={(e) => props.setSocksPass(e.target.value)}
+                  className={inputCls}
+                  autoComplete="new-password"
+                />
+              </FieldL>
+            </div>
+            <label className="flex items-center gap-2 text-xs text-gray-400 cursor-pointer select-none">
+              <input
+                type="checkbox"
+                checked={props.socksUdp}
+                onChange={(e) => props.setSocksUdp(e.target.checked)}
+                className="rounded-sm border-gray-600 bg-gray-800 text-brand-500"
+              />
+              {t(
+                'Proxy supports UDP (UDP ASSOCIATE) — otherwise UDP is blocked; DNS still works via the proxy over TCP',
+                'Прокси поддерживает UDP (UDP ASSOCIATE) — иначе UDP блокируется; DNS продолжит работать через прокси по TCP',
+              )}
+            </label>
+            <p className="text-[11px] text-gray-600">
+              {t(
+                'Only WireGuard peer traffic is proxied — SSH and other services of the VPS keep their direct egress. Applied right after the WireGuard install.',
+                'Проксируется только трафик WG-пиров — SSH и остальные сервисы VPS ходят напрямую. Применяется сразу после установки WireGuard.',
+              )}
+            </p>
+          </>
+        )}
+      </div>
     </div>
   )
 }

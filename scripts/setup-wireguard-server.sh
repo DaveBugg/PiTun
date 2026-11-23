@@ -46,6 +46,22 @@
 #                  `CLIENTS=<json>` where the JSON is an array of
 #                  {name, public_key, address}.
 #
+#   setup-outbound-socks
+#                  Route ALL WireGuard peer egress through an upstream
+#                  SOCKS5 proxy (sing-box + TUN + policy routing; only
+#                  wg0-sourced traffic is intercepted — SSH and other
+#                  VPS services are untouched). DNS is hijacked and
+#                  resolved over TCP through the proxy. May also be
+#                  requested at install time via the same env vars.
+#                  Required env: SOCKS_HOST
+#                  Optional env: SOCKS_PORT (default 1080),
+#                                SOCKS_USER, SOCKS_PASS,
+#                                SOCKS_UDP (yes = proxy supports UDP
+#                                ASSOCIATE; default no = UDP blocked).
+#
+#   remove-outbound-socks
+#                  Revert the above: peers egress directly again.
+#
 # Optional SSH port change (install sub-command only, since v1.3.0-beta.7):
 #   SSH_PORT=<num>   — move SSH listener to this port. Empty or 22 means
 #                      leave SSH config untouched. Validated 1-65535. The
@@ -111,6 +127,44 @@ WG_IF="wg0"
 WG_CONF="/etc/wireguard/${WG_IF}.conf"
 WG_PARAMS="/etc/wireguard/pitun-params"
 CLIENTS_DIR="/etc/wireguard/pitun-clients"
+
+# sing-box for the optional outbound-SOCKS5 mode (setup-outbound-socks).
+# Pinned like the x-ui installers — verify before running anything fetched.
+SINGBOX_VERSION="1.14.4"
+SINGBOX_SHA256_AMD64="699a1b510aa4396b2176d32d1181920399ebf1e267835da6f3b598d0f7c24968"
+SINGBOX_SHA256_ARM64="436441f76ee2f7fe21b5b2d426d3cb261a480455a704865789ad533e4273ec26"
+SINGBOX_BIN="/usr/local/bin/sing-box"
+SINGBOX_CONF_DIR="/etc/sing-box"
+SINGBOX_CONF="${SINGBOX_CONF_DIR}/pitun-outbound.json"
+SINGBOX_UNIT="/etc/systemd/system/pitun-sing-box.service"
+TUN_IF="pitun-tun"
+SOCKS_ROUTE_TABLE="101"
+RPFILTER_DROPIN="/etc/sysctl.d/99-pitun-socks-rpfilter.conf"
+
+# ── Helper: idempotent params update ───────────────────────────────────────
+_params_set() {
+    # _params_set KEY VALUE — replace or append KEY="VALUE" in $WG_PARAMS.
+    python3 - "$WG_PARAMS" "$1" "$2" <<'PYEOF'
+import sys
+path, key, value = sys.argv[1], sys.argv[2], sys.argv[3]
+try:
+    with open(path) as f:
+        lines = f.readlines()
+except FileNotFoundError:
+    lines = []
+out, done = [], False
+for line in lines:
+    if line.startswith(f"{key}="):
+        out.append(f'{key}="{value}"\n')
+        done = True
+    else:
+        out.append(line)
+if not done:
+    out.append(f'{key}="{value}"\n')
+with open(path, "w") as f:
+    f.writelines(out)
+PYEOF
+}
 
 # ── Helper: source params if installed already ─────────────────────────────
 load_params() {
@@ -344,6 +398,12 @@ EOF
 
     # ── SSH port change (last, so WG is already up if sshd breaks)
     apply_ssh_port
+
+    # ── Optional: route peer egress through an upstream SOCKS5 proxy
+    if [[ -n "${SOCKS_HOST:-}" ]]; then
+        log "SOCKS_HOST set — enabling outbound SOCKS5 routing..."
+        cmd_setup_outbound_socks
+    fi
 }
 
 # ── cmd_add_client ─────────────────────────────────────────────────────────
@@ -537,6 +597,258 @@ cmd_get_conf() {
     echo "PITUN-CLIENT-CONF-END ${CLIENT_NAME}"
 }
 
+# ── Outbound SOCKS5 mode (sing-box + TUN + policy routing) ────────────────
+#
+# Routes ONLY the traffic that arrives from the WireGuard peers (iif wg0)
+# through an upstream SOCKS5 proxy the operator already runs (on the VPS
+# itself or elsewhere). SSH and every other service of the VPS is
+# untouched: only wg0-sourced packets hit the override routing table.
+# The proxy connection itself originates locally from sing-box, so it
+# leaves via the default interface in the main table — no loop.
+#
+# DNS is hijacked by sing-box and resolved over TCP through the proxy,
+# so it works even when the proxy has no UDP support. Other UDP is
+# blocked unless SOCKS_UDP=yes (the proxy supports UDP ASSOCIATE).
+
+_install_sing_box() {
+    if [[ -x "$SINGBOX_BIN" ]] \
+        && "$SINGBOX_BIN" version 2>/dev/null | grep -q "sing-box version ${SINGBOX_VERSION} "; then
+        info "sing-box ${SINGBOX_VERSION} already installed"
+        return 0
+    fi
+    local arch tarball url expected tmp
+    arch=$(uname -m)
+    case "$arch" in
+        x86_64)  arch="amd64"; expected="$SINGBOX_SHA256_AMD64" ;;
+        aarch64) arch="arm64"; expected="$SINGBOX_SHA256_ARM64" ;;
+        *) err "Unsupported arch for sing-box: $arch" ;;
+    esac
+    tarball="sing-box-${SINGBOX_VERSION}-linux-${arch}.tar.gz"
+    url="https://github.com/SagerNet/sing-box/releases/download/v${SINGBOX_VERSION}/${tarball}"
+    tmp=$(mktemp -d)
+    log "Downloading sing-box ${SINGBOX_VERSION} (${arch})..."
+    curl -fsSL -o "${tmp}/${tarball}" "$url" \
+        || { rm -rf "$tmp"; err "sing-box download failed: $url"; }
+    echo "${expected}  ${tmp}/${tarball}" | sha256sum -c - \
+        || { rm -rf "$tmp"; err "sing-box sha256 mismatch — refusing to install"; }
+    tar -xzf "${tmp}/${tarball}" -C "$tmp"
+    install -m 755 "${tmp}/sing-box-${SINGBOX_VERSION}-linux-${arch}/sing-box" "$SINGBOX_BIN"
+    rm -rf "$tmp"
+}
+
+_write_singbox_config() {
+    # _write_singbox_config HOST PORT USER PASS UDP(yes|no)
+    mkdir -p "$SINGBOX_CONF_DIR"
+    chmod 700 "$SINGBOX_CONF_DIR"
+    python3 - "$SINGBOX_CONF" "$1" "$2" "$3" "$4" "$5" "$TUN_IF" <<'PYEOF'
+import json, sys
+path, host, port, user, password, udp_ok, tun_if = sys.argv[1:8]
+
+socks = {
+    "type": "socks", "tag": "socks-out",
+    "server": host, "server_port": int(port), "version": "5",
+}
+if user:
+    socks["username"] = user
+    socks["password"] = password
+
+rules = [
+    {"action": "hijack-dns"},
+    {"action": "route", "ip_is_private": True, "outbound": "direct"},
+]
+if udp_ok != "yes":
+    # The proxy can't carry UDP — block it (DNS above is hijacked first).
+    rules.append({"action": "reject", "network": "udp"})
+
+cfg = {
+    "log": {"level": "warn", "timestamp": True},
+    "dns": {
+        "servers": [
+            {"tag": "proxy-dns", "type": "tcp",
+             "server": "1.1.1.1", "detour": "socks-out"},
+        ],
+        "final": "proxy-dns",
+        "strategy": "ipv4_only",
+    },
+    "inbounds": [{
+        "type": "tun", "tag": "tun-in",
+        "interface_name": tun_if,
+        "address": ["192.0.2.1/30"],
+        "mtu": 1420, "stack": "system",
+        "auto_route": False, "strict_route": False,
+        "sniff": True,
+    }],
+    "outbounds": [
+        socks,
+        {"type": "direct", "tag": "direct"},
+    ],
+    "route": {
+        "rules": rules,
+        "final": "socks-out",
+        "auto_detect_interface": True,
+    },
+}
+with open(path, "w") as f:
+    json.dump(cfg, f, indent=2)
+PYEOF
+    chmod 600 "$SINGBOX_CONF"
+    "$SINGBOX_BIN" check -c "$SINGBOX_CONF" \
+        || err "sing-box rejected the generated config — please report this"
+}
+
+_write_singbox_unit() {
+    cat > "$SINGBOX_UNIT" <<EOF
+[Unit]
+Description=PiTun outbound-SOCKS router (sing-box)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=${SINGBOX_BIN} run -c ${SINGBOX_CONF}
+Restart=on-failure
+RestartSec=3
+LimitNOFILE=1048576
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    systemctl daemon-reload
+}
+
+_wg_conf_insert_socks_routes() {
+    # Adds marked PostUp/PostDown lines to wg0.conf's [Interface] section
+    # so the policy routing appears with the tunnel and dies with it.
+    python3 - "$WG_CONF" "$WG_NETWORK_4" "$WG_NETWORK_6" "$TUN_IF" "$SOCKS_ROUTE_TABLE" <<'PYEOF'
+import sys
+path, net4, net6, tun_if, table = sys.argv[1:6]
+with open(path) as f:
+    text = f.read()
+if "# PITUN-SOCKS-ROUTE-BEGIN" in text:
+    sys.exit(0)
+block = f"""# PITUN-SOCKS-ROUTE-BEGIN
+PostUp = ip rule add iif %i to {net4} pref 99 table main
+PostUp = ip rule add iif %i pref 100 table {table}
+PostUp = ip route replace default dev {tun_if} table {table}
+PostUp = ip -6 rule add iif %i to {net6} pref 99 table main
+PostUp = ip -6 rule add iif %i pref 100 table {table}
+PostUp = ip -6 route replace default dev {tun_if} table {table}
+PostDown = ip rule del iif %i to {net4} pref 99 table main
+PostDown = ip rule del iif %i pref 100 table {table}
+PostDown = ip -6 rule del iif %i to {net6} pref 99 table main
+PostDown = ip -6 rule del iif %i pref 100 table {table}
+# PITUN-SOCKS-ROUTE-END
+"""
+lines = text.splitlines(keepends=True)
+# Insert at the end of the [Interface] section (before the first peer
+# marker / [Peer] header), falling back to appending at the end.
+idx = len(lines)
+for i, line in enumerate(lines):
+    if i == 0:
+        continue
+    if line.startswith("[Peer]") or line.startswith("# PITUN-CLIENT"):
+        idx = i
+        break
+lines.insert(idx, block)
+with open(path, "w") as f:
+    f.writelines(lines)
+PYEOF
+}
+
+_wg_conf_strip_socks_routes() {
+    python3 - "$WG_CONF" <<'PYEOF'
+import sys
+path = sys.argv[1]
+with open(path) as f:
+    lines = f.readlines()
+out, skip = [], False
+for line in lines:
+    if line.strip() == "# PITUN-SOCKS-ROUTE-BEGIN":
+        skip = True
+        continue
+    if line.strip() == "# PITUN-SOCKS-ROUTE-END":
+        skip = False
+        continue
+    if not skip:
+        out.append(line)
+with open(path, "w") as f:
+    f.writelines(out)
+PYEOF
+}
+
+# ── cmd_setup_outbound_socks ───────────────────────────────────────────────
+cmd_setup_outbound_socks() {
+    load_params
+
+    local SOCKS_HOST="${SOCKS_HOST:-}"
+    local SOCKS_PORT="${SOCKS_PORT:-1080}"
+    local SOCKS_USER="${SOCKS_USER:-}"
+    local SOCKS_PASS="${SOCKS_PASS:-}"
+    local SOCKS_UDP="${SOCKS_UDP:-no}"
+    [[ -z "$SOCKS_HOST" ]] && err "SOCKS_HOST is required."
+    if ! [[ "$SOCKS_PORT" =~ ^[0-9]+$ ]] || (( SOCKS_PORT < 1 || SOCKS_PORT > 65535 )); then
+        err "SOCKS_PORT must be 1..65535 (got: $SOCKS_PORT)"
+    fi
+    [[ "$SOCKS_UDP" == "yes" ]] || SOCKS_UDP="no"
+
+    _install_sing_box
+    _write_singbox_config "$SOCKS_HOST" "$SOCKS_PORT" "$SOCKS_USER" "$SOCKS_PASS" "$SOCKS_UDP"
+    _write_singbox_unit
+
+    # Loose reverse-path filtering — the TUN path is asymmetric by design.
+    cat > "$RPFILTER_DROPIN" <<EOF
+net.ipv4.conf.all.rp_filter = 2
+net.ipv4.conf.default.rp_filter = 2
+EOF
+    sysctl --system >/dev/null
+
+    _wg_conf_insert_socks_routes
+
+    systemctl enable --now pitun-sing-box
+    # PostUp changes need a full wg-quick cycle — peers reconnect in seconds.
+    systemctl restart "wg-quick@${WG_IF}"
+    sleep 1
+    systemctl is-active --quiet pitun-sing-box \
+        || err "pitun-sing-box failed to start — check 'journalctl -u pitun-sing-box'"
+    systemctl is-active --quiet "wg-quick@${WG_IF}" \
+        || err "wg-quick@${WG_IF} failed after route change — check 'systemctl status wg-quick@${WG_IF}'"
+
+    _params_set OUTBOUND_SOCKS_HOST "$SOCKS_HOST"
+    _params_set OUTBOUND_SOCKS_PORT "$SOCKS_PORT"
+    _params_set OUTBOUND_SOCKS_USER "$SOCKS_USER"
+    _params_set OUTBOUND_SOCKS_PASS "$SOCKS_PASS"
+    _params_set OUTBOUND_SOCKS_UDP "$SOCKS_UDP"
+
+    log "Outbound SOCKS5 routing active: peer traffic -> socks5://${SOCKS_HOST}:${SOCKS_PORT} (udp=${SOCKS_UDP})"
+    echo "OUTBOUND_SOCKS=enabled"
+}
+
+# ── cmd_remove_outbound_socks ──────────────────────────────────────────────
+cmd_remove_outbound_socks() {
+    load_params
+
+    systemctl disable --now pitun-sing-box 2>/dev/null || true
+    rm -f "$SINGBOX_UNIT" "$SINGBOX_CONF" "$RPFILTER_DROPIN"
+    systemctl daemon-reload
+    sysctl --system >/dev/null || true
+
+    _wg_conf_strip_socks_routes
+    # Live cleanup (the wg-quick restart below also runs PostDown).
+    ip rule del iif "$WG_IF" pref 100 table "$SOCKS_ROUTE_TABLE" 2>/dev/null || true
+    ip -6 rule del iif "$WG_IF" pref 100 table "$SOCKS_ROUTE_TABLE" 2>/dev/null || true
+    ip route flush table "$SOCKS_ROUTE_TABLE" 2>/dev/null || true
+
+    systemctl restart "wg-quick@${WG_IF}"
+
+    _params_set OUTBOUND_SOCKS_HOST ""
+    _params_set OUTBOUND_SOCKS_PORT ""
+    _params_set OUTBOUND_SOCKS_USER ""
+    _params_set OUTBOUND_SOCKS_PASS ""
+    _params_set OUTBOUND_SOCKS_UDP ""
+
+    log "Outbound SOCKS5 routing removed — peers egress directly (MASQUERADE)."
+    echo "OUTBOUND_SOCKS=disabled"
+}
+
 # ── Sub-command dispatch ───────────────────────────────────────────────────
 case "${1:-install}" in
     install)        cmd_install ;;
@@ -544,5 +856,7 @@ case "${1:-install}" in
     remove-client)  cmd_remove_client ;;
     list-clients)   cmd_list_clients ;;
     get-conf)       cmd_get_conf ;;
-    *) err "Unknown sub-command: $1 (use install|add-client|remove-client|list-clients|get-conf)" ;;
+    setup-outbound-socks)   cmd_setup_outbound_socks ;;
+    remove-outbound-socks)  cmd_remove_outbound_socks ;;
+    *) err "Unknown sub-command: $1 (use install|add-client|remove-client|list-clients|get-conf|setup-outbound-socks|remove-outbound-socks)" ;;
 esac

@@ -13,7 +13,8 @@
  *   - `'node:5'`   → `'5'`
  *
  * We verify by rendering the editor with the given initial action and
- * reading the <select> that's value-bound to `customNode`.
+ * reading the SearchableSelect button bound to `customNode`: a parsed
+ * id shows the node's name, the empty fallback shows the placeholder.
  */
 import { describe, it, expect, vi } from 'vitest'
 import { render } from '@testing-library/react'
@@ -31,16 +32,6 @@ function wrap(ui: ReactNode) {
   return <QueryClientProvider client={qc}>{ui}</QueryClientProvider>
 }
 
-// The editor shows the Target Node select only for node-action rules.
-// It always has an initial empty-placeholder <option value="">…</option>
-// then one <option value="{id}"> per node in nodeOptions. The select's
-// own `value` reflects `form.customNode`.
-const nodeSelect = (container: HTMLElement): HTMLSelectElement => {
-  const selects = container.querySelectorAll('select')
-  // Layout: Rule Type select (index 0), Action select (index 1), Target Node select (index 2)
-  return selects[selects.length - 1] as HTMLSelectElement
-}
-
 describe('<RuleEditor> action parsing', () => {
   const nodeOptions = [
     { id: 5, name: 'Node Five' },
@@ -48,7 +39,7 @@ describe('<RuleEditor> action parsing', () => {
   ]
 
   it('extracts the node id from a well-formed "node:5"', () => {
-    const { container } = render(
+    const { getByRole } = render(
       wrap(
         <RuleEditor
           initial={{ action: 'node:5' }}
@@ -58,11 +49,11 @@ describe('<RuleEditor> action parsing', () => {
         />,
       ),
     )
-    expect(nodeSelect(container).value).toBe('5')
+    expect(getByRole('button', { name: 'Node Five' })).toBeInTheDocument()
   })
 
   it('falls back to empty on malformed "node:abc" (THE regression)', () => {
-    const { container } = render(
+    const { getByRole, queryByRole } = render(
       wrap(
         <RuleEditor
           // Cast: these are deliberately malformed strings that the type
@@ -76,11 +67,12 @@ describe('<RuleEditor> action parsing', () => {
         />,
       ),
     )
-    expect(nodeSelect(container).value).toBe('')
+    expect(getByRole('button', { name: 'Select node…' })).toBeInTheDocument()
+    expect(queryByRole('button', { name: 'Node Five' })).not.toBeInTheDocument()
   })
 
   it('falls back to empty on bare "node:"', () => {
-    const { container } = render(
+    const { getByRole, queryByRole } = render(
       wrap(
         <RuleEditor
           initial={{ action: 'node:' as never }}
@@ -90,6 +82,7 @@ describe('<RuleEditor> action parsing', () => {
         />,
       ),
     )
-    expect(nodeSelect(container).value).toBe('')
+    expect(getByRole('button', { name: 'Select node…' })).toBeInTheDocument()
+    expect(queryByRole('button', { name: 'Node Nine' })).not.toBeInTheDocument()
   })
 })

@@ -46,3 +46,24 @@ def test_missing_or_unreadable_inbound_is_not_deleted():
     c = _client(error=XuiAPIError("not found"))
     _run(c)
     c.del_inbound.assert_not_awaited()
+
+
+# ── Ownership marks (`[pitun:<install_id>]` in the remark) ──────────────────
+
+
+def test_deletes_own_marked_inbound_even_after_rename_and_report():
+    c = _client({"remark": "totally renamed [pitun:abc123def456]", "port": 1})
+    asyncio.run(_del_inbound_if_ours(
+        c, 7, "VPN-NAME", 8443, "test", install_id="abc123def456",
+    ))
+    c.del_inbound.assert_awaited_once_with(7)
+
+
+def test_never_deletes_another_installs_marked_inbound():
+    # Same remark AND same port as ours, but the mark belongs to a
+    # different PiTun install — the cross-box delete trap.
+    c = _client({"remark": "VPN-NAME [pitun:999888777666]", "port": 8443})
+    asyncio.run(_del_inbound_if_ours(
+        c, 7, "VPN-NAME", 8443, "test", install_id="abc123def456",
+    ))
+    c.del_inbound.assert_not_awaited()

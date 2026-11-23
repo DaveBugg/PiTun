@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { balancersApi, http } from '@/api/client'
 import { useT } from '@/hooks/useT'
+import { SearchableSelect } from '@/components/SearchableSelect'
 import type { RoutingRule, RoutingRuleCreate, RuleType } from '@/types'
 
 interface GeoCategories {
@@ -257,16 +258,12 @@ export function RuleEditor({ initial, nodeOptions = [], onSave, onCancel, loadin
       {isNodeAction && nodeOptions.length > 0 && (
         <div>
           <label className="block text-xs font-medium text-gray-400 mb-1">{t('Target Node', 'Целевая нода')}</label>
-          <select
+          <SearchableSelect
             value={form.customNode}
-            onChange={(e) => set('customNode', e.target.value)}
-            className="w-full rounded-sm bg-gray-800 border border-gray-700 px-3 py-1.5 text-sm text-gray-100 focus:border-brand-500 focus:outline-hidden"
-          >
-            <option value="">{t('Select node…', 'Выберите ноду…')}</option>
-            {nodeOptions.map((n) => (
-              <option key={n.id} value={n.id}>{n.name}</option>
-            ))}
-          </select>
+            onChange={(v) => set('customNode', v)}
+            placeholder={t('Select node…', 'Выберите ноду…')}
+            options={nodeOptions.map((n) => ({ value: String(n.id), label: n.name }))}
+          />
         </div>
       )}
 

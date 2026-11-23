@@ -423,6 +423,7 @@ app.include_router(server_tasks.router, prefix="/api", dependencies=_auth)
 app.include_router(server_tasks.ws_router, prefix="/api")
 # WireGuard server-side client management (since v1.3.0-beta.4) — auth-gated.
 app.include_router(server_clients.router, prefix="/api", dependencies=_auth)
+app.include_router(server_clients.outbound_router, prefix="/api", dependencies=_auth)
 # x-ui-pro / 3x-ui panel management (since v1.3.0-beta.7) — auth-gated.
 app.include_router(xui.router, prefix="/api", dependencies=_auth)
 # Host network configuration UI (since v1.3.3) — auth-gated.

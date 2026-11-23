@@ -73,6 +73,12 @@ function CircleModal({ initial, nodeOptions, onSave, onCancel, loading }: ModalP
   const [selectedIds, setSelectedIds] = useState<Set<number>>(
     new Set(initial?.node_ids ?? [])
   )
+  // Client-side filter over the membership list — with a linked 1k-node
+  // subscription the checkbox list is unusable without it.
+  const [nodeQuery, setNodeQuery] = useState('')
+  const visibleNodeOptions = nodeQuery.trim()
+    ? nodeOptions.filter((n) => n.name.toLowerCase().includes(nodeQuery.trim().toLowerCase()))
+    : nodeOptions
   // Optional subscription link — '' means "managed by hand" (sent as null).
   const [subscriptionIds, setSubscriptionIds] = useState<number[]>(
     initial?.subscription_ids?.length
@@ -370,11 +376,18 @@ function CircleModal({ initial, nodeOptions, onSave, onCancel, loading }: ModalP
             </button>
           )}
         </div>
-        <div className="rounded-sm bg-gray-800 border border-gray-700 max-h-48 overflow-y-auto divide-y divide-gray-700/50">
-          {nodeOptions.length === 0 ? (
-            <div className="px-3 py-4 text-sm text-gray-500 text-center">No nodes available</div>
+        <div className="rounded-sm bg-gray-800 border border-gray-700">
+          <input
+            value={nodeQuery}
+            onChange={(e) => setNodeQuery(e.target.value)}
+            placeholder={t('Filter nodes…', 'Фильтр нод…')}
+            className="w-full bg-transparent border-b border-gray-700 px-3 py-1.5 text-sm text-gray-100 focus:outline-hidden"
+          />
+          <div className="max-h-48 overflow-y-auto divide-y divide-gray-700/50">
+          {visibleNodeOptions.length === 0 ? (
+            <div className="px-3 py-4 text-sm text-gray-500 text-center">{t('No nodes match', 'Ноды не найдены')}</div>
           ) : (
-            nodeOptions.map((node) => (
+            visibleNodeOptions.map((node) => (
               <label
                 key={node.id}
                 // `touch-manipulation` removes iOS Safari's 300ms double-tap-
@@ -401,6 +414,7 @@ function CircleModal({ initial, nodeOptions, onSave, onCancel, loading }: ModalP
               </label>
             ))
           )}
+          </div>
         </div>
       </div>
 
@@ -753,6 +767,7 @@ function FailoverToggle() {
   const { data: settings } = useSystemSettings()
   const update = useUpdateSettings()
   const { data: nodes = [] } = useNodes()
+  const [fallbackQuery, setFallbackQuery] = useState('')
   const enabled = !!settings?.failover_enabled
   // failover_node_ids may come back as `number[]`, an empty list, or
   // (when the setting was never set) undefined. Normalise to `Set<number>`
@@ -839,8 +854,20 @@ function FailoverToggle() {
               {t('No nodes available. Add nodes to use as fallback.', 'Нет нод. Добавьте на странице Nodes.')}
             </p>
           ) : (
-            <div className="flex flex-wrap gap-1.5">
-              {nodes.map((n) => {
+            <div>
+              <input
+                value={fallbackQuery}
+                onChange={(e) => setFallbackQuery(e.target.value)}
+                placeholder={t('Filter nodes…', 'Фильтр нод…')}
+                className="w-full mb-2 rounded-lg bg-gray-900 border border-gray-800 px-3 py-1.5 text-sm text-gray-100 focus:border-brand-500 focus:outline-hidden"
+              />
+              <div className="flex flex-wrap gap-1.5 max-h-40 overflow-y-auto">
+              {nodes
+                .filter((n) => {
+                  const q = fallbackQuery.trim().toLowerCase()
+                  return !q || n.name.toLowerCase().includes(q)
+                })
+                .map((n) => {
                 const selected = fallbackIds.has(n.id)
                 return (
                   <button
@@ -859,6 +886,7 @@ function FailoverToggle() {
                   </button>
                 )
               })}
+              </div>
             </div>
           )}
         </div>

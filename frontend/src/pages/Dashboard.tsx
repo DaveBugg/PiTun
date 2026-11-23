@@ -866,6 +866,7 @@ function ActiveNodeSection({ nodes, status, activeNode, showNodePicker, setShowN
   const t = useT()
   const qc = useQueryClient()
   const [tab, setTab] = useState<'node' | 'circle'>('node')
+  const [pickerQuery, setPickerQuery] = useState('')
 
   const { data: circles = [] } = useQuery<NodeCircleType[]>({
     queryKey: ['nodecircle'],
@@ -979,25 +980,42 @@ function ActiveNodeSection({ nodes, status, activeNode, showNodePicker, setShowN
           )}
 
           {showNodePicker && (
-            <div className="mt-3 border-t border-gray-800 pt-3 space-y-1 max-h-60 overflow-y-auto">
-              {nodes.filter((n: any) => n.enabled).map((n: any) => (
-                <button
-                  key={n.id}
-                  onClick={() => {
-                    setActive.mutate(n.id)
-                    setShowNodePicker(false)
-                  }}
-                  className={clsx(
-                    'w-full flex items-center justify-between rounded-lg px-3 py-2 text-sm transition-colors',
-                    n.id === status?.active_node_id
-                      ? 'bg-brand-50 text-brand-700 dark:bg-brand-500/15 dark:text-brand-200'
-                      : 'hover:bg-gray-800 text-gray-300',
-                  )}
-                >
-                  <span className="truncate">{n.name}</span>
-                  <StatusBadge online={n.is_online} latency={n.latency_ms ?? undefined} />
-                </button>
-              ))}
+            <div className="mt-3 border-t border-gray-800 pt-3">
+              {/* Search keeps the picker usable with 1k+ subscription
+                  nodes; filters by name or address substring. */}
+              <input
+                autoFocus
+                value={pickerQuery}
+                onChange={(e) => setPickerQuery(e.target.value)}
+                placeholder={t('Search nodes…', 'Поиск нод…')}
+                className="w-full mb-2 rounded-lg bg-gray-900 border border-gray-800 px-3 py-1.5 text-sm text-gray-100 focus:border-brand-500 focus:outline-hidden"
+              />
+              <div className="space-y-1 max-h-60 overflow-y-auto">
+                {nodes
+                  .filter((n: any) => n.enabled)
+                  .filter((n: any) => {
+                    const q = pickerQuery.trim().toLowerCase()
+                    return !q || n.name.toLowerCase().includes(q) || String(n.address).toLowerCase().includes(q)
+                  })
+                  .map((n: any) => (
+                    <button
+                      key={n.id}
+                      onClick={() => {
+                        setActive.mutate(n.id)
+                        setShowNodePicker(false)
+                      }}
+                      className={clsx(
+                        'w-full flex items-center justify-between rounded-lg px-3 py-2 text-sm transition-colors',
+                        n.id === status?.active_node_id
+                          ? 'bg-brand-50 text-brand-700 dark:bg-brand-500/15 dark:text-brand-200'
+                          : 'hover:bg-gray-800 text-gray-300',
+                      )}
+                    >
+                      <span className="truncate">{n.name}</span>
+                      <StatusBadge online={n.is_online} latency={n.latency_ms ?? undefined} />
+                    </button>
+                  ))}
+              </div>
             </div>
           )}
         </div>

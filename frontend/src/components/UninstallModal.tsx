@@ -7,6 +7,7 @@ import { Link } from 'react-router-dom'
 
 import { http } from '@/api/client'
 import { ModalShell } from '@/components/ModalShell'
+import { ChainPresenceWarning } from '@/components/ChainPresenceWarning'
 import { useT } from '@/hooks/useT'
 import { effectiveJobStatus } from '@/lib/jobStatus'
 import {
@@ -100,6 +101,7 @@ export function UninstallModal({
 
         {!jobId && (
           <ConfirmView
+            serverId={server.id}
             protocol={protocol}
             error={error}
             submitting={submitting}
@@ -124,6 +126,7 @@ export function UninstallModal({
 
 
 function ConfirmView(props: {
+  serverId: number
   protocol: ServerDeploymentProtocol
   error: string
   submitting: boolean
@@ -159,6 +162,12 @@ function ConfirmView(props: {
         <div className="mb-3 rounded-lg bg-red-50 dark:bg-red-900/30 border border-red-200 dark:border-red-700/50 px-3 py-2 text-sm text-red-700 dark:text-red-300 flex items-start gap-2">
           <AlertTriangle className="h-4 w-4 mt-0.5 shrink-0" />
           <span>{props.error}</span>
+        </div>
+      )}
+
+      {props.protocol === 'xui' && (
+        <div className="mb-3">
+          <ChainPresenceWarning serverId={props.serverId} />
         </div>
       )}
 

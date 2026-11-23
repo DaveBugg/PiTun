@@ -27,12 +27,12 @@ import type {
   SystemMetric,
   NaiveSidecarStatus, NaiveSidecarLogs,
   V2RayImportRequest, V2RayImportResult,
-  Server, ServerCreate, ServerUpdate, ServerTestResult, ServerTestAllResult,
+  Server, ServerCreate, ServerUpdate, ServerTestResult, ServerTestAllResult, ServerChainPresence,
   ServerDeployment, ServerDeploymentUpsert, ServerDeploymentProtocol,
   DeployJobAccepted, JobListResponse, JobRead, JobStatus,
   DeploymentClient, DeploymentClientList, DeploymentClientConf,
   DeploymentClientCreate, DeploymentClientSyncResult,
-  ExportClientToNodeRequest,
+  ExportClientToNodeRequest, OutboundSocksConfig, WireGuardOutboundSocksState, HttpsCertReissueResult,
   XuiPortCheck,
   XuiXrayInfo,
   XuiPanelUpdateInfo,
@@ -427,6 +427,9 @@ export const systemApi = {
   stop: () => http.post('/system/stop'),
   restart: () => http.post('/system/restart'),
   reloadConfig: () => http.post('/system/reload-config'),
+
+  reissueHttpsCert: () =>
+    http.post<HttpsCertReissueResult>('/system/https-cert/reissue').then(r => r.data),
 
   setMode: (mode: ProxyMode) =>
     http.post('/system/mode', { mode }),
@@ -934,6 +937,8 @@ export const serversApi = {
     http.post<ServerTestResult>(`/servers/${id}/test`, null, { params: { direct } }).then(r => r.data),
   testAll: (direct = false) =>
     http.post<ServerTestAllResult>('/servers/test-all', null, { params: { direct } }).then(r => r.data),
+  chainPresence: (id: number) =>
+    http.get<ServerChainPresence>(`/servers/${id}/chain-presence`).then(r => r.data),
 
   // Fetch the generated naive-install bash script as text, then trigger
   // a file download via an in-memory Blob URL. We deliberately don't
@@ -1060,6 +1065,20 @@ export const serversApi = {
       `/servers/${serverId}/deployments/wireguard/clients/${encodeURIComponent(name)}/export-node`,
       body,
       { params: { direct } },
+    ).then(r => r.data),
+
+  getOutboundSocks: (serverId: number) =>
+    http.get<WireGuardOutboundSocksState>(
+      `/servers/${serverId}/deployments/wireguard/outbound-socks`,
+    ).then(r => r.data),
+
+  setOutboundSocks: (
+    serverId: number,
+    body: { enabled: boolean; socks?: OutboundSocksConfig },
+  ) =>
+    http.post<WireGuardOutboundSocksState>(
+      `/servers/${serverId}/deployments/wireguard/outbound-socks`,
+      body,
     ).then(r => r.data),
 
   // JSON backup. `includeSecrets=false` (default) strips passwords and

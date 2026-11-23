@@ -84,6 +84,7 @@ cat <<BANNER
 ================================================================
 This will:
   • Stop + disable wg-quick@${WG_IF} (PostDown clears its iptables rules)
+  • Remove pitun-sing-box + its policy routing (if outbound-SOCKS was on)
   • Remove ${WG_CONF}, ${WG_PARAMS}, ${CLIENTS_DIR}/
   • Remove ${SYSCTL_CONF} and reload sysctl
   • $([[ "$REMOVE_PACKAGES" == "1" ]] && echo 'Purge wireguard / wireguard-tools / qrencode packages' || echo 'Keep packages installed (pass --remove-packages to also purge)')
@@ -127,6 +128,21 @@ if ip link show "${WG_IF}" >/dev/null 2>&1; then
         ip link delete "${WG_IF}" 2>/dev/null || \
         warn "Could not remove ${WG_IF} interface — check 'ip link' manually"
 fi
+
+# ── 1b. Outbound-SOCKS mode artifacts (if setup-outbound-socks ran) ────────
+if systemctl list-unit-files pitun-sing-box.service 2>/dev/null | grep -q pitun-sing-box; then
+    log "Removing pitun-sing-box (outbound SOCKS5 routing)…"
+    systemctl disable --now pitun-sing-box 2>/dev/null || true
+fi
+rm -f /etc/systemd/system/pitun-sing-box.service \
+      /etc/sing-box/pitun-outbound.json \
+      /etc/sysctl.d/99-pitun-socks-rpfilter.conf
+rmdir /etc/sing-box 2>/dev/null || true
+# Policy-routing leftovers (PostDown may not have run for the socks block).
+ip rule del iif "${WG_IF}" pref 100 table 101 2>/dev/null || true
+ip -6 rule del iif "${WG_IF}" pref 100 table 101 2>/dev/null || true
+ip route flush table 101 2>/dev/null || true
+systemctl daemon-reload
 
 # ── 2. Remove config + state ───────────────────────────────────────────────
 for f in "$WG_CONF" "$WG_PARAMS"; do

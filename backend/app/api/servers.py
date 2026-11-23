@@ -37,10 +37,11 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.core.ssh import test_ssh_connection
 from app.database import get_async_engine, get_session
-from app.models import Node, Server, ServerDeployment
+from app.models import Node, ProxyChain, Server, ServerDeployment, XuiServer
 from app.schemas import (
     DeployJobAccepted,
     NodeRead,
+    ServerChainPresence,
     ServerCreate,
     ServerDeployRequest,
     ServerDeploymentRead,
@@ -225,6 +226,75 @@ async def test_server(
     if not server:
         raise HTTPException(status_code=404, detail="Server not found")
     return await _probe_one(server, session, direct=direct)
+
+
+@router.get("/{server_id:int}/chain-presence", response_model=ServerChainPresence)
+async def chain_presence(server_id: int, session: AsyncSession = Depends(get_session)):
+    """What an x-ui reinstall/uninstall would wipe on this server.
+
+    Counts chains bound to the server's panel(s) in our DB, then scans
+    the live panel for chain inbounds — ours (`[pitun:<our id>]` in the
+    remark), a foreign PiTun install's (a different mark), and legacy
+    unmarked `chain-*` tags. Read-only; panel errors degrade to a
+    DB-only answer with `error` set.
+    """
+    from app.core.install_id import get_install_id, remark_owner
+    from app.core.xui_api import XuiClient
+    from app.core.xui_chain import _api_base_url
+
+    server = await session.get(Server, server_id)
+    if not server:
+        raise HTTPException(status_code=404, detail="Server not found")
+
+    xs_rows = list((
+        await session.exec(select(XuiServer).where(XuiServer.server_id == server_id))
+    ).all())
+    xs_ids = [x.id for x in xs_rows]
+    local_chains = 0
+    if xs_ids:
+        local_chains = len(list((
+            await session.exec(
+                select(ProxyChain).where(
+                    (ProxyChain.relay_xui_server_id.in_(xs_ids))  # type: ignore[union-attr]
+                    | (ProxyChain.exit_xui_server_id.in_(xs_ids)),  # type: ignore[union-attr]
+                )
+            )
+        ).all()))
+    # get_install_id commits (expiring ORM rows), so every attribute we
+    # still need is captured into plain locals first.
+    panel_url = panel_token = None
+    if xs_rows:
+        panel_url = _api_base_url(xs_rows[0], server)
+        panel_token = xs_rows[0].api_token
+    install_id = await get_install_id(session)
+
+    result = ServerChainPresence(server_id=server_id, local_chains=local_chains)
+    if panel_url is None:
+        return result
+
+    try:
+        async with XuiClient(
+            base_url=panel_url,
+            api_token=panel_token, verify_tls=False,
+        ) as client:
+            inbounds = await client.list_inbounds()
+        own = foreign = legacy = 0
+        for ib in inbounds:
+            remark = str(ib.get("remark") or "")
+            owner = remark_owner(remark)
+            if owner is not None:
+                if owner == install_id:
+                    own += 1
+                else:
+                    foreign += 1
+            elif str(ib.get("tag") or "").startswith("chain-"):
+                legacy += 1
+        result.own_marked_inbounds = own
+        result.foreign_marked_inbounds = foreign
+        result.legacy_chain_inbounds = legacy
+    except Exception as e:  # noqa: BLE001
+        result.error = f"{type(e).__name__}: {str(e)[:180]}"
+    return result
 
 
 @router.post(

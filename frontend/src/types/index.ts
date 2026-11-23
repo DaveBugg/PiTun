@@ -970,6 +970,15 @@ export interface ServerTestAllResult {
   results: ServerTestResult[]
 }
 
+export interface ServerChainPresence {
+  server_id: number
+  local_chains: number
+  own_marked_inbounds?: number | null
+  foreign_marked_inbounds?: number | null
+  legacy_chain_inbounds?: number | null
+  error?: string | null
+}
+
 // ── Server deployments ──────────────────────────────────────────────────────
 //
 // A persistent record of "what credentials did the user pick last time
@@ -1049,6 +1058,28 @@ export interface WireGuardDeploymentConfig {
   /** Move SSH listener to this port at install time. Same semantics as
    * `NaiveDeploymentConfig.ssh_port`. Since v1.3.0-beta.7. */
   ssh_port?: number
+  /** Route peer egress through an upstream SOCKS5 proxy (sing-box on the VPS). */
+  outbound_socks?: OutboundSocksConfig
+}
+
+export interface OutboundSocksConfig {
+  host: string
+  port: number
+  username?: string
+  password?: string
+  /** Proxy supports UDP ASSOCIATE — otherwise UDP is blocked server-side. */
+  udp?: boolean
+}
+
+export interface WireGuardOutboundSocksState {
+  enabled: boolean
+  socks?: OutboundSocksConfig | null
+}
+
+export interface HttpsCertReissueResult {
+  ok: boolean
+  output: string
+  nginx_reloaded: boolean
 }
 
 // ── x-ui-pro / 3x-ui panel deploy + management (since v1.3.0-beta.7) ────────

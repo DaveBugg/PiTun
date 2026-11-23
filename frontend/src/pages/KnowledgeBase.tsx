@@ -1514,6 +1514,44 @@ nftables TPROXY -> xray-core -> правила маршрутизации
     },
   },
 
+  /* 12b. HTTPS for the panel */
+  {
+    id: 'https-panel',
+    title: { en: 'HTTPS for the Panel', ru: 'HTTPS для панели' },
+    content: {
+      en: (
+        <>
+          <P>
+            The panel is served on both plain HTTP (port 80) and HTTPS (port 443). The HTTPS
+            certificate is signed by a per-install local <B>PiTun CA</B> — every box generates its
+            own CA at install time, so no public CA is involved and nothing leaves the LAN.
+          </P>
+          <Ul>
+            <li><B>Stop the browser warning</B> — download the root CA from <code className="text-gray-400">http(s)://&lt;box&gt;/pitun-ca.crt</code> (or Settings → HTTPS) and install it into your OS/browser trust store. Step-by-step for Windows/macOS/Firefox/mobile is in Settings → HTTPS.</li>
+            <li><B>IP change</B> — browsers match the certificate's SAN to the box IP. The installer re-issues the leaf automatically when the LAN IP changes; you can re-issue manually via Settings → HTTPS → <B>Re-issue certificate</B>.</li>
+            <li><B>No lockout risk</B> — plain HTTP on port 80 keeps working even if the certificate is broken or untrusted. HTTPS is an addition, not a gate.</li>
+            <li><B>Root CA safety</B> — the CA private key stays on the box (<code className="text-gray-400">/etc/pitun/certs/</code>, mode 600). It can only sign this panel's certificate, but uninstall the CA from your trust store if you decommission the box.</li>
+          </Ul>
+        </>
+      ),
+      ru: (
+        <>
+          <P>
+            Панель отдаётся и по обычному HTTP (порт 80), и по HTTPS (порт 443). HTTPS-сертификат
+            подписан локальным <B>PiTun CA</B> этой установки — каждый бокс генерирует свой CA при
+            установке, публичный CA не нужен, ничего не покидает LAN.
+          </P>
+          <Ul>
+            <li><B>Убрать предупреждение браузера</B> — скачайте root-CA с <code className="text-gray-400">http(s)://&lt;бокс&gt;/pitun-ca.crt</code> (или Settings → HTTPS) и добавьте его в доверенные корневые сертификаты ОС/браузера. Пошагово для Windows/macOS/Firefox/мобильных — в Settings → HTTPS.</li>
+            <li><B>Смена IP</B> — браузер сверяет SAN сертификата с IP бокса. Установщик перевыпускает сертификат сам при смене LAN IP; вручную — Settings → HTTPS → <B>Перевыпустить сертификат</B>.</li>
+            <li><B>Без риска блокировки</B> — обычный HTTP на порту 80 работает всегда, даже если сертификат сломан или не доверен. HTTPS — дополнение, а не барьер.</li>
+            <li><B>Безопасность root CA</B> — приватный ключ CA остаётся на боксе (<code className="text-gray-400">/etc/pitun/certs/</code>, права 600). Он может подписывать только сертификат этой панели, но при выводе бокса из эксплуатации удалите CA из доверенных.</li>
+          </Ul>
+        </>
+      ),
+    },
+  },
+
   /* 13. QUIC Blocking */
   {
     id: 'quic-blocking',
