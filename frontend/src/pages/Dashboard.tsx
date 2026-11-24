@@ -15,6 +15,7 @@ import { StatusBadge, ModeBadge } from '@/components/StatusBadge'
 import { InfoTip } from '@/components/InfoTip'
 import { MetricsCharts } from '@/components/MetricsCharts'
 import { ProcessesCard } from '@/components/ProcessesCard'
+import { ProxyEndpointsSection } from '@/components/ProxyEndpointsSection'
 import { RecentEvents } from '@/components/RecentEvents'
 import { systemApi, circleApi } from '@/api/client'
 import { useT } from '@/hooks/useT'
@@ -800,6 +801,8 @@ export function Dashboard() {
               Inline so the user can flip it without leaving the
               dashboard. */}
           <LanProxyAuthControl settings={sysSettings} />
+          {/* Extra SOCKS5 flows with their own xray process each */}
+          <ProxyEndpointsSection />
         </div>
       )}
 

@@ -667,6 +667,15 @@ async def set_active_node(
     node = await session.get(Node, body.node_id)
     if not node:
         raise HTTPException(404, "Node not found")
+    # Flow uniqueness: a node assigned to an extra endpoint can't become
+    # the main flow's active node (balancers are exempt by design).
+    from app.core.endpoints import flow_for_node
+    flow = await flow_for_node(session, body.node_id)
+    if flow not in (None, "main flow"):
+        raise HTTPException(
+            400,
+            f"Node {node.name!r} is already assigned to endpoint {flow!r}",
+        )
     await _set_setting(session, "active_node_id", str(body.node_id))
     await session.commit()
 

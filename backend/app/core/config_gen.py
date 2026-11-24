@@ -1911,3 +1911,162 @@ async def _write_config_unlocked(
         # Pre-flight is advisory — never block the write on a probe error.
         logger.debug("xray config pre-flight validation skipped: %s", exc)
         return None
+
+
+# ── Proxy endpoints (per-endpoint xray processes) ───────────────────────────
+
+
+def generate_endpoint_config(
+    *,
+    socks_port: int,
+    node: Optional[Node],
+    balancer: Optional[BalancerGroup],
+    set_rules: List[RoutingRule],
+    all_nodes: List[Node],
+    balancer_groups: List[BalancerGroup],
+    settings_map: Dict[str, str],
+) -> Dict[str, Any]:
+    """Config for one extra SOCKS5 endpoint (its own xray process).
+
+    Exactly one of `node` / `balancer` is set — the endpoint's assigned
+    egress. `set_rules` are the attached RoutingSet's rules (empty for
+    mode=global); the catch-all always lands on the assigned egress.
+    LAN proxy auth mirrors the main flow's global settings.
+    """
+    if (node is None) == (balancer is None):
+        raise ValueError("endpoint needs exactly one of node / balancer")
+
+    lan_auth_enabled = (
+        settings_map.get("lan_proxy_auth_enabled", "false").lower() == "true"
+    )
+    lan_auth_user = settings_map.get("lan_proxy_auth_user", "").strip()
+    lan_auth_pass = settings_map.get("lan_proxy_auth_pass", "")
+    if lan_auth_enabled and (not lan_auth_user or not lan_auth_pass):
+        raise ValueError(
+            "lan_proxy_auth_enabled=true but credentials are empty — "
+            "fix Settings before starting an endpoint"
+        )
+
+    main_tag = f"node-{node.id}" if node is not None else f"balancer-{balancer.id}"
+
+    outbounds: List[Dict[str, Any]] = []
+    used_ids: set = set()
+
+    if node is not None:
+        ob = _build_outbound(node)
+        _apply_chain(node, ob, outbounds, used_ids, all_nodes)
+        outbounds.append(ob)
+        used_ids.add(node.id)
+
+    # Balancers: the assigned one plus any referenced by `balancer:X`
+    # rules in the attached set. Member outbounds are shared per node id.
+    xray_balancers = []
+    for bg in balancer_groups:
+        if not bg.enabled:
+            continue
+        ids = json.loads(bg.node_ids) if isinstance(bg.node_ids, str) else bg.node_ids
+        selector = []
+        for nid in ids:
+            member = next((n for n in all_nodes if n.id == nid and n.enabled), None)
+            if member is None:
+                continue
+            if nid not in used_ids:
+                try:
+                    ob = _build_outbound(member)
+                    _apply_chain(member, ob, outbounds, used_ids, all_nodes)
+                    outbounds.append(ob)
+                    used_ids.add(nid)
+                except Exception as exc:
+                    logger.warning("Endpoint balancer node %d skip: %s", nid, exc)
+                    continue
+            selector.append(f"node-{nid}")
+        if selector:
+            xray_balancers.append({
+                "tag": f"balancer-{bg.id}",
+                "selector": selector,
+                "strategy": {"type": bg.strategy},
+            })
+    if balancer is not None and not any(
+        b["tag"] == main_tag for b in xray_balancers
+    ):
+        raise ValueError(f"balancer {balancer.id} has no usable member nodes")
+
+    # Nodes referenced by `node:<id>` actions inside the set's rules.
+    for rule in set_rules:
+        if not rule.enabled or not rule.action.startswith("node:"):
+            continue
+        try:
+            nid = int(rule.action.split(":", 1)[1])
+        except (ValueError, IndexError):
+            continue
+        if nid in used_ids:
+            continue
+        ref = next((n for n in all_nodes if n.id == nid and n.enabled), None)
+        if ref is None:
+            continue
+        try:
+            ob = _build_outbound(ref)
+            _apply_chain(ref, ob, outbounds, used_ids, all_nodes)
+            outbounds.append(ob)
+            used_ids.add(nid)
+        except Exception as exc:
+            logger.warning("Endpoint rule node %d skip: %s", nid, exc)
+
+    outbounds += [
+        {"tag": "direct", "protocol": "freedom",
+         "streamSettings": {"sockopt": {"mark": 255, "domainStrategy": "UseIP"}}},
+        {"tag": "block", "protocol": "blackhole"},
+    ]
+
+    # DNS through the endpoint's egress (no local-resolver leak). Plain
+    # UDP/53 to an anycast IP — the rule below sends it via the node.
+    routing_rules: List[Dict[str, Any]] = [
+        {"type": "field", "network": "tcp,udp", "port": "53",
+         "outboundTag": main_tag},
+    ]
+    for rule in set_rules:
+        if not rule.enabled:
+            continue
+        xr = _routing_rule_to_xray(
+            rule,
+            node.id if node is not None else None,
+            active_balancer_tag=main_tag if balancer is not None else None,
+        )
+        if xr is not None:
+            routing_rules.append(xr)
+    # Catch-all: everything unmatched takes the assigned egress.
+    catch_all: Dict[str, Any] = {"type": "field", "network": "tcp,udp"}
+    if node is not None:
+        catch_all["outboundTag"] = main_tag
+    else:
+        catch_all["balancerTag"] = main_tag
+    routing_rules.append(catch_all)
+
+    socks_settings: Dict[str, Any] = {"auth": "noauth", "udp": True}
+    if lan_auth_enabled:
+        socks_settings["auth"] = "password"
+        socks_settings["accounts"] = [{"user": lan_auth_user, "pass": lan_auth_pass}]
+
+    return {
+        "log": {"loglevel": settings_map.get("log_level", "warning")},
+        "dns": {"servers": ["1.1.1.1"]},
+        "inbounds": [{
+            "tag": "ep-in",
+            "protocol": "socks",
+            "listen": "0.0.0.0",
+            "port": socks_port,
+            "settings": socks_settings,
+            "sniffing": {
+                "enabled": True,
+                "destOverride": ["http", "tls"],
+                "routeOnly": False,
+            },
+        }],
+        "outbounds": outbounds,
+        "routing": {
+            "domainStrategy": "IPIfNonMatch",
+            "domainMatcher": "hybrid",
+            "rules": routing_rules,
+            **({"balancers": xray_balancers} if xray_balancers else {}),
+        },
+    }

@@ -66,38 +66,10 @@ MAX_ROUTING_SETS = TPROXY_PORT_MAX - TPROXY_PORT_MIN + 1  # 36
 
 
 def _host_port_free(port: int) -> bool:
-    """Best-effort check: is this TCP port currently free to bind on the host?
-
-    Used by `_allocate_tproxy_port` to skip a port that the operator
-    happens to have something else listening on (homelab service in
-    the 65500+ range, unlikely but possible). Without this guard
-    xray would silently fail to start its per-set inbound with
-    "address already in use" → silent feature break.
-
-    Defensive: socket creation may fail in unusual environments (no
-    AF_INET, sandboxed test runner) — treat any error as "assume
-    free" so the test suite doesn't break in those envs. The
-    backend container itself runs with host network, so this check
-    sees the real listener landscape.
-    """
-    import socket
-    try:
-        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        # Intentionally NO SO_REUSEADDR. With REUSEADDR=1, two sockets
-        # can bind to disjoint addresses on the same port (e.g. one
-        # listens on 127.0.0.1, our probe on 0.0.0.0 succeeds anyway).
-        # That hides a real conflict — when xray later tries to
-        # actually start its listener on 0.0.0.0:<port>, it'd race.
-        # A bare bind is the honest "is this port truly free?" test.
-        try:
-            s.bind(("0.0.0.0", port))
-            return True
-        except OSError:
-            return False
-        finally:
-            s.close()
-    except Exception:
-        return True  # fail-open — never block allocation on env quirks
+    """Kept for the existing call sites; implementation moved to
+    `core.net.host_port_free` so the endpoints feature can share it."""
+    from app.core.net import host_port_free
+    return host_port_free(port)
 
 
 async def _allocate_tproxy_port(session: AsyncSession) -> int:

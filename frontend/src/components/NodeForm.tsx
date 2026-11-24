@@ -73,7 +73,7 @@ export function NodeForm({ initial, onSave, onCancel, loading, nodes = [] }: Pro
   const t = useT()
   const [form, setForm] = useState<FormData>({ ...DEFAULTS, ...initial })
   const [chainNodeId, setChainNodeId] = useState(initial?.chain_node_id?.toString() ?? '')
-  const [hideUnavailable, setHideUnavailable] = useState<boolean>(loadHideUnavailable)
+  const [hideUnavailable, setHideUnavailable] = useState<boolean>(() => loadHideUnavailable(true))
   const [serverId, setServerId] = useState(initial?.server_id?.toString() ?? '')
   // Servers list is small (1-5 typical) and the form is short-lived, so
   // fetching here on mount keeps the API surface simple — we don't have

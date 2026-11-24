@@ -1082,6 +1082,42 @@ export interface HttpsCertReissueResult {
   nginx_reloaded: boolean
 }
 
+// ── Proxy endpoints (extra SOCKS5 flows) ────────────────────────────────────
+
+export type ProxyEndpointMode = 'global' | 'routing_set'
+
+export interface ProxyEndpoint {
+  id: number
+  name: string
+  enabled: boolean
+  socks_port: number
+  mode: ProxyEndpointMode
+  node_id?: number | null
+  balancer_id?: number | null
+  routing_set_id?: number | null
+  order: number
+  created_at?: string | null
+  running: boolean
+  pid?: number | null
+  uptime?: number | null
+  last_error?: string | null
+  node_name?: string | null
+  balancer_name?: string | null
+  routing_set_name?: string | null
+}
+
+export interface ProxyEndpointCreate {
+  name: string
+  enabled?: boolean
+  socks_port?: number   // 0/omitted = auto-allocate from 1081+
+  mode?: ProxyEndpointMode
+  node_id?: number | null
+  balancer_id?: number | null
+  routing_set_id?: number | null
+}
+
+export type ProxyEndpointUpdate = Partial<ProxyEndpointCreate>
+
 // ── x-ui-pro / 3x-ui panel deploy + management (since v1.3.0-beta.7) ────────
 
 export interface XuiDeploymentConfig {

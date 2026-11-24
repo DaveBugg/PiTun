@@ -1,12 +1,15 @@
 // Shared "hide unreachable nodes" preference — one key drives the Nodes
-// page quick filter and the chain-via picker in NodeForm.
+// page quick filter and the node pickers (chain-via, endpoints).
+// Pickers default to hiding; the Nodes page defaults to showing.
 export const HIDE_UNAVAILABLE_KEY = 'pitun.nodesHideUnavailable'
 
-export function loadHideUnavailable(): boolean {
+export function loadHideUnavailable(defaultValue = false): boolean {
   try {
-    return localStorage.getItem(HIDE_UNAVAILABLE_KEY) === '1'
+    const raw = localStorage.getItem(HIDE_UNAVAILABLE_KEY)
+    if (raw === null) return defaultValue
+    return raw === '1'
   } catch {
-    return false
+    return defaultValue
   }
 }
 

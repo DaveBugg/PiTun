@@ -506,6 +506,35 @@ class NodeCircle(SQLModel, table=True):
     last_check_result: Optional[str] = None
 
 
+class ProxyEndpoint(SQLModel, table=True):
+    """An extra SOCKS5 entry point with its own xray process.
+
+    Unlike the main flow (TPROXY + active node), an endpoint carries
+    only a SOCKS5 inbound and routes everything to its assigned node
+    (`mode="global"`) or through a RoutingSet's rules with the assigned
+    node as the catch-all (`mode="routing_set"`). Exactly one of
+    `node_id` / `balancer_id` is set (balancers are exempt from the
+    flow-uniqueness rule). Hard cap: MAX_PROXY_ENDPOINTS (9) — each
+    endpoint is its own xray process.
+    """
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    name: str = Field(unique=True, index=True)
+    enabled: bool = True
+    socks_port: int = Field(unique=True)
+    mode: str = "global"  # "global" | "routing_set"
+    node_id: Optional[int] = Field(default=None, foreign_key="node.id")
+    balancer_id: Optional[int] = Field(default=None, foreign_key="balancergroup.id")
+    routing_set_id: Optional[int] = Field(default=None, foreign_key="routingset.id")
+    order: int = 0
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+    )
+    updated_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+    )
+
+
 class AutoCheckConfig(SQLModel, table=True):
     """Singleton config (row id=1) for the background auto-speedtest sweep.
 

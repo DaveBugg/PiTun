@@ -96,3 +96,32 @@ async def bypass_connected_socket(
         sock.close()
         raise
     return sock
+
+
+def host_port_free(port: int) -> bool:
+    """Best-effort check: is this TCP port currently free to bind on the host?
+
+    Used when allocating listener ports (routing-set TPROXY, proxy
+    endpoints) to skip a port the operator happens to have something
+    else listening on. Without this guard xray would silently fail to
+    start its inbound with "address already in use".
+
+    Defensive: socket creation may fail in unusual environments (no
+    AF_INET, sandboxed test runner) — treat any error as "assume free"
+    so the test suite doesn't break in those envs. The backend
+    container itself runs with host network, so this check sees the
+    real listener landscape.
+    """
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        # Intentionally NO SO_REUSEADDR — a bare bind is the honest
+        # "is this port truly free?" test.
+        try:
+            s.bind(("0.0.0.0", port))
+            return True
+        except OSError:
+            return False
+        finally:
+            s.close()
+    except Exception:
+        return True  # fail-open — never block allocation on env quirks

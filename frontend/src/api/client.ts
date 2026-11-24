@@ -33,6 +33,7 @@ import type {
   DeploymentClient, DeploymentClientList, DeploymentClientConf,
   DeploymentClientCreate, DeploymentClientSyncResult,
   ExportClientToNodeRequest, OutboundSocksConfig, WireGuardOutboundSocksState, HttpsCertReissueResult,
+  ProxyEndpoint, ProxyEndpointCreate, ProxyEndpointUpdate,
   XuiPortCheck,
   XuiXrayInfo,
   XuiPanelUpdateInfo,
@@ -1081,6 +1082,7 @@ export const serversApi = {
       body,
     ).then(r => r.data),
 
+
   // JSON backup. `includeSecrets=false` (default) strips passwords and
   // private keys — safer to share or commit accidentally. With
   // `includeSecrets=true` the bundle is round-trip-perfect but
@@ -1173,6 +1175,19 @@ export const scriptsApi = {
 // connector for live log streams. Kept in this file (rather than a
 // dedicated module) for symmetry with the other endpoints; React Query
 // hooks live in `useServerTasks.ts`.
+
+// Extra SOCKS5 proxy endpoints (each its own xray process) — Dashboard's
+// Proxy Endpoints section.
+export const endpointsApi = {
+  list: () => http.get<ProxyEndpoint[]>('/endpoints').then(r => r.data),
+  create: (data: ProxyEndpointCreate) =>
+    http.post<ProxyEndpoint>('/endpoints', data).then(r => r.data),
+  update: (id: number, data: ProxyEndpointUpdate) =>
+    http.patch<ProxyEndpoint>(`/endpoints/${id}`, data).then(r => r.data),
+  delete: (id: number) => http.delete(`/endpoints/${id}`),
+  restart: (id: number) =>
+    http.post<ProxyEndpoint>(`/endpoints/${id}/restart`).then(r => r.data),
+}
 
 export const serverTasksApi = {
   list: (params?: {

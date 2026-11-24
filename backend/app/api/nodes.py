@@ -484,6 +484,17 @@ async def delete_node(
     was_naive = node.protocol == "naive"
     log = logging.getLogger(__name__)
 
+    # A node assigned to an extra endpoint is that flow's only egress —
+    # deleting it would strand the endpoint on a dead config.
+    from app.core.endpoints import flow_for_node
+    flow = await flow_for_node(session, node_id)
+    if flow not in (None, "main flow"):
+        raise HTTPException(
+            400,
+            f"Node is assigned to endpoint {flow!r} — reassign or delete "
+            "the endpoint first",
+        )
+
     # Tear down sidecar BEFORE committing DB changes. If the DB commit later
     # fails, `naive_manager.sync_all()` on next boot will reconcile the
     # orphaned-config-without-container state (harmless). The reverse order

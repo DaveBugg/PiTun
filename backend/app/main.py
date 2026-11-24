@@ -298,11 +298,24 @@ async def lifespan(app: FastAPI):
     except Exception as exc:
         logger.warning("Auto-start on boot failed: %s", exc)
 
+    # Extra proxy endpoints: bring up every enabled one (its own xray).
+    try:
+        from sqlmodel import select as _select
+        from sqlmodel.ext.asyncio.session import AsyncSession as _AsyncSession
+        from app.core.endpoint_manager import endpoint_manager
+        async with _AsyncSession(get_async_engine()) as _ep_session:
+            await endpoint_manager.sync_from_db(_ep_session)
+    except Exception as exc:
+        logger.warning("Endpoint sync on boot failed: %s", exc)
+
     yield
 
     # ── Shutdown ─────────────────────────────────────────────────────────────
     logger.info("PiTun backend shutting down")
+    from app.core.endpoint_manager import endpoint_manager
     from app.core.geo_scheduler import geo_scheduler
+
+    await endpoint_manager.shutdown()
 
     _update_check_task.cancel()
     _assistant_cleanup_task.cancel()
@@ -386,7 +399,7 @@ app.add_middleware(
 )
 
 # ── Routers ───────────────────────────────────────────────────────────────────
-from app.api import domain_stats as domain_stats_api, resources as resources_api, nodes, routing, routing_sets, subscriptions, system, geodata, logs, dns, balancers, auth, nodecircle, devices, diagnostics, events, servers, scripts, server_tasks, server_clients, templates, user_agents, xui, network, autocheck, backup
+from app.api import domain_stats as domain_stats_api, resources as resources_api, nodes, routing, routing_sets, subscriptions, system, geodata, logs, dns, balancers, auth, nodecircle, devices, diagnostics, events, servers, scripts, server_tasks, server_clients, templates, user_agents, xui, network, autocheck, backup, endpoints
 from app.core.auth import get_current_user
 
 app.include_router(auth.router, prefix="/api")
@@ -424,7 +437,7 @@ app.include_router(server_tasks.ws_router, prefix="/api")
 # WireGuard server-side client management (since v1.3.0-beta.4) — auth-gated.
 app.include_router(server_clients.router, prefix="/api", dependencies=_auth)
 app.include_router(server_clients.outbound_router, prefix="/api", dependencies=_auth)
-# x-ui-pro / 3x-ui panel management (since v1.3.0-beta.7) — auth-gated.
+app.include_router(endpoints.router, prefix="/api", dependencies=_auth)# x-ui-pro / 3x-ui panel management (since v1.3.0-beta.7) — auth-gated.
 app.include_router(xui.router, prefix="/api", dependencies=_auth)
 # Host network configuration UI (since v1.3.3) — auth-gated.
 app.include_router(network.router, prefix="/api", dependencies=_auth)

@@ -4,6 +4,15 @@ All notable user-facing changes to PiTun. Full per-release detail lives in the
 [GitHub Releases](https://github.com/DaveBugg/PiTun/releases); this file is the
 committed summary.
 
+## v1.8.0-beta.11 — 2026-11-24
+
+**Extra SOCKS5 endpoints: separate entry points, each pinned to its own node.**
+
+### Added
+
+- The Dashboard's Proxy Endpoints section now lets you add up to 9 extra SOCKS5 endpoints. Each endpoint is its own xray process with its own egress: either a node (global mode — everything goes there) or a routing set whose rules apply first, with the assigned node as the fallback. Ports auto-allocate from 1081 upward (or pick your own). The main flow (TPROXY + SOCKS5 1080 + HTTP 8080) is untouched.
+- A node can drive only one flow at a time: the main flow's active node and every endpoint's node must be unique (balancers are exempt and can repeat). The API refuses double-assignment, and the pickers hide nodes already in use — plus unreachable ones by default.
+
 ## v1.8.0-beta.10 — 2026-11-24
 
 **Safer chains on shared panels, WireGuard egress through your own SOCKS5, and friendlier node pickers.**

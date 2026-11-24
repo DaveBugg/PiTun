@@ -1054,6 +1054,51 @@ class NodeCircleRead(NodeCircleBase):
         from_attributes = True
 
 
+# ─── Proxy Endpoints (extra SOCKS5 flows) ────────────────────────────────────
+
+class ProxyEndpointBase(BaseModel):
+    name: str
+    enabled: bool = True
+    # 0 / omitted on create = auto-allocate the next free port from 1081+.
+    socks_port: int = 0
+    mode: str = "global"  # "global" | "routing_set"
+    node_id: Optional[int] = None
+    balancer_id: Optional[int] = None
+    routing_set_id: Optional[int] = None
+
+
+class ProxyEndpointCreate(ProxyEndpointBase):
+    pass
+
+
+class ProxyEndpointUpdate(BaseModel):
+    name: Optional[str] = None
+    enabled: Optional[bool] = None
+    socks_port: Optional[int] = None
+    mode: Optional[str] = None
+    node_id: Optional[int] = None
+    balancer_id: Optional[int] = None
+    routing_set_id: Optional[int] = None
+
+
+class ProxyEndpointRead(ProxyEndpointBase):
+    id: int
+    order: int = 0
+    created_at: Optional[datetime] = None
+    # Runtime, filled by the endpoint manager:
+    running: bool = False
+    pid: Optional[int] = None
+    uptime: Optional[float] = None
+    last_error: Optional[str] = None
+    # Display helpers:
+    node_name: Optional[str] = None
+    balancer_name: Optional[str] = None
+    routing_set_name: Optional[str] = None
+
+    class Config:
+        from_attributes = True
+
+
 _AUTOCHECK_SCOPES = ("all", "subscription", "group", "nodes")
 
 
