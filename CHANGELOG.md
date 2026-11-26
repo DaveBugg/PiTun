@@ -4,6 +4,14 @@ All notable user-facing changes to PiTun. Full per-release detail lives in the
 [GitHub Releases](https://github.com/DaveBugg/PiTun/releases); this file is the
 committed summary.
 
+## v1.8.0-beta.13 — 2026-11-26
+
+**Fix xray startup for balancers using leastPing.**
+
+### Fixed
+
+- Main-flow and extra-endpoint configs now include the `observatory` section required by xray's `leastPing` strategy, with probes limited to the balancer's member outbounds. Without it, xray rejected the config with `core: not all dependencies are resolved`. Balancers using `random` are unchanged.
+
 ## v1.8.0-beta.12 — 2026-11-26
 
 **Security and stability fixes across the assistant, extra proxy endpoints, shared-panel chains and WireGuard.**

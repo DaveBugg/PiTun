@@ -1020,6 +1020,25 @@ SPEED_PROBE_PORT = 10809
 SPEED_PROBE_TAG = "speed-probe"
 
 
+def _observatory_for_balancers(balancers: List[Dict[str, Any]]) -> Dict[str, Any]:
+    selectors = sorted({
+        tag
+        for balancer in balancers
+        if balancer.get("strategy", {}).get("type") == "leastPing"
+        for tag in balancer.get("selector", [])
+    })
+    if not selectors:
+        return {}
+    return {
+        "observatory": {
+            "subjectSelector": selectors,
+            "probeUrl": "https://www.google.com/generate_204",
+            "probeInterval": "30s",
+            "enableConcurrency": True,
+        }
+    }
+
+
 def generate_config(
     active_node: Optional[Node],
     all_nodes: List[Node],
@@ -1563,6 +1582,7 @@ def generate_config(
             "rules": routing_rules,
             **({"balancers": xray_balancers} if xray_balancers else {}),
         },
+        **_observatory_for_balancers(xray_balancers),
     }
 
     return config
@@ -2072,4 +2092,5 @@ def generate_endpoint_config(
             "rules": routing_rules,
             **({"balancers": xray_balancers} if xray_balancers else {}),
         },
+        **_observatory_for_balancers(xray_balancers),
     }

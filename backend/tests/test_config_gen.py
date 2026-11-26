@@ -512,6 +512,8 @@ class TestRoutingRuleConversion:
         domain_rules = [r for r in cfg["routing"]["rules"] if "domain" in r and "domain:balanced.com" in r.get("domain", [])]
         assert len(domain_rules) >= 1
         assert domain_rules[0].get("balancerTag") == "balancer-1"
+        assert cfg["observatory"]["subjectSelector"] == ["node-10"]
+        assert cfg["observatory"]["probeInterval"] == "30s"
 
 
 # ============================================================================

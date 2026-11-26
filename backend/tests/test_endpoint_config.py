@@ -94,6 +94,21 @@ def test_balancer_mode_builds_balancer_and_members():
     assert node_dns["outboundTag"] == "node-1"
     assert "balancerTag" not in node_dns
 
+    observatory = cfg["observatory"]
+    assert observatory["subjectSelector"] == ["node-1", "node-2"]
+    assert observatory["probeUrl"] == "https://www.google.com/generate_204"
+    assert observatory["probeInterval"] == "30s"
+    assert observatory["enableConcurrency"] is True
+
+    random_bg = BalancerGroup(id=6, name="random", enabled=True,
+                              node_ids="[1]", strategy="random")
+    random_cfg = generate_endpoint_config(
+        socks_port=1083, node=None, balancer=random_bg,
+        set_rules=[], all_nodes=[m1], balancer_groups=[random_bg],
+        settings_map={},
+    )
+    assert "observatory" not in random_cfg
+
 
 def test_lan_auth_locks_the_socks_inbound():
     node = _node(1, "n1")
