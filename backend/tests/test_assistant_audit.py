@@ -71,6 +71,34 @@ def test_redactor_hides_secret_shapes_and_echoed_values():
         "see https://en.wikipedia.org/wiki/Example_dot_com and 192.168.50.10 at 12:30:45"
 
 
+def test_redactor_hides_sensitive_url_query_params():
+    from app.assistant.redact import Redactor
+    r = Redactor()
+    short = "https://sub.example.com/?token=sk-abc123def456"
+    hyphen_rich = "https://sub.example.com/?token=sk-abc-123-def-456-ghi-789"
+    case_insensitive = "https://sub.example.com/?ACCESS_TOKEN=short"
+    pass_key = "https://sub.example.com/?a=1&pass=short"
+    ordinary = "see https://en.wikipedia.org/wiki/Example_dot_com"
+
+    hidden_short = r.hide(short)
+    hidden_hyphen = r.hide(hyphen_rich)
+    hidden_case = r.hide(case_insensitive)
+    hidden_pass = r.hide(pass_key)
+    kept = r.hide(ordinary)
+
+    assert hidden_short != short and "‹s" in hidden_short
+    assert hidden_hyphen != hyphen_rich and "‹s" in hidden_hyphen
+    assert hidden_case != case_insensitive and "‹s" in hidden_case
+    assert hidden_pass != pass_key and "‹s" in hidden_pass
+    assert kept == ordinary
+
+    # reveal() restores the original values
+    assert r.reveal(hidden_short) == short
+    assert r.reveal(hidden_hyphen) == hyphen_rich
+    assert r.reveal(hidden_case) == case_insensitive
+    assert r.reveal(hidden_pass) == pass_key
+
+
 def test_user_text_is_hidden_from_the_model(client, admin_user, auth_headers):
     _enable(client, auth_headers)
     fake = FakeProvider([ModelTurn(text="ok")])
@@ -204,3 +232,59 @@ async def test_web_fetch_connects_to_the_checked_address():
             await web.fetch("https://example.com/a", None)
     assert seen["url"].startswith("https://198.51.100.80/") and seen["headers"]["Host"] == "example.com"
     assert seen["ext"] == {"sni_hostname": "example.com"}
+
+
+
+# ── undo concurrency ──────────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_concurrent_undo_runs_executor_only_once(client, admin_user, auth_headers, session):
+    import asyncio
+    from app.assistant import agent
+    from app.models import AssistantConversation, AssistantPlan
+
+    _enable(client, auth_headers)
+    conv = AssistantConversation()
+    session.add(conv)
+    session.commit()
+    session.refresh(conv)
+
+    plan = AssistantPlan(
+        conversation_id=conv.id,
+        title="test",
+        summary="test",
+        steps=json.dumps([{"method": "POST", "path": "/routing/rules",
+                           "body": {"name": "x", "rule_type": "domain", "match_value": "example.com",
+                                    "action": "direct"}}]),
+        status="executed",
+        undo=json.dumps({"steps": [{"method": "DELETE", "path": "/routing/rules/1"}]}),
+    )
+    session.add(plan)
+    session.commit()
+    session.refresh(plan)
+
+    gate = asyncio.Event()
+    started = asyncio.Event()
+    calls = []
+
+    async def slow_run_plan(steps):
+        calls.append(steps)
+        started.set()
+        await gate.wait()
+        return True, [{"ok": True, "status": 200, "body": {}}]
+
+    with mock.patch("app.assistant.executor.Executor.run_plan", side_effect=slow_run_plan):
+        a_task = asyncio.create_task(agent.undo_plan(plan.id, "u1"))
+        b_task = asyncio.create_task(agent.undo_plan(plan.id, "u2"))
+        await asyncio.wait_for(started.wait(), timeout=1.0)
+        gate.set()
+        a, b = await asyncio.gather(a_task, b_task)
+
+    assert len(calls) == 1
+    winners = [v for v in (a, b) if v.get("undo_ok")]
+    losers = [v for v in (a, b) if not v.get("undo_ok")]
+    assert len(winners) == 1 and len(losers) == 1
+    assert winners[0]["status"] == "undone"
+    # The loser returned the current plan view without running steps or
+    # overwriting the winner's results.
+    assert "undo_ok" not in losers[0]

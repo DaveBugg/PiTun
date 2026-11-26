@@ -13,6 +13,7 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 from app.core.ua_templates import build_subscription_headers
 from app.database import get_session, get_async_engine
 from app.models import Node, NodeCircle, RoutingRule, Settings as DBSettings, Subscription
+from app.core.endpoints import endpoint_assigned_node_ids_subquery
 from app.schemas import SubscriptionCreate, SubscriptionRead, SubscriptionUpdate
 
 logger = logging.getLogger(__name__)
@@ -984,6 +985,7 @@ async def _fetch_subscription_unlocked(sub_id: int) -> None:
                 select(Node)
                 .where(Node.subscription_id == sub_id)
                 .where(Node.enabled == True)  # noqa: E712
+                .where(Node.id.notin_(endpoint_assigned_node_ids_subquery()))  # type: ignore[union-attr,attr-defined]
                 .order_by(Node.is_online.desc(), Node.id)  # type: ignore[union-attr]
             )).all()
             if survivors:

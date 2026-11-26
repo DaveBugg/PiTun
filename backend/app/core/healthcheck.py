@@ -11,6 +11,7 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.config import settings
 from app.database import get_async_engine
+from app.core.endpoints import endpoint_assigned_node_ids
 from app.models import Node, Settings as DBSettings
 
 logger = logging.getLogger(__name__)
@@ -227,9 +228,10 @@ class HealthChecker:
             except (ValueError, json.JSONDecodeError):
                 failover_ids = []
 
+            assigned_ids = await endpoint_assigned_node_ids(session)
             candidates = []
             for fid in failover_ids:
-                if fid == failed_node_id:
+                if fid == failed_node_id or fid in assigned_ids:
                     continue
                 candidate = await session.get(Node, fid)
                 if candidate and candidate.enabled:

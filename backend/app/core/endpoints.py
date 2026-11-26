@@ -57,6 +57,19 @@ async def next_free_socks_port(session: AsyncSession) -> int:
     raise EndpointValidationError("no free port left in the endpoint range")
 
 
+def endpoint_assigned_node_ids_subquery():
+    """Subquery returning every ``Node.id`` currently assigned to a
+    ``ProxyEndpoint``. Use as ``Node.id.notin_(...)`` to exclude nodes
+    that would violate the one-node-per-flow invariant."""
+    return select(ProxyEndpoint.node_id).where(ProxyEndpoint.node_id.isnot(None))  # type: ignore[union-attr]
+
+
+async def endpoint_assigned_node_ids(session: AsyncSession) -> set[int]:
+    """Set of node IDs currently assigned to any ``ProxyEndpoint``."""
+    rows = (await session.exec(endpoint_assigned_node_ids_subquery())).all()
+    return {row for row in rows if row is not None}
+
+
 async def validate_assignment(
     session: AsyncSession,
     *,

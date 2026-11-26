@@ -403,7 +403,7 @@ async def _run(conversation_id: int, username: str, user_text: Optional[str],
             await session.refresh(plan)
             return plan.id
 
-        ctx = ToolContext(session, redactor, Executor(username), save_plan, web_proxy=s.web_proxy)
+        ctx = ToolContext(session, redactor, Executor(username), save_plan, web_proxy=s.web_proxy, web_search=s.web_search)
         max_steps = SMALL_STEPS if small else MAX_STEPS
         failures: Dict[str, int] = {}
 
@@ -558,7 +558,7 @@ async def run_form(conversation_id: int, username: str, name: str, args: dict) -
                 return plan.id
 
             s = await asettings.load(session)
-            ctx = ToolContext(session, redactor, Executor(username), save_plan, web_proxy=s.web_proxy)
+            ctx = ToolContext(session, redactor, Executor(username), save_plan, web_proxy=s.web_proxy, web_search=s.web_search)
             yield {"type": "tool", "name": name, "summary": redactor.reveal(_short_args(name, args))}
             result, is_error, plan_id = await run_tool(ctx, name, tc["arguments"])
             tmsg = {"role": "tool", "tool_call_id": tc["id"], "name": name, "content": result,
@@ -633,9 +633,16 @@ async def undo_plan(plan_id: int, username: str) -> Optional[dict]:
         if not view["can_undo"]:
             return view
         was = plan.status
-        plan.status = "running"
-        session.add(plan)
+        # Claim it atomically: of two concurrent undo clicks only one wins.
+        from sqlalchemy import update
+        claimed = await session.execute(
+            update(AssistantPlan).where(AssistantPlan.id == plan_id,
+                                        AssistantPlan.status.in_(("executed", "failed")))  # type: ignore[attr-defined]
+            .values(status="running"))
         await session.commit()
+        await session.refresh(plan)
+        if claimed.rowcount != 1:
+            return plan_view(plan)
         undo = json.loads(plan.undo or "{}")
 
     steps = undo.get("steps") or []

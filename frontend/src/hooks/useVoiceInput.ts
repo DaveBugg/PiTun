@@ -43,6 +43,7 @@ export function useVoiceInput(mode: Mode, lang: string, onText: (text: string, f
   const media = useRef<MediaRecorder | null>(null)
   const stream = useRef<MediaStream | null>(null)
   const starting = useRef(false)
+  const startGen = useRef(0)
 
   const start = async () => {
     if (starting.current || rec.current || media.current) return
@@ -71,10 +72,17 @@ export function useVoiceInput(mode: Mode, lang: string, onText: (text: string, f
       setState('listening')
       return
     }
+
     starting.current = true
     setState('listening')
+    const g = ++startGen.current
     try {
       const ms = await navigator.mediaDevices.getUserMedia({ audio: true })
+      if (g !== startGen.current) {
+        // Cancelled while waiting for permission — don't open the mic.
+        ms.getTracks().forEach((tr) => tr.stop())
+        return
+      }
       stream.current = ms
       const mr = new MediaRecorder(ms)
       const chunks: Blob[] = []
@@ -98,20 +106,31 @@ export function useVoiceInput(mode: Mode, lang: string, onText: (text: string, f
       media.current = mr
       mr.start()
     } catch (err) {
-      setError((err as Error).message)
-      setState('idle')
+      if (g === startGen.current) {
+        setError((err as Error).message)
+        setState('idle')
+      }
     } finally {
-      starting.current = false
+      if (g === startGen.current) starting.current = false
     }
   }
 
   const stop = () => {
     rec.current?.stop()
+    if (starting.current) {
+      // Abort a pending getUserMedia start before it can create the recorder.
+      startGen.current += 1
+      starting.current = false
+      setState('idle')
+      return
+    }
     if (media.current && media.current.state !== 'inactive') media.current.stop()
   }
 
   // Never leave the microphone open when the component goes away.
   useEffect(() => () => {
+    startGen.current += 1
+    starting.current = false
     rec.current?.abort?.()
     if (media.current && media.current.state !== 'inactive') media.current.stop()
     stream.current?.getTracks().forEach((tr) => tr.stop())

@@ -49,6 +49,72 @@ async def _reapply_limits() -> None:
     await reapply_on_boot()
 
 
+async def _heal_active_node_on_boot(session) -> None:
+    """Heal ``active_node_id`` on backend startup.
+
+    Mirrors the delete-time heal in ``app.api.nodes`` but keeps the boot
+    path's existing logging and recovery semantics. If the stored active node
+    is missing or disabled, fall back to the first enabled node that is NOT
+    already assigned to an extra SOCKS5 endpoint (one-node-per-flow
+    invariant). If every survivor is already assigned, clear the setting.
+    """
+    from sqlmodel import select
+    from app.core.endpoints import endpoint_assigned_node_ids_subquery
+    from app.models import Settings as DBSettings, Node
+
+    log = logging.getLogger(__name__)
+
+    try:
+        session.sync_session.expire_on_commit = False
+    except Exception:  # noqa: BLE001
+        pass
+
+    row = (await session.exec(
+        select(DBSettings).where(DBSettings.key == "active_node_id")
+    )).first()
+    stale = False
+    if row and row.value:
+        try:
+            target_id = int(row.value)
+        except (TypeError, ValueError):
+            target_id = None
+            stale = True
+        else:
+            node = await session.get(Node, target_id)
+            if node is None or not node.enabled:
+                stale = True
+
+        if stale:
+            enabled_nodes = (await session.exec(
+                select(Node).where(
+                    Node.enabled == True,  # noqa: E712
+                    Node.id.notin_(endpoint_assigned_node_ids_subquery()),  # type: ignore[union-attr,attr-defined]
+                ).order_by(Node.id)
+            )).all()
+            new_id = enabled_nodes[0].id if enabled_nodes else None
+            new_name = enabled_nodes[0].name if enabled_nodes else None
+            old_value = row.value
+            if new_id is not None:
+                row.value = str(new_id)
+                session.add(row)
+                await session.commit()
+                log.warning(
+                    "active_node_id healed on boot: %r -> %d (%r) "
+                    "— previous value referenced a missing or disabled node",
+                    old_value, new_id, new_name,
+                )
+            else:
+                row.value = ""
+                session.add(row)
+                await session.commit()
+                log.warning(
+                    "active_node_id cleared on boot: previous %r referenced "
+                    "a missing/disabled node, and there are no other enabled "
+                    "nodes to fall back to. Add a node and set it active.",
+                    old_value,
+                )
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # ── Startup ──────────────────────────────────────────────────────────────
@@ -202,75 +268,11 @@ async def lifespan(app: FastAPI):
     # direct routing. A clear log line + auto-pick of the first enabled
     # node lets the admin spot it on the next health check.
     try:
-        from sqlmodel import select
         from sqlmodel.ext.asyncio.session import AsyncSession
         from app.database import get_async_engine
-        from app.models import Settings as DBSettings, Node
 
         async with AsyncSession(get_async_engine()) as session:
-            # Disable expire-on-commit so attribute reads after
-            # `session.commit()` (e.g. `enabled_nodes[0].name` on the
-            # log line below) don't trigger a sync lazy-load and the
-            # `MissingGreenlet: greenlet_spawn has not been called`
-            # error. Same systemic fix we applied to the orchestrate_*
-            # functions in 1.3.0-beta — kept the check working when
-            # SQLAlchemy upgraded its expire semantics. Without this,
-            # the integrity check was silently skipping every boot
-            # (logged as "integrity check skipped: greenlet_spawn..."
-            # — best-effort fallback).
-            try:
-                session.sync_session.expire_on_commit = False
-            except Exception:  # noqa: BLE001
-                pass
-
-            row = (await session.exec(
-                select(DBSettings).where(DBSettings.key == "active_node_id")
-            )).first()
-            stale = False
-            if row and row.value:
-                try:
-                    target_id = int(row.value)
-                except (TypeError, ValueError):
-                    target_id = None
-                    stale = True
-                else:
-                    node = await session.get(Node, target_id)
-                    if node is None or not node.enabled:
-                        stale = True
-
-                if stale:
-                    enabled_nodes = (await session.exec(
-                        select(Node).where(Node.enabled == True).order_by(Node.id)
-                    )).all()
-                    # Snapshot fields we need AFTER commit before
-                    # invoking the commit — even with expire_on_commit
-                    # off, this is a belt-and-braces guarantee against
-                    # future SQLAlchemy default-behaviour drift.
-                    new_id = enabled_nodes[0].id if enabled_nodes else None
-                    new_name = enabled_nodes[0].name if enabled_nodes else None
-                    old_value = row.value
-                    if new_id is not None:
-                        row.value = str(new_id)
-                        session.add(row)
-                        await session.commit()
-                        logger.warning(
-                            "active_node_id healed on boot: %r -> %d (%r) "
-                            "— previous value referenced a missing or disabled node",
-                            old_value, new_id, new_name,
-                        )
-                    else:
-                        # No enabled nodes at all — clear the setting so
-                        # config_gen / auto-start skip cleanly. Admin will
-                        # add a node and pick it manually.
-                        row.value = ""
-                        session.add(row)
-                        await session.commit()
-                        logger.warning(
-                            "active_node_id cleared on boot: previous %r referenced "
-                            "a missing/disabled node, and there are no other enabled "
-                            "nodes to fall back to. Add a node and set it active.",
-                            old_value,
-                        )
+            await _heal_active_node_on_boot(session)
     except Exception as exc:
         # Healing is best-effort — never block backend startup on it.
         logger.warning("active_node_id integrity check skipped: %s", exc)

@@ -646,24 +646,41 @@ async def deploy_to_server(
                                 .where(ServerDeployment.server_id == srv_id)
                                 .where(ServerDeployment.protocol == body.protocol)
                             )).first()
-                            if not existing_dep:
-                                # WG-specific config: server-level state
-                                # (port, network, DNS) — peers go to
-                                # DeploymentClient rows below.
-                                wg_dep_config = {
-                                    "server_port": int(plan.env.get("SERVER_PORT", "51820")),
-                                    "wg_network_4": plan.env.get("WG_NETWORK_4", "10.66.66.0/24"),
-                                    "wg_network_6": plan.env.get("WG_NETWORK_6", "fd42:42:42::/64"),
-                                    "dns_1": plan.env.get("DNS_1", "1.1.1.1"),
-                                    "dns_2": plan.env.get("DNS_2", "1.0.0.1"),
-                                    "allowed_ips": plan.env.get("ALLOWED_IPS", "0.0.0.0/0,::/0"),
+                            # WG-specific config: server-level state
+                            # (port, network, DNS, optional outbound SOCKS)
+                            # — peers go to DeploymentClient rows below.
+                            wg_dep_config = {
+                                "server_port": int(plan.env.get("SERVER_PORT", "51820")),
+                                "wg_network_4": plan.env.get("WG_NETWORK_4", "10.66.66.0/24"),
+                                "wg_network_6": plan.env.get("WG_NETWORK_6", "fd42:42:42::/64"),
+                                "dns_1": plan.env.get("DNS_1", "1.1.1.1"),
+                                "dns_2": plan.env.get("DNS_2", "1.0.0.1"),
+                                "allowed_ips": plan.env.get("ALLOWED_IPS", "0.0.0.0/0,::/0"),
+                            }
+                            socks_host = plan.env.get("SOCKS_HOST")
+                            if socks_host:
+                                wg_dep_config["outbound_socks"] = {
+                                    "host": socks_host,
+                                    "port": int(plan.env.get("SOCKS_PORT", "1080")),
+                                    "username": plan.env.get("SOCKS_USER", ""),
+                                    "password": plan.env.get("SOCKS_PASS", ""),
+                                    "udp": plan.env.get("SOCKS_UDP", "no") == "yes",
                                 }
+                            if not existing_dep:
                                 existing_dep = ServerDeployment(
                                     server_id=srv_id,
                                     protocol=body.protocol,
                                     config_json=json.dumps(wg_dep_config),
                                     status="deployed",
                                 )
+                                s.add(existing_dep)
+                                await s.flush()
+                            else:
+                                # Redeploy: refresh server-level config so
+                                # outbound-SOCKS state does not go stale.
+                                existing_dep.config_json = json.dumps(wg_dep_config)
+                                existing_dep.status = "deployed"
+                                existing_dep.updated_at = datetime.now(timezone.utc)
                                 s.add(existing_dep)
                                 await s.flush()
                             client = DeploymentClient(

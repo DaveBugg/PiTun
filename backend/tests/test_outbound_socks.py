@@ -4,12 +4,15 @@ Covers the deploy env mapping (install-time), the retrofit endpoint
 (`/servers/{id}/deployments/wireguard/outbound-socks`), and the
 structural contract of the setup script's new sub-commands.
 """
+import asyncio
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
 from app.core.deploy import build_plan, build_wireguard_env
+from app.core.jobs import job_manager
+from app.core.ssh import DeployResult
 from app.models import Server, ServerDeployment
 
 SCRIPTS = Path(__file__).resolve().parent.parent.parent / "scripts"
@@ -69,7 +72,7 @@ def test_client_subcommands_still_require_client_name():
 
 
 def _seed_wg(session):
-    srv = Server(name="vps", host="1.2.3.4", port=22, user="root", auth_type="key")
+    srv = Server(name="vps", host="192.0.2.5", port=22, user="root", auth_type="key")
     session.add(srv)
     session.commit()
     session.refresh(srv)
@@ -196,3 +199,201 @@ def test_uninstall_cleans_socks_artifacts():
         "table 101",
     ):
         assert needle in text, f"uninstall script lost {needle!r}"
+
+
+# ── install-time state persistence ───────────────────────────────────────────
+
+
+@pytest.fixture
+def reset_job_manager():
+    """Reset the module-level `job_manager` singleton's RAM state so
+    leftover slot locks from prior tests don't bleed across."""
+    old_slots = dict(job_manager._slot_busy)
+    old_tasks = dict(job_manager._tasks)
+    old_buffers = dict(job_manager._buffers)
+    old_subs = dict(job_manager._subscribers)
+
+    job_manager._slot_busy.clear()
+    job_manager._tasks.clear()
+    job_manager._buffers.clear()
+    job_manager._subscribers.clear()
+
+    yield job_manager
+
+    job_manager._slot_busy.clear()
+    job_manager._slot_busy.update(old_slots)
+    job_manager._tasks.clear()
+    job_manager._tasks.update(old_tasks)
+    job_manager._buffers.clear()
+    job_manager._buffers.update(old_buffers)
+    job_manager._subscribers.clear()
+    job_manager._subscribers.update(old_subs)
+
+
+def _wg_success_result() -> DeployResult:
+    return DeployResult(
+        ok=True,
+        exit_code=0,
+        stdout=(
+            "PITUN-CLIENT-CONF-BEGIN client1\n"
+            "[Interface]\n"
+            "PrivateKey = cHJpdmtleQ==\n"
+            "Address = 10.66.66.2/24\n"
+            "DNS = 1.1.1.1,1.0.0.1\n"
+            "\n"
+            "[Peer]\n"
+            "PublicKey = cHVia2V5\n"
+            "AllowedIPs = 0.0.0.0/0, ::/0\n"
+            "Endpoint = 192.0.2.5:51820\n"
+            "PITUN-CLIENT-CONF-END client1\n"
+            "URI=wireguard://cHJpdmtleQ==@192.0.2.5:51820"
+            "?publickey=cHVia2V5&address=10.66.66.2/24#client1\n"
+        ),
+        stderr="",
+        duration_sec=60.0,
+        connect_latency_ms=10,
+    )
+
+
+def _patch_streaming(canned: DeployResult):
+    async def fake(*args, **kwargs):
+        on_line = kwargs.get("on_line")
+        if on_line is not None:
+            await on_line("stdout", "[fake] starting")
+            await on_line("stdout", "[fake] done")
+        return canned
+
+    return patch("app.core.ssh.exec_remote_script_streaming", new=fake)
+
+
+async def _wait_for_job(client, auth_headers, job_id: str, timeout: float = 5.0):
+    deadline = asyncio.get_event_loop().time() + timeout
+    while asyncio.get_event_loop().time() < deadline:
+        resp = client.get(f"/api/server-tasks/{job_id}", headers=auth_headers)
+        if resp.status_code == 200:
+            data = resp.json()
+            if data["status"] in ("succeeded", "failed"):
+                return data
+        await asyncio.sleep(0.05)
+    raise AssertionError(f"Job {job_id} did not finish within {timeout}s")
+
+
+@pytest.mark.asyncio
+async def test_deploy_wireguard_with_outbound_socks_persists_state(
+    client, session, admin_user, auth_headers, reset_job_manager
+):
+    srv = Server(
+        name="vps", host="192.0.2.5", port=22,
+        user="root", auth_type="password", password="pw",
+    )
+    session.add(srv)
+    session.commit()
+    session.refresh(srv)
+
+    with _patch_streaming(_wg_success_result()):
+        resp = client.post(
+            f"/api/servers/{srv.id}/deploy",
+            json={
+                "protocol": "wireguard",
+                "config": {
+                    "client_name": "client1",
+                    "outbound_socks": {
+                        "host": "127.0.0.1",
+                        "port": 1081,
+                        "username": "u",
+                        "password": "p",
+                        "udp": True,
+                    },
+                },
+            },
+            headers=auth_headers,
+        )
+    assert resp.status_code == 202, resp.text
+    result = await _wait_for_job(client, auth_headers, resp.json()["job_id"])
+    assert result["status"] == "succeeded", result
+
+    state = client.get(
+        f"/api/servers/{srv.id}/deployments/wireguard/outbound-socks",
+        headers=auth_headers,
+    ).json()
+    assert state["enabled"] is True
+    assert state["socks"]["host"] == "127.0.0.1"
+    assert state["socks"]["port"] == 1081
+    assert state["socks"]["username"] == "u"
+    assert state["socks"]["password"] == "p"
+    assert state["socks"]["udp"] is True
+
+
+@pytest.mark.asyncio
+async def test_deploy_wireguard_without_outbound_socks_reports_disabled(
+    client, session, admin_user, auth_headers, reset_job_manager
+):
+    srv = Server(
+        name="vps", host="192.0.2.5", port=22,
+        user="root", auth_type="password", password="pw",
+    )
+    session.add(srv)
+    session.commit()
+    session.refresh(srv)
+
+    with _patch_streaming(_wg_success_result()):
+        resp = client.post(
+            f"/api/servers/{srv.id}/deploy",
+            json={"protocol": "wireguard", "config": {"client_name": "client1"}},
+            headers=auth_headers,
+        )
+    assert resp.status_code == 202, resp.text
+    result = await _wait_for_job(client, auth_headers, resp.json()["job_id"])
+    assert result["status"] == "succeeded", result
+
+    state = client.get(
+        f"/api/servers/{srv.id}/deployments/wireguard/outbound-socks",
+        headers=auth_headers,
+    ).json()
+    assert state["enabled"] is False
+
+
+@pytest.mark.asyncio
+async def test_redeploy_wireguard_clears_stale_outbound_socks_state(
+    client, session, admin_user, auth_headers, reset_job_manager
+):
+    srv = Server(
+        name="vps", host="192.0.2.5", port=22,
+        user="root", auth_type="password", password="pw",
+    )
+    session.add(srv)
+    session.commit()
+    session.refresh(srv)
+
+    with _patch_streaming(_wg_success_result()):
+        resp = client.post(
+            f"/api/servers/{srv.id}/deploy",
+            json={
+                "protocol": "wireguard",
+                "config": {
+                    "client_name": "client1",
+                    "outbound_socks": {"host": "127.0.0.1", "port": 1080},
+                },
+            },
+            headers=auth_headers,
+        )
+        job_id = resp.json()["job_id"]
+    assert resp.status_code == 202, resp.text
+    result = await _wait_for_job(client, auth_headers, job_id)
+    assert result["status"] == "succeeded", result
+
+    with _patch_streaming(_wg_success_result()):
+        resp = client.post(
+            f"/api/servers/{srv.id}/deploy",
+            json={"protocol": "wireguard", "config": {"client_name": "client2"}},
+            headers=auth_headers,
+        )
+    assert resp.status_code == 202, resp.text
+    result = await _wait_for_job(client, auth_headers, resp.json()["job_id"])
+    assert result["status"] == "succeeded", result
+
+    state = client.get(
+        f"/api/servers/{srv.id}/deployments/wireguard/outbound-socks",
+        headers=auth_headers,
+    ).json()
+    assert state["enabled"] is False

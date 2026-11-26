@@ -467,6 +467,8 @@ export function AssistantPanel() {
 
   if (!settings.data?.enabled && !settings.data?.mcp_enabled) return null
 
+  const builtInEnabled = !!settings.data?.enabled
+
   return (
     <>
       {!open && (
@@ -488,8 +490,8 @@ export function AssistantPanel() {
       {open && (
         <div
           className="fixed inset-y-0 right-0 z-50 flex w-full sm:w-[440px] flex-col border-l border-gray-800 bg-gray-950 shadow-2xl"
-          onDragOver={(e) => { if (e.dataTransfer.types.includes('Files')) e.preventDefault() }}
-          onDrop={(e) => { e.preventDefault(); void attach(Array.from(e.dataTransfer.files)) }}
+          onDragOver={builtInEnabled ? (e) => { if (e.dataTransfer.types.includes('Files')) e.preventDefault() } : undefined}
+          onDrop={builtInEnabled ? (e) => { e.preventDefault(); void attach(Array.from(e.dataTransfer.files)) } : undefined}
         >
           <div className="flex items-center gap-2 border-b border-gray-800 px-3 py-2.5">
             <Bot className="h-5 w-5 text-brand-400 shrink-0" />
@@ -502,10 +504,12 @@ export function AssistantPanel() {
               {cid === null && <option value="">{t('New chat', 'Новый чат')}</option>}
               {(convs.data ?? []).map((c) => <option key={c.id} value={c.id}>{c.title}</option>)}
             </select>
-            <button onClick={newChat} disabled={busy}
-                    title={t('New chat', 'Новый чат')} className="text-gray-400 hover:text-gray-200 disabled:opacity-50">
-              <Plus className="h-4 w-4" />
-            </button>
+            {builtInEnabled && (
+              <button onClick={newChat} disabled={busy}
+                      title={t('New chat', 'Новый чат')} className="text-gray-400 hover:text-gray-200 disabled:opacity-50">
+                <Plus className="h-4 w-4" />
+              </button>
+            )}
             {cid !== null && (
               <button
                 onClick={async () => {
@@ -537,29 +541,40 @@ export function AssistantPanel() {
           <div className="flex-1 overflow-y-auto px-3 py-3 space-y-2">
             {items.length === 0 && (
               <div className="space-y-3 pt-2">
-                <p className="text-xs text-gray-500">
-                  {t(
-                    'I can look things up and prepare changes: routing devices and sites through nodes, building circles, installing x-ui on a VPS and issuing nodes, finding out what does not work. Every change comes as a plan you approve first.',
-                    'Я могу искать информацию и готовить изменения: пускать устройства и сайты через ноды, собирать циркл, ставить x-ui на VPS и выпускать ноды, искать, что не работает. Любое изменение приходит планом, который вы сначала подтверждаете.',
-                  )}
-                </p>
-                <p className="text-[11px] text-gray-600 whitespace-pre-line">
-                  {t(
-                    'To add a VPS, paste its access on separate lines: IP, password, then optionally user (root) and port (22). The box reads it itself; the password never goes to the model.',
-                    'Чтобы добавить VPS, вставьте доступ построчно: IP, пароль, дальше по желанию пользователь (root) и порт (22). Бокс разберёт это сам, пароль модели не уходит.',
-                  )}
-                </p>
-                <div className="space-y-1.5">
-                  {EXAMPLES.map((ex) => {
-                    const text = t(ex.en, ex.ru)
-                    return (
-                      <button key={ex.en} onClick={() => void send(text)} disabled={busy}
-                              className="block w-full rounded-lg border border-gray-800 bg-gray-900/50 px-3 py-2 text-left text-xs text-gray-300 hover:border-gray-700 disabled:opacity-50">
-                        {text}
-                      </button>
-                    )
-                  })}
-                </div>
+                {builtInEnabled ? (
+                  <>
+                    <p className="text-xs text-gray-500">
+                      {t(
+                        'I can look things up and prepare changes: routing devices and sites through nodes, building circles, installing x-ui on a VPS and issuing nodes, finding out what does not work. Every change comes as a plan you approve first.',
+                        'Я могу искать информацию и готовить изменения: пускать устройства и сайты через ноды, собирать циркл, ставить x-ui на VPS и выпускать ноды, искать, что не работает. Любое изменение приходит планом, который вы сначала подтверждаете.',
+                      )}
+                    </p>
+                    <p className="text-[11px] text-gray-600 whitespace-pre-line">
+                      {t(
+                        'To add a VPS, paste its access on separate lines: IP, password, then optionally user (root) and port (22). The box reads it itself; the password never goes to the model.',
+                        'Чтобы добавить VPS, вставьте доступ построчно: IP, пароль, дальше по желанию пользователь (root) и порт (22). Бокс разберёт это сам, пароль модели не уходит.',
+                      )}
+                    </p>
+                    <div className="space-y-1.5">
+                      {EXAMPLES.map((ex) => {
+                        const text = t(ex.en, ex.ru)
+                        return (
+                          <button key={ex.en} onClick={() => void send(text)} disabled={busy}
+                                  className="block w-full rounded-lg border border-gray-800 bg-gray-900/50 px-3 py-2 text-left text-xs text-gray-300 hover:border-gray-700 disabled:opacity-50">
+                            {text}
+                          </button>
+                        )
+                      })}
+                    </div>
+                  </>
+                ) : (
+                  <p className="text-xs text-gray-500">
+                    {t(
+                      'MCP-only mode: chat, screenshots, voice and quick actions are disabled; only plan approval is available.',
+                      'MCP-режим: чат, скриншоты, голос и быстрые действия отключены; доступно только подтверждение планов.',
+                    )}
+                  </p>
+                )}
               </div>
             )}
             {items.map((it, i) => {
@@ -623,88 +638,99 @@ export function AssistantPanel() {
             <div ref={endRef} />
           </div>
 
-          {images.length > 0 && (
-            <div className="flex flex-wrap gap-2 border-t border-gray-800 px-3 pt-2">
-              {images.map((im, j) => (
-                <div key={j} className="relative">
-                  <img src={im.preview} alt="" className="h-14 w-20 rounded-sm object-cover" />
-                  <button
-                    onClick={() => setImages((p) => p.filter((_, k) => k !== j))}
-                    aria-label={t('Remove', 'Убрать')}
-                    className="absolute -right-1.5 -top-1.5 rounded-full bg-gray-800 p-0.5 text-gray-300 hover:bg-gray-700"
-                  >
-                    <X className="h-3 w-3" />
-                  </button>
-                </div>
-              ))}
-            </div>
-          )}
-          <form
-            onSubmit={(e) => { e.preventDefault(); void send(input) }}
-            className="flex items-end gap-2 border-t border-gray-800 p-3"
-          >
-            <input
-              ref={fileRef}
-              type="file"
-              accept="image/*"
-              multiple
-              className="hidden"
-              onChange={(e) => { void attach(Array.from(e.target.files ?? [])); e.target.value = '' }}
-            />
-            <div className="relative">
-              <button type="button" onClick={() => setMenu(!menu)} disabled={busy}
-                      title={t('Quick actions (forms, no model needed)', 'Быстрые действия (формы, без модели)')}
-                      className="flex h-9 w-9 items-center justify-center rounded-lg text-gray-400 hover:bg-gray-900 hover:text-gray-200 disabled:opacity-50">
-                <Zap className="h-4 w-4" />
-              </button>
-              {menu && (
-                <div className="absolute bottom-10 left-0 z-10 w-60 rounded-lg border border-gray-800 bg-gray-900 py-1 shadow-xl">
-                  {(macros.data ?? []).map((m) => (
-                    <button key={m.name} type="button" onClick={() => openForm(m.name)}
-                            className="block w-full px-3 py-1.5 text-left text-xs text-gray-200 hover:bg-gray-800">
-                      {MACRO_LABEL[m.name] ? t(MACRO_LABEL[m.name].en, MACRO_LABEL[m.name].ru) : m.name}
-                    </button>
+          {builtInEnabled ? (
+            <>
+              {images.length > 0 && (
+                <div className="flex flex-wrap gap-2 border-t border-gray-800 px-3 pt-2">
+                  {images.map((im, j) => (
+                    <div key={j} className="relative">
+                      <img src={im.preview} alt="" className="h-14 w-20 rounded-sm object-cover" />
+                      <button
+                        onClick={() => setImages((p) => p.filter((_, k) => k !== j))}
+                        aria-label={t('Remove', 'Убрать')}
+                        className="absolute -right-1.5 -top-1.5 rounded-full bg-gray-800 p-0.5 text-gray-300 hover:bg-gray-700"
+                      >
+                        <X className="h-3 w-3" />
+                      </button>
+                    </div>
                   ))}
                 </div>
               )}
+              <form
+                onSubmit={(e) => { e.preventDefault(); void send(input) }}
+                className="flex items-end gap-2 border-t border-gray-800 p-3"
+              >
+                <input
+                  ref={fileRef}
+                  type="file"
+                  accept="image/*"
+                  multiple
+                  className="hidden"
+                  onChange={(e) => { void attach(Array.from(e.target.files ?? [])); e.target.value = '' }}
+                />
+                <div className="relative">
+                  <button type="button" onClick={() => setMenu(!menu)} disabled={busy}
+                          title={t('Quick actions (forms, no model needed)', 'Быстрые действия (формы, без модели)')}
+                          className="flex h-9 w-9 items-center justify-center rounded-lg text-gray-400 hover:bg-gray-900 hover:text-gray-200 disabled:opacity-50">
+                    <Zap className="h-4 w-4" />
+                  </button>
+                  {menu && (
+                    <div className="absolute bottom-10 left-0 z-10 w-60 rounded-lg border border-gray-800 bg-gray-900 py-1 shadow-xl">
+                      {(macros.data ?? []).map((m) => (
+                        <button key={m.name} type="button" onClick={() => openForm(m.name)}
+                                className="block w-full px-3 py-1.5 text-left text-xs text-gray-200 hover:bg-gray-800">
+                          {MACRO_LABEL[m.name] ? t(MACRO_LABEL[m.name].en, MACRO_LABEL[m.name].ru) : m.name}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+                <button type="button" onClick={() => fileRef.current?.click()}
+                        disabled={busy || images.length >= MAX_IMAGES}
+                        title={t('Attach a screenshot (or paste / drop it)', 'Приложить скриншот (или вставить / перетащить)')}
+                        className="flex h-9 w-9 items-center justify-center rounded-lg text-gray-400 hover:bg-gray-900 hover:text-gray-200 disabled:opacity-50">
+                  <ImagePlus className="h-4 w-4" />
+                </button>
+                {noVoice !== 'off' && (
+                  <button type="button"
+                          onClick={() => { if (voice.state === 'idle') voiceBase.current = input.trim(); voice.toggle() }}
+                          disabled={(busy && voice.state === 'idle') || noVoice !== null || voice.state === 'transcribing'}
+                          title={voice.error ? `${micTitle} — ${voice.error}` : micTitle}
+                          className={clsx('flex h-9 w-9 items-center justify-center rounded-lg disabled:opacity-50',
+                            voice.state === 'listening' ? 'bg-red-600/80 text-white animate-pulse'
+                              : voice.error ? 'text-red-400 hover:bg-gray-900' : 'text-gray-400 hover:bg-gray-900 hover:text-gray-200')}>
+                    {voice.state === 'transcribing' ? <Loader2 className="h-4 w-4 animate-spin" />
+                      : noVoice ? <MicOff className="h-4 w-4" /> : <Mic className="h-4 w-4" />}
+                  </button>
+                )}
+                <textarea
+                  value={input}
+                  onChange={(e) => setInput(e.target.value)}
+                  onPaste={(e) => {
+                    const files = Array.from(e.clipboardData.files)
+                    if (files.some((f) => f.type.startsWith('image/'))) { e.preventDefault(); void attach(files) }
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void send(input) }
+                  }}
+                  rows={2}
+                  placeholder={t('Ask or describe a change…', 'Спросите или опишите изменение…')}
+                  className="flex-1 resize-none rounded-lg bg-gray-900 border border-gray-800 px-3 py-2 text-sm text-gray-100 focus:border-brand-500 focus:outline-hidden"
+                />
+                <button type="submit" disabled={busy || (!input.trim() && images.length === 0)} aria-label={t('Send', 'Отправить')}
+                        className="flex h-9 w-9 items-center justify-center rounded-lg bg-brand-600 text-white hover:bg-brand-500 disabled:opacity-50">
+                  <Send className="h-4 w-4" />
+                </button>
+              </form>
+            </>
+          ) : (
+            <div className="border-t border-gray-800 p-3 text-xs text-gray-500">
+              {t(
+                'MCP-only mode: chat, screenshots, voice and quick actions are disabled; only plan approval is available.',
+                'MCP-режим: чат, скриншоты, голос и быстрые действия отключены; доступно только подтверждение планов.',
+              )}
             </div>
-            <button type="button" onClick={() => fileRef.current?.click()}
-                    disabled={busy || images.length >= MAX_IMAGES}
-                    title={t('Attach a screenshot (or paste / drop it)', 'Приложить скриншот (или вставить / перетащить)')}
-                    className="flex h-9 w-9 items-center justify-center rounded-lg text-gray-400 hover:bg-gray-900 hover:text-gray-200 disabled:opacity-50">
-              <ImagePlus className="h-4 w-4" />
-            </button>
-            {noVoice !== 'off' && (
-              <button type="button"
-                      onClick={() => { if (voice.state === 'idle') voiceBase.current = input.trim(); voice.toggle() }}
-                      disabled={(busy && voice.state === 'idle') || noVoice !== null || voice.state === 'transcribing'}
-                      title={voice.error ? `${micTitle} — ${voice.error}` : micTitle}
-                      className={clsx('flex h-9 w-9 items-center justify-center rounded-lg disabled:opacity-50',
-                        voice.state === 'listening' ? 'bg-red-600/80 text-white animate-pulse'
-                          : voice.error ? 'text-red-400 hover:bg-gray-900' : 'text-gray-400 hover:bg-gray-900 hover:text-gray-200')}>
-                {voice.state === 'transcribing' ? <Loader2 className="h-4 w-4 animate-spin" />
-                  : noVoice ? <MicOff className="h-4 w-4" /> : <Mic className="h-4 w-4" />}
-              </button>
-            )}
-            <textarea
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              onPaste={(e) => {
-                const files = Array.from(e.clipboardData.files)
-                if (files.some((f) => f.type.startsWith('image/'))) { e.preventDefault(); void attach(files) }
-              }}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void send(input) }
-              }}
-              rows={2}
-              placeholder={t('Ask or describe a change…', 'Спросите или опишите изменение…')}
-              className="flex-1 resize-none rounded-lg bg-gray-900 border border-gray-800 px-3 py-2 text-sm text-gray-100 focus:border-brand-500 focus:outline-hidden"
-            />
-            <button type="submit" disabled={busy || (!input.trim() && images.length === 0)} aria-label={t('Send', 'Отправить')}
-                    className="flex h-9 w-9 items-center justify-center rounded-lg bg-brand-600 text-white hover:bg-brand-500 disabled:opacity-50">
-              <Send className="h-4 w-4" />
-            </button>
-          </form>
+          )}
         </div>
       )}
     </>

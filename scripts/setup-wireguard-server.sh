@@ -143,8 +143,13 @@ RPFILTER_DROPIN="/etc/sysctl.d/99-pitun-socks-rpfilter.conf"
 
 # ── Helper: idempotent params update ───────────────────────────────────────
 _params_set() {
-    # _params_set KEY VALUE — replace or append KEY="VALUE" in $WG_PARAMS.
+    # _params_set KEY VALUE — replace or append KEY=<quoted VALUE> in $WG_PARAMS.
+    # Keys are fixed safe identifiers; values may contain arbitrary SOCKS
+    # credentials (quotes, whitespace, $(), backticks, newlines...), so we
+    # serialize them with POSIX-correct shell quoting. This keeps `load_params`
+    # from interpreting command substitutions or mangling secrets.
     python3 - "$WG_PARAMS" "$1" "$2" <<'PYEOF'
+import shlex
 import sys
 path, key, value = sys.argv[1], sys.argv[2], sys.argv[3]
 try:
@@ -155,12 +160,12 @@ except FileNotFoundError:
 out, done = [], False
 for line in lines:
     if line.startswith(f"{key}="):
-        out.append(f'{key}="{value}"\n')
+        out.append(f'{key}={shlex.quote(value)}\n')
         done = True
     else:
         out.append(line)
 if not done:
-    out.append(f'{key}="{value}"\n')
+    out.append(f'{key}={shlex.quote(value)}\n')
 with open(path, "w") as f:
     f.writelines(out)
 PYEOF
@@ -837,7 +842,13 @@ cmd_remove_outbound_socks() {
     ip -6 rule del iif "$WG_IF" pref 100 table "$SOCKS_ROUTE_TABLE" 2>/dev/null || true
     ip route flush table "$SOCKS_ROUTE_TABLE" 2>/dev/null || true
 
-    systemctl restart "wg-quick@${WG_IF}"
+    # Only restart wg-quick when it is currently active. If the tunnel is
+    # already stopped/failed, a restart would (re)start it and is not
+    # required for cleanup; a restart failure of an active tunnel is real.
+    if systemctl is-active --quiet "wg-quick@${WG_IF}"; then
+        systemctl restart "wg-quick@${WG_IF}" \
+            || err "Failed to restart wg-quick@${WG_IF} after removing outbound SOCKS5 routing"
+    fi
 
     _params_set OUTBOUND_SOCKS_HOST ""
     _params_set OUTBOUND_SOCKS_PORT ""

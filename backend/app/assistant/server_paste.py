@@ -33,14 +33,6 @@ _HEADER = re.compile(r"(server|сервер|vps|впс|добав|add)", re.I)
 _NOT_PASSWORDS = {"direct", "proxy", "block", "node", "напрямую", "прокси", "блок", "заблокировать"}
 
 
-def _is_ip(v: str) -> bool:
-    try:
-        ipaddress.ip_address(v)
-        return True
-    except ValueError:
-        return False
-
-
 def _host(v: str) -> Optional[str]:
     v = v.strip().strip("[]").lower()
     try:
@@ -114,11 +106,8 @@ def parse(text: str) -> Optional[dict]:
     user, host, port = _split_host(lines[0])
     if host is None:
         return None
-    # A bare hostname + one word is more likely "example.com / direct" than
-    # credentials: ask for an IP, user@host, host:port or a third line.
-    is_ip = _is_ip(host)
-    if not is_ip and len(lines) == 2 and user is None and port is None:
-        return None
+    # A bare hostname + one plausible password line is treated as credentials.
+    # Routing keywords are still rejected below.
     password = lines[1]
     if password.lower() in _NOT_PASSWORDS:
         return None

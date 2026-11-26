@@ -218,15 +218,16 @@ async def find_devices(session, args: dict, keep_score: bool = False) -> List[di
 
 
 class ToolContext:
-    """What a tool call needs: DB session, the redactor, the executor, and a
-    callback that stores a proposed plan."""
+    """What a tool call needs: DB session, the redactor, the executor, a
+    callback that stores a proposed plan, and whether web tools may run."""
 
-    def __init__(self, session, redactor, executor: Executor, save_plan, web_proxy=None):
+    def __init__(self, session, redactor, executor: Executor, save_plan, web_proxy=None, web_search=False):
         self.session = session
         self.redactor = redactor
         self.executor = executor
         self.save_plan = save_plan
         self.web_proxy = web_proxy
+        self.web_search = web_search
 
 
 async def _make_plan(ctx: ToolContext, title: str, summary: str, steps: List[dict]) -> tuple[str, bool, Optional[int]]:
@@ -315,6 +316,8 @@ async def run_tool(ctx: ToolContext, name: str, args: dict) -> tuple[str, bool, 
             return ("Deleted." if await delete_fact(ctx.session, fid) else f"no fact #{fid}"), False, None
 
         if name in ("web_search", "web_fetch"):
+            if not ctx.web_search:
+                return "web search is disabled in Settings", True, None
             from app.assistant import web
             try:
                 if name == "web_search":

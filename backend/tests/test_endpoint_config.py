@@ -77,6 +77,22 @@ def test_balancer_mode_builds_balancer_and_members():
     assert balancers[0]["tag"] == "balancer-5"
     assert balancers[0]["selector"] == ["node-1", "node-2"]
     assert cfg["routing"]["rules"][-1]["balancerTag"] == "balancer-5"
+    # DNS rule must follow the same egress contract as the catch-all.
+    dns_rule = cfg["routing"]["rules"][0]
+    assert dns_rule["port"] == "53"
+    assert dns_rule["balancerTag"] == "balancer-5"
+    assert "outboundTag" not in dns_rule
+
+    # Node endpoints keep the original outboundTag behaviour.
+    node_cfg = generate_endpoint_config(
+        socks_port=1082, node=m1, balancer=None,
+        set_rules=[], all_nodes=[m1], balancer_groups=[],
+        settings_map={},
+    )
+    node_dns = node_cfg["routing"]["rules"][0]
+    assert node_dns["port"] == "53"
+    assert node_dns["outboundTag"] == "node-1"
+    assert "balancerTag" not in node_dns
 
 
 def test_lan_auth_locks_the_socks_inbound():

@@ -40,6 +40,13 @@ _IPV6 = re.compile(r"(?<![\w:])(?:[0-9a-fA-F]{1,4}:){2,7}[0-9a-fA-F]{0,4}(?::[0-
 _PROXY_URI = re.compile(r"\b(?:vless|vmess|trojan|ss|ssr|hysteria2?|hy2|tuic|wireguard|wg|socks5?|naive\+https|"
                         r"happ|xui|anytls|juicity)://\S+", re.I)
 _URL_CRED = re.compile(r"\bhttps?://[^\s/@]+:[^\s/@]+@\S+", re.I)
+_URL_SENSITIVE_PARAM = re.compile(
+    r"\bhttps?://\S*?(?:[?&](?:"
+    r"access_token|api_key|apikey|password|passwd|pass|subscription_url|subscription|sub_url|"
+    r"secret|token|auth|key"
+    r")=[^\s&]+)\S*",
+    re.I,
+)
 _URL_TOKEN = re.compile(r"\bhttps?://\S*?[A-Za-z0-9_\-]{20,}\S*", re.I)
 _UUID = re.compile(r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b")
 _WG_KEY = re.compile(r"(?i)((?:PrivateKey|PresharedKey)\s*=\s*)(\S+)")
@@ -112,6 +119,7 @@ class Redactor:
 
         s = _PROXY_URI.sub(whole, s)
         s = _URL_CRED.sub(whole, s)
+        s = _URL_SENSITIVE_PARAM.sub(whole, s)
         s = _URL_TOKEN.sub(lambda m: self._ph(m.group(0)) if _looks_like_token(m.group(0)) else m.group(0), s)
         s = _UUID.sub(whole, s)
         s = _WG_KEY.sub(lambda m: m.group(1) + self._ph(m.group(2)), s)

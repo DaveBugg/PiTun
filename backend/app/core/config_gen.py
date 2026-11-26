@@ -2019,11 +2019,14 @@ def generate_endpoint_config(
     ]
 
     # DNS through the endpoint's egress (no local-resolver leak). Plain
-    # UDP/53 to an anycast IP — the rule below sends it via the node.
-    routing_rules: List[Dict[str, Any]] = [
-        {"type": "field", "network": "tcp,udp", "port": "53",
-         "outboundTag": main_tag},
-    ]
+    # UDP/53 to an anycast IP — the rule below sends it via the node or
+    # through the assigned balancer.
+    dns_rule: Dict[str, Any] = {"type": "field", "network": "tcp,udp", "port": "53"}
+    if node is not None:
+        dns_rule["outboundTag"] = main_tag
+    else:
+        dns_rule["balancerTag"] = main_tag
+    routing_rules: List[Dict[str, Any]] = [dns_rule]
     for rule in set_rules:
         if not rule.enabled:
             continue

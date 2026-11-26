@@ -11,6 +11,7 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.config import APP_VERSION
 from app.core.dataplane import dispatch_dataplane
+from app.core.endpoints import endpoint_assigned_node_ids_subquery
 from app.database import get_async_engine, get_session
 from app.models import BalancerGroup, Node, RoutingRule
 from app.schemas import (
@@ -392,7 +393,10 @@ async def _heal_active_node_after_delete(
 
     survivors = (await session.exec(
         select(Node)
-        .where(Node.enabled == True)  # noqa: E712
+        .where(
+            Node.enabled == True,  # noqa: E712
+            Node.id.notin_(endpoint_assigned_node_ids_subquery()),  # type: ignore[union-attr,attr-defined]
+        )
         .order_by(Node.is_online.desc(), Node.id)  # type: ignore[union-attr]
     )).all()
 

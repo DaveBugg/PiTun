@@ -19,6 +19,7 @@ from tests.test_assistant_b2 import FakeProvider, _chat, _enable, _events, _plan
     ("Add a server:\n203.0.113.5\npw", ("203.0.113.5", "pw", "root", 22)),
     ("ubuntu@203.0.113.9:2201\npw", ("203.0.113.9", "pw", "ubuntu", 2201)),
     ("vps.example.com\npw\nubuntu", ("vps.example.com", "pw", "ubuntu", 22)),
+    ("vps.example.com\nmySecret123", ("vps.example.com", "mySecret123", "root", 22)),
     ("ip: 203.0.113.7\npassword: two words\nport: 2200", ("203.0.113.7", "two words", "root", 2200)),
     ("адрес: 203.0.113.7\nпароль: x\nлогин: admin", ("203.0.113.7", "x", "admin", 22)),
 ])
@@ -73,6 +74,38 @@ def test_pasted_server_becomes_a_plan_and_the_password_never_reaches_the_model(
     assert view["status"] == "executed", view["results"]
     srv = session.exec(select(Server)).one()
     assert (srv.host, srv.port, srv.user, srv.password) == ("203.0.113.5", 2222, "root", "S3cr3t-pass")
+    assert view["results"][1]["body"]["ok"] is True
+
+
+def test_pasted_hostname_credentials_hide_password_from_model_and_history(
+        client, admin_user, auth_headers, session):
+    from sqlmodel import select
+    from app.models import AssistantMessage, AssistantPlan, Server
+    _enable(client, auth_headers)
+    fake = FakeProvider([ModelTurn(text="Check the plan and approve it.")])
+    cid, evs = _chat(client, auth_headers, fake, "vps.example.com\nmySecret123")
+    assert evs[0] == {"type": "user_masked",
+                      "text": "[Server credentials pasted: host vps.example.com, user root, port 22, password hidden]"}
+    plan = _plan(evs)
+    assert plan["steps"][0]["body"]["password"] == "••••••"
+    assert plan["steps"][1]["path"] == "/servers/{{step1.id}}/test"
+    sent = json.dumps(fake.seen) + json.dumps(fake.systems)
+    assert "mySecret123" not in sent
+    assert "vps.example.com" not in sent
+    stored = " ".join(r.content for r in session.exec(select(AssistantMessage)).all())
+    assert "mySecret123" not in stored
+    row = session.exec(select(AssistantPlan)).one()
+    assert json.loads(row.steps)[0]["body"]["password"] == "mySecret123"
+
+    probe = mock.AsyncMock(return_value={"server_id": 1, "ok": True, "latency_ms": 40, "error": None,
+                                         "remote_info": "Linux"})
+    with mock.patch("app.api.servers._probe_one", probe), \
+            mock.patch("app.assistant.agent.make_provider", return_value=FakeProvider([ModelTurn(text="ok")])):
+        evs = _events(client.post(f"/api/assistant/plans/{plan['id']}/approve", headers=auth_headers))
+    view = evs[0]["plan"]
+    assert view["status"] == "executed", view["results"]
+    srv = session.exec(select(Server)).one()
+    assert (srv.host, srv.port, srv.user, srv.password) == ("vps.example.com", 22, "root", "mySecret123")
     assert view["results"][1]["body"]["ok"] is True
 
 

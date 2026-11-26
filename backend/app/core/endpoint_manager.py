@@ -300,9 +300,11 @@ class EndpointManager:
 
     def _get(self, endpoint: ProxyEndpoint) -> EndpointProcess:
         proc = self._procs.get(endpoint.id)
-        if proc is None or proc.name != endpoint.name:
+        if proc is None:
             proc = EndpointProcess(endpoint.id, endpoint.name)
             self._procs[endpoint.id] = proc
+        elif proc.name != endpoint.name:
+            proc.name = endpoint.name
         return proc
 
     async def apply(self, session: AsyncSession, endpoint: ProxyEndpoint) -> None:

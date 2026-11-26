@@ -849,3 +849,112 @@ class TestSubscriptionRefreshMutex:
             assert "in progress" in detail.get("error", "").lower()
         finally:
             subs_mod._REFRESH_IN_FLIGHT.discard(sub_id)
+
+
+class TestSubscriptionRefreshHealsActiveExcludesEndpoints:
+    """When the active node disappears during a subscription refresh,
+    the fallback must not pick a node that is already assigned to an
+    extra endpoint (one-node-per-flow invariant)."""
+
+    def _refresh(self, session, sub, uris):
+        import asyncio
+        from unittest.mock import AsyncMock
+        from app.api.subscriptions import _fetch_subscription_unlocked
+
+        with mock.patch("app.api.subscriptions.httpx.AsyncClient") as mock_client:
+            instance = mock_client.return_value.__aenter__.return_value
+            instance.get = AsyncMock(return_value=mock.Mock(
+                status_code=200,
+                text="\n".join(uris),
+                raise_for_status=lambda: None,
+            ))
+            asyncio.run(_fetch_subscription_unlocked(sub.id))
+
+    def test_refresh_heal_skips_assigned_survivor(
+        self, client, admin_user, auth_headers, session
+    ):
+        from app.models import Subscription, Node, ProxyEndpoint, Settings as DBSettings
+
+        sub = Subscription(name="Test", url="http://example/sub", enabled=True)
+        session.add(sub)
+        session.commit()
+        session.refresh(sub)
+
+        active = Node(
+            name="active", protocol="vless", address="192.0.2.10", port=443,
+            uuid="active-uuid", transport="tcp", tls="reality",
+            subscription_id=sub.id, enabled=True,
+        )
+        assigned = Node(
+            name="assigned", protocol="vless", address="192.0.2.11", port=443,
+            uuid="assigned-uuid", transport="tcp", tls="reality",
+            subscription_id=sub.id, enabled=True,
+        )
+        free = Node(
+            name="free", protocol="vless", address="192.0.2.12", port=443,
+            uuid="free-uuid", transport="tcp", tls="reality",
+            subscription_id=sub.id, enabled=True,
+        )
+        session.add(active)
+        session.add(assigned)
+        session.add(free)
+        session.commit()
+        session.refresh(active)
+        session.refresh(assigned)
+        session.refresh(free)
+
+        session.add(ProxyEndpoint(name="ep1", node_id=assigned.id, socks_port=1081, mode="global"))
+        session.add(DBSettings(key="active_node_id", value=str(active.id)))
+        session.commit()
+
+        self._refresh(session, sub, [
+            "vless://assigned-uuid@192.0.2.11:443?type=tcp&security=reality#assigned",
+            "vless://free-uuid@192.0.2.12:443?type=tcp&security=reality#free",
+        ])
+
+        session.expire_all()
+        active_after = session.query(DBSettings).filter(
+            DBSettings.key == "active_node_id"
+        ).first()
+        assert active_after.value == str(free.id)
+
+    def test_refresh_heal_leaves_setting_when_all_survivors_assigned(
+        self, client, admin_user, auth_headers, session
+    ):
+        from app.models import Subscription, Node, ProxyEndpoint, Settings as DBSettings
+
+        sub = Subscription(name="Test", url="http://example/sub", enabled=True)
+        session.add(sub)
+        session.commit()
+        session.refresh(sub)
+
+        active = Node(
+            name="active", protocol="vless", address="192.0.2.10", port=443,
+            uuid="active-uuid", transport="tcp", tls="reality",
+            subscription_id=sub.id, enabled=True,
+        )
+        assigned = Node(
+            name="assigned", protocol="vless", address="192.0.2.11", port=443,
+            uuid="assigned-uuid", transport="tcp", tls="reality",
+            subscription_id=sub.id, enabled=True,
+        )
+        session.add(active)
+        session.add(assigned)
+        session.commit()
+        session.refresh(active)
+        session.refresh(assigned)
+
+        session.add(ProxyEndpoint(name="ep1", node_id=assigned.id, socks_port=1081, mode="global"))
+        session.add(DBSettings(key="active_node_id", value=str(active.id)))
+        session.commit()
+        active_id = active.id
+
+        self._refresh(session, sub, [
+            "vless://assigned-uuid@192.0.2.11:443?type=tcp&security=reality#assigned",
+        ])
+
+        session.expire_all()
+        active_after = session.query(DBSettings).filter(
+            DBSettings.key == "active_node_id"
+        ).first()
+        assert active_after.value == str(active_id)

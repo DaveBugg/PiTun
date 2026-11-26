@@ -202,14 +202,39 @@ function EndpointFormModal({
     return used
   }, [status, endpoints, initial])
 
-  const nodeOptions = useMemo(() => nodes
-    .filter((n) => n.enabled && !usedNodeIds.has(n.id))
-    .filter((n) => !hideUnavailable || n.is_online || `node:${n.id}` === egress)
-    .map((n) => ({
-      value: `node:${n.id}`,
-      label: `${n.name}${n.is_online ? '' : ` (${t('offline', 'недоступна')})`}`,
-      hint: `${n.protocol} · ${n.address}`,
-    })), [nodes, usedNodeIds, hideUnavailable, egress, t])
+  const nodeOptions = useMemo(() => {
+    const currentNode = initial?.node_id != null
+      ? nodes.find((n) => n.id === initial.node_id)
+      : undefined
+    const currentValue = currentNode ? `node:${currentNode.id}` : ''
+
+    const options = nodes
+      .filter((n) => n.enabled && !usedNodeIds.has(n.id))
+      .filter((n) => !hideUnavailable || n.is_online || `node:${n.id}` === egress)
+      .map((n) => ({
+        value: `node:${n.id}`,
+        label: `${n.name}${n.is_online ? '' : ` (${t('offline', 'недоступна')})`}`,
+        hint: `${n.protocol} · ${n.address}`,
+      }))
+
+    if (currentNode && egress === currentValue) {
+      const currentOption = {
+        value: currentValue,
+        label: `${currentNode.name} (${t('current', 'текущая')})${currentNode.is_online ? '' : ` · ${t('offline', 'недоступна')}`}`,
+        hint: `${currentNode.protocol} · ${currentNode.address}`,
+      }
+      const idx = options.findIndex((o) => o.value === currentValue)
+      if (idx === -1) {
+        return [currentOption, ...options]
+      }
+      return [
+        ...options.slice(0, idx),
+        currentOption,
+        ...options.slice(idx + 1),
+      ]
+    }
+    return options
+  }, [nodes, usedNodeIds, hideUnavailable, egress, t, initial?.node_id])
 
   const balancerOptions = balancers
     .filter((b) => b.enabled)
@@ -247,6 +272,13 @@ function EndpointFormModal({
       setError(t('Name is required', 'Укажите имя'))
       return
     }
+    if (port.trim()) {
+      const n = Number(port.trim())
+      if (!Number.isInteger(n) || n < 1 || n > 65535) {
+        setError(t('Port must be an integer from 1 to 65535', 'Порт должен быть целым числом от 1 до 65535'))
+        return
+      }
+    }
     if (!egress) {
       setError(t('Pick a node or a balancer', 'Выберите ноду или балансер'))
       return
@@ -281,6 +313,10 @@ function EndpointFormModal({
               {t('SOCKS port', 'SOCKS-порт')}
             </label>
             <input
+              type="number"
+              min={1}
+              max={65535}
+              step={1}
               value={port}
               onChange={(e) => setPort(e.target.value)}
               className={inputCls}

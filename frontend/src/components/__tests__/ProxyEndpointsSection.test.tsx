@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, fireEvent, waitFor } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { ReactNode } from 'react'
 
@@ -23,6 +24,7 @@ vi.mock('@/hooks/useNodes', () => ({
       { id: 2, name: 'Taken node', protocol: 'vless', address: '10.0.0.2', is_online: true, enabled: true },
       { id: 3, name: 'Free node', protocol: 'trojan', address: '10.0.0.3', is_online: true, enabled: true },
       { id: 4, name: 'Dead node', protocol: 'ss', address: '10.0.0.4', is_online: false, enabled: true },
+      { id: 5, name: 'Disabled node', protocol: 'vless', address: '10.0.0.5', is_online: false, enabled: false },
     ],
   }),
 }))
@@ -111,5 +113,91 @@ describe('<ProxyEndpointsSection> form', () => {
     fireEvent.click(screen.getByText('Save'))
     expect(await screen.findByText('Pick a routing set')).toBeInTheDocument()
     expect(createMock).not.toHaveBeenCalled()
+  })
+
+  it('keeps the stale current node visible and labeled when editing', async () => {
+    vi.mocked(endpointsApi.list).mockResolvedValue([
+      {
+        id: 9, name: 'ep-main', enabled: true, socks_port: 1081,
+        mode: 'global', node_id: 1, balancer_id: null, routing_set_id: null,
+        order: 1, running: true, node_name: 'Main node',
+      },
+      {
+        id: 12, name: 'ep-taken', enabled: true, socks_port: 1082,
+        mode: 'global', node_id: 2, balancer_id: null, routing_set_id: null,
+        order: 2, running: true, node_name: 'Taken node',
+      },
+      {
+        id: 10, name: 'ep-dead', enabled: true, socks_port: 1083,
+        mode: 'global', node_id: 4, balancer_id: null, routing_set_id: null,
+        order: 3, running: false, node_name: 'Dead node',
+      },
+      {
+        id: 11, name: 'ep-disabled', enabled: true, socks_port: 1084,
+        mode: 'global', node_id: 5, balancer_id: null, routing_set_id: null,
+        order: 4, running: false, node_name: 'Disabled node',
+      },
+    ] as never)
+    render(wrap(<ProxyEndpointsSection />))
+    await waitFor(() => screen.getByText('ep-main'))
+
+    // Main-flow node used by this endpoint stays visible and labeled.
+    fireEvent.click(screen.getAllByText('Edit')[0])
+    expect(screen.getByRole('button', { name: /Main node \(current\)/ })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: /Main node \(current\)/ }))
+    expect(screen.getAllByRole('button', { name: /Main node \(current\)/ })).toHaveLength(2)
+
+    // Other used/disabled nodes stay hidden.
+    expect(screen.queryByRole('button', { name: /Taken node/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Disabled node/ })).not.toBeInTheDocument()
+
+    // Offline current node is also labeled.
+    fireEvent.click(screen.getByText('Cancel'))
+    await waitFor(() => expect(screen.queryByText('Edit endpoint')).not.toBeInTheDocument())
+    fireEvent.click(screen.getAllByText('Edit')[2])
+    expect(screen.getByRole('button', { name: /Dead node \(current\)/ })).toBeInTheDocument()
+
+    // Disabled current node is also labeled.
+    fireEvent.click(screen.getByText('Cancel'))
+    await waitFor(() => expect(screen.queryByText('Edit endpoint')).not.toBeInTheDocument())
+    fireEvent.click(screen.getAllByText('Edit')[3])
+    expect(screen.getByRole('button', { name: /Disabled node \(current\)/ })).toBeInTheDocument()
+  })
+
+  it('blocks non-numeric and out-of-range ports before submitting', async () => {
+    const user = userEvent.setup()
+    await openForm()
+    fireEvent.change(screen.getByPlaceholderText('work-laptop'), { target: { value: 'ep-x' } })
+    fireEvent.click(screen.getByRole('button', { name: /Select node or balancer/ }))
+    fireEvent.click(screen.getByRole('button', { name: /Free node/ }))
+
+    const portInput = screen.getByPlaceholderText(/auto/) as HTMLInputElement
+    await user.type(portInput, '10.5')
+    fireEvent.click(screen.getByText('Save'))
+    expect(await screen.findByText(/integer from 1 to 65535/)).toBeInTheDocument()
+    expect(createMock).not.toHaveBeenCalled()
+
+    await user.clear(portInput)
+    await user.type(portInput, '70000')
+    fireEvent.click(screen.getByText('Save'))
+    expect(await screen.findByText(/integer from 1 to 65535/)).toBeInTheDocument()
+    expect(createMock).not.toHaveBeenCalled()
+  })
+
+  it('submits with a valid explicit port', async () => {
+    await openForm()
+    fireEvent.change(screen.getByPlaceholderText('work-laptop'), { target: { value: 'ep-x' } })
+    fireEvent.click(screen.getByRole('button', { name: /Select node or balancer/ }))
+    fireEvent.click(screen.getByRole('button', { name: /Free node/ }))
+    fireEvent.change(screen.getByPlaceholderText(/auto/), { target: { value: '1500' } })
+    fireEvent.click(screen.getByText('Save'))
+    await waitFor(() => expect(createMock).toHaveBeenCalled())
+    expect(createMock).toHaveBeenCalledWith(expect.objectContaining({
+      name: 'ep-x',
+      socks_port: 1500,
+      mode: 'global',
+      node_id: 3,
+      balancer_id: null,
+    }))
   })
 })

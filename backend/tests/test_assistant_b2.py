@@ -379,3 +379,45 @@ def test_discovery_probes_private_hosts_only(client, admin_user, auth_headers, s
     assert r.json() == [{"base_url": "http://192.168.50.30:11434/v1", "kind": "Ollama", "host": "192.168.50.30",
                          "port": 11434, "models": ["qwen3:14b"]}]
     assert "203.0.113.5" not in probed and "127.0.0.1" in probed
+
+
+
+# ── web_search execution boundary ─────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_disabled_web_search_blocks_search_and_fetch():
+    from app.assistant import web
+    from app.assistant.tools import ToolContext, run_tool
+
+    ctx = ToolContext(session=None, redactor=None, executor=None, save_plan=None, web_search=False)
+
+    with mock.patch.object(web, "search", new_callable=mock.AsyncMock) as m_search, \
+            mock.patch.object(web, "fetch", new_callable=mock.AsyncMock) as m_fetch:
+        res, err, _ = await run_tool(ctx, "web_search", {"query": "x"})
+        assert err is True and "disabled" in res
+        m_search.assert_not_awaited()
+
+        res, err, _ = await run_tool(ctx, "web_fetch", {"url": "https://example.com"})
+        assert err is True and "disabled" in res
+        m_fetch.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_enabled_web_search_still_calls_search_and_fetch():
+    from app.assistant import web
+    from app.assistant.redact import Redactor
+    from app.assistant.tools import ToolContext, run_tool
+
+    ctx = ToolContext(session=None, redactor=Redactor(), executor=None, save_plan=None, web_search=True)
+
+    with mock.patch.object(web, "search", new_callable=mock.AsyncMock,
+                           return_value=[{"title": "t", "url": "https://example.com", "snippet": "s"}]) as m:
+        res, err, _ = await run_tool(ctx, "web_search", {"query": "x"})
+        assert err is False
+        m.assert_awaited_once()
+
+    with mock.patch.object(web, "fetch", new_callable=mock.AsyncMock,
+                           return_value={"url": "https://example.com", "status": 200, "text": "hi"}) as m:
+        res, err, _ = await run_tool(ctx, "web_fetch", {"url": "https://example.com"})
+        assert err is False
+        m.assert_awaited_once()

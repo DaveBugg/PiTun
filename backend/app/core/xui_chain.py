@@ -1627,6 +1627,14 @@ async def orchestrate_delete(
                         ProxyChain.relay_xui_server_id == chain.relay_xui_server_id,
                     ).where(ProxyChain.id != chain.id)
                     others = list((await session.exec(others_q)).all())
+                    # `own_chain_ids` must include BOTH the chain being
+                    # removed (so its stale entries are stripped) and the
+                    # surviving chains (so their current entries are treated
+                    # as ours and replaced, not preserved as "foreign" and
+                    # duplicated by the fresh template).
+                    own_chain_ids = {other.id for other in others if other.id is not None}
+                    if chain.id is not None:
+                        own_chain_ids.add(chain.id)
                     if others:
                         template = await build_combined_relay_template(
                             session=session,
@@ -1635,7 +1643,7 @@ async def orchestrate_delete(
                         )
                         await _push_xray_template(
                             relay_client=c, template=template,
-                            own_chain_ids={chain.id},
+                            own_chain_ids=own_chain_ids,
                         )
                         await _restart_xray(c)
                     else:
@@ -1645,7 +1653,7 @@ async def orchestrate_delete(
                         # PiTun install): then a merged push instead of
                         # a hard clear so their routes survive.
                         if await _template_has_foreign_entries(
-                            c, own_chain_ids={chain.id},
+                            c, own_chain_ids=own_chain_ids,
                         ):
                             template = await build_combined_relay_template(
                                 session=session,
@@ -1654,7 +1662,7 @@ async def orchestrate_delete(
                             )
                             await _push_xray_template(
                                 relay_client=c, template=template,
-                                own_chain_ids={chain.id},
+                                own_chain_ids=own_chain_ids,
                             )
                             await _restart_xray(c)
                         else:

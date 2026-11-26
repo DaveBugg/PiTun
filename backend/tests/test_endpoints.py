@@ -4,6 +4,7 @@ The endpoint manager is mocked out: process lifecycle is covered
 separately, here we pin the API surface (validation, uniqueness,
 limit, guards on active-node / node-delete).
 """
+from unittest import mock
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -232,3 +233,167 @@ def test_apply_disable_does_not_deadlock():
     asyncio.run(run())
     proc.stop.assert_awaited_once()
     assert 1 not in mgr._procs
+
+
+def test_apply_rename_preserves_existing_process():
+    """Renaming an endpoint must update proc.name in place. The existing
+    OS process stays bound to the same EndpointProcess object and is
+    restarted through the normal restart path; it is never orphaned and
+    never replaced by a fresh EndpointProcess object."""
+    import asyncio
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock, patch
+
+    from app.core.endpoint_manager import EndpointManager, EndpointProcess
+
+    mgr = EndpointManager()
+    ep = SimpleNamespace(
+        id=1, name="new-name", enabled=True, node_id=1, balancer_id=None,
+        mode="global", routing_set_id=None, socks_port=1081,
+    )
+    proc = EndpointProcess(1, "old-name")
+    proc.restart = AsyncMock()
+    proc.start = AsyncMock()
+    proc._process = SimpleNamespace(returncode=None, pid=12345)
+    mgr._procs[1] = proc
+
+    async def run():
+        with patch(
+            "app.core.endpoint_manager.build_endpoint_config",
+            new=AsyncMock(return_value={"inbounds": []}),
+        ), patch(
+            "app.core.endpoint_manager.write_endpoint_config",
+            new=AsyncMock(),
+        ):
+            await asyncio.wait_for(mgr.apply(None, ep), timeout=5)  # type: ignore[arg-type]
+
+    asyncio.run(run())
+    assert mgr._procs[1] is proc
+    assert proc.name == "new-name"
+    proc.restart.assert_awaited_once()
+    proc.start.assert_not_awaited()
+
+
+
+class TestDeleteActiveNodeHealExcludesEndpoints:
+    """The active-node heal must not pick a survivor that is already
+    assigned to an extra endpoint — that would violate the one-node-per-flow
+    invariant enforced by set_active_node."""
+
+    def _mk_ep_node(self, session, name, port, ep_name, socks_port):
+        n = _node(session, name, port=port)
+        session.add(ProxyEndpoint(name=ep_name, node_id=n.id, socks_port=socks_port, mode="global"))
+        session.commit()
+        return n
+
+    def _active_value(self, session):
+        session.expire_all()
+        row = session.exec(
+            select(Settings).where(Settings.key == "active_node_id")
+        ).first()
+        return row.value if row else None
+
+    def test_heal_skips_assigned_first_survivor(self, client, session, admin_user, auth_headers):
+        active = _node(session, "active")
+        assigned = self._mk_ep_node(session, "assigned", 444, "ep1", 1081)
+        free = _node(session, "free", port=445)
+        session.add(Settings(key="active_node_id", value=str(active.id)))
+        session.commit()
+
+        with patch(
+            "app.core.xray.XrayManager.is_running",
+            new_callable=mock.PropertyMock, return_value=False,
+        ):
+            resp = client.delete(f"/api/nodes/{active.id}", headers=auth_headers)
+
+        assert resp.status_code == 204
+        assert self._active_value(session) == str(free.id)
+
+    def test_heal_clears_when_all_survivors_assigned(
+        self, client, session, admin_user, auth_headers,
+    ):
+        active = _node(session, "active")
+        self._mk_ep_node(session, "assigned-1", 444, "ep1", 1081)
+        self._mk_ep_node(session, "assigned-2", 445, "ep2", 1082)
+        session.add(Settings(key="active_node_id", value=str(active.id)))
+        session.commit()
+
+        with patch(
+            "app.core.xray.XrayManager.is_running",
+            new_callable=mock.PropertyMock, return_value=False,
+        ):
+            resp = client.delete(f"/api/nodes/{active.id}", headers=auth_headers)
+
+        assert resp.status_code == 204
+        assert self._active_value(session) == ""
+
+
+class TestBootActiveNodeHealExcludesEndpoints:
+    """The boot-time heal uses the same one-node-per-flow exclusion as the
+    delete-time heal."""
+
+    @pytest.mark.asyncio
+    async def test_boot_heal_skips_assigned_survivor(self, engine):
+        sync_engine, async_engine = engine
+        from sqlmodel import Session
+        from sqlmodel.ext.asyncio.session import AsyncSession
+        from app.main import _heal_active_node_on_boot
+
+        with Session(sync_engine) as s:
+            assigned = Node(
+                name="assigned", protocol="vless", address="192.0.2.10", port=443,
+                uuid="u", transport="tcp", tls="none", enabled=True,
+            )
+            free = Node(
+                name="free", protocol="vless", address="192.0.2.11", port=444,
+                uuid="u", transport="tcp", tls="none", enabled=True,
+            )
+            s.add(assigned)
+            s.add(free)
+            s.commit()
+            s.refresh(assigned)
+            s.refresh(free)
+            free_id = free.id
+            s.add(ProxyEndpoint(name="ep1", node_id=assigned.id, socks_port=1081, mode="global"))
+            s.add(Settings(key="active_node_id", value="9999"))
+            s.commit()
+
+        async with AsyncSession(async_engine) as s:
+            await _heal_active_node_on_boot(s)
+
+        with Session(sync_engine) as s:
+            row = s.exec(select(Settings).where(Settings.key == "active_node_id")).first()
+            assert row.value == str(free_id)
+
+    @pytest.mark.asyncio
+    async def test_boot_heal_clears_when_all_survivors_assigned(self, engine):
+        sync_engine, async_engine = engine
+        from sqlmodel import Session
+        from sqlmodel.ext.asyncio.session import AsyncSession
+        from app.main import _heal_active_node_on_boot
+
+        with Session(sync_engine) as s:
+            a1 = Node(
+                name="a1", protocol="vless", address="192.0.2.10", port=443,
+                uuid="u", transport="tcp", tls="none", enabled=True,
+            )
+            a2 = Node(
+                name="a2", protocol="vless", address="192.0.2.11", port=444,
+                uuid="u", transport="tcp", tls="none", enabled=True,
+            )
+            s.add(a1)
+            s.add(a2)
+            s.commit()
+            s.refresh(a1)
+            s.refresh(a2)
+            s.add(ProxyEndpoint(name="ep1", node_id=a1.id, socks_port=1081, mode="global"))
+            s.add(ProxyEndpoint(name="ep2", node_id=a2.id, socks_port=1082, mode="global"))
+            s.add(Settings(key="active_node_id", value="9999"))
+            s.commit()
+
+        async with AsyncSession(async_engine) as s:
+            await _heal_active_node_on_boot(s)
+
+        with Session(sync_engine) as s:
+            row = s.exec(select(Settings).where(Settings.key == "active_node_id")).first()
+            assert row.value == ""

@@ -154,3 +154,70 @@ async def test_http_ok_blames_the_node_only_for_a_tunnel_that_carried_nothing(cl
     for res, expected in cases:
         with patch("app.core.speedtest.reachability_check", new=AsyncMock(return_value=res)):
             assert await _REAL_HTTP_OK(HealthChecker(), n.id) is expected
+
+
+
+def _ep(session, node_id, name="ep", port=1081):
+    from app.models import ProxyEndpoint
+    ep = ProxyEndpoint(name=name, node_id=node_id, socks_port=port, mode="global")
+    session.add(ep)
+    session.commit()
+    session.refresh(ep)
+    return ep
+
+
+@pytest.mark.asyncio
+async def test_failover_skips_endpoint_assigned_candidate(client, admin_user, session):
+    from app.core.healthcheck import HealthChecker
+    from app.models import Settings
+    from sqlmodel import select
+
+    failed = _mk(session, name="failed", address="192.0.2.10")
+    assigned = _mk(session, name="assigned", address="192.0.2.11")
+    free = _mk(session, name="free", address="192.0.2.12")
+    _ep(session, assigned.id, name="ep1", port=1081)
+
+    _setting(session, "active_node_id", str(failed.id))
+    _setting(session, "failover_enabled", "true")
+    _setting(session, "failover_node_ids", json.dumps([assigned.id, free.id]))
+
+    hc = HealthChecker()
+    with (
+        patch.object(HealthChecker, "_probe_node", AsyncMock(return_value={"is_online": True, "latency_ms": 10})),
+        patch.object(HealthChecker, "_http_ok", AsyncMock(return_value=True)),
+        patch.object(HealthChecker, "_reload_xray", AsyncMock()),
+    ):
+        await hc._failover(failed.id)
+
+    session.expire_all()
+    row = session.exec(select(Settings).where(Settings.key == "active_node_id")).first()
+    assert row.value == str(free.id)
+
+
+@pytest.mark.asyncio
+async def test_failover_keeps_current_when_all_candidates_are_endpoint_assigned(
+    client, admin_user, session,
+):
+    from app.core.healthcheck import HealthChecker
+    from app.models import Settings
+    from sqlmodel import select
+
+    failed = _mk(session, name="failed", address="192.0.2.20")
+    assigned = _mk(session, name="assigned", address="192.0.2.21")
+    _ep(session, assigned.id, name="ep1", port=1081)
+
+    _setting(session, "active_node_id", str(failed.id))
+    _setting(session, "failover_enabled", "true")
+    _setting(session, "failover_node_ids", json.dumps([assigned.id]))
+
+    hc = HealthChecker()
+    with (
+        patch.object(HealthChecker, "_probe_node", AsyncMock(return_value={"is_online": True, "latency_ms": 10})),
+        patch.object(HealthChecker, "_http_ok", AsyncMock(return_value=True)),
+        patch.object(HealthChecker, "_reload_xray", AsyncMock()),
+    ):
+        await hc._failover(failed.id)
+
+    session.expire_all()
+    row = session.exec(select(Settings).where(Settings.key == "active_node_id")).first()
+    assert row.value == str(failed.id)

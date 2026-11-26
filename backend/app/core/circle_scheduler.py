@@ -9,6 +9,7 @@ from typing import Optional
 from sqlmodel import select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
+from app.core.endpoints import endpoint_assigned_node_ids
 from app.database import get_async_engine
 from app.models import NodeCircle, Node, Settings as DBSettings
 
@@ -447,10 +448,11 @@ class CircleScheduler:
             else:  # sequential — walk forward from current+1, wrap, skip current
                 order = [(current_idx + i) % len(node_ids) for i in range(1, len(node_ids))]
 
+            assigned_ids = await endpoint_assigned_node_ids(session)
             candidates: list[dict] = []
             for idx in order:
                 cand = await session.get(Node, node_ids[idx])
-                if not cand or not cand.enabled:
+                if not cand or not cand.enabled or cand.id in assigned_ids:
                     continue
                 # Candidate filters (0 = disabled). Reject only on KNOWN-bad
                 # values — an untested node (None) gets the benefit of the

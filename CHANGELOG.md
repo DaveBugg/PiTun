@@ -4,6 +4,22 @@ All notable user-facing changes to PiTun. Full per-release detail lives in the
 [GitHub Releases](https://github.com/DaveBugg/PiTun/releases); this file is the
 committed summary.
 
+## v1.8.0-beta.12 — 2026-11-26
+
+**Security and stability fixes across the assistant, extra proxy endpoints, shared-panel chains and WireGuard.**
+
+### Security
+
+- Pasting a bare hostname and an SSH password into the assistant now always takes the masked credentials path; the password no longer reaches the model. URLs with sensitive query parameters are redacted regardless of token length or hyphen count.
+- Disabling web search now also blocks execution of `web_search` and `web_fetch`, not just their advertisement to the model. Cancelling or closing voice input while the browser is still requesting microphone permission no longer allows recording to start afterwards.
+
+### Fixed
+
+- Extra SOCKS endpoints work with balancers, survive renaming without orphaning the old xray process, keep the current node visible while editing, and validate the SOCKS port before submitting. Automatic active-node selection can no longer assign one node to both the main flow and an endpoint — including delete/boot/subscription recovery, health failover and circle rotation.
+- Deleting one chain from a shared relay no longer duplicates the remaining chains' outbounds and routing rules.
+- Assistant undo is atomically claimed, so concurrent requests cannot run the same revert twice. MCP-only mode keeps plan approval but hides chat and other model-dependent controls.
+- WireGuard deployment now persists its outbound-SOCKS state, credentials with shell metacharacters round-trip safely through `pitun-params`, and disabling outbound SOCKS works when `wg-quick` is already stopped.
+
 ## v1.8.0-beta.11 — 2026-11-24
 
 **Extra SOCKS5 endpoints: separate entry points, each pinned to its own node.**

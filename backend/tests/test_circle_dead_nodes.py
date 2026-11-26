@@ -126,3 +126,57 @@ async def test_circle_http_probe_does_not_blame_the_node_for_a_tunnel_start_fail
                new=AsyncMock(return_value={"ok": False, "detail": "cloudflare: ConnectError"})):
         ok, _ = await CircleScheduler()._http_probe(n.id)
     assert ok is False
+
+
+
+def _ep(session, node_id, name="ep", port=1081):
+    from app.models import ProxyEndpoint
+    ep = ProxyEndpoint(name=name, node_id=node_id, socks_port=port, mode="global")
+    session.add(ep)
+    session.commit()
+    session.refresh(ep)
+    return ep
+
+
+@pytest.mark.asyncio
+async def test_rotation_skips_endpoint_assigned_candidate_for_main_flow(client, admin_user, session):
+    from app.models import Settings as DBSettings
+    from sqlmodel import select
+
+    cur = _node(session, name="cur", address="10.0.0.0", latency_ms=500)
+    assigned = _node(session, name="assigned", address="10.0.0.1", latency_ms=20)
+    free = _node(session, name="free", address="10.0.0.2", latency_ms=30)
+    _ep(session, assigned.id, name="ep1", port=1081)
+    c = _circle(session, [cur.id, assigned.id, free.id], mode="sequential", min_speed_mbps=0.0)
+
+    await _rotate(c.id, {"10.0.0.1": _fast("x"), "10.0.0.2": _fast("x")})
+    assert _current(session, c.id) == free.id
+
+    session.expire_all()
+    active = session.exec(select(DBSettings).where(DBSettings.key == "active_node_id")).first()
+    assert active.value == str(free.id)
+
+
+@pytest.mark.asyncio
+async def test_rotation_keeps_current_when_every_candidate_is_endpoint_assigned(
+    client, admin_user, session,
+):
+    from app.models import Settings as DBSettings
+    from sqlmodel import select
+    from app.core.circle_scheduler import circle_scheduler
+
+    from app.models import Settings as DBSettings
+
+    cur = _node(session, name="cur", address="10.0.0.0", latency_ms=500)
+    assigned = _node(session, name="assigned", address="10.0.0.1", latency_ms=20)
+    _ep(session, assigned.id, name="ep1", port=1081)
+    c = _circle(session, [cur.id, assigned.id], mode="sequential", min_speed_mbps=0.0)
+    session.add(DBSettings(key="active_node_id", value=str(cur.id)))
+    session.commit()
+
+    await _rotate(c.id, {"10.0.0.1": _fast("x")})
+    assert _current(session, c.id) == cur.id
+
+    session.expire_all()
+    active = session.exec(select(DBSettings).where(DBSettings.key == "active_node_id")).first()
+    assert active.value == str(cur.id)
